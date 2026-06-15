@@ -4,6 +4,7 @@ import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { formatDuration } from "../hooks/useLoopStats"
 import { stripMarkdown } from "../lib/format"
+import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
 import { ProgressIndicator } from "./ProgressIndicator"
 
@@ -30,29 +31,29 @@ export interface DashboardProps {
 function getStateBadge(state: LoopState): { icon: string; text: string; colorKey: "success" | "warning" | "error" | "info" | "primary" } {
   switch (state.type) {
     case "starting":
-      return { icon: "◐", text: "STARTING", colorKey: "warning" }
+      return { icon: "◐", text: t("badgeStarting"), colorKey: "warning" }
     case "ready":
-      return { icon: "●", text: "READY", colorKey: "info" }
+      return { icon: "●", text: t("badgeReady"), colorKey: "info" }
     case "running":
-      return { icon: "▶", text: "RUNNING", colorKey: "success" }
+      return { icon: "▶", text: t("badgeRunning"), colorKey: "success" }
     case "pausing":
-      return { icon: "◑", text: "PAUSING", colorKey: "warning" }
+      return { icon: "◑", text: t("badgePausing"), colorKey: "warning" }
     case "paused":
-      return { icon: "⏸", text: "PAUSED", colorKey: "warning" }
+      return { icon: "⏸", text: t("badgePaused"), colorKey: "warning" }
     case "cooldown":
-      return { icon: "◴", text: "COOLDOWN", colorKey: "warning" }
+      return { icon: "◴", text: t("badgeCooldown"), colorKey: "warning" }
     case "stopping":
-      return { icon: "◌", text: "STOPPING", colorKey: "error" }
+      return { icon: "◌", text: t("badgeStopping"), colorKey: "error" }
     case "stopped":
-      return { icon: "⏹", text: "STOPPED", colorKey: "error" }
+      return { icon: "⏹", text: t("badgeStopped"), colorKey: "error" }
     case "complete":
-      return { icon: "✓", text: "COMPLETE", colorKey: "success" }
+      return { icon: "✓", text: t("badgeComplete"), colorKey: "success" }
     case "error":
-      return { icon: "!", text: "ERROR", colorKey: "error" }
+      return { icon: "!", text: t("badgeError"), colorKey: "error" }
     case "debug":
-      return { icon: "⚙", text: "DEBUG", colorKey: "info" }
+      return { icon: "⚙", text: t("badgeDebug"), colorKey: "info" }
     default:
-      return { icon: "?", text: "UNKNOWN", colorKey: "info" }
+      return { icon: "?", text: t("badgeUnknown"), colorKey: "info" }
   }
 }
 
@@ -103,15 +104,15 @@ export function Dashboard(props: DashboardProps) {
     if (!h || (s.type !== "running" && s.type !== "pausing")) return null
     switch (h) {
       case "HEALTHY":
-        return { colorKey: "success" as const, label: "OK" }
+        return { colorKey: "success" as const, label: t("guardOk") }
       case "SUSPECT":
-        return { colorKey: "warning" as const, label: "SUSPECT" }
+        return { colorKey: "warning" as const, label: t("guardSuspect") }
       case "CONFIRMING":
-        return { colorKey: "warning" as const, label: "CHECK" }
+        return { colorKey: "warning" as const, label: t("guardCheck") }
       case "STUCK":
-        return { colorKey: "error" as const, label: "STUCK" }
+        return { colorKey: "error" as const, label: t("guardStuck") }
       case "RECOVERING":
-        return { colorKey: "error" as const, label: "RECOVER" }
+        return { colorKey: "error" as const, label: t("guardRecover") }
       default:
         return null
     }
@@ -122,7 +123,7 @@ export function Dashboard(props: DashboardProps) {
     const state = props.state
     if (state.type !== "cooldown") return null
     const secs = Math.max(0, Math.ceil((props.cooldownRemainingMs ?? 0) / 1000))
-    return `Rate limited — reintentando en ${secs}s (intento ${state.attempt})`
+    return t("cooldownText", { secs, attempt: state.attempt })
   })
 
   // Calculate remaining tasks for ETA
@@ -159,56 +160,63 @@ export function Dashboard(props: DashboardProps) {
     switch (state.type) {
       case "ready":
         return [
-          { key: "S", desc: "start" },
-          { key: "^P", desc: "commands" },
-          { key: "Q", desc: "quit" },
+          { key: "S", desc: t("hintStart") },
+          { key: "^P", desc: t("hintCommands") },
+          { key: "Q", desc: t("hintQuit") },
         ]
       case "running":
         return [
-          { key: "T", desc: "terminal" },
-          { key: "Space", desc: "pause" },
-          { key: "^P", desc: "commands" },
-          { key: "Q", desc: "quit" },
+          { key: "T", desc: t("hintTerminal") },
+          { key: "Space", desc: t("hintPause") },
+          { key: "^P", desc: t("hintCommands") },
+          { key: "Q", desc: t("hintQuit") },
         ]
       case "paused":
         return [
-          { key: "T", desc: "terminal" },
-          { key: "Space", desc: "resume" },
-          { key: "^P", desc: "commands" },
-          { key: "Q", desc: "quit" },
+          { key: "T", desc: t("hintTerminal") },
+          { key: "Space", desc: t("hintResume") },
+          { key: "^P", desc: t("hintCommands") },
+          { key: "Q", desc: t("hintQuit") },
         ]
       case "pausing":
-        return [{ key: "", desc: "Waiting for task..." }, { key: "Q", desc: "quit" }]
+        return [
+          { key: "", desc: t("hintPausingMsg") },
+          { key: "Space", desc: t("hintCancel") },
+          { key: "Q", desc: t("hintQuit") },
+        ]
       case "cooldown":
-        return [{ key: "", desc: "Rate limited, waiting..." }, { key: "Q", desc: "quit" }]
+        return [
+          { key: "", desc: t("hintCooldownMsg") },
+          { key: "Q", desc: t("hintQuit") },
+        ]
       case "complete":
-        return [{ key: "", desc: "Press any key to exit" }]
+        return [{ key: "", desc: t("hintCompleteMsg") }]
       case "error":
         if (state.recoverable) {
           return [
-            { key: "R", desc: "retry" },
-            { key: "Q", desc: "quit" },
+            { key: "R", desc: t("hintRetry") },
+            { key: "Q", desc: t("hintQuit") },
           ]
         }
-        return [{ key: "Q", desc: "quit" }]
+        return [{ key: "Q", desc: t("hintQuit") }]
       case "debug":
         // Detached in debug mode
         if (state.sessionId) {
           return [
-            { key: "P", desc: "prompt" },
-            { key: "T", desc: "terminal" },
-            { key: "N", desc: "new session" },
-            { key: "I", desc: "sample activity" },
-            { key: "^P", desc: "commands" },
-            { key: "Q", desc: "quit" },
+            { key: "P", desc: t("hintPrompt") },
+            { key: "T", desc: t("hintTerminal") },
+            { key: "N", desc: t("hintNewSession") },
+            { key: "I", desc: t("hintSampleActivity") },
+            { key: "^P", desc: t("hintCommands") },
+            { key: "Q", desc: t("hintQuit") },
           ]
         }
         // No active session
         return [
-          { key: "N", desc: "new session" },
-          { key: "I", desc: "sample activity" },
-          { key: "^P", desc: "commands" },
-          { key: "Q", desc: "quit" },
+          { key: "N", desc: t("hintNewSession") },
+          { key: "I", desc: t("hintSampleActivity") },
+          { key: "^P", desc: t("hintCommands") },
+          { key: "Q", desc: t("hintQuit") },
         ]
       default:
         return []
@@ -270,7 +278,7 @@ export function Dashboard(props: DashboardProps) {
         {/* Model display */}
         <Show when={props.model}>
           <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>Model</span>
+            <span style={{ fg: theme().textMuted }}>{t("lblModel")}</span>
             <span style={{ fg: theme().text }}> {props.model}</span>
           </text>
         </Show>
@@ -278,7 +286,7 @@ export function Dashboard(props: DashboardProps) {
         {/* Agent display */}
         <Show when={props.agent}>
           <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>Agent</span>
+            <span style={{ fg: theme().textMuted }}>{t("lblAgent")}</span>
             <span style={{ fg: theme().text }}> {props.agent}</span>
           </text>
         </Show>
@@ -286,7 +294,7 @@ export function Dashboard(props: DashboardProps) {
         {/* Iteration counter */}
         <Show when={iteration() > 0}>
           <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>Iter</span>
+            <span style={{ fg: theme().textMuted }}>{t("lblIter")}</span>
             <span style={{ fg: theme().text }}> {iteration()}</span>
           </text>
         </Show>
@@ -294,7 +302,7 @@ export function Dashboard(props: DashboardProps) {
         {/* Plan progress - hide in debug mode */}
         <Show when={props.progress && props.state.type !== "debug"}>
           <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>Tasks</span>
+            <span style={{ fg: theme().textMuted }}>{t("lblTasks")}</span>
             <span style={{ fg: theme().primary }}> {progressText()}</span>
           </text>
           <box style={{ marginLeft: 1 }}>
@@ -309,7 +317,7 @@ export function Dashboard(props: DashboardProps) {
         {/* Watchdog health indicator */}
         <Show when={watchdogIndicator()}>
           <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>Guard</span>
+            <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
             <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> ●</span>
             <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
           </text>
@@ -319,17 +327,17 @@ export function Dashboard(props: DashboardProps) {
       {/* Row 2: Timing stats */}
       <box style={{ flexDirection: "row" }}>
         <text>
-          <span style={{ fg: theme().textMuted }}>Time</span>
+          <span style={{ fg: theme().textMuted }}>{t("lblTime")}</span>
           <span style={{ fg: theme().text }}> {formatDuration(props.stats.elapsedTime())}</span>
         </text>
 
         <text style={{ marginLeft: 2 }}>
-          <span style={{ fg: theme().textMuted }}>Avg</span>
+          <span style={{ fg: theme().textMuted }}>{t("lblAvg")}</span>
           <span style={{ fg: theme().text }}> {averageDisplay()}</span>
         </text>
 
         <text style={{ marginLeft: 2 }}>
-          <span style={{ fg: theme().textMuted }}>ETA</span>
+          <span style={{ fg: theme().textMuted }}>{t("lblEta")}</span>
           <span style={{ fg: theme().text }}> {estimatedDisplay()}</span>
         </text>
       </box>
@@ -343,13 +351,13 @@ export function Dashboard(props: DashboardProps) {
               when={truncatedTask()}
               fallback={
                 <text>
-                  <span style={{ fg: theme().textMuted }}>Task: </span>
-                  <span style={{ fg: theme().textMuted, italic: true }}>waiting...</span>
+                  <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
+                  <span style={{ fg: theme().textMuted, italic: true }}>{t("lblWaiting")}</span>
                 </text>
               }
             >
               <text>
-                <span style={{ fg: theme().textMuted }}>Task: </span>
+                <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
                 <span style={{ fg: theme().text }}>{truncatedTask()}</span>
               </text>
             </Show>

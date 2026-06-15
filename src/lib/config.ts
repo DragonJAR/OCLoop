@@ -127,6 +127,13 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 export interface OcloopConfig {
   terminal?: TerminalConfig
   scrollbar_visible?: boolean
+  /**
+   * Theme name override for the OCLoop GUI. Defaults to the DragonJAR brand
+   * theme. Set to any bundled theme id (e.g. "opencode", "dracula") to change it.
+   */
+  theme?: string
+  /** UI language. Defaults to English; "es" for Spanish. */
+  language?: import("./i18n").Locale
   /** Optional persisted resilience overrides (partial; merged over defaults). */
   resilience?: Partial<ResilienceConfig>
 }

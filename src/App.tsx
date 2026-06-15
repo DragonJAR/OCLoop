@@ -53,6 +53,7 @@ import {
 import { withTimeout } from "./lib/with-timeout"
 import { computeBackoff } from "./lib/backoff"
 import { monotonicNow } from "./lib/clock"
+import { t, setLocale, getLocale, type Locale } from "./lib/i18n"
 import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
 import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
@@ -196,7 +197,7 @@ function AppContent(props: AppProps) {
     log.health("sleep", "wake", { gapMs })
     activityLog.addEvent(
       "task",
-      `Despertar tras ${Math.round(gapMs / 1000)}s suspendido — reconectando`,
+      t("actWake", { secs: Math.round(gapMs / 1000) }),
     )
 
     // Reconnect SSE (heartbeat) and re-evaluate the watchdog now.
@@ -254,22 +255,16 @@ function AppContent(props: AppProps) {
     },
     actions: {
       reconnectSSE: () => {
-        activityLog.addEvent("task", "Guardián: reconectando SSE")
+        activityLog.addEvent("task", t("actGuardReconnect"))
         sse.reconnect()
       },
       synthesizeIdle: () => {
-        activityLog.addEvent(
-          "session_idle",
-          "Guardián: sesión idle/missing, avanzando",
-        )
+        activityLog.addEvent("session_idle", t("actGuardSynthIdle"))
         rateLimitAttempts = 0
         loop.dispatch({ type: "session_idle" })
       },
       abortAndRetry: async () => {
-        activityLog.addEvent(
-          "task",
-          "Guardián: sesión bloqueada, abortando y reintentando",
-        )
+        activityLog.addEvent("task", t("actGuardAbort"))
         const url = server.url()
         const s = loop.state()
         const sid =
@@ -290,7 +285,12 @@ function AppContent(props: AppProps) {
         loop.dispatch({
           type: "error",
           source: "api",
-          message: `Guardián: recuperación agotada (${d.reason}) tras ${d.attempts} intentos; sin latido ${Math.round(d.lastHeartbeatAgeMs / 1000)}s, último estado ${d.lastVerdict ?? "?"}`,
+          message: t("errGuardExhausted", {
+            reason: d.reason,
+            attempts: d.attempts,
+            secs: Math.round(d.lastHeartbeatAgeMs / 1000),
+            verdict: d.lastVerdict ?? "?",
+          }),
           recoverable: true,
         })
       },
@@ -425,18 +425,18 @@ function AppContent(props: AppProps) {
       },
       onSessionError: (id, error) => {
         if (error.isAborted) {
-          activityLog.addEvent("task", "Session aborted by user")
+          activityLog.addEvent("task", t("actSessionAborted"))
           if (loop.state().type === "running") {
             loop.dispatch({ type: "toggle_pause" })
           }
         } else if (error.kind === "rate_limit") {
           // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
-          activityLog.addEvent("error", `Rate limit: ${error.message}`)
+          activityLog.addEvent("error", t("actRateLimit", { message: error.message }))
           if (loop.state().type === "running") {
             enterCooldown(error.message, error.retryAfter)
           }
         } else {
-          activityLog.addEvent("error", `Session error: ${error.message}`)
+          activityLog.addEvent("error", t("actSessionError", { message: error.message }))
         }
       },
       onSessionIdle: (eventSessionId) => {
@@ -453,7 +453,7 @@ function AppContent(props: AppProps) {
           rateLimitAttempts = 0
           watchdog.notifyIdle()
           loop.dispatch({ type: "session_idle" })
-          activityLog.addEvent("session_idle", "Session idle")
+          activityLog.addEvent("session_idle", t("actSessionIdle"))
         }
       },
       onTodoUpdated: (_eventSessionId, todos) => {
@@ -593,7 +593,7 @@ function AppContent(props: AppProps) {
     if (result === "idle" || result === "missing") {
       activityLog.addEvent(
         "session_idle",
-        `Reconciled: session ${result}, advancing`,
+        t("actReconciled", { result }),
       )
       rateLimitAttempts = 0
       loop.dispatch({ type: "session_idle" })
@@ -607,7 +607,7 @@ function AppContent(props: AppProps) {
    */
   async function restartServer(): Promise<void> {
     log.health("server", "recovery_restart", { url: server.url() })
-    activityLog.addEvent("error", "Guardián: servidor sin respuesta, reiniciando")
+    activityLog.addEvent("error", t("actGuardRestart"))
     await server.restart()
     sse.reconnect()
     await reconcileAndAdvance()
@@ -626,11 +626,11 @@ function AppContent(props: AppProps) {
     if (rateLimitAttempts > r.maxRateLimitRetries) {
       const tried = rateLimitAttempts - 1
       log.health("ratelimit", "exhausted", { attempts: tried, reason })
-      activityLog.addEvent("error", `Rate limit persistente tras ${tried} intentos`)
+      activityLog.addEvent("error", t("actRateExhausted", { attempts: tried }))
       loop.dispatch({
         type: "error",
         source: "api",
-        message: `Rate limit persistente tras ${tried} intentos: ${reason}`,
+        message: t("errRatePersistent", { attempts: tried, reason }),
         recoverable: true,
       })
       rateLimitAttempts = 0
@@ -654,7 +654,7 @@ function AppContent(props: AppProps) {
     })
     activityLog.addEvent(
       "error",
-      `Rate limited — reintentando en ${Math.ceil(delayMs / 1000)}s (intento ${rateLimitAttempts})`,
+      t("cooldownText", { secs: Math.ceil(delayMs / 1000), attempt: rateLimitAttempts }),
     )
 
     loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts })
@@ -695,7 +695,7 @@ function AppContent(props: AppProps) {
     loop.dispatch({
       type: "error",
       source: "api",
-      message: `Failed to start iteration: ${message}`,
+      message: t("errIterationStart", { message }),
       recoverable: true,
     })
   }
@@ -868,10 +868,10 @@ function AppContent(props: AppProps) {
   const showQuitConfirmation = () => {
     dialog.show(() => (
       <DialogConfirm
-        title="Quit OCLoop?"
-        message="Are you sure you want to quit?"
-        confirmLabel="Quit"
-        cancelLabel="Cancel"
+        title={t("dlgQuitTitle")}
+        message={t("dlgQuitMsg")}
+        confirmLabel={t("dlgQuitConfirm")}
+        cancelLabel={t("dlgCancel")}
         onConfirm={() => {
           dialog.clear()
           handleQuit()
@@ -1030,10 +1030,10 @@ function AppContent(props: AppProps) {
         } else {
           dialog.show(() => (
             <DialogConfirm
-              title="Resume previous run?"
-              message={`Found an interrupted run at iteration ${persisted.iteration}. Resume it?`}
-              confirmLabel="Resume"
-              cancelLabel="Start fresh"
+              title={t("dlgResumeTitle")}
+              message={t("dlgResumeMsg", { iteration: persisted.iteration })}
+              confirmLabel={t("dlgResumeConfirm")}
+              cancelLabel={t("dlgResumeCancel")}
               onConfirm={() => {
                 dialog.clear()
                 void doResume(persisted)
@@ -1085,7 +1085,7 @@ function AppContent(props: AppProps) {
     if (verdict === "working" && p.sessionId) {
       activityLog.addEvent(
         "session_start",
-        `Resuming session ${p.sessionId.substring(0, 8)} (iter ${p.iteration})`,
+        t("actResuming", { id: p.sessionId.substring(0, 8), iteration: p.iteration }),
       )
       loop.dispatch({
         type: "resume_session",
@@ -1097,7 +1097,7 @@ function AppContent(props: AppProps) {
     } else {
       activityLog.addEvent(
         "task",
-        `Previous session ${verdict}; continuing the loop`,
+        t("actContinuing", { verdict }),
       )
       await clearLoopState()
       // Fresh iteration, iteration count preserved.
@@ -1368,11 +1368,68 @@ function AppContent(props: AppProps) {
     const hasSession = !!sid
 
     command.register(() => {
+      const st = loop.state().type
       const opts: CommandOption[] = [
+      // --- Loop control (context-aware) ---
       {
-        title: "Copy attach command",
+        title: t("cmdStart"),
+        value: "loop_start",
+        category: t("catLoop"),
+        keybind: "S",
+        disabled: !loop.canStart(),
+        onSelect: () => {
+          dialog.clear()
+          loop.dispatch({ type: "start" })
+        },
+      },
+      {
+        title: t("cmdPause"),
+        value: "loop_pause",
+        category: t("catLoop"),
+        keybind: "Space",
+        disabled: st !== "running",
+        onSelect: () => {
+          dialog.clear()
+          loop.dispatch({ type: "toggle_pause" })
+        },
+      },
+      {
+        title: t("cmdResume"),
+        value: "loop_resume",
+        category: t("catLoop"),
+        keybind: "Space",
+        disabled: st !== "paused",
+        onSelect: () => {
+          dialog.clear()
+          loop.dispatch({ type: "toggle_pause" })
+        },
+      },
+      {
+        title: t("cmdCancelPause"),
+        value: "loop_cancel_pause",
+        category: t("catLoop"),
+        disabled: st !== "pausing",
+        onSelect: () => {
+          dialog.clear()
+          loop.dispatch({ type: "toggle_pause" })
+        },
+      },
+      {
+        title: t("cmdRestartServer"),
+        value: "server_restart",
+        category: t("catLoop"),
+        disabled: !url,
+        onSelect: () => {
+          dialog.clear()
+          toast.show({ variant: "info", message: t("toastRestarting") })
+          void restartServer()
+        },
+      },
+      // --- Terminal ---
+      {
+        title: t("cmdCopyAttach"),
         value: "copy_attach",
-        category: "Terminal",
+        category: t("catTerminal"),
         keybind: "C",
         disabled: !hasSession,
         onSelect: () => {
@@ -1384,9 +1441,9 @@ function AppContent(props: AppProps) {
         },
       },
       {
-        title: "Choose default terminal",
+        title: t("cmdChooseTerminal"),
         value: "terminal_config",
-        category: "Terminal",
+        category: t("catTerminal"),
         keybind: "T",
         disabled: !hasSession,
         onSelect: () => {
@@ -1399,10 +1456,11 @@ function AppContent(props: AppProps) {
           ))
         },
       },
+      // --- View / language ---
       {
-        title: "Toggle scrollbar",
+        title: t("cmdToggleScrollbar"),
         value: "toggle_scrollbar",
-        category: "View",
+        category: t("catView"),
         onSelect: async () => {
           const current = ocloopConfig().scrollbar_visible ?? true
           const newConfig = {
@@ -1412,6 +1470,32 @@ function AppContent(props: AppProps) {
           setOcloopConfig(newConfig)
           await saveConfig(newConfig)
           dialog.clear()
+        },
+      },
+      {
+        // Inherently bilingual label: shows the language you'll switch TO.
+        title: getLocale() === "en" ? "Language → Español" : "Idioma → English",
+        value: "toggle_language",
+        category: t("catLanguage"),
+        onSelect: async () => {
+          const next: Locale = getLocale() === "en" ? "es" : "en"
+          setLocale(next)
+          const newConfig = { ...ocloopConfig(), language: next }
+          setOcloopConfig(newConfig)
+          await saveConfig(newConfig)
+          toast.show({ variant: "success", message: t("toastLanguageChanged") })
+          dialog.clear()
+        },
+      },
+      // --- General ---
+      {
+        title: t("cmdQuit"),
+        value: "quit",
+        category: t("catView"),
+        keybind: "Q",
+        onSelect: () => {
+          dialog.clear()
+          showQuitConfirmation()
         },
       },
       ]

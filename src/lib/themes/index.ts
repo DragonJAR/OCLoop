@@ -13,6 +13,7 @@ import catppuccinMacchiato from "./catppuccin-macchiato.json";
 import cobalt2 from "./cobalt2.json";
 import cursor from "./cursor.json";
 import dracula from "./dracula.json";
+import dragonjar from "./dragonjar.json";
 import everforest from "./everforest.json";
 import flexoki from "./flexoki.json";
 import github from "./github.json";
@@ -60,6 +61,7 @@ export const themes: Record<string, ThemeDefinition> = {
   cobalt2,
   cursor,
   dracula,
+  dragonjar,
   everforest,
   flexoki,
   github,
@@ -87,9 +89,10 @@ export const themes: Record<string, ThemeDefinition> = {
 } as Record<string, ThemeDefinition>;
 
 /**
- * Default theme to use when the requested theme is not found
+ * Default theme. DragonJAR brand identity (red #C11B05 accent on near-black
+ * #0A0A0A with blanco-roto text) — used unless overridden in ocloop.json.
  */
-export const DEFAULT_THEME = "opencode";
+export const DEFAULT_THEME = "dragonjar";
 
 /**
  * Get a theme by name, falling back to the default theme if not found

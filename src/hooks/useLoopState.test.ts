@@ -141,6 +141,22 @@ describe("loopReducer", () => {
         expect(result.sessionId).toBe("")
       }
     })
+
+    it("should cancel a pending pause: pausing → running keeping the same session", () => {
+      const state: LoopState = {
+        type: "pausing",
+        iteration: 3,
+        sessionId: "session-123",
+      }
+      const result = loopReducer(state, { type: "toggle_pause" })
+
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        // Same iteration and same active session — no new iteration started.
+        expect(result.iteration).toBe(3)
+        expect(result.sessionId).toBe("session-123")
+      }
+    })
   })
 
   describe("session_idle action", () => {

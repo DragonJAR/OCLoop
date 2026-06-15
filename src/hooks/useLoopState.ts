@@ -91,6 +91,15 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           sessionId: state.sessionId,
         }
       }
+      if (state.type === "pausing") {
+        // Cancel a pending pause: the session is still running, so go straight
+        // back to running with the SAME session (no new iteration is started).
+        return {
+          type: "running",
+          iteration: state.iteration,
+          sessionId: state.sessionId,
+        }
+      }
       if (state.type === "paused") {
         // Resume - will need iteration_started to set sessionId
         return {
@@ -295,6 +304,8 @@ export function useLoopState(): UseLoopStateReturn {
     const s = state()
     // Can pause when running
     if (s.type === "running") return true
+    // Can cancel a pending pause while pausing
+    if (s.type === "pausing") return true
     // Can resume when paused
     if (s.type === "paused") return true
     return false

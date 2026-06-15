@@ -81,6 +81,8 @@ export interface CLIArgs {
   planFile: string
   run?: boolean  // Start iterations immediately without waiting for user input
   debug?: boolean  // Enable debug/sandbox mode without plan file validation
+  createPlan?: boolean  // Interactively generate PLAN.md, then exit (no TUI)
+  lang?: import("./lib/i18n").Locale  // UI language override (en|es)
   verbose?: boolean  // Enable verbose logging (keyboard events, etc.)
   /**
    * Agent to use for all sessions in this run.

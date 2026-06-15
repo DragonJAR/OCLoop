@@ -1,22 +1,22 @@
 /**
  * Theme Context Provider
  *
- * Provides theme colors to the application by reading the user's OpenCode
- * theme preferences from ~/.local/state/opencode/kv.json.
+ * Provides theme colors to the GUI. Defaults to the DragonJAR brand theme,
+ * overridable via `theme` in ~/.config/ocloop/ocloop.json. The light/dark mode
+ * is still synced from OpenCode's ~/.local/state/opencode/kv.json when present.
  *
- * Falls back to the "opencode" theme in dark mode if:
- * - The kv.json file doesn't exist
- * - The theme specified in kv.json is not found
- * - Any error occurs during theme loading
+ * Falls back to the DragonJAR theme in dark mode if anything is missing/invalid.
  */
 
 import { createContext, useContext, createSignal, onMount, type JSX } from "solid-js"
 import {
   getResolvedTheme,
+  isValidTheme,
   type ThemeColors,
   type ThemeMode,
 } from "../lib/theme-resolver"
 import { DEFAULT_THEME } from "../lib/themes"
+import { loadConfig } from "../lib/config"
 
 /**
  * Value provided by the ThemeContext
@@ -114,12 +114,18 @@ export function ThemeProvider(props: ThemeProviderProps) {
   const [themeName, setThemeName] = createSignal<string>(DEFAULT_THEME)
 
   onMount(async () => {
-    const prefs = await readOpenCodePreferences()
+    // Brand-first: default to the DragonJAR theme. A user can override the GUI
+    // theme via `theme` in ~/.config/ocloop/ocloop.json. We intentionally do NOT
+    // inherit OpenCode's theme *name* (that would override the brand), but we DO
+    // still respect its light/dark mode so the GUI matches the user's preference.
+    const kv = await readOpenCodePreferences()
+    const ocloop = loadConfig()
 
-    const selectedTheme = prefs?.theme || DEFAULT_THEME
-    const selectedMode: ThemeMode = prefs?.theme_mode || "dark"
+    const requested = ocloop.theme
+    const selectedTheme =
+      requested && isValidTheme(requested) ? requested : DEFAULT_THEME
+    const selectedMode: ThemeMode = kv?.theme_mode || "dark"
 
-    // Resolve the theme colors
     const resolvedColors = getResolvedTheme(selectedTheme, selectedMode)
 
     setTheme(resolvedColors)

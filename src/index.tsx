@@ -1,11 +1,24 @@
 #!/usr/bin/env bun
 
 import { render } from "@opentui/solid"
+import { createOpencodeServer } from "@opencode-ai/sdk/server"
+import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
 import { DEFAULTS } from "./lib/constants"
 import type { CLIArgs } from "./types"
-import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./lib/config"
+import { DEFAULT_RESILIENCE, loadConfig, type ResilienceConfig } from "./lib/config"
+import { withTimeout } from "./lib/with-timeout"
+import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
+
+/**
+ * Defaults for the interactive plan generator (`--create-plan`).
+ * Overridable with -m/--model and -a/--agent.
+ */
+const DEFAULT_PLAN_MODEL = "zai-coding-plan/glm-5.2"
+const DEFAULT_PLAN_AGENT = "plan"
+/** Plan generation can take a while; bound it so it can never hang forever. */
+const PLAN_GEN_TIMEOUT_MS = 240_000
 
 // Read version from package.json at build time
 const VERSION = require("../package.json").version
@@ -36,10 +49,12 @@ Options:
   -m, --model <string>     Model to use (passed to opencode)
   -a, --agent <string>     Agent to use (passed to opencode)
   -r, --run                Start iterations immediately (default: wait for [S])
+  -c, --create-plan        Interactively generate PLAN.md (model glm-5.2, agent plan)
   -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
   --verbose                Enable verbose logging (keyboard events, etc.)
   --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
   --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
+  --lang <en|es>           UI language (default: en; also settable in Ctrl+P)
   --resume                 Reconcile a persisted in-flight session on startup
   --no-caffeinate          Do not keep the system awake while running (macOS)
   --chaos                  Enable chaos fault-injection (debug only)
@@ -49,6 +64,7 @@ Options:
 
 Examples:
   ocloop                           # Start, wait for [S] to begin
+  ocloop --create-plan             # Generate a PLAN.md interactively, then exit
   ocloop -r                        # Start iterations immediately
   ocloop -m claude-sonnet-4        # Use specific model
   ocloop -a plan                   # Use specific agent
@@ -175,8 +191,23 @@ function parseArgs(argv: string[]): CLIArgs {
         args.debug = true
         break
 
+      case "-c":
+      case "--create-plan":
+        args.createPlan = true
+        break
+
       case "--verbose":
         args.verbose = true
+        break
+
+      case "--lang":
+      case "--language":
+        const lang = argv[++i]
+        if (!lang || !isLocale(lang)) {
+          console.error("Error: --lang requires 'en' or 'es'")
+          process.exit(1)
+        }
+        args.lang = lang
         break
 
       case "--resume":
@@ -253,12 +284,170 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   }
 }
 
+/** Parse a "provider/model" string into the SDK model param, or undefined. */
+function parsePlanModel(
+  model: string,
+): { providerID: string; modelID: string } | undefined {
+  const slash = model.indexOf("/")
+  if (slash <= 0 || slash === model.length - 1) return undefined
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
+}
+
+/** Strip a surrounding ```fence``` if the model wrapped its output in one. */
+function stripCodeFences(text: string): string {
+  const t = text.trim()
+  const m = t.match(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/)
+  return m ? m[1].trim() : t
+}
+
+/** Extract the assistant's text from a session.prompt response. */
+function extractPlanText(
+  data: { parts?: Array<{ type?: string; text?: string }> } | undefined,
+): string {
+  if (!data?.parts) return ""
+  return data.parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text as string)
+    .join("")
+    .trim()
+}
+
+/** Build the plan-generation prompt for a fresh goal (localized via i18n). */
+function buildPlanPrompt(goal: string): string {
+  return t("cpPrompt", { goal })
+}
+
+/** Build a refinement prompt given the previous plan and user feedback. */
+function buildRefinePrompt(previousPlan: string, feedback: string): string {
+  return t("cpRefine", { feedback, plan: previousPlan })
+}
+
+/**
+ * Interactive plan generator (`--create-plan`).
+ *
+ * Headless CLI flow: asks what you want to build, uses glm-5.2 + the `plan`
+ * agent to draft a PLAN.md in OCLoop's format, shows it, and lets you approve,
+ * refine, or cancel before writing the file. Runs instead of the TUI.
+ */
+async function runCreatePlan(args: CLIArgs): Promise<void> {
+  const planPath = args.planFile || DEFAULTS.PLAN_FILE
+  const modelStr = args.model || DEFAULT_PLAN_MODEL
+  const agent = args.agent || DEFAULT_PLAN_AGENT
+  const model = parsePlanModel(modelStr)
+
+  console.log(t("cpTitle"))
+  console.log(
+    t("cpConfig", { model: modelStr, note: model ? "" : t("cpModelNote"), agent }),
+  )
+  console.log("")
+
+  const goal = prompt(t("cpAskGoal"))
+  if (!goal || !goal.trim()) {
+    console.error(t("cpNoGoal"))
+    process.exit(1)
+  }
+
+  console.log("\n" + t("cpStartingServer"))
+  let server: { url: string; close: () => void } | null = null
+  try {
+    server = await createOpencodeServer({ hostname: "127.0.0.1", timeout: 15000 })
+    const client = createOpencodeClient({ baseUrl: server.url })
+
+    const created = await client.session.create({})
+    if (!created.response.ok || !created.data) {
+      throw new Error(t("cpSessionFail"))
+    }
+    const sessionID = created.data.id
+
+    let currentPrompt = buildPlanPrompt(goal.trim())
+    let plan = ""
+
+    for (;;) {
+      console.log("\n" + t("cpGenerating"))
+      const res = await withTimeout(
+        (signal) =>
+          client.session.prompt(
+            { sessionID, model, agent, parts: [{ type: "text", text: currentPrompt }] },
+            { signal },
+          ),
+        PLAN_GEN_TIMEOUT_MS,
+        "session.prompt",
+      )
+      if (!res.response.ok) {
+        throw new Error(
+          t("cpGenFail", {
+            status: res.response.status,
+            statusText: res.response.statusText,
+          }),
+        )
+      }
+
+      const text = extractPlanText(res.data as { parts?: Array<{ type?: string; text?: string }> })
+      if (!text) {
+        console.error(t("cpNoContent"))
+        process.exitCode = 1
+        break
+      }
+      plan = stripCodeFences(text)
+
+      console.log("\n" + t("cpProposedTop") + "\n")
+      console.log(plan)
+      console.log("\n" + t("cpProposedBottom"))
+
+      const choice = (prompt(t("cpAskApprove")) || "").trim().toLowerCase()
+
+      // Accept both English and Spanish letters regardless of UI language.
+      if (["y", "yes", "s", "si", "sí"].includes(choice)) {
+        await Bun.write(planPath, plan.endsWith("\n") ? plan : plan + "\n")
+        console.log(t("cpSaved", { path: planPath }))
+        const planArg = planPath === DEFAULTS.PLAN_FILE ? "" : ` --plan ${planPath}`
+        console.log(t("cpRunHint", { planArg }))
+        break
+      }
+      if (["e", "edit", "editar"].includes(choice)) {
+        const feedback = prompt(t("cpAskEdit"))
+        if (!feedback || !feedback.trim()) {
+          console.log(t("cpNoChanges"))
+          continue
+        }
+        currentPrompt = buildRefinePrompt(plan, feedback.trim())
+        continue
+      }
+
+      console.log(t("cpCancelled"))
+      break
+    }
+  } catch (err) {
+    console.error(
+      t("cpError", { message: err instanceof Error ? err.message : String(err) }),
+    )
+    process.exitCode = 1
+  } finally {
+    try {
+      server?.close()
+    } catch {
+      // ignore
+    }
+  }
+}
+
 /**
  * Main entry point
  */
 async function main(): Promise<void> {
   // Parse command line arguments
   const args = parseArgs(process.argv.slice(2))
+
+  // Resolve UI language: CLI --lang > ocloop.json language > English default.
+  // Done before any output/render so all strings localize from the start.
+  const cfgLang = loadConfig().language
+  setLocale(isLocale(args.lang) ? args.lang : isLocale(cfgLang) ? cfgLang : "en")
+
+  // Interactive plan generator: runs instead of the TUI and exits.
+  if (args.createPlan) {
+    await runCreatePlan(args)
+    return
+  }
 
   // Initialize logging
   log.sessionStart({ debug: !!args.debug, cwd: process.cwd(), model: args.model })
