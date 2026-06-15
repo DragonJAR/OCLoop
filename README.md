@@ -4,26 +4,58 @@
 <p align="center">
   <i>Round and round we go</i>
 </p>
+<p align="center">
+  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
+  <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+</p>
+<p align="center">
+  <b>English</b> · <a href="README.es.md">Español</a>
+</p>
 
 ---
 
-OCLoop is a loop harness that orchestrates [OpenCode](https://opencode.ai) to execute tasks from a PLAN.md file iteratively. Each iteration runs in an isolated session, with full visibility into what OpenCode is doing.
+**OCLoop** is a loop harness that orchestrates [OpenCode](https://opencode.ai) to execute the tasks in a `PLAN.md` file **one at a time**, each in its own isolated session, with full visibility into what OpenCode is doing. You write (or generate) a plan; OCLoop works through it task by task and is built to **keep going unattended** — through provider rate limits, laptop sleep, server hangs, and even a full crash.
+
+## Table of contents
+
+- [Features](#features)
+- [Requirements](#requirements)
+- [Installation](#installation)
+- [Quick start](#quick-start)
+- [Recommended workflow](#recommended-workflow)
+- [Generating a plan (`--create-plan`)](#generating-a-plan---create-plan)
+- [Command-line options](#command-line-options)
+- [Plan file format](#plan-file-format)
+- [Keybindings](#keybindings)
+- [Command palette (`Ctrl+P`)](#command-palette-ctrlp)
+- [Language (i18n)](#language-i18n)
+- [Theme](#theme)
+- [Resilience](#resilience)
+- [Configuration](#configuration)
+- [Files](#files)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+- [License](#license)
 
 ## Features
 
-- **Automated task execution** — Execute a plan one task at a time, each in a fresh context window
-- **Live dashboard** — Visual status with iteration timing, averages, ETA, and progress bar
-- **Activity log** — Real-time view of tool usage, file edits, token counts, and git diffs
-- **Terminal integration** — Launch OpenCode in an external terminal to interact mid-iteration
-- **Command palette** — Quick access to actions via `Ctrl+P`
-- **Knowledge persistence** — Learnings documented in AGENTS.md and docs/ across iterations
-- **Theme sync** — Automatically inherits your OpenCode theme (32 themes bundled)
-- **Debug mode** — Sandbox for manual session creation without a plan file
+- **Automated task execution** — run a plan one task at a time, each in a fresh context window.
+- **Interactive plan generator** — `--create-plan` drafts a `PLAN.md` for you from a one-line goal.
+- **Live dashboard** — status badge, iteration timing, average, ETA, progress bar, and a watchdog health indicator.
+- **Activity log** — real-time tool usage, file edits, token counts, and git diffs.
+- **Unattended resilience** — a task guardian that survives rate limits, sleep/suspension, server/session hangs, and total crashes (see [Resilience](#resilience)).
+- **Pause / resume** — pause gracefully after the current task, or cancel a pending pause instantly.
+- **Command palette** — quick access to every action with `Ctrl+P`.
+- **Bilingual UI** — English by default, Spanish on demand (`--lang`, config, or the palette).
+- **DragonJAR theme** — branded console theme by default, plus 32 bundled OpenCode themes.
+- **Terminal integration** — launch OpenCode in an external terminal to interact mid-iteration.
+- **Crash recovery** — minimal progress is persisted; `--resume` continues an interrupted run.
 
 ## Requirements
 
 - [Bun](https://bun.sh) runtime (v1.0 or later)
-- [OpenCode](https://opencode.ai) installed and configured
+- [OpenCode](https://opencode.ai) installed and configured (API keys, model, agents)
 
 ## Installation
 
@@ -33,255 +65,278 @@ OCLoop is a loop harness that orchestrates [OpenCode](https://opencode.ai) to ex
 # Install globally
 bun add -g ocloop
 
-# Or run directly without installing
+# Or run without installing
 bunx ocloop
 ```
 
-### From Source
+### From source
 
 ```bash
-# Clone the repository
 git clone https://github.com/d3vr/ocloop.git
 cd ocloop
-
-# Install dependencies
 bun install
-
-# Build the project
 bun run build
-
-# Link globally
-bun link
+bun link        # makes `ocloop` available globally
 ```
 
-## Quick Start
-
-1. **Create a plan file** (`PLAN.md`) and **loop prompt file** (`.loop-prompt.md`):
+## Quick start
 
 ```bash
-cp examples/PLAN.md ./PLAN.md
-cp examples/loop-prompt.md ./.loop-prompt.md  # Note the leading dot
-```
+# 1. Create a plan (interactively) and a loop prompt
+ocloop --create-plan
+cp examples/loop-prompt.md ./.loop-prompt.md   # note the leading dot
 
-See `examples/CREATE_PLAN.md` for a prompt to help generate plans for your project.
-
-2. **Run OCLoop**:
-
-```bash
+# 2. Run OCLoop and press S to begin
 ocloop
 ```
 
-3. **Press `S`** to start executing tasks (or use `-r` to start immediately)
+Prefer to write the plan yourself? Copy the example instead of step 1:
 
-## Usage
+```bash
+cp examples/PLAN.md ./PLAN.md
+```
+
+## Recommended workflow
+
+A complete, reliable run from zero:
+
+1. **Install prerequisites** — Bun and OpenCode, with your model/agent/API keys configured in OpenCode.
+2. **Create the loop prompt** — `cp examples/loop-prompt.md ./.loop-prompt.md`. This is the instruction sent to OpenCode each iteration; edit it to fit your project conventions.
+3. **Create the plan** — either:
+   - run **`ocloop --create-plan`**, describe your goal, review the proposed plan, and save it; or
+   - write `PLAN.md` by hand using the [plan format](#plan-file-format) (start from `examples/PLAN.md`).
+4. **Start the loop** — run `ocloop` and press **`S`** (or `ocloop -r` to start immediately).
+5. **Watch it work** — the dashboard shows the current state, task, timing, and guardian health; the activity log streams what OpenCode does. Use **`Space`** to pause, **`Ctrl+P`** for the command palette, **`T`** to open OpenCode in a real terminal.
+6. **Leave it running** — rate limits, sleep, and server hiccups are handled automatically. If the whole process dies, relaunch with **`ocloop --resume`** to continue.
+7. **Done** — the loop ends when the model marks the plan complete (`<plan-complete>` tag), all automatable tasks are finished, you quit with `Q`, or an unrecoverable error occurs.
+
+## Generating a plan (`--create-plan`)
+
+`ocloop --create-plan` (or `-c`) launches an interactive generator instead of the TUI:
+
+1. It asks what you want OCLoop to build.
+2. It uses **glm-5.2** and the **`plan`** agent by default to draft a `PLAN.md` in OCLoop's format.
+3. It shows you the proposed plan and asks to **save**, **edit** (refine with feedback), or **cancel**.
+4. On save, it writes the file (to `--plan <path>`, default `PLAN.md`) and tells you how to start.
+
+The generated plan follows the current [UI language](#language-i18n). Override the model/agent with `--model` / `--agent`:
+
+```bash
+ocloop --create-plan                       # glm-5.2 + plan agent
+ocloop --create-plan --model openai/gpt-5  # custom model
+ocloop --create-plan --plan roadmap.md     # write to a custom path
+```
+
+## Command-line options
 
 ```
 Usage: ocloop [options]
-
-Options:
-  -p, --port <number>      Server port (default: 4096, falls back to random)
-  -m, --model <string>     Model to use (passed to opencode)
-  -a, --agent <string>     Agent to use (default: build)
-  -r, --run                Start iterations immediately (skip the ready screen)
-  -d, --debug              Debug/sandbox mode (no plan file required)
-  --verbose                Enable verbose logging to .loop.log
-  --prompt <path>          Path to loop prompt file (default: .loop-prompt.md)
-  --plan <path>            Path to plan file (default: PLAN.md)
-  --resume                 Reconcile/continue an interrupted run on startup
-  --no-caffeinate          Don't keep the system awake while running (macOS)
-  --chaos                  Enable chaos fault-injection (debug only)
-  --resilience <key=value> Override a resilience threshold (repeatable)
-  -v, --version            Show version number
-  -h, --help               Show help
-
-Examples:
-  ocloop                           # Start with defaults
-  ocloop -r                        # Start immediately without waiting
-  ocloop -m claude-sonnet-4        # Use specific model
-  ocloop -a plan                   # Use the plan agent
-  ocloop --plan my-plan.md         # Use custom plan file
-  ocloop -d                        # Debug mode for experimentation
-  ocloop --resume                  # Continue a run interrupted by a crash
-  ocloop --resilience watchdogSuspectMs=120000   # Tune a threshold
 ```
 
-## Keybindings
+| Option | Description |
+| --- | --- |
+| `-p, --port <number>` | Server port (OpenCode default: try 4096, then random) |
+| `-m, --model <string>` | Model to use (passed to OpenCode) |
+| `-a, --agent <string>` | Agent to use (passed to OpenCode) |
+| `-r, --run` | Start iterations immediately (default: wait for `S`) |
+| `-c, --create-plan` | Interactively generate `PLAN.md`, then exit (model glm-5.2, agent plan) |
+| `-d, --debug` | Debug/sandbox mode (no plan-file validation, manual sessions) |
+| `--verbose` | Enable verbose logging (keyboard events, etc.) |
+| `--prompt <path>` | Path to the loop prompt file (default: `.loop-prompt.md`) |
+| `--plan <path>` | Path to the plan file (default: `PLAN.md`) |
+| `--lang <en\|es>` | UI language (default: `en`; also settable in `Ctrl+P`) |
+| `--resume` | Reconcile/continue a persisted in-flight run on startup |
+| `--no-caffeinate` | Do not keep the system awake while running (macOS) |
+| `--chaos` | Enable chaos fault-injection (debug only) |
+| `--resilience <key=value>` | Override a resilience threshold (repeatable — see [Tuning](#tuning)) |
+| `-v, --version` | Show version number |
+| `-h, --help` | Show help |
 
-| Key     | State        | Action                          |
-| ------- | ------------ | ------------------------------- |
-| `S`     | Ready        | Start iterations                |
-| `Space` | Running      | Pause after current task        |
-| `Space` | Paused       | Resume iterations               |
-| `T`     | Running/Paused/Debug | Open terminal launcher  |
-| `Ctrl+P`| Any          | Open command palette            |
-| `Q`     | Most states  | Show quit confirmation          |
-| `R`     | Error        | Retry after recoverable error   |
-| `N`     | Debug mode   | Create new session              |
+```bash
+# Examples
+ocloop                              # start, wait for S
+ocloop --create-plan                # generate a PLAN.md, then exit
+ocloop -r                           # start iterations immediately
+ocloop -m claude-sonnet-4           # use a specific model
+ocloop -a plan                      # use the plan agent
+ocloop --plan my-plan.md            # use a custom plan file
+ocloop --lang es                    # Spanish UI
+ocloop --resume                     # continue a run interrupted by a crash
+ocloop --resilience watchdogSuspectMs=120000
+```
 
-## Plan File Format
+## Plan file format
 
-OCLoop parses your PLAN.md to track progress. Supported task formats:
+OCLoop parses `PLAN.md` to track progress. Supported task markers:
 
 ```markdown
 - [ ] Pending task (will be executed)
 - [x] Completed task
-- [MANUAL] Task requiring human intervention (skipped)
+- [MANUAL] Task requiring human intervention (skipped by the loop)
 - [BLOCKED: reason] Task that cannot proceed (skipped)
 ```
 
-### Task Naming Convention
-
-Using bold task IDs helps with organization:
+Group work under headings and keep one actionable step per line:
 
 ```markdown
-- [ ] **1.1** First task in phase 1
-- [ ] **1.2** Second task in phase 1
-- [ ] **2.1** First task in phase 2
+# My project
+
+## Phase 1 — Setup
+- [ ] **1.1** Initialize the project structure
+- [ ] **1.2** Add the configuration module
+
+## Phase 2 — Features
+- [ ] **2.1** Implement the first feature
+
+## Acceptance criteria
+- ...
 ```
 
-## Loop Lifecycle
+## Keybindings
 
-1. OCLoop starts the OpenCode server
-2. Creates a new session for each iteration
-3. Sends your loop prompt to the session
-4. Waits for the session to become idle (task complete)
-5. Checks for `<plan-complete>` tag in plan file
-6. If not complete, starts the next iteration
+| Key | State | Action |
+| --- | --- | --- |
+| `S` | Ready | Start iterations |
+| `Space` | Running | Pause after the current task |
+| `Space` | Pausing | Cancel the pending pause (keep running) |
+| `Space` | Paused | Resume iterations |
+| `T` | Running / Paused / Debug | Open OpenCode in an external terminal |
+| `Ctrl+P` | Any | Open the command palette |
+| `Q` | Most states | Quit (with confirmation) |
+| `R` | Error | Retry after a recoverable error |
+| `N` | Debug | Create a new session |
+| `P` | Debug | Send a prompt to the session |
+| `I` | Debug | Insert sample activity (UI testing) |
 
-### Completion
+Pausing is **graceful**: pressing `Space` finishes the current task before pausing, and the dashboard shows `Pausing after current task — Space cancel`. Press `Space` again to cancel and keep running.
 
-The loop ends when:
-- Model appends `<plan-complete>summary</plan-complete>` to the plan file (all automatable tasks done)
-- You quit manually with `Q`
-- An unrecoverable error occurs
+## Command palette (`Ctrl+P`)
+
+Every action is also discoverable in the palette, context-aware (commands are disabled when they don't apply):
+
+- **Loop** — Start, Pause, Resume, Cancel pending pause, Restart OpenCode server
+- **Terminal** — Copy attach command, Choose default terminal
+- **View** — Toggle scrollbar, Quit
+- **Language** — switch between English and Español (persists to your config)
+- **Chaos** (only with `--chaos` in debug) — kill/revive server, freeze/unfreeze session, inject rate limit
+
+## Language (i18n)
+
+The UI is **English by default** with full Spanish support. The locale resolves as: `--lang` flag → `language` in `ocloop.json` → `en`.
+
+```bash
+ocloop --lang es            # this run in Spanish
+```
+
+You can also toggle the language live from the command palette (`Ctrl+P` → `Language → Español` / `Idioma → English`); the choice is saved to your config. Generated plans (`--create-plan`) are written in the active language.
+
+## Theme
+
+OCLoop ships with the **DragonJAR** brand theme as the default (red `#C11B05` accent on a near-black background), plus the 32 bundled OpenCode themes. The light/dark mode follows your OpenCode preference. To use a different theme, set it in your config:
+
+```jsonc
+// ~/.config/ocloop/ocloop.json
+{ "theme": "opencode" }   // any bundled theme id, e.g. dracula, tokyonight, nord
+```
 
 ## Resilience
 
-OCLoop is designed to keep running unattended through provider rate limits,
-laptop sleep, server hangs, and outright crashes. A **task guardian** (watchdog)
-watches each iteration for a heartbeat and, before ever taking a destructive
-action, confirms against ground truth (an active server ping plus the session's
-real status) — so it never aborts a session that is genuinely working, and never
-leaves a dead loop hanging.
+OCLoop is designed to keep running unattended. A **task guardian** (watchdog) watches each iteration for a heartbeat and, before ever taking a destructive action, confirms against ground truth (an active server ping plus the session's real status) — so it never aborts a session that is genuinely working, and never leaves a dead loop hanging.
 
 What it handles:
 
-- **Rate limits** — a `429`/overloaded never fails the loop. It enters a
-  `cooldown` state, respects any `Retry-After`, backs off with full jitter, and
-  retries the same iteration. After `maxRateLimitRetries` consecutive limits it
-  surfaces a recoverable error.
-- **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects
-  the event stream and reconciles the in-flight session (recovering a missed
-  completion). On macOS it runs `caffeinate` while working to avoid sleeping at
-  all (disable with `--no-caffeinate`).
-- **Server / session hangs** — an active health check restarts a hung OpenCode
-  server and reconciles the session; a genuinely wedged session is aborted and
-  retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full
-  diagnostic instead of looping forever.
-- **Total crash** — minimal progress is persisted atomically to `.loop-state.json`.
-  On the next start OCLoop offers to resume (automatic with `--resume`).
+- **Rate limits** — a `429`/overloaded never fails the loop. It enters a `COOLDOWN` state, respects any `Retry-After`, backs off with full jitter, and retries the same task. After `maxRateLimitRetries` consecutive limits it surfaces a recoverable error.
+- **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects the event stream and reconciles the in-flight session (recovering a missed completion). On macOS it runs `caffeinate` while working to avoid sleeping at all (disable with `--no-caffeinate`).
+- **Server / session hangs** — an active health check restarts a hung OpenCode server and reconciles the session; a genuinely wedged session is aborted and retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full diagnostic instead of looping forever.
+- **Total crash** — minimal progress is persisted atomically to `.loop-state.json`. On the next start OCLoop offers to resume (automatic with `--resume`). Shutdown on `SIGINT`/`SIGTERM`/`SIGHUP` aborts the active session so no orphan server is left behind.
 
-All watchdog activity is logged to `.loop.log` as structured `[HEALTH]` lines, so
-you can audit exactly why the guardian acted.
+The dashboard shows a `Guard ●` indicator (green healthy, yellow checking, red recovering), and all guardian activity is logged to `.loop.log` as structured `[HEALTH]` lines so you can audit exactly why it acted.
 
 ### Tuning
 
-Thresholds live in a `resilience` block and resolve as
-`defaults < ~/.config/ocloop/ocloop.json < CLI flags`. Override individual values
-with repeatable `--resilience key=value` flags, for example:
+Resilience thresholds resolve as `defaults` < `~/.config/ocloop/ocloop.json` (`resilience` block) < CLI flags. Override individual values with repeatable `--resilience key=value` flags:
 
 ```bash
 ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 ```
 
-Keys include `createTimeoutMs`, `promptTimeoutMs`, `pingTimeoutMs`,
-`backoffBaseMs`, `backoffMaxMs`, `maxRateLimitRetries`, `minIterationGapMs`,
-`sleepTickMs`, `sleepThresholdMs`, `watchdogSuspectMs` (T1), `watchdogConfirmMs`
-(T2), `watchdogTickMs`, and `maxRecoveryAttempts`.
-
-## Files
-
-| File                | Purpose                                          |
-| ------------------- | ------------------------------------------------ |
-| `PLAN.md`           | Task list to execute                             |
-| `.loop-prompt.md`   | Prompt sent to OpenCode each iteration           |
-| `AGENTS.md`         | Persistent knowledge for OpenCode across sessions|
-| `.loop.log`         | Debug log (with `[HEALTH]` watchdog telemetry)   |
-| `.loop-state.json`  | Persisted progress for crash recovery (`--resume`)|
+| Key | Meaning |
+| --- | --- |
+| `createTimeoutMs` | Timeout for creating a session |
+| `promptTimeoutMs` | Timeout for sending a prompt |
+| `abortTimeoutMs` | Timeout for aborting a session |
+| `statusTimeoutMs` | Timeout for session-status reconciliation |
+| `pingTimeoutMs` | Timeout for the server health ping |
+| `backoffBaseMs` | Base delay for exponential backoff |
+| `backoffMaxMs` | Maximum backoff delay |
+| `backoffJitter` | Apply full jitter to backoff (`true`/`false`) |
+| `maxRateLimitRetries` | Consecutive rate-limit retries before failing |
+| `minIterationGapMs` | Minimum spacing between iterations (`0` = off) |
+| `sleepTickMs` | Sleep-detector sampling interval |
+| `sleepThresholdMs` | Wall-clock gap that counts as a suspend/resume |
+| `caffeinate` | Keep the system awake while running (`true`/`false`) |
+| `watchdogTickMs` | Watchdog evaluation interval |
+| `watchdogSuspectMs` | T1 — no heartbeat before suspecting |
+| `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged |
+| `maxRecoveryAttempts` | Recovery attempts before escalating to a recoverable error |
+| `resume` | Auto-resume a persisted run on startup |
+| `chaos` | Enable chaos fault-injection |
 
 ## Configuration
 
-### Environment Variables
+OCLoop reads optional settings from `~/.config/ocloop/ocloop.json` (or `$XDG_CONFIG_HOME/ocloop/ocloop.json`):
 
-OCLoop respects OpenCode's environment variables for API keys and configuration. See [OpenCode documentation](https://opencode.ai/docs) for details.
-
-### Theming
-
-OCLoop automatically detects your OpenCode theme from `~/.local/state/opencode/kv.json` and applies it to the dashboard. Includes all 32 bundled OpenCode themes.
-
-### Terminal Preferences
-
-On first use of `T` (terminal launcher), OCLoop detects installed terminals and saves your preference to `~/.config/ocloop/ocloop.json`. Supports: Alacritty, Kitty, WezTerm, GNOME Terminal, Konsole, and more.
-
-## Examples
-
-The `examples/` directory contains starter templates:
-
-- `PLAN.md` — Example task plan demonstrating all supported markers
-- `loop-prompt.md` — Example loop prompt with best practices
-- `CREATE_PLAN.md` — Prompt to help generate a plan for your project
-
-To use them:
-
-```bash
-cp examples/PLAN.md ./PLAN.md
-cp examples/loop-prompt.md ./.loop-prompt.md  # Note the leading dot
+```jsonc
+{
+  "language": "en",              // "en" | "es"
+  "theme": "dragonjar",          // any bundled theme id
+  "scrollbar_visible": true,
+  "terminal": { "type": "known", "name": "kitty" },
+  "resilience": {                // any subset of the Tuning keys
+    "watchdogSuspectMs": 120000,
+    "maxRateLimitRetries": 12
+  }
+}
 ```
 
-## Development
+OCLoop also respects OpenCode's environment variables for API keys and model configuration — see the [OpenCode docs](https://opencode.ai/docs).
 
-```bash
-# Run in development mode
-bun run dev
+## Files
 
-# Run tests
-bun test
+| File | Purpose |
+| --- | --- |
+| `PLAN.md` | The task list to execute |
+| `.loop-prompt.md` | The prompt sent to OpenCode each iteration |
+| `AGENTS.md` | Persistent knowledge for OpenCode across sessions |
+| `.loop.log` | Debug log, including `[HEALTH]` watchdog telemetry |
+| `.loop-state.json` | Persisted progress for crash recovery (`--resume`) |
 
-# Build for production
-bun run build
-```
+All `.loop*` files are git-ignored automatically.
 
 ## Troubleshooting
 
-### "Error: Prompt file not found"
-
-Create a `.loop-prompt.md` file with instructions for executing plan tasks. See Quick Start above.
-
-### "Error: Plan file not found"
-
-Create a `PLAN.md` file with tasks. At minimum:
+**"Error: Plan file not found"** — create a `PLAN.md` (or run `ocloop --create-plan`). At minimum:
 
 ```markdown
 ## Backlog
 - [ ] Your first task
 ```
 
-### Server fails to start
+**"Error: Prompt file not found"** — create `.loop-prompt.md` (copy `examples/loop-prompt.md`).
 
-- Ensure OpenCode is properly installed and available in your PATH
-- Check OpenCode logs for errors (usually in `.opencode/` directory)
-- Verify your API keys are configured correctly
+**Server fails to start** — make sure OpenCode is installed and on your `PATH`, your API keys are configured, and check OpenCode's logs.
 
-### Loop seems stuck
+**The loop seems stuck** — the guardian detects a genuine stall automatically; watch the `Guard ●` indicator and the `[HEALTH]` lines in `.loop.log`. Press `T` to open OpenCode in a terminal and see what's happening. If recovery is exhausted, the error dialog includes a diagnostic (last heartbeat age, probe verdict, attempts).
 
-- The task guardian detects a genuinely stalled loop automatically: watch the
-  `Guard ●` indicator in the dashboard (green healthy, yellow checking, red
-  recovering) and the `[HEALTH]` lines in `.loop.log`.
-- Press `T` to launch OpenCode in an external terminal and see what's happening
-- Check if OpenCode is waiting for input or confirmation
-- Look at the activity log for recent events
-- If a recovery loop reports persistent failure, the error dialog includes a
-  diagnostic (last heartbeat age, probe verdict, attempts)
+**It got rate-limited** — that's expected and handled: OCLoop shows a `COOLDOWN` countdown and retries automatically.
+
+## Development
+
+```bash
+bun run dev      # run from source
+bun test         # run the test suite
+bun run build    # production build
+```
 
 ## License
 
