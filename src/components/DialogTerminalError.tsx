@@ -1,6 +1,7 @@
 import { Dialog } from "../ui/Dialog"
 import { useTheme } from "../context/ThemeContext"
 import { getConfigPath } from "../lib/config"
+import { t } from "../lib/i18n"
 import { useKeyboard } from "@opentui/solid"
 
 /**
@@ -63,7 +64,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
         {/* Header */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
           <text>
-            <span style={{ fg: theme().error, bold: true }}>Terminal Launch Failed</span>
+            <span style={{ fg: theme().error, bold: true }}>{t("dlgTerminalFailed")}</span>
           </text>
           <text>
             <span style={{ fg: theme().textMuted }}>esc</span>
@@ -78,13 +79,13 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
 
         {/* Config hint */}
         <text style={{ marginTop: 1 }}>
-          <span style={{ fg: theme().textMuted }}>Edit config: </span>
+          <span style={{ fg: theme().textMuted }}>{t("dlgEditConfig")}</span>
           <span style={{ fg: theme().accent }}>{configPath}</span>
         </text>
 
         {/* Attach command */}
         <text style={{ marginTop: 1 }}>
-          <span style={{ fg: theme().textMuted }}>Attach command:</span>
+          <span style={{ fg: theme().textMuted }}>{t("dlgAttachCommand")}</span>
         </text>
         <text>
           <span style={{ fg: theme().text }}>{props.attachCommand}</span>
@@ -92,9 +93,9 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
 
         {/* Footer */}
         <text style={{ marginTop: 2 }}>
-          <span style={{ bold: true }}>Copy</span> C
+          <span style={{ bold: true }}>{t("dlgCopy")}</span> C
           <span style={{ fg: theme().textMuted }}>  </span>
-          <span style={{ bold: true }}>Close</span> esc
+          <span style={{ bold: true }}>{t("dlgClose")}</span> esc
         </text>
       </box>
     </Dialog>

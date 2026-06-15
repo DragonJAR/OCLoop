@@ -52,10 +52,12 @@ export type LoopAction =
   | { type: "retry" }
   // Enter cooldown after a rate limit; resumeAt is monotonic ms.
   | { type: "rate_limited"; reason: string; resumeAt: number; attempt: number }
-  // Cooldown elapsed: go back to running and retry the same iteration.
+  // Cooldown elapsed: go back to running and retry the same plan task. The plan
+  // progress is preserved; a new session (and thus a new attempt) is created.
   | { type: "resume_cooldown" }
-  // Resume after a crash: restore running at a given iteration. An empty
-  // sessionId means "start a fresh iteration", preserving the iteration count.
+  // Resume after a crash: restore running from a given iteration count. A
+  // non-empty sessionId re-attaches to a live session; an empty one lets the
+  // iteration-driver start the next session (the attempt counter then advances).
   | { type: "resume_session"; iteration: number; sessionId: string }
 
 /**

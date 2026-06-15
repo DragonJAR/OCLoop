@@ -4,6 +4,7 @@ import type { InputRenderable } from "@opentui/core"
 import { Dialog } from "../ui/Dialog"
 import { DialogSelect, type DialogSelectOption } from "../ui/DialogSelect"
 import { useTheme } from "../context/ThemeContext"
+import { t } from "../lib/i18n"
 import type { KnownTerminal } from "../lib/terminal-launcher"
 
 /**
@@ -51,7 +52,7 @@ export function createTerminalConfigState(
   onSelect: (terminal: KnownTerminal) => void,
   onCustom: (command: string, args: string) => void,
   onCopy: () => void,
-  onCancel: () => void,
+  _onCancel: () => void,
 ): TerminalConfigState {
   const [viewState, setViewState] = createSignal<TerminalConfigViewState>("list")
   const [customCommand, setCustomCommand] = createSignal("")
@@ -135,13 +136,13 @@ function CustomTerminalForm(props: {
       <box style={{ flexDirection: "column" }}>
         {/* Title */}
         <text>
-          <span style={{ fg: theme().primary, bold: true }}>Custom Terminal</span>
+          <span style={{ fg: theme().primary, bold: true }}>{t("dlgCustomTerminal")}</span>
         </text>
 
         {/* Command input */}
         <box style={{ marginTop: 1 }}>
           <text>
-            <span style={{ fg: theme().textMuted }}>Command: </span>
+            <span style={{ fg: theme().textMuted }}>{t("dlgCommandColon")}</span>
           </text>
           <input
             ref={commandInput}
@@ -157,7 +158,7 @@ function CustomTerminalForm(props: {
         {/* Args input */}
         <box style={{ marginTop: 1 }}>
           <text>
-            <span style={{ fg: theme().textMuted }}>Args:    </span>
+            <span style={{ fg: theme().textMuted }}>{t("dlgArgsColon")}</span>
           </text>
           <input
             ref={argsInput}
@@ -173,18 +174,18 @@ function CustomTerminalForm(props: {
         {/* Help text */}
         <text style={{ marginTop: 1 }}>
           <span style={{ fg: theme().textMuted }}>
-            Use {"{cmd}"} as placeholder for the attach command
+            {t("dlgCmdPlaceholderHelp")}
           </span>
         </text>
 
         {/* Footer */}
         <text style={{ marginTop: 2 }}>
           <span style={{ fg: theme().text }}>Enter</span>
-          <span style={{ fg: theme().textMuted }}> save  </span>
+          <span style={{ fg: theme().textMuted }}> {t("kbSave")}  </span>
           <span style={{ fg: theme().text }}>Tab</span>
-          <span style={{ fg: theme().textMuted }}> switch  </span>
+          <span style={{ fg: theme().textMuted }}> {t("kbSwitch")}  </span>
           <span style={{ fg: theme().text }}>Esc</span>
-          <span style={{ fg: theme().textMuted }}> back</span>
+          <span style={{ fg: theme().textMuted }}> {t("kbBack")}</span>
         </text>
       </box>
     </Dialog>
@@ -199,18 +200,18 @@ export function DialogTerminalConfig(props: DialogTerminalConfigProps) {
 
   // Transform available terminals to options
   const options = createMemo<DialogSelectOption[]>(() => {
-    const terms = state.availableTerminals().map(t => ({
-      title: t.name,
-      value: t.name,
-      category: "Installed Terminals",
-      onSelect: () => state.onSelect(t)
+    const terms = state.availableTerminals().map(term => ({
+      title: term.name,
+      value: term.name,
+      category: t("dlgInstalledTerminals"),
+      onSelect: () => state.onSelect(term)
     }))
-    
+
     // Add Custom option
     terms.push({
-      title: "Custom...",
+      title: t("dlgCustomEllipsis"),
       value: "custom",
-      category: "Manual Configuration",
+      category: t("dlgManualConfig"),
       onSelect: () => state.setViewState("custom")
     })
     return terms
@@ -218,9 +219,9 @@ export function DialogTerminalConfig(props: DialogTerminalConfigProps) {
 
   // Keybinds for list view
   const keybinds = [
-    { label: "Select", key: "Enter" },
-    { label: "Navigate", key: "↑/↓" },
-    { label: "Copy", key: "^C", onSelect: state.onCopy, bind: ["\x03"] }
+    { label: t("kbSelect"), key: "Enter" },
+    { label: t("kbNavigate"), key: "↑/↓" },
+    { label: t("dlgCopy"), key: "^C", onSelect: state.onCopy, bind: ["\x03"] }
   ]
 
   return (
@@ -234,7 +235,7 @@ export function DialogTerminalConfig(props: DialogTerminalConfigProps) {
       }
     >
       <DialogSelect
-        title="Configure Terminal"
+        title={t("dlgConfigureTerminal")}
         options={options()}
         onClose={props.onCancel}
         keybinds={keybinds}

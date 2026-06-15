@@ -3,6 +3,7 @@ import { useKeyboard } from "@opentui/solid"
 import type { InputRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
+import { t } from "../lib/i18n"
 
 export interface DialogPromptProps {
   onSubmit: (text: string) => void
@@ -45,7 +46,7 @@ export function DialogPrompt(props: DialogPromptProps) {
       {/* Header */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
         <text>
-          <span style={{ bold: true, fg: theme().text }}>Send Prompt</span>
+          <span style={{ bold: true, fg: theme().text }}>{t("dlgSendPrompt")}</span>
         </text>
       </box>
 
@@ -65,7 +66,7 @@ export function DialogPrompt(props: DialogPromptProps) {
       {/* Footer hint */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "flex-end" }}>
         <text>
-          <span style={{ fg: theme().textMuted }}>Enter send  Esc cancel</span>
+          <span style={{ fg: theme().textMuted }}>{t("dlgPromptHint")}</span>
         </text>
       </box>
     </Dialog>

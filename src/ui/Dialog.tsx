@@ -79,7 +79,7 @@ export function Dialog(props: DialogProps) {
   const top = () => Math.floor((dimensions().height - dialogHeight()) / 2)
 
   // Handle backdrop click
-  const handleBackdropClick = (e: any) => {
+  const handleBackdropClick = () => {
     // Don't close if user is selecting text
     // @ts-ignore - selection property exists at runtime
     if (renderer.selection?.active) return

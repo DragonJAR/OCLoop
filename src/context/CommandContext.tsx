@@ -1,6 +1,7 @@
 import { createContext, useContext, createSignal, onCleanup, type JSX, type Accessor } from "solid-js"
 import { useDialog } from "./DialogContext"
 import { DialogSelect, type DialogSelectOption } from "../ui/DialogSelect"
+import { t } from "../lib/i18n"
 import { useKeyboard } from "@opentui/solid"
 
 export interface CommandOption extends DialogSelectOption {
@@ -41,13 +42,13 @@ export function CommandProvider(props: { children: JSX.Element }) {
   const show = () => {
     dialog.show(() => (
       <DialogSelect
-        title="Command Palette"
-        placeholder="Type a command..."
+        title={t("paletteTitle")}
+        placeholder={t("palettePlaceholder")}
         options={getCommands()}
         onClose={() => dialog.clear()}
         keybinds={[
-          { label: "Select", key: "Enter" },
-          { label: "Navigate", key: "↑/↓" }
+          { label: t("kbSelect"), key: "Enter" },
+          { label: t("kbNavigate"), key: "↑/↓" }
         ]}
       />
     ))

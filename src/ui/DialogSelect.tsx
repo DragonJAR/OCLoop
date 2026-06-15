@@ -6,6 +6,7 @@ import { ScrollBoxRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
 import { useTheme, selectedForeground } from "../context/ThemeContext"
 import { truncate } from "../lib/locale"
+import { t } from "../lib/i18n"
 
 export interface DialogSelectOption {
   title: string
@@ -216,7 +217,7 @@ export function DialogSelect(props: DialogSelectProps) {
       <Show when={filteredOptions().length > 0} fallback={
         <box style={{ flexGrow: 1 }}>
           <text>
-             <span style={{ fg: theme().textMuted }}>No results found</span>
+             <span style={{ fg: theme().textMuted }}>{t("dlgNoResults")}</span>
           </text>
         </box>
       }>

@@ -443,10 +443,11 @@ async function main(): Promise<void> {
   const cfgLang = loadConfig().language
   setLocale(isLocale(args.lang) ? args.lang : isLocale(cfgLang) ? cfgLang : "en")
 
-  // Interactive plan generator: runs instead of the TUI and exits.
+  // Interactive plan generator: runs instead of the TUI and exits. Force the
+  // exit so the embedded OpenCode server child can't keep the process alive.
   if (args.createPlan) {
     await runCreatePlan(args)
-    return
+    process.exit(process.exitCode ?? 0)
   }
 
   // Initialize logging

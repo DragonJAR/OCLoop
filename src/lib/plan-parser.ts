@@ -1,4 +1,4 @@
-import type { PlanProgress, CompletionSummary } from "../types"
+import type { PlanProgress } from "../types"
 
 type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
 

@@ -9,6 +9,7 @@ import {
 } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "./ThemeContext"
+import { t } from "../lib/i18n"
 
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -49,7 +50,7 @@ export function ToastProvider(props: ToastProviderProps) {
   const error = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err)
     show({
-      title: "Error",
+      title: t("toastErrorTitle"),
       message,
       variant: "error",
     })

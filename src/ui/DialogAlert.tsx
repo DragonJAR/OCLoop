@@ -1,4 +1,3 @@
-import { createSignal } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme, selectedForeground } from "../context/ThemeContext"

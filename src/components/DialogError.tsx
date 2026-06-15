@@ -1,6 +1,7 @@
 import { Show } from "solid-js"
 import { Dialog } from "../ui/Dialog"
 import { useTheme } from "../context/ThemeContext"
+import { t } from "../lib/i18n"
 
 export interface DialogErrorProps {
   source: string
@@ -33,7 +34,7 @@ export function DialogError(props: DialogErrorProps) {
         {/* Header */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
           <text>
-            <span style={{ fg: theme().error, bold: true }}>Error</span>
+            <span style={{ fg: theme().error, bold: true }}>{t("dlgErrorTitle")}</span>
           </text>
           <text>
             <span style={{ fg: theme().textMuted }}>esc</span>
@@ -49,10 +50,10 @@ export function DialogError(props: DialogErrorProps) {
         {/* Actions */}
         <text style={{ marginTop: 2 }}>
           <Show when={props.recoverable}>
-            <span style={{ bold: true }}>Retry</span> R
+            <span style={{ bold: true }}>{t("dlgRetry")}</span> R
             <span style={{ fg: theme().textMuted }}>  </span>
           </Show>
-          <span style={{ bold: true }}>Quit</span> Q
+          <span style={{ bold: true }}>{t("dlgQuitConfirm")}</span> Q
         </text>
       </box>
     </Dialog>

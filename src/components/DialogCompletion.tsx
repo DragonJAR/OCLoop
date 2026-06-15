@@ -1,8 +1,9 @@
-import { Show, createSignal } from "solid-js";
+import { createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import { Dialog } from "../ui/Dialog";
 import { useTheme, selectedForeground } from "../context/ThemeContext";
 import { formatDuration } from "../hooks/useLoopStats";
+import { t } from "../lib/i18n";
 
 export interface DialogCompletionProps {
   iterations: number;
@@ -69,7 +70,7 @@ export function DialogCompletion(props: DialogCompletionProps) {
             <span style={{ fg: theme().success, bold: true }}>✓</span>
             <span style={{ fg: theme().primary, bold: true }}>
               {" "}
-              Plan Complete
+              {t("dlgPlanComplete")}
             </span>
           </text>
           <text>
@@ -79,16 +80,12 @@ export function DialogCompletion(props: DialogCompletionProps) {
 
         {/* Summary line */}
         <text>
-          <span style={{ fg: theme().textMuted }}>Completed in </span>
-          <span style={{ fg: theme().text }}>{props.iterations}</span>
-          <span style={{ fg: theme().textMuted }}>
-            {" "}
-            iteration{props.iterations !== 1 ? "s" : ""} (
-          </span>
           <span style={{ fg: theme().text }}>
-            {formatDuration(props.totalTime)}
+            {t("dlgCompletedIn", {
+              iterations: props.iterations,
+              time: formatDuration(props.totalTime),
+            })}
           </span>
-          <span style={{ fg: theme().textMuted }}>)</span>
         </text>
 
         {/* Summary Content */}
@@ -136,7 +133,7 @@ export function DialogCompletion(props: DialogCompletionProps) {
                     : theme().text,
               }}
             >
-              Dismiss
+              {t("dlgDismiss")}
             </text>
           </box>
           <box
@@ -155,7 +152,7 @@ export function DialogCompletion(props: DialogCompletionProps) {
                     : theme().text,
               }}
             >
-              Quit
+              {t("dlgQuitConfirm")}
             </text>
           </box>
         </box>

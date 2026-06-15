@@ -3,6 +3,7 @@ import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme, selectedForeground } from "../context/ThemeContext"
 import { DialogContextValue } from "../context/DialogContext"
+import { t } from "../lib/i18n"
 
 export interface DialogConfirmProps {
   title: string
@@ -80,7 +81,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
             <span style={{ 
               fg: activeButton() === "cancel" ? selectedForeground(theme()) : theme().textMuted 
             }}>
-              {props.cancelLabel || "Cancel"}
+              {props.cancelLabel || t("dlgCancel")}
             </span>
           </text>
         </box>
@@ -101,7 +102,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
             <span style={{ 
               fg: activeButton() === "confirm" ? selectedForeground(theme()) : theme().textMuted 
             }}>
-              {props.confirmLabel || "Confirm"}
+              {props.confirmLabel || t("dlgConfirm")}
             </span>
           </text>
         </box>

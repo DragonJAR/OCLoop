@@ -5,7 +5,6 @@ import {
   createMemo,
   onMount,
   onCleanup,
-  Show,
 } from "solid-js"
 import {
   useRenderer,
@@ -15,7 +14,7 @@ import {
 import { useServer } from "./hooks/useServer"
 import { useSSE, classifySessionError, type FileDiff } from "./hooks/useSSE"
 import { useLoopState } from "./hooks/useLoopState"
-import { useWatchdog, type WatchdogHealth } from "./hooks/useWatchdog"
+import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
@@ -365,7 +364,6 @@ function AppContent(props: AppProps) {
   const [planProgress, setPlanProgress] = createSignal<PlanProgress | null>(
     null,
   )
-  const [planError, setPlanError] = createSignal<Error | undefined>(undefined)
   const [currentTask, setCurrentTask] = createSignal<string | undefined>(
     undefined,
   )
@@ -423,16 +421,20 @@ function AppContent(props: AppProps) {
         setLastSessionId(id)
         sessionStats.reset()
       },
-      onSessionError: (id, error) => {
+      onSessionError: (_id, error) => {
+        const st = loop.state().type
         if (error.isAborted) {
           activityLog.addEvent("task", t("actSessionAborted"))
-          if (loop.state().type === "running") {
+          if (st === "running") {
             loop.dispatch({ type: "toggle_pause" })
           }
         } else if (error.kind === "rate_limit") {
           // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
+          // Cover `pausing` too (the reducer accepts it) so a rate limit while
+          // pausing can't wedge the loop waiting for a session.idle that the
+          // errored session will never emit.
           activityLog.addEvent("error", t("actRateLimit", { message: error.message }))
-          if (loop.state().type === "running") {
+          if (st === "running" || st === "pausing") {
             enterCooldown(error.message, error.retryAfter)
           }
         } else {
@@ -529,9 +531,8 @@ function AppContent(props: AppProps) {
     try {
       const progress = await parsePlanFile(props.planFile || DEFAULTS.PLAN_FILE)
       setPlanProgress(progress)
-      setPlanError(undefined)
     } catch (err) {
-      setPlanError(err instanceof Error ? err : new Error(String(err)))
+      log.error("plan", "Failed to parse plan file", err)
     }
   }
 
@@ -842,7 +843,7 @@ function AppContent(props: AppProps) {
     const sid = sessionId() || lastSessionId()
 
     if (!url || !sid) {
-      toast.show({ variant: "error", message: "No active session to send prompt" })
+      toast.show({ variant: "error", message: t("toastNoSessionPrompt") })
       return
     }
 
@@ -1335,7 +1336,7 @@ function AppContent(props: AppProps) {
      if (sid && url) {
         const cmd = getAttachCommand(url, sid)
         copyToClipboard(cmd)
-        toast.show({ variant: "success", message: "Copied to clipboard" })
+        toast.show({ variant: "success", message: t("toastCopied") })
      }
      dialog.clear()
   }
@@ -1346,7 +1347,7 @@ function AppContent(props: AppProps) {
      if (sid && url) {
         const cmd = getAttachCommand(url, sid)
         copyToClipboard(cmd)
-        toast.show({ variant: "success", message: "Copied to clipboard" })
+        toast.show({ variant: "success", message: t("toastCopied") })
      }
   }
 
@@ -1436,7 +1437,7 @@ function AppContent(props: AppProps) {
           if (sid && url) {
             const cmd = getAttachCommand(url, sid)
             copyToClipboard(cmd)
-            toast.show({ variant: "success", message: "Copied to clipboard" })
+            toast.show({ variant: "success", message: t("toastCopied") })
           }
         },
       },
@@ -1588,7 +1589,7 @@ function AppContent(props: AppProps) {
       if (key.name === "i") {
         // I - insert sample activity for UI testing
         insertSampleActivity()
-        toast.show({ variant: "info", message: "Sample activity inserted" })
+        toast.show({ variant: "info", message: t("toastSampleInserted") })
         key.preventDefault()
         return
       }
@@ -1597,7 +1598,7 @@ function AppContent(props: AppProps) {
         // P - prompt dialog
         const sid = sessionId() || lastSessionId()
         if (!sid) {
-          toast.show({ variant: "info", message: "No active session to send prompt" })
+          toast.show({ variant: "info", message: t("toastNoSessionPrompt") })
           key.preventDefault()
           return
         }
@@ -1632,7 +1633,7 @@ function AppContent(props: AppProps) {
                ))
             }
          } else {
-            toast.show({ variant: "info", message: "No active session to attach to" })
+            toast.show({ variant: "info", message: t("toastNoSessionAttach") })
          }
          key.preventDefault()
          return
@@ -1687,7 +1688,7 @@ function AppContent(props: AppProps) {
              ))
           }
        } else {
-          toast.show({ variant: "info", message: "No active session to attach to" })
+          toast.show({ variant: "info", message: t("toastNoSessionAttach") })
        }
        key.preventDefault()
        return

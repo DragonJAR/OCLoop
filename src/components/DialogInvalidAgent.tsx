@@ -2,6 +2,7 @@ import { createSignal } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
 import { useTheme, selectedForeground } from "../context/ThemeContext"
+import { t } from "../lib/i18n"
 
 export interface DialogInvalidAgentProps {
   agentName: string
@@ -46,22 +47,22 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
       {/* Header */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
         <text>
-          <span style={{ bold: true, fg: theme().text }}>Invalid Agent</span>
+          <span style={{ bold: true, fg: theme().text }}>{t("dlgInvalidAgent")}</span>
         </text>
         <text>
-          <span style={{ fg: theme().textMuted }}>esc to quit</span>
+          <span style={{ fg: theme().textMuted }}>{t("dlgEscToQuit")}</span>
         </text>
       </box>
 
       {/* Message */}
       <box style={{ flexGrow: 1, marginBottom: 1, flexDirection: "column" }}>
         <text>
-          <span style={{ fg: theme().error }}>Agent "{props.agentName}" not found.</span>
+          <span style={{ fg: theme().error }}>{t("dlgAgentNotFound", { agent: props.agentName })}</span>
         </text>
-        
+
         <box style={{ marginTop: 1, flexDirection: "column" }}>
           <text>
-            <span style={{ fg: theme().textMuted }}>Available agents:</span>
+            <span style={{ fg: theme().textMuted }}>{t("dlgAvailableAgents")}</span>
           </text>
           {props.availableAgents.map(agent => (
             <text>
@@ -87,9 +88,9 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
         >
           <text>
             <span style={{ 
-              fg: activeButton() === "quit" ? selectedForeground(theme()) : theme().textMuted 
+              fg: activeButton() === "quit" ? selectedForeground(theme()) : theme().textMuted
             }}>
-              Quit
+              {t("dlgQuitConfirm")}
             </span>
           </text>
         </box>
@@ -108,9 +109,9 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
         >
           <text>
             <span style={{ 
-              fg: activeButton() === "default" ? selectedForeground(theme()) : theme().textMuted 
+              fg: activeButton() === "default" ? selectedForeground(theme()) : theme().textMuted
             }}>
-              Use Default {props.defaultAgent ? `(${props.defaultAgent})` : ""}
+              {t("dlgUseDefault")}{props.defaultAgent ? ` (${props.defaultAgent})` : ""}
             </span>
           </text>
         </box>
