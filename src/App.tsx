@@ -11,11 +11,11 @@ import {
   useRenderer,
   useKeyboard,
 } from "@opentui/solid"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 
 import { useServer } from "./hooks/useServer"
-import { useSSE, type FileDiff } from "./hooks/useSSE"
+import { useSSE, classifySessionError, type FileDiff } from "./hooks/useSSE"
 import { useLoopState } from "./hooks/useLoopState"
+import { useWatchdog, type WatchdogHealth } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
@@ -27,7 +27,35 @@ import { shutdownManager } from "./lib/shutdown"
 import {
   ensureGitignore,
 } from "./lib/project"
-import { loadConfig, saveConfig, hasTerminalConfig, type OcloopConfig } from "./lib/config"
+import {
+  saveLoopState,
+  loadLoopState,
+  clearLoopState,
+  type PersistedLoopState,
+} from "./lib/loop-state-store"
+import {
+  loadConfig,
+  saveConfig,
+  hasTerminalConfig,
+  resolveResilience,
+  type OcloopConfig,
+  type ResilienceConfig,
+} from "./lib/config"
+import {
+  createClient,
+  createSession,
+  sendPromptAsync,
+  abortSession,
+  configureApiTimeouts,
+  reconcileSession,
+  type ReconcileResult,
+} from "./lib/api"
+import { withTimeout } from "./lib/with-timeout"
+import { computeBackoff } from "./lib/backoff"
+import { monotonicNow } from "./lib/clock"
+import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
+import { createPowerManager } from "./lib/power"
+import { createChaos } from "./lib/chaos"
 import { 
   detectInstalledTerminals, 
   getAttachCommand, 
@@ -124,6 +152,154 @@ function AppContent(props: AppProps) {
   const [availableTerminals, setAvailableTerminals] = createSignal<KnownTerminal[]>([])
   const [lastSessionId, setLastSessionId] = createSignal<string | undefined>(undefined)
 
+  // Resolved resilience thresholds (DEFAULT_RESILIENCE < config file < CLI flags).
+  // Seeded with defaults so api.ts timeouts are sane before onMount resolves them.
+  const [resilience, setResilience] = createSignal<ResilienceConfig>(
+    resolveResilience(undefined, props.resilience),
+  )
+
+  // --- Rate-limit cooldown bookkeeping (Phase 1) ---
+  // Consecutive rate-limit attempts; reset whenever an iteration completes ok.
+  let rateLimitAttempts = 0
+  // Timers for the cooldown wait and the dashboard countdown.
+  let cooldownTimer: ReturnType<typeof setTimeout> | null = null
+  let cooldownTicker: ReturnType<typeof setInterval> | null = null
+  // Monotonic timestamp of the last iteration kickoff, for minIterationGap.
+  let lastIterationStartAt = 0
+  // Remaining cooldown time (ms) for the dashboard countdown.
+  const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
+
+  /** Clear any pending cooldown timers (on resume, quit, or success). */
+  function clearCooldownTimers(): void {
+    if (cooldownTimer) {
+      clearTimeout(cooldownTimer)
+      cooldownTimer = null
+    }
+    if (cooldownTicker) {
+      clearInterval(cooldownTicker)
+      cooldownTicker = null
+    }
+  }
+
+  // --- Sleep/suspension survival (Phase 2) ---
+  // Keep the Mac awake while the loop is doing or waiting on work.
+  const power = createPowerManager({ enabled: () => resilience().caffeinate })
+  let sleepDetector: SleepDetector | null = null
+
+  /**
+   * Handle waking from a system suspension. The SSE stream almost always died
+   * while asleep, so reconnect it; then reconcile the in-flight session in case
+   * we slept through its `session.idle`. If a rate-limit cooldown elapsed during
+   * sleep, resume it immediately rather than waiting for the (now-late) timer.
+   */
+  function handleWake(gapMs: number): void {
+    log.health("sleep", "wake", { gapMs })
+    activityLog.addEvent(
+      "task",
+      `Despertar tras ${Math.round(gapMs / 1000)}s suspendido — reconectando`,
+    )
+
+    // Reconnect SSE (heartbeat) and re-evaluate the watchdog now.
+    sse.reconnect()
+    watchdog.notifyWake()
+
+    const st = loop.state()
+    if (st.type === "cooldown") {
+      // Cooldown deadline may have passed while we slept.
+      if (monotonicNow() >= st.resumeAt) {
+        clearCooldownTimers()
+        loop.dispatch({ type: "resume_cooldown" })
+      }
+    } else {
+      // Recover a possibly-missed session.idle.
+      void reconcileAndAdvance()
+    }
+  }
+
+  // --- Chaos fault injection (Phase 6, debug + --chaos only) ---
+  // Wraps the watchdog probes so faults can be triggered for manual soak tests.
+  const chaos = createChaos(() => resilience().chaos && !!props.debug)
+
+  // --- Task guardian / watchdog (Phase 4) ---
+  // Created before useSSE so SSE progress handlers can feed it heartbeats.
+  // Probes read ground truth; actions are the recovery levers. All closures are
+  // invoked at tick time, after the rest of setup has run.
+  const watchdog = useWatchdog({
+    config: () => {
+      const r = resilience()
+      return {
+        suspectMs: r.watchdogSuspectMs,
+        confirmMs: r.watchdogConfirmMs,
+        tickMs: r.watchdogTickMs,
+        maxRecoveryAttempts: r.maxRecoveryAttempts,
+      }
+    },
+    probes: {
+      isActive: () => {
+        const s = loop.state()
+        return (
+          (s.type === "running" || s.type === "pausing") && s.sessionId !== ""
+        )
+      },
+      pingServer: () => chaos.ping(() => server.ping()),
+      reconcile: () =>
+        chaos.reconcile(async () => {
+          const url = server.url()
+          const s = loop.state()
+          const sid =
+            s.type === "running" || s.type === "pausing" ? s.sessionId : ""
+          if (!url || !sid) return "unknown"
+          return reconcileSession(createClient(url), sid)
+        }),
+    },
+    actions: {
+      reconnectSSE: () => {
+        activityLog.addEvent("task", "Guardián: reconectando SSE")
+        sse.reconnect()
+      },
+      synthesizeIdle: () => {
+        activityLog.addEvent(
+          "session_idle",
+          "Guardián: sesión idle/missing, avanzando",
+        )
+        rateLimitAttempts = 0
+        loop.dispatch({ type: "session_idle" })
+      },
+      abortAndRetry: async () => {
+        activityLog.addEvent(
+          "task",
+          "Guardián: sesión bloqueada, abortando y reintentando",
+        )
+        const url = server.url()
+        const s = loop.state()
+        const sid =
+          s.type === "running" || s.type === "pausing" ? s.sessionId : ""
+        if (url && sid) {
+          try {
+            await abortSession(createClient(url), sid)
+          } catch {
+            // Best effort — the session may already be gone.
+          }
+        }
+        // Advance so the iteration-driver re-creates the session and re-sends
+        // the prompt (same iteration; plan progress untouched).
+        loop.dispatch({ type: "session_idle" })
+      },
+      restartServer: () => restartServer(),
+      fail: (d) => {
+        loop.dispatch({
+          type: "error",
+          source: "api",
+          message: `Guardián: recuperación agotada (${d.reason}) tras ${d.attempts} intentos; sin latido ${Math.round(d.lastHeartbeatAgeMs / 1000)}s, último estado ${d.lastVerdict ?? "?"}`,
+          recoverable: true,
+        })
+      },
+    },
+  })
+
+  /** Feed the watchdog a heartbeat from any real session-progress SSE event. */
+  const heartbeat = () => watchdog.recordHeartbeat()
+
   // Active model
   const [activeModel, setActiveModel] = createSignal<string | undefined>(props.model)
   
@@ -209,11 +385,29 @@ function AppContent(props: AppProps) {
     return undefined
   })
 
+  // Apply CLI-aware timeouts immediately so any early SDK call is bounded,
+  // even before onMount resolves the on-disk config.
+  configureApiTimeouts(resilience())
+
   // On Mount: Load config and detect terminals
   onMount(async () => {
     const config = await loadConfig()
     setOcloopConfig(config)
-    
+
+    // Resolve resilience thresholds: defaults < config file < CLI flags.
+    const resolved = resolveResilience(config.resilience, props.resilience)
+    setResilience(resolved)
+    configureApiTimeouts(resolved)
+    log.info("config", "Resolved resilience config", resolved as unknown as Record<string, unknown>)
+
+    // Sleep/suspension detector — always on while the app runs.
+    sleepDetector = createSleepDetector({
+      tickMs: resolved.sleepTickMs,
+      thresholdMs: resolved.sleepThresholdMs,
+      onWake: handleWake,
+    })
+    sleepDetector.start()
+
     const terminals = await detectInstalledTerminals()
     setAvailableTerminals(terminals)
   })
@@ -235,6 +429,12 @@ function AppContent(props: AppProps) {
           if (loop.state().type === "running") {
             loop.dispatch({ type: "toggle_pause" })
           }
+        } else if (error.kind === "rate_limit") {
+          // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
+          activityLog.addEvent("error", `Rate limit: ${error.message}`)
+          if (loop.state().type === "running") {
+            enterCooldown(error.message, error.retryAfter)
+          }
         } else {
           activityLog.addEvent("error", `Session error: ${error.message}`)
         }
@@ -247,11 +447,17 @@ function AppContent(props: AppProps) {
         const debugSessionId = state.type === "debug" ? state.sessionId : undefined
         
         if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
+          // A clean idle means the iteration succeeded: clear the rate-limit
+          // streak so a past cooldown doesn't penalize future iterations, and
+          // reset the watchdog for the next iteration.
+          rateLimitAttempts = 0
+          watchdog.notifyIdle()
           loop.dispatch({ type: "session_idle" })
           activityLog.addEvent("session_idle", "Session idle")
         }
       },
       onTodoUpdated: (_eventSessionId, todos) => {
+        heartbeat()
         // Update current task display from todos
         const inProgress = todos.find((t) => t.status === "in_progress")
         if (inProgress) {
@@ -260,6 +466,7 @@ function AppContent(props: AppProps) {
         }
       },
       onFileEdited: (file) => {
+        heartbeat()
         activityLog.addEvent("file_edit", file)
         // Re-parse plan if PLAN.md was edited
         const planFile = props.planFile || DEFAULTS.PLAN_FILE
@@ -273,6 +480,7 @@ function AppContent(props: AppProps) {
         }
       },
       onStepFinish: (part) => {
+        heartbeat()
         sessionStats.addTokens(part.tokens)
       },
       onSessionDiff: (diffs: FileDiff[]) => {
@@ -287,6 +495,7 @@ function AppContent(props: AppProps) {
         sessionStats.setDiff({ additions, deletions, files })
       },
       onToolUse: (part) => {
+        heartbeat()
         const toolName = part.tool || part.state.tool || "unknown"
         const input = part.state.input as Record<string, unknown>
         const preview = getToolPreview(toolName, input)
@@ -298,10 +507,12 @@ function AppContent(props: AppProps) {
         }
       },
       onMessageText: (part, role) => {
+        heartbeat()
         const type = role === "user" ? "user_message" : "assistant_message"
         activityLog.addEvent(type, part.text, { dimmed: true })
       },
       onReasoning: (part) => {
+        heartbeat()
         activityLog.addEvent("reasoning", part.text, { dimmed: true })
       },
     },
@@ -358,6 +569,138 @@ function AppContent(props: AppProps) {
   }
 
   /**
+   * Reconcile the active session against the server's ground truth and advance
+   * the loop if we missed its completion. Returns the reconcile verdict.
+   *
+   * This is the single source of truth shared by the watchdog (Phase 4) and the
+   * sleep/wake handler (Phase 2): if the server says the session is `idle` or
+   * `missing` while we still think it's running, we lost the `session.idle`
+   * event (SSE dropped during sleep/disconnect) — so we synthesize it here.
+   */
+  async function reconcileAndAdvance(): Promise<ReconcileResult> {
+    const url = server.url()
+    const state = loop.state()
+    const sid =
+      state.type === "running" || state.type === "pausing"
+        ? state.sessionId
+        : ""
+    if (!url || !sid) return "unknown"
+
+    const client = createClient(url)
+    const result = await reconcileSession(client, sid)
+    log.health("reconcile", result, { sessionId: sid })
+
+    if (result === "idle" || result === "missing") {
+      activityLog.addEvent(
+        "session_idle",
+        `Reconciled: session ${result}, advancing`,
+      )
+      rateLimitAttempts = 0
+      loop.dispatch({ type: "session_idle" })
+    }
+    return result
+  }
+
+  /**
+   * Recover from a hung server: restart it, reconnect SSE to the (possibly new)
+   * URL, and reconcile the in-flight session. Used by the watchdog and on wake.
+   */
+  async function restartServer(): Promise<void> {
+    log.health("server", "recovery_restart", { url: server.url() })
+    activityLog.addEvent("error", "Guardián: servidor sin respuesta, reiniciando")
+    await server.restart()
+    sse.reconnect()
+    await reconcileAndAdvance()
+  }
+
+  /**
+   * Enter a rate-limit cooldown: wait out a backoff (honoring Retry-After) and
+   * then retry the SAME iteration. A circuit breaker escalates to a recoverable
+   * error after `maxRateLimitRetries` consecutive rate limits so we never loop
+   * forever against a provider that is down.
+   */
+  function enterCooldown(reason: string, retryAfterSeconds?: number): void {
+    const r = resilience()
+    rateLimitAttempts++
+
+    if (rateLimitAttempts > r.maxRateLimitRetries) {
+      const tried = rateLimitAttempts - 1
+      log.health("ratelimit", "exhausted", { attempts: tried, reason })
+      activityLog.addEvent("error", `Rate limit persistente tras ${tried} intentos`)
+      loop.dispatch({
+        type: "error",
+        source: "api",
+        message: `Rate limit persistente tras ${tried} intentos: ${reason}`,
+        recoverable: true,
+      })
+      rateLimitAttempts = 0
+      clearCooldownTimers()
+      return
+    }
+
+    const delayMs = computeBackoff(rateLimitAttempts - 1, {
+      base: r.backoffBaseMs,
+      max: r.backoffMaxMs,
+      jitter: r.backoffJitter,
+      retryAfterSeconds,
+    })
+    const resumeAt = monotonicNow() + delayMs
+
+    log.health("ratelimit", "cooldown", {
+      attempt: rateLimitAttempts,
+      delayMs,
+      retryAfterSeconds: retryAfterSeconds ?? null,
+      reason,
+    })
+    activityLog.addEvent(
+      "error",
+      `Rate limited — reintentando en ${Math.ceil(delayMs / 1000)}s (intento ${rateLimitAttempts})`,
+    )
+
+    loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts })
+
+    // Countdown for the dashboard, driven by the monotonic clock.
+    clearCooldownTimers()
+    setCooldownRemainingMs(delayMs)
+    cooldownTicker = setInterval(() => {
+      const remaining = Math.max(0, resumeAt - monotonicNow())
+      setCooldownRemainingMs(remaining)
+      if (remaining <= 0 && cooldownTicker) {
+        clearInterval(cooldownTicker)
+        cooldownTicker = null
+      }
+    }, 250)
+
+    // Resume after the backoff. The idle effect (running + empty session) then
+    // re-creates the session and re-sends the prompt for the same iteration.
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null
+      if (loop.state().type === "cooldown") {
+        loop.dispatch({ type: "resume_cooldown" })
+      }
+    }, delayMs)
+  }
+
+  /**
+   * Route an iteration-start failure: rate limits go to cooldown (retry the same
+   * iteration), everything else becomes a recoverable error.
+   */
+  function handleIterationError(err: unknown): void {
+    const classified = classifySessionError(err)
+    if (classified.kind === "rate_limit") {
+      enterCooldown(classified.message, classified.retryAfter)
+      return
+    }
+    const message = err instanceof Error ? err.message : String(err)
+    loop.dispatch({
+      type: "error",
+      source: "api",
+      message: `Failed to start iteration: ${message}`,
+      recoverable: true,
+    })
+  }
+
+  /**
    * Create a new session and start an iteration
    */
   async function startIteration(): Promise<void> {
@@ -381,20 +724,28 @@ function AppContent(props: AppProps) {
     }
 
     try {
-      // Create SDK client
-      const client = createOpencodeClient({ baseUrl: url })
+      // Enforce a minimum spacing between iterations so very short iterations
+      // don't hammer the provider. Uses the monotonic clock; default 0 = off.
+      const gap = resilience().minIterationGapMs
+      if (gap > 0) {
+        const since = monotonicNow() - lastIterationStartAt
+        if (since < gap) {
+          await new Promise((r) => setTimeout(r, gap - since))
+        }
+      }
+      lastIterationStartAt = monotonicNow()
+
+      // Create SDK client (all calls below are timeout-wrapped via api.ts)
+      const client = createClient(url)
 
       // Create a new session
-      const result = await client.session.create({})
-
-      if (!result.response.ok || !result.data) {
-        throw new Error("Failed to create session")
-      }
-
-      const newSessionId = result.data.id
+      const session = await createSession(client)
+      const newSessionId = session.id
 
       // Dispatch iteration started
       loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
+      // Reset the watchdog's heartbeat baseline for this fresh iteration.
+      watchdog.notifyIterationStart()
 
       // Read the prompt file
       const promptFile = Bun.file(props.promptFile || DEFAULTS.PROMPT_FILE)
@@ -411,7 +762,7 @@ function AppContent(props: AppProps) {
       const prompt = promptContent.replaceAll("{{PLAN_FILE}}", props.planFile || DEFAULTS.PLAN_FILE)
 
       // Send the prompt asynchronously
-      await client.session.promptAsync({
+      await sendPromptAsync(client, {
         sessionID: newSessionId,
         parts: [{ type: "text", text: prompt }],
         agent: activeAgent(),
@@ -420,13 +771,8 @@ function AppContent(props: AppProps) {
       // Refresh plan progress
       await refreshPlan()
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      loop.dispatch({
-        type: "error",
-        source: "api",
-        message: `Failed to start iteration: ${errorMessage}`,
-        recoverable: true,
-      })
+      // Rate limits → cooldown + retry; anything else → recoverable error.
+      handleIterationError(err)
     }
   }
 
@@ -461,18 +807,13 @@ function AppContent(props: AppProps) {
     }
 
     try {
-      // Create SDK client
-      const client = createOpencodeClient({ baseUrl: url })
+      // Create SDK client (timeout-wrapped via api.ts)
+      const client = createClient(url)
 
       // Create a new session
-      const result = await client.session.create({})
+      const session = await createSession(client)
+      const newSessionId = session.id
 
-      if (!result.response.ok || !result.data) {
-        throw new Error("Failed to create session")
-      }
-
-      const newSessionId = result.data.id
-      
       log.info("session", "Debug session created", { sessionId: newSessionId })
 
       // Dispatch new_session to update debug state with session ID
@@ -509,8 +850,8 @@ function AppContent(props: AppProps) {
       // Add activity log immediately for feedback
       activityLog.addEvent("user_message", `User: ${text}`)
 
-      const client = createOpencodeClient({ baseUrl: url })
-      await client.session.promptAsync({
+      const client = createClient(url)
+      await sendPromptAsync(client, {
         sessionID: sid,
         parts: [{ type: "text", text }],
         agent: activeAgent(),
@@ -549,14 +890,25 @@ function AppContent(props: AppProps) {
     
     loop.dispatch({ type: "quit" })
 
+    // Stop resilience machinery: cooldown timers, watchdog, sleep detector, caffeinate
+    clearCooldownTimers()
+    watchdog.stop()
+    sleepDetector?.stop()
+    power.stop()
+
+    // Clean exit: drop the persisted state so we don't offer to resume next time.
+    if (!props.debug) {
+      await clearLoopState()
+    }
+
     // Abort current session if running
     const currentSessionId = sessionId()
     if (currentSessionId) {
       try {
         const url = server.url()
         if (url) {
-          const client = createOpencodeClient({ baseUrl: url })
-          await client.session.abort({ sessionID: currentSessionId })
+          const client = createClient(url)
+          await abortSession(client, currentSessionId)
         }
       } catch {
         // Ignore errors when aborting - we're shutting down anyway
@@ -597,7 +949,8 @@ function AppContent(props: AppProps) {
       if (!activeModel()) {
         const url = server.url()
         if (url) {
-          createOpencodeClient({ baseUrl: url }).config.get()
+          const client = createClient(url)
+          withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
             .then(res => {
               if (res.data?.model) {
                 setActiveModel(res.data.model)
@@ -613,7 +966,8 @@ function AppContent(props: AppProps) {
       if (props.agent) {
         const url = server.url()
         if (url) {
-          createOpencodeClient({ baseUrl: url }).app.agents()
+          const client = createClient(url)
+          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
             .then(res => {
               const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
               if (!primaryAgents.includes(props.agent!)) {
@@ -661,20 +1015,93 @@ function AppContent(props: AppProps) {
       // Ensure .loop* is in .gitignore
       await ensureGitignore()
 
+      // Resume after a crash: a persisted state means the OCLoop process itself
+      // died mid-run. Reconcile/continue automatically with --resume, otherwise
+      // offer the choice.
+      const persisted = await loadLoopState()
+      if (persisted && persisted.iteration > 0) {
+        log.health("resume", "found", {
+          iteration: persisted.iteration,
+          sessionId: persisted.sessionId,
+          stateType: persisted.stateType,
+        })
+        if (resilience().resume) {
+          await doResume(persisted)
+        } else {
+          dialog.show(() => (
+            <DialogConfirm
+              title="Resume previous run?"
+              message={`Found an interrupted run at iteration ${persisted.iteration}. Resume it?`}
+              confirmLabel="Resume"
+              cancelLabel="Start fresh"
+              onConfirm={() => {
+                dialog.clear()
+                void doResume(persisted)
+              }}
+              onCancel={() => {
+                dialog.clear()
+                void clearLoopState()
+                if (props.run) loop.dispatch({ type: "start" })
+              }}
+            />
+          ))
+        }
+        return
+      }
+
       if (props.run) {
-        // --run flag set, start immediately
+        // --run flag set: start immediately. The iteration-driver effect picks
+        // up the running+empty-session state and kicks off the first iteration.
         loop.dispatch({ type: "start" })
-        startIteration()
       }
     } catch (err) {
       // Log error but don't block startup
       console.error("Failed to initialize session:", err)
-      
+
       // If --run flag is set, start anyway
       if (props.run) {
         loop.dispatch({ type: "start" })
-        startIteration()
       }
+    }
+  }
+
+  /**
+   * Resume a persisted run. If the old session is still working on the server we
+   * re-attach to it; otherwise (the usual case — the embedded server died with
+   * us) we continue the loop with a fresh iteration, preserving the count.
+   */
+  async function doResume(p: PersistedLoopState): Promise<void> {
+    rateLimitAttempts = p.rateLimitAttempts || 0
+    const url = server.url()
+    let verdict: ReconcileResult = "missing"
+    if (url && p.sessionId) {
+      verdict = await reconcileSession(createClient(url), p.sessionId)
+    }
+    log.health("resume", verdict, {
+      iteration: p.iteration,
+      sessionId: p.sessionId,
+    })
+
+    if (verdict === "working" && p.sessionId) {
+      activityLog.addEvent(
+        "session_start",
+        `Resuming session ${p.sessionId.substring(0, 8)} (iter ${p.iteration})`,
+      )
+      loop.dispatch({
+        type: "resume_session",
+        iteration: p.iteration,
+        sessionId: p.sessionId,
+      })
+      watchdog.notifyIterationStart()
+      void reconcileAndAdvance()
+    } else {
+      activityLog.addEvent(
+        "task",
+        `Previous session ${verdict}; continuing the loop`,
+      )
+      await clearLoopState()
+      // Fresh iteration, iteration count preserved.
+      loop.dispatch({ type: "resume_session", iteration: p.iteration, sessionId: "" })
     }
   }
 
@@ -690,14 +1117,85 @@ function AppContent(props: AppProps) {
     }
   })
 
-  // Session idle effect - start next iteration if running
+  // Single iteration-driver: any time we are in `running` with no active
+  // session, kick off (or retry) an iteration. This is the ONE place
+  // iterations start, covering the first start, the next-after-idle, resume
+  // from pause, and resume from a rate-limit cooldown — including the very
+  // first iteration (iteration 0), so a rate limit on the first session
+  // creation can never leave the loop wedged.
   createEffect(() => {
     const state = loop.state()
-
-    // When session becomes idle and we're in running state with empty sessionId,
-    // start the next iteration
-    if (state.type === "running" && !state.sessionId && state.iteration > 0) {
+    if (state.type === "running" && state.sessionId === "") {
       startIteration()
+    }
+  })
+
+  // If SSE cannot reconnect after several attempts the server's event stream is
+  // likely broken (not just a blip). Escalate to a server restart — which brings
+  // up a fresh stream and reconciles — rather than letting heartbeats silently
+  // stop. Fires once per failure streak; resets when a connection succeeds.
+  const SSE_RECONNECT_RESTART_THRESHOLD = 6
+  let sseRecoveryFired = false
+  createEffect(() => {
+    const attempts = sse.reconnectAttempts()
+    if (attempts === 0) {
+      sseRecoveryFired = false
+      return
+    }
+    if (
+      attempts >= SSE_RECONNECT_RESTART_THRESHOLD &&
+      loop.isRunning() &&
+      !sseRecoveryFired
+    ) {
+      sseRecoveryFired = true
+      log.health("sse", "reconnect_exhausted", { attempts })
+      void restartServer()
+    }
+  })
+
+  // Lifecycle of the guardian and power assertion:
+  // - Watchdog runs while iterating (running/pausing); it's silent otherwise.
+  // - caffeinate runs while iterating OR waiting out a cooldown, so a rate-limit
+  //   wait can't get suspended either.
+  createEffect(() => {
+    if (loop.isRunning()) {
+      watchdog.start()
+    } else {
+      watchdog.stop()
+    }
+
+    if (loop.isRunning() || loop.isCooldown()) {
+      power.start()
+    } else {
+      power.stop()
+    }
+  })
+
+  // Persist minimal progress on every meaningful transition so a hard crash of
+  // the OCLoop process (not just OpenCode) can be resumed. Atomic write. Skipped
+  // in debug mode; cleared on terminal states.
+  createEffect(() => {
+    if (props.debug) return
+    const s = loop.state()
+    if (
+      s.type === "running" ||
+      s.type === "pausing" ||
+      s.type === "paused" ||
+      s.type === "cooldown"
+    ) {
+      const sid =
+        s.type === "running" || s.type === "pausing" ? s.sessionId : null
+      const snapshot: PersistedLoopState = {
+        version: 1,
+        iteration: loop.iteration(),
+        sessionId: sid || null,
+        stateType: s.type,
+        rateLimitAttempts,
+        updatedAt: new Date().toISOString(),
+      }
+      void saveLoopState(snapshot)
+    } else if (s.type === "complete") {
+      void clearLoopState()
     }
   })
 
@@ -869,7 +1367,8 @@ function AppContent(props: AppProps) {
     const url = server.url()
     const hasSession = !!sid
 
-    command.register(() => [
+    command.register(() => {
+      const opts: CommandOption[] = [
       {
         title: "Copy attach command",
         value: "copy_attach",
@@ -915,7 +1414,36 @@ function AppContent(props: AppProps) {
           dialog.clear()
         },
       },
-    ])
+      ]
+
+      // Chaos fault-injection commands (debug + --chaos only) for soak testing.
+      if (chaos.isEnabled()) {
+        const chaosCmd = (
+          title: string,
+          value: string,
+          run: () => void,
+          message: string,
+        ): CommandOption => ({
+          title,
+          value,
+          category: "Chaos",
+          onSelect: () => {
+            run()
+            toast.show({ variant: "info", message })
+            dialog.clear()
+          },
+        })
+        opts.push(
+          chaosCmd("Chaos: kill server", "chaos_kill", () => chaos.killServer(), "Chaos: server killed"),
+          chaosCmd("Chaos: revive server", "chaos_revive", () => chaos.reviveServer(), "Chaos: server revived"),
+          chaosCmd("Chaos: freeze session", "chaos_freeze", () => chaos.freezeSession(), "Chaos: session frozen"),
+          chaosCmd("Chaos: unfreeze session", "chaos_unfreeze", () => chaos.unfreezeSession(), "Chaos: session unfrozen"),
+          chaosCmd("Chaos: inject rate limit", "chaos_429", () => enterCooldown("chaos: injected 429", 5), "Chaos: rate limit injected"),
+        )
+      }
+
+      return opts
+    })
   })
 
   // Register shutdown handler for SIGINT/SIGTERM signals
@@ -926,6 +1454,8 @@ function AppContent(props: AppProps) {
 
     onCleanup(() => {
       shutdownManager.unregister()
+      sleepDetector?.stop()
+      power.stop()
     })
   })
 
@@ -1032,8 +1562,9 @@ function AppContent(props: AppProps) {
     // Ready state - handle S to start iterations
     if (loop.canStart()) {
       if (key.name === "s") {
+        // The iteration-driver effect starts the first iteration once we enter
+        // running with an empty session.
         loop.dispatch({ type: "start" })
-        startIteration()
         key.preventDefault()
         return
       }
@@ -1125,6 +1656,8 @@ function AppContent(props: AppProps) {
         currentTask={currentTask() ?? null}
         model={activeModel()}
         agent={activeAgent()}
+        cooldownRemainingMs={cooldownRemainingMs()}
+        watchdogHealth={watchdog.health()}
       />
 
       {/* Activity Log takes remaining space */}

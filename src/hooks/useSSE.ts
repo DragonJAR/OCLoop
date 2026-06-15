@@ -76,10 +76,140 @@ export interface FileDiff {
  */
 export type SSEStatus = "disconnected" | "connecting" | "connected" | "error"
 
+/**
+ * Coarse classification of a session error so callers can react correctly:
+ * - `rate_limit` → wait + retry the same iteration (recoverable, expected)
+ * - `aborted`    → user/programmatic abort (not a failure)
+ * - `auth`       → credential problem (won't fix itself by retrying)
+ * - `transient`  → network/5xx/timeout blip (retryable)
+ * - `fatal`      → anything else
+ */
+export type SessionErrorKind =
+  | "rate_limit"
+  | "aborted"
+  | "auth"
+  | "transient"
+  | "fatal"
+
 export interface SessionError {
   message: string
   name?: string
   isAborted: boolean
+  /** Coarse category used to decide recovery strategy. */
+  kind: SessionErrorKind
+  /** Seconds to wait before retrying (only set for rate limits, when known). */
+  retryAfter?: number
+}
+
+const RATE_LIMIT_NAMES = new Set(["RateLimitError", "OverloadedError"])
+const AUTH_NAMES = new Set([
+  "AuthError",
+  "AuthenticationError",
+  "UnauthorizedError",
+])
+const ABORTED_NAMES = new Set(["MessageAbortedError", "AbortError"])
+
+const RATE_LIMIT_RE =
+  /(\b429\b|rate[\s_-]?limit|ratelimited|too many requests|overloaded|over capacity|quota|insufficient_quota)/i
+const AUTH_RE =
+  /(\b401\b|\b403\b|unauthorized|forbidden|invalid api key|authentication failed|invalid x-api-key)/i
+const TRANSIENT_RE =
+  /(\b50\d\b|\b529\b|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection (?:closed|reset|refused|error))/i
+
+/**
+ * Map an error name + message to a {@link SessionErrorKind}.
+ * Checked in priority order: aborted → rate_limit → auth → transient → fatal.
+ */
+function classifyKind(name: string | undefined, message: string): SessionErrorKind {
+  const hay = `${name ?? ""} ${message}`
+  if ((name && ABORTED_NAMES.has(name)) || /\baborted?\b/i.test(hay)) {
+    return "aborted"
+  }
+  if ((name && RATE_LIMIT_NAMES.has(name)) || RATE_LIMIT_RE.test(hay)) {
+    return "rate_limit"
+  }
+  if ((name && AUTH_NAMES.has(name)) || AUTH_RE.test(hay)) {
+    return "auth"
+  }
+  if (TRANSIENT_RE.test(hay)) {
+    return "transient"
+  }
+  return "fatal"
+}
+
+/**
+ * Best-effort extraction of a Retry-After hint (in seconds) from an error
+ * object: explicit numeric fields, a `retry-after` header, or a duration parsed
+ * from the message ("retry after 30s", "try again in 2 minutes").
+ */
+function extractRetryAfter(e: Record<string, any>): number | undefined {
+  const candidates = [
+    e?.retryAfter,
+    e?.retry_after,
+    e?.data?.retryAfter,
+    e?.data?.retry_after,
+  ]
+  for (const c of candidates) {
+    const n = typeof c === "string" ? Number(c) : c
+    if (typeof n === "number" && Number.isFinite(n) && n >= 0) return n
+  }
+
+  const headers = e?.headers ?? e?.response?.headers
+  if (headers) {
+    const raw =
+      typeof headers.get === "function"
+        ? headers.get("retry-after")
+        : headers["retry-after"] ?? headers["Retry-After"]
+    if (raw != null) {
+      const n = Number(raw)
+      if (Number.isFinite(n) && n >= 0) return n
+    }
+  }
+
+  if (typeof e?.message === "string") {
+    const m = e.message.match(
+      /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes)?/i,
+    )
+    if (m) {
+      let v = parseFloat(m[1])
+      const unit = (m[2] || "s").toLowerCase()
+      if (unit.startsWith("m")) v *= 60
+      if (Number.isFinite(v) && v >= 0) return v
+    }
+  }
+
+  return undefined
+}
+
+/**
+ * Normalize a raw `session.error` payload (object, string, or unknown) into a
+ * structured {@link SessionError} with a {@link SessionErrorKind} and, for rate
+ * limits, a `retryAfter` hint. Pure and exported for unit testing.
+ */
+export function classifySessionError(rawError: unknown): SessionError {
+  let name: string | undefined
+  let message: string
+  let retryAfter: number | undefined
+
+  if (typeof rawError === "object" && rawError !== null) {
+    const e = rawError as Record<string, any>
+    name = typeof e.name === "string" ? e.name : undefined
+    message = e.message || e.data?.message || "Unknown error"
+    retryAfter = extractRetryAfter(e)
+  } else if (typeof rawError === "string") {
+    message = rawError
+  } else {
+    message = "Unknown error"
+  }
+
+  const kind = classifyKind(name, message)
+  return {
+    message,
+    name,
+    isAborted: kind === "aborted",
+    kind,
+    retryAfter: kind === "rate_limit" ? retryAfter : undefined,
+  }
 }
 
 /**
@@ -140,6 +270,8 @@ export interface UseSSEReturn {
   status: Accessor<SSEStatus>
   /** Last error that occurred */
   error: Accessor<Error | undefined>
+  /** Consecutive reconnect attempts since the last successful connection. */
+  reconnectAttempts: Accessor<number>
   /** Manually reconnect */
   reconnect: () => void
   /** Disconnect from the SSE stream */
@@ -187,6 +319,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
   const [status, setStatus] = createSignal<SSEStatus>("disconnected")
   const [error, setError] = createSignal<Error | undefined>(undefined)
+  const [reconnectAttempts, setReconnectAttempts] = createSignal(0)
 
   // Abort controller for canceling the SSE connection
   let abortController: AbortController | null = null
@@ -243,24 +376,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
           .sessionID
         
         const rawError = (event.properties as any).error
-        let sessionError: SessionError
-
-        if (typeof rawError === "object" && rawError !== null) {
-          // Handle structured error object
-          const name = rawError.name
-          const message = rawError.message || rawError.data?.message || "Unknown error"
-          sessionError = {
-            message,
-            name,
-            isAborted: name === "MessageAbortedError"
-          }
-        } else {
-          // Handle string error or unknown format
-          sessionError = {
-            message: typeof rawError === "string" ? rawError : "Unknown error",
-            isAborted: false
-          }
-        }
+        const sessionError = classifySessionError(rawError)
 
         // Filter by session if a filter is set
         if (
@@ -423,6 +539,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       setStatus("connected")
+      // A successful connection clears the reconnect streak.
+      setReconnectAttempts(0)
       log.info("sse", "Connected")
 
       // Process events from the stream
@@ -430,8 +548,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         processEvent(event)
       }
 
-      // Stream ended normally
+      // Stream ended normally (server closed it or it was exhausted). Treat as a
+      // disconnect and reconnect — never fall silent.
       setStatus("disconnected")
+      log.health("sse", "stream_ended", { willReconnect: shouldReconnect })
 
       // Attempt reconnection if appropriate
       if (shouldReconnect) {
@@ -463,7 +583,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   /**
    * Schedule a reconnection attempt with exponential backoff
    */
-  let reconnectAttempts = 0
   let reconnectTimeout: ReturnType<typeof setTimeout> | null = null
 
   function scheduleReconnect(): void {
@@ -472,8 +591,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     }
 
     // Calculate delay with exponential backoff (max 30 seconds)
-    const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), 30000)
-    reconnectAttempts++
+    const attempt = reconnectAttempts()
+    const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
+    setReconnectAttempts(attempt + 1)
+    log.health("sse", "reconnect_scheduled", { attempt: attempt + 1, delayMs: delay })
 
     reconnectTimeout = setTimeout(() => {
       if (shouldReconnect) {
@@ -507,7 +628,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
    */
   function reconnect(): void {
     // Reset reconnection state
-    reconnectAttempts = 0
+    setReconnectAttempts(0)
     shouldReconnect = true
 
     // Cancel any existing connection
@@ -540,6 +661,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   return {
     status,
     error,
+    reconnectAttempts,
     reconnect,
     disconnect,
   }

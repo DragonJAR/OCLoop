@@ -87,6 +87,10 @@ Options:
   --verbose                Enable verbose logging to .loop.log
   --prompt <path>          Path to loop prompt file (default: .loop-prompt.md)
   --plan <path>            Path to plan file (default: PLAN.md)
+  --resume                 Reconcile/continue an interrupted run on startup
+  --no-caffeinate          Don't keep the system awake while running (macOS)
+  --chaos                  Enable chaos fault-injection (debug only)
+  --resilience <key=value> Override a resilience threshold (repeatable)
   -v, --version            Show version number
   -h, --help               Show help
 
@@ -97,6 +101,8 @@ Examples:
   ocloop -a plan                   # Use the plan agent
   ocloop --plan my-plan.md         # Use custom plan file
   ocloop -d                        # Debug mode for experimentation
+  ocloop --resume                  # Continue a run interrupted by a crash
+  ocloop --resilience watchdogSuspectMs=120000   # Tune a threshold
 ```
 
 ## Keybindings
@@ -149,6 +155,50 @@ The loop ends when:
 - You quit manually with `Q`
 - An unrecoverable error occurs
 
+## Resilience
+
+OCLoop is designed to keep running unattended through provider rate limits,
+laptop sleep, server hangs, and outright crashes. A **task guardian** (watchdog)
+watches each iteration for a heartbeat and, before ever taking a destructive
+action, confirms against ground truth (an active server ping plus the session's
+real status) — so it never aborts a session that is genuinely working, and never
+leaves a dead loop hanging.
+
+What it handles:
+
+- **Rate limits** — a `429`/overloaded never fails the loop. It enters a
+  `cooldown` state, respects any `Retry-After`, backs off with full jitter, and
+  retries the same iteration. After `maxRateLimitRetries` consecutive limits it
+  surfaces a recoverable error.
+- **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects
+  the event stream and reconciles the in-flight session (recovering a missed
+  completion). On macOS it runs `caffeinate` while working to avoid sleeping at
+  all (disable with `--no-caffeinate`).
+- **Server / session hangs** — an active health check restarts a hung OpenCode
+  server and reconciles the session; a genuinely wedged session is aborted and
+  retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full
+  diagnostic instead of looping forever.
+- **Total crash** — minimal progress is persisted atomically to `.loop-state.json`.
+  On the next start OCLoop offers to resume (automatic with `--resume`).
+
+All watchdog activity is logged to `.loop.log` as structured `[HEALTH]` lines, so
+you can audit exactly why the guardian acted.
+
+### Tuning
+
+Thresholds live in a `resilience` block and resolve as
+`defaults < ~/.config/ocloop/ocloop.json < CLI flags`. Override individual values
+with repeatable `--resilience key=value` flags, for example:
+
+```bash
+ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
+```
+
+Keys include `createTimeoutMs`, `promptTimeoutMs`, `pingTimeoutMs`,
+`backoffBaseMs`, `backoffMaxMs`, `maxRateLimitRetries`, `minIterationGapMs`,
+`sleepTickMs`, `sleepThresholdMs`, `watchdogSuspectMs` (T1), `watchdogConfirmMs`
+(T2), `watchdogTickMs`, and `maxRecoveryAttempts`.
+
 ## Files
 
 | File                | Purpose                                          |
@@ -156,7 +206,8 @@ The loop ends when:
 | `PLAN.md`           | Task list to execute                             |
 | `.loop-prompt.md`   | Prompt sent to OpenCode each iteration           |
 | `AGENTS.md`         | Persistent knowledge for OpenCode across sessions|
-| `.loop.log`         | Debug log (when running with `-v`)               |
+| `.loop.log`         | Debug log (with `[HEALTH]` watchdog telemetry)   |
+| `.loop-state.json`  | Persisted progress for crash recovery (`--resume`)|
 
 ## Configuration
 
@@ -223,9 +274,14 @@ Create a `PLAN.md` file with tasks. At minimum:
 
 ### Loop seems stuck
 
+- The task guardian detects a genuinely stalled loop automatically: watch the
+  `Guard ●` indicator in the dashboard (green healthy, yellow checking, red
+  recovering) and the `[HEALTH]` lines in `.loop.log`.
 - Press `T` to launch OpenCode in an external terminal and see what's happening
 - Check if OpenCode is waiting for input or confirmation
 - Look at the activity log for recent events
+- If a recovery loop reports persistent failure, the error dialog includes a
+  diagnostic (last heartbeat age, probe verdict, attempts)
 
 ## License
 

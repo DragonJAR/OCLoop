@@ -1,6 +1,7 @@
 import { createMemo, Show } from "solid-js"
 import type { LoopState, PlanProgress } from "../types"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
+import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { formatDuration } from "../hooks/useLoopStats"
 import { stripMarkdown } from "../lib/format"
 import { useTheme } from "../context/ThemeContext"
@@ -17,6 +18,10 @@ export interface DashboardProps {
   currentTask: string | null
   model?: string
   agent?: string
+  /** Remaining cooldown time (ms) shown as a countdown during rate limits. */
+  cooldownRemainingMs?: number
+  /** Current watchdog health, shown as a colored indicator while iterating. */
+  watchdogHealth?: WatchdogHealth
 }
 
 /**
@@ -34,6 +39,8 @@ function getStateBadge(state: LoopState): { icon: string; text: string; colorKey
       return { icon: "◑", text: "PAUSING", colorKey: "warning" }
     case "paused":
       return { icon: "⏸", text: "PAUSED", colorKey: "warning" }
+    case "cooldown":
+      return { icon: "◴", text: "COOLDOWN", colorKey: "warning" }
     case "stopping":
       return { icon: "◌", text: "STOPPING", colorKey: "error" }
     case "stopped":
@@ -83,9 +90,39 @@ export function Dashboard(props: DashboardProps) {
     if (state.type === "running") return state.iteration
     if (state.type === "pausing") return state.iteration
     if (state.type === "paused") return state.iteration
+    if (state.type === "cooldown") return state.iteration
     if (state.type === "complete") return state.iterations
     if (state.type === "debug") return 0
     return 0
+  })
+
+  // Watchdog health indicator (only meaningful while iterating).
+  const watchdogIndicator = createMemo(() => {
+    const h = props.watchdogHealth
+    const s = props.state
+    if (!h || (s.type !== "running" && s.type !== "pausing")) return null
+    switch (h) {
+      case "HEALTHY":
+        return { colorKey: "success" as const, label: "OK" }
+      case "SUSPECT":
+        return { colorKey: "warning" as const, label: "SUSPECT" }
+      case "CONFIRMING":
+        return { colorKey: "warning" as const, label: "CHECK" }
+      case "STUCK":
+        return { colorKey: "error" as const, label: "STUCK" }
+      case "RECOVERING":
+        return { colorKey: "error" as const, label: "RECOVER" }
+      default:
+        return null
+    }
+  })
+
+  // Cooldown countdown line shown on Row 3 during a rate limit.
+  const cooldownText = createMemo(() => {
+    const state = props.state
+    if (state.type !== "cooldown") return null
+    const secs = Math.max(0, Math.ceil((props.cooldownRemainingMs ?? 0) / 1000))
+    return `Rate limited — reintentando en ${secs}s (intento ${state.attempt})`
   })
 
   // Calculate remaining tasks for ETA
@@ -142,6 +179,8 @@ export function Dashboard(props: DashboardProps) {
         ]
       case "pausing":
         return [{ key: "", desc: "Waiting for task..." }, { key: "Q", desc: "quit" }]
+      case "cooldown":
+        return [{ key: "", desc: "Rate limited, waiting..." }, { key: "Q", desc: "quit" }]
       case "complete":
         return [{ key: "", desc: "Press any key to exit" }]
       case "error":
@@ -266,6 +305,15 @@ export function Dashboard(props: DashboardProps) {
             />
           </box>
         </Show>
+
+        {/* Watchdog health indicator */}
+        <Show when={watchdogIndicator()}>
+          <text style={{ marginLeft: 2 }}>
+            <span style={{ fg: theme().textMuted }}>Guard</span>
+            <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> ●</span>
+            <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
+          </text>
+        </Show>
       </box>
 
       {/* Row 2: Timing stats */}
@@ -286,17 +334,29 @@ export function Dashboard(props: DashboardProps) {
         </text>
       </box>
 
-      {/* Row 3: Current task */}
+      {/* Row 3: Cooldown countdown (during rate limits) or current task */}
       <box style={{ flexDirection: "row" }}>
-        <Show when={truncatedTask()} fallback={
+        <Show
+          when={cooldownText()}
+          fallback={
+            <Show
+              when={truncatedTask()}
+              fallback={
+                <text>
+                  <span style={{ fg: theme().textMuted }}>Task: </span>
+                  <span style={{ fg: theme().textMuted, italic: true }}>waiting...</span>
+                </text>
+              }
+            >
+              <text>
+                <span style={{ fg: theme().textMuted }}>Task: </span>
+                <span style={{ fg: theme().text }}>{truncatedTask()}</span>
+              </text>
+            </Show>
+          }
+        >
           <text>
-            <span style={{ fg: theme().textMuted }}>Task: </span>
-            <span style={{ fg: theme().textMuted, italic: true }}>waiting...</span>
-          </text>
-        }>
-          <text>
-            <span style={{ fg: theme().textMuted }}>Task: </span>
-            <span style={{ fg: theme().text }}>{truncatedTask()}</span>
+            <span style={{ fg: theme().warning }}>{cooldownText()}</span>
           </text>
         </Show>
       </box>

@@ -33,11 +33,125 @@ export interface CustomTerminalConfig {
 export type TerminalConfig = KnownTerminalConfig | CustomTerminalConfig
 
 /**
+ * Resilience thresholds — the single source of truth for every timeout,
+ * watchdog window, backoff parameter and recovery limit used across OCLoop.
+ *
+ * Resolution order (lowest to highest precedence):
+ *   DEFAULT_RESILIENCE  <  ~/.config/ocloop/ocloop.json `resilience`  <  CLI flags
+ *
+ * All durations are milliseconds. A timeout of `0` disables that timeout (see
+ * `withTimeout`).
+ */
+export interface ResilienceConfig {
+  // --- Phase 0: SDK call timeouts ---
+  /** Timeout for session.create (ms). */
+  createTimeoutMs: number
+  /** Timeout for session.promptAsync (ms). */
+  promptTimeoutMs: number
+  /** Timeout for session.abort (ms). */
+  abortTimeoutMs: number
+  /** Timeout for session.status reconciliation (ms). */
+  statusTimeoutMs: number
+  /** Timeout for the lightweight server health ping (ms). */
+  pingTimeoutMs: number
+
+  // --- Phase 1: rate-limit handling ---
+  /** Base delay for exponential backoff (ms). */
+  backoffBaseMs: number
+  /** Maximum backoff delay cap (ms). */
+  backoffMaxMs: number
+  /** Whether to apply full jitter to backoff. */
+  backoffJitter: boolean
+  /** Consecutive rate-limit retries before giving up to a recoverable error. */
+  maxRateLimitRetries: number
+  /** Minimum spacing enforced between iterations (ms); 0 disables. */
+  minIterationGapMs: number
+
+  // --- Phase 2: sleep / suspension detection ---
+  /** How often the sleep detector samples the wall clock (ms). */
+  sleepTickMs: number
+  /** Wall-clock gap beyond the tick that counts as a suspend/resume (ms). */
+  sleepThresholdMs: number
+  /** Keep the system awake with `caffeinate` while running (macOS only). */
+  caffeinate: boolean
+
+  // --- Phase 4: watchdog ---
+  /** Watchdog evaluation interval (ms). */
+  watchdogTickMs: number
+  /** No heartbeat for this long → SUSPECT and begin confirming (T1, ms). */
+  watchdogSuspectMs: number
+  /** No heartbeat for this long with a "working" session → wedged (T2, ms). */
+  watchdogConfirmMs: number
+  /** Recovery attempts per iteration before escalating to a recoverable error. */
+  maxRecoveryAttempts: number
+
+  // --- Phase 5/6: lifecycle ---
+  /** Reconcile a persisted in-flight session on startup instead of starting fresh. */
+  resume: boolean
+  /** Enable the chaos fault-injection module (debug only). */
+  chaos: boolean
+}
+
+/**
+ * Sensible defaults for every resilience threshold.
+ */
+export const DEFAULT_RESILIENCE: ResilienceConfig = {
+  createTimeoutMs: 15_000,
+  promptTimeoutMs: 30_000,
+  abortTimeoutMs: 15_000,
+  statusTimeoutMs: 15_000,
+  pingTimeoutMs: 5_000,
+
+  backoffBaseMs: 1_000,
+  backoffMaxMs: 60_000,
+  backoffJitter: true,
+  maxRateLimitRetries: 8,
+  minIterationGapMs: 0,
+
+  sleepTickMs: 5_000,
+  sleepThresholdMs: 30_000,
+  caffeinate: true,
+
+  watchdogTickMs: 15_000,
+  watchdogSuspectMs: 90_000,
+  watchdogConfirmMs: 300_000,
+  maxRecoveryAttempts: 3,
+
+  resume: false,
+  chaos: false,
+}
+
+/**
  * OCLoop configuration file structure
  */
 export interface OcloopConfig {
   terminal?: TerminalConfig
   scrollbar_visible?: boolean
+  /** Optional persisted resilience overrides (partial; merged over defaults). */
+  resilience?: Partial<ResilienceConfig>
+}
+
+/**
+ * Merge resilience config from defaults, the config file, and CLI overrides.
+ *
+ * `undefined` values in either override layer are ignored so a partially
+ * specified file or a flagless run inherits the lower layer.
+ */
+export function resolveResilience(
+  fileConfig?: Partial<ResilienceConfig>,
+  cliOverrides?: Partial<ResilienceConfig>,
+): ResilienceConfig {
+  const pickDefined = <T extends object>(obj?: T): Partial<T> => {
+    if (!obj) return {}
+    return Object.fromEntries(
+      Object.entries(obj).filter(([, v]) => v !== undefined),
+    ) as Partial<T>
+  }
+  return {
+    ...DEFAULT_RESILIENCE,
+    ...pickDefined(fileConfig),
+    ...pickDefined(cliOverrides),
+  }
 }
 
 /**

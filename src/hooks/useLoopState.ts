@@ -15,6 +15,7 @@ export interface UseLoopStateReturn {
   isPausing: () => boolean
   isError: () => boolean
   isDebug: () => boolean
+  isCooldown: () => boolean
   canStart: () => boolean
   canPause: () => boolean
   canQuit: () => boolean
@@ -128,6 +129,47 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
       return state
     }
 
+    case "rate_limited": {
+      // Enter cooldown from running (or pausing) — a healthy wait, not an error.
+      if (state.type === "running" || state.type === "pausing") {
+        return {
+          type: "cooldown",
+          iteration: state.iteration,
+          reason: action.reason,
+          resumeAt: action.resumeAt,
+          attempt: action.attempt,
+        }
+      }
+      return state
+    }
+
+    case "resume_cooldown": {
+      // Cooldown elapsed: back to running with an empty session so the next
+      // iteration is re-created and the prompt re-sent (same plan progress).
+      if (state.type === "cooldown") {
+        return {
+          type: "running",
+          iteration: state.iteration,
+          sessionId: "",
+        }
+      }
+      return state
+    }
+
+    case "resume_session": {
+      // Resume a persisted run from the ready state. A non-empty sessionId
+      // re-attaches to a still-working session; an empty one lets the
+      // iteration-driver start a fresh iteration while preserving the count.
+      if (state.type === "ready") {
+        return {
+          type: "running",
+          iteration: action.iteration,
+          sessionId: action.sessionId,
+        }
+      }
+      return state
+    }
+
     case "quit": {
       // Transition to stopping from any active state
       if (
@@ -135,6 +177,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         state.type === "running" ||
         state.type === "paused" ||
         state.type === "pausing" ||
+        state.type === "cooldown" ||
         state.type === "debug"
       ) {
         return { type: "stopping" }
@@ -161,6 +204,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         state.type === "running" ||
         state.type === "pausing" ||
         state.type === "paused" ||
+        state.type === "cooldown" ||
         state.type === "debug"
       ) {
         return {
@@ -243,6 +287,10 @@ export function useLoopState(): UseLoopStateReturn {
     return state().type === "debug"
   })
 
+  const isCooldown = createMemo(() => {
+    return state().type === "cooldown"
+  })
+
   const canPause = createMemo(() => {
     const s = state()
     // Can pause when running
@@ -264,6 +312,8 @@ export function useLoopState(): UseLoopStateReturn {
     if (s.type === "running") return true
     if (s.type === "pausing") return true
     if (s.type === "paused") return true
+    // Can quit while waiting out a rate-limit cooldown
+    if (s.type === "cooldown") return true
     // Can quit from debug state
     if (s.type === "debug") return true
     // Can quit from error state
@@ -281,6 +331,7 @@ export function useLoopState(): UseLoopStateReturn {
     if (s.type === "running") return s.iteration
     if (s.type === "pausing") return s.iteration
     if (s.type === "paused") return s.iteration
+    if (s.type === "cooldown") return s.iteration
     if (s.type === "complete") return s.iterations
     return 0
   })
@@ -294,6 +345,7 @@ export function useLoopState(): UseLoopStateReturn {
     isPausing,
     isError,
     isDebug,
+    isCooldown,
     canStart,
     canPause,
     canQuit,

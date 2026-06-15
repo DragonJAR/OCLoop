@@ -19,6 +19,16 @@ export type LoopState =
   | { type: "running"; iteration: number; sessionId: string }
   | { type: "pausing"; iteration: number; sessionId: string }
   | { type: "paused"; iteration: number }
+  // Waiting out a provider rate limit before retrying the SAME iteration. This
+  // is a healthy waiting state, deliberately distinct from `error`, so the
+  // watchdog stays quiet and the user sees a countdown instead of a failure.
+  | {
+      type: "cooldown"
+      iteration: number
+      reason: string
+      resumeAt: number // monotonic ms when the retry will fire
+      attempt: number // consecutive rate-limit attempt number
+    }
   | { type: "stopping" }
   | { type: "stopped" }
   | { type: "complete"; iterations: number; summary: CompletionSummary }
@@ -40,6 +50,13 @@ export type LoopAction =
   | { type: "plan_complete"; summary: CompletionSummary }
   | { type: "error"; source: ErrorSource; message: string; recoverable: boolean }
   | { type: "retry" }
+  // Enter cooldown after a rate limit; resumeAt is monotonic ms.
+  | { type: "rate_limited"; reason: string; resumeAt: number; attempt: number }
+  // Cooldown elapsed: go back to running and retry the same iteration.
+  | { type: "resume_cooldown" }
+  // Resume after a crash: restore running at a given iteration. An empty
+  // sessionId means "start a fresh iteration", preserving the iteration count.
+  | { type: "resume_session"; iteration: number; sessionId: string }
 
 /**
  * Progress information parsed from PLAN.md
@@ -70,4 +87,10 @@ export interface CLIArgs {
    * If not specified, uses the default agent from OpenCode config.
    */
   agent?: string
+  /**
+   * Resilience overrides parsed from CLI flags (--resume, --no-caffeinate,
+   * --chaos, --resilience key=value). Merged over the config file, which is
+   * merged over DEFAULT_RESILIENCE.
+   */
+  resilience?: Partial<import("./lib/config").ResilienceConfig>
 }

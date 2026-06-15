@@ -2,7 +2,9 @@
  * Graceful shutdown manager for OCLoop
  *
  * Provides centralized signal handling and cleanup coordination
- * for SIGINT (Ctrl+C) and SIGTERM signals.
+ * for SIGINT (Ctrl+C), SIGTERM, and SIGHUP (terminal closed) signals, so the
+ * embedded OpenCode server and active session are always torn down — never
+ * left orphaned — when OCLoop is terminated.
  */
 
 export type ShutdownHandler = () => Promise<void> | void
@@ -13,11 +15,17 @@ export type ShutdownHandler = () => Promise<void> | void
 class ShutdownManager {
   private handler: ShutdownHandler | null = null
   private isShuttingDown = false
+  /** Hard cap on cleanup before we force-exit, so shutdown can never hang. */
+  private forceExitMs = 10000
 
   constructor() {
-    // Register signal handlers
+    // Register signal handlers. SIGHUP fires when the controlling terminal is
+    // closed (window closed, SSH dropped) — handling it prevents an orphaned
+    // OpenCode server in exactly the kind of unattended scenario this harness
+    // is built for.
     process.on("SIGINT", () => this.handleSignal("SIGINT"))
     process.on("SIGTERM", () => this.handleSignal("SIGTERM"))
+    process.on("SIGHUP", () => this.handleSignal("SIGHUP"))
   }
 
   /**
@@ -45,6 +53,17 @@ class ShutdownManager {
     }
     this.isShuttingDown = true
 
+    // Failsafe: if cleanup stalls (e.g. a wedged server.close or a hung abort),
+    // force the process to exit so the user is never stuck on Ctrl+C.
+    const failsafe = setTimeout(() => {
+      console.error(
+        `Shutdown timed out after ${signal}; forcing exit to avoid hanging.`,
+      )
+      process.exit(1)
+    }, this.forceExitMs)
+    // Don't let the failsafe timer itself keep the process alive.
+    failsafe.unref?.()
+
     if (this.handler) {
       try {
         await this.handler()
@@ -52,9 +71,12 @@ class ShutdownManager {
         // Log error but still exit
         console.error(`Error during shutdown (${signal}):`, error)
         process.exit(1)
+      } finally {
+        clearTimeout(failsafe)
       }
     } else {
       // No handler registered, exit immediately
+      clearTimeout(failsafe)
       process.exit(0)
     }
   }

@@ -457,6 +457,145 @@ describe("loopReducer", () => {
     })
   })
 
+  describe("rate_limited / cooldown actions", () => {
+    it("transitions from running to cooldown preserving the iteration", () => {
+      const state: LoopState = {
+        type: "running",
+        iteration: 4,
+        sessionId: "session-x",
+      }
+      const action: LoopAction = {
+        type: "rate_limited",
+        reason: "429 too many requests",
+        resumeAt: 12345,
+        attempt: 2,
+      }
+
+      const result = loopReducer(state, action)
+
+      expect(result.type).toBe("cooldown")
+      if (result.type === "cooldown") {
+        expect(result.iteration).toBe(4)
+        expect(result.reason).toBe("429 too many requests")
+        expect(result.resumeAt).toBe(12345)
+        expect(result.attempt).toBe(2)
+      }
+    })
+
+    it("transitions from pausing to cooldown", () => {
+      const state: LoopState = {
+        type: "pausing",
+        iteration: 1,
+        sessionId: "s",
+      }
+      const result = loopReducer(state, {
+        type: "rate_limited",
+        reason: "overloaded",
+        resumeAt: 999,
+        attempt: 1,
+      })
+      expect(result.type).toBe("cooldown")
+    })
+
+    it("does not enter cooldown from ready/paused", () => {
+      expect(
+        loopReducer({ type: "ready" }, {
+          type: "rate_limited",
+          reason: "x",
+          resumeAt: 1,
+          attempt: 1,
+        }).type,
+      ).toBe("ready")
+      expect(
+        loopReducer({ type: "paused", iteration: 2 }, {
+          type: "rate_limited",
+          reason: "x",
+          resumeAt: 1,
+          attempt: 1,
+        }).type,
+      ).toBe("paused")
+    })
+
+    it("resume_cooldown returns to running with an empty session, same iteration", () => {
+      const state: LoopState = {
+        type: "cooldown",
+        iteration: 7,
+        reason: "rate limit",
+        resumeAt: 555,
+        attempt: 3,
+      }
+      const result = loopReducer(state, { type: "resume_cooldown" })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(7)
+        expect(result.sessionId).toBe("")
+      }
+    })
+
+    it("can quit from cooldown", () => {
+      const state: LoopState = {
+        type: "cooldown",
+        iteration: 1,
+        reason: "r",
+        resumeAt: 1,
+        attempt: 1,
+      }
+      expect(loopReducer(state, { type: "quit" }).type).toBe("stopping")
+    })
+
+    it("can escalate from cooldown to a recoverable error", () => {
+      const state: LoopState = {
+        type: "cooldown",
+        iteration: 1,
+        reason: "r",
+        resumeAt: 1,
+        attempt: 8,
+      }
+      const result = loopReducer(state, {
+        type: "error",
+        source: "api",
+        message: "Rate limit persistente",
+        recoverable: true,
+      })
+      expect(result.type).toBe("error")
+    })
+  })
+
+  describe("resume_session action", () => {
+    it("re-attaches to a working session from ready", () => {
+      const result = loopReducer({ type: "ready" }, {
+        type: "resume_session",
+        iteration: 5,
+        sessionId: "ses_live",
+      })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(5)
+        expect(result.sessionId).toBe("ses_live")
+      }
+    })
+
+    it("with an empty session id, preserves iteration for a fresh start", () => {
+      const result = loopReducer({ type: "ready" }, {
+        type: "resume_session",
+        iteration: 8,
+        sessionId: "",
+      })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(8)
+        expect(result.sessionId).toBe("")
+      }
+    })
+
+    it("is ignored from non-ready states", () => {
+      const state: LoopState = { type: "running", iteration: 1, sessionId: "x" }
+      expect(
+        loopReducer(state, { type: "resume_session", iteration: 9, sessionId: "y" }),
+      ).toEqual(state)
+    })
+  })
+
   describe("state machine flow scenarios", () => {
     it("should handle a complete lifecycle: start → ready → run → pause → resume → complete", () => {
       let state: LoopState = { type: "starting" }

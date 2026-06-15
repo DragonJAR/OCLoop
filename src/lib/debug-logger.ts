@@ -4,7 +4,14 @@ import path from 'node:path';
 const LOG_FILE = '.loop.log';
 const OLD_LOG_FILE = '.loop.log.old';
 
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'HEALTH';
+
+/**
+ * Structured metrics attached to a health-log entry. Kept open-ended so the
+ * watchdog / sleep-detector can record whatever is useful for an audit
+ * (heartbeat age, session status, probe results, attempt counters, ...).
+ */
+export type HealthMetrics = Record<string, unknown>;
 
 class DebugLogger {
   private logFile: string;
@@ -68,6 +75,19 @@ class DebugLogger {
 
   error(context: string, message: string, error?: unknown) {
     this.entry('ERROR', context, message, error);
+  }
+
+  /**
+   * Structured health/watchdog telemetry.
+   *
+   * Emits a single greppable line — `[HEALTH] [component] state {metrics}` — so
+   * that after an incident you can `grep HEALTH .loop.log` to replay exactly why
+   * the guardian suspected, confirmed, recovered, or stood down. `state` is the
+   * transition or condition (e.g. "heartbeat", "suspect", "confirming",
+   * "recovering", "recovered"); `metrics` is structured JSON.
+   */
+  health(component: string, state: string, metrics?: HealthMetrics) {
+    this.entry('HEALTH', component, state, metrics);
   }
 
   private entry(level: LogLevel, context: string, message: string, data?: unknown) {

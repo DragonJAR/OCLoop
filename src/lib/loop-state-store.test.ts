@@ -1,0 +1,70 @@
+import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { mkdtempSync, rmSync, existsSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import {
+  saveLoopState,
+  loadLoopState,
+  clearLoopState,
+  type PersistedLoopState,
+} from "./loop-state-store"
+
+// The store reads/writes relative to process.cwd(); run each test in a temp dir.
+let dir: string
+let prevCwd: string
+
+beforeEach(() => {
+  prevCwd = process.cwd()
+  dir = mkdtempSync(join(tmpdir(), "ocloop-state-"))
+  process.chdir(dir)
+})
+
+afterEach(() => {
+  process.chdir(prevCwd)
+  rmSync(dir, { recursive: true, force: true })
+})
+
+const sample: PersistedLoopState = {
+  version: 1,
+  iteration: 3,
+  sessionId: "ses_abc",
+  stateType: "running",
+  rateLimitAttempts: 1,
+  updatedAt: "2026-01-01T00:00:00.000Z",
+}
+
+describe("loop-state-store", () => {
+  it("returns null when no state file exists", async () => {
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("round-trips a saved state", async () => {
+    await saveLoopState(sample)
+    const loaded = await loadLoopState()
+    expect(loaded).toEqual(sample)
+  })
+
+  it("overwrites previous state atomically (no leftover temp file)", async () => {
+    await saveLoopState(sample)
+    await saveLoopState({ ...sample, iteration: 9 })
+    const loaded = await loadLoopState()
+    expect(loaded?.iteration).toBe(9)
+    expect(existsSync(join(dir, ".loop-state.json.tmp"))).toBe(false)
+  })
+
+  it("clears the state file", async () => {
+    await saveLoopState(sample)
+    await clearLoopState()
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("clearing a non-existent file does not throw", async () => {
+    await clearLoopState()
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("returns null for an unsupported version", async () => {
+    await saveLoopState({ ...sample, version: 99 as unknown as 1 })
+    expect(await loadLoopState()).toBeNull()
+  })
+})

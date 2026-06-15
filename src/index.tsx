@@ -4,6 +4,7 @@ import { render } from "@opentui/solid"
 import { App } from "./App"
 import { DEFAULTS } from "./lib/constants"
 import type { CLIArgs } from "./types"
+import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./lib/config"
 import { log } from "./lib/debug-logger"
 
 // Read version from package.json at build time
@@ -39,6 +40,10 @@ Options:
   --verbose                Enable verbose logging (keyboard events, etc.)
   --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
   --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
+  --resume                 Reconcile a persisted in-flight session on startup
+  --no-caffeinate          Do not keep the system awake while running (macOS)
+  --chaos                  Enable chaos fault-injection (debug only)
+  --resilience <key=value> Override a resilience threshold (repeatable)
   -v, --version            Show version number
   -h, --help               Show help
 
@@ -53,6 +58,41 @@ Examples:
 }
 
 /**
+ * Apply a single `key=value` resilience override onto a partial config.
+ * Validates the key against DEFAULT_RESILIENCE and coerces to the right type.
+ */
+function applyResilienceOverride(
+  target: Partial<ResilienceConfig>,
+  kv: string,
+): void {
+  const eq = kv.indexOf("=")
+  if (eq < 0) {
+    console.error(`Error: --resilience expects key=value, got "${kv}"`)
+    process.exit(1)
+  }
+  const key = kv.slice(0, eq).trim()
+  const raw = kv.slice(eq + 1).trim()
+
+  if (!(key in DEFAULT_RESILIENCE)) {
+    console.error(`Error: unknown resilience key "${key}"`)
+    console.error(`Valid keys: ${Object.keys(DEFAULT_RESILIENCE).join(", ")}`)
+    process.exit(1)
+  }
+
+  const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
+  if (typeof def === "boolean") {
+    ;(target as Record<string, unknown>)[key] = raw === "true" || raw === "1"
+  } else {
+    const num = Number(raw)
+    if (!Number.isFinite(num)) {
+      console.error(`Error: --resilience ${key} expects a number, got "${raw}"`)
+      process.exit(1)
+    }
+    ;(target as Record<string, unknown>)[key] = num
+  }
+}
+
+/**
  * Parse command line arguments
  */
 function parseArgs(argv: string[]): CLIArgs {
@@ -60,6 +100,8 @@ function parseArgs(argv: string[]): CLIArgs {
     promptFile: DEFAULTS.PROMPT_FILE,
     planFile: DEFAULTS.PLAN_FILE,
   }
+
+  const resilience: Partial<ResilienceConfig> = {}
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -137,10 +179,35 @@ function parseArgs(argv: string[]): CLIArgs {
         args.verbose = true
         break
 
+      case "--resume":
+        resilience.resume = true
+        break
+
+      case "--no-caffeinate":
+        resilience.caffeinate = false
+        break
+
+      case "--chaos":
+        resilience.chaos = true
+        break
+
+      case "--resilience":
+        const kv = argv[++i]
+        if (!kv) {
+          console.error("Error: --resilience requires a key=value argument")
+          process.exit(1)
+        }
+        applyResilienceOverride(resilience, kv)
+        break
+
       default:
         // Unknown argument - ignore for now (could warn)
         break
     }
+  }
+
+  if (Object.keys(resilience).length > 0) {
+    args.resilience = resilience
   }
 
   return args
