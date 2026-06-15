@@ -5,7 +5,7 @@
   <i>Round and round we go</i>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.2.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
 </p>
