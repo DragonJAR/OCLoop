@@ -26,19 +26,18 @@ export interface ProgressIndicatorProps {
 export function ProgressIndicator(props: ProgressIndicatorProps) {
   const { theme } = useTheme()
 
-  const percentage = createMemo(() => {
-    if (props.total === 0) return 100
-    return Math.round((props.completed / props.total) * 100)
+  // Clamp the ratio to [0,1] so an over-/under-count never produces a bar
+  // longer than `width` or a negative repeat() (which throws RangeError).
+  const ratio = createMemo(() => {
+    if (props.total === 0) return 1
+    return Math.min(1, Math.max(0, props.completed / props.total))
   })
 
-  const filledWidth = createMemo(() => {
-    if (props.total === 0) return props.width
-    return Math.round((props.completed / props.total) * props.width)
-  })
+  const percentage = createMemo(() => Math.round(ratio() * 100))
 
-  const emptyWidth = createMemo(() => {
-    return props.width - filledWidth()
-  })
+  const filledWidth = createMemo(() => Math.round(ratio() * props.width))
+
+  const emptyWidth = createMemo(() => Math.max(0, props.width - filledWidth()))
 
   const filledChars = createMemo(() => {
     return "█".repeat(filledWidth())

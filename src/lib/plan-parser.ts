@@ -51,8 +51,9 @@ export function parseTaskLine(line: string): ParsedTask {
     return { type: "manual", description }
   }
   
-  // Check for BLOCKED - either in checkbox or as tag after
-  if (/^BLOCKED/i.test(checkboxContent)) {
+  // Check for BLOCKED - either in checkbox or as tag after.
+  // Anchor the keyword so "BLOCKEDABC" is not misread as blocked.
+  if (/^BLOCKED(?=$|[:\s])/i.test(checkboxContent)) {
     const reason = checkboxContent.replace(/^BLOCKED[:\s]*/i, "")
     return { 
       type: "blocked", 

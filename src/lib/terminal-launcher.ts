@@ -119,8 +119,9 @@ export function getAttachCommand(url: string, sessionId: string): string {
  * Replaces {cmd} placeholder with the actual command parts.
  */
 function buildArgs(argsPattern: string[], attachCmd: string): string[] {
-  // Split the attach command into parts for proper shell handling
-  const cmdParts = attachCmd.split(" ")
+  // Split the attach command into parts for proper shell handling.
+  // Drop empty tokens so a stray/extra space never yields a blank argv entry.
+  const cmdParts = attachCmd.split(" ").filter((p) => p.length > 0)
 
   return argsPattern.flatMap((arg) => {
     if (arg === "{cmd}") {

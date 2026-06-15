@@ -13,6 +13,7 @@ import {
   createContext,
   useContext,
   createSignal,
+  Show,
   type JSX,
   type Accessor,
 } from "solid-js"
@@ -174,11 +175,19 @@ export function useDialog(): DialogContextValue {
 export function DialogStack() {
   const { stack } = useDialog()
 
+  // Render ONLY the top dialog. Each dialog registers a global keypress listener
+  // via useKeyboard, and `preventDefault()` does not stop sibling listeners — so
+  // rendering every stacked dialog would make Enter/Escape fire on all of them.
+  // Keeping just the top mounted means exactly one dialog handles input; popping
+  // it re-mounts the one beneath.
+  const top = () => {
+    const s = stack()
+    return s.length > 0 ? s[s.length - 1] : undefined
+  }
+
   return (
-    <>
-      {stack().map((DialogComponent, index) => (
-        <DialogComponent key={index} />
-      ))}
-    </>
+    <Show when={top()} keyed>
+      {(DialogComponent) => <DialogComponent />}
+    </Show>
   )
 }

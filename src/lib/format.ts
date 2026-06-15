@@ -49,14 +49,15 @@ export function stripMarkdown(text: string): string {
   return text
     // Headers
     .replace(/^#{1,6}\s+/gm, "")
+    // Inline code first, so emphasis rules don't touch code contents
+    .replace(/`([^`]+)`/g, "$1")
     // Bold
     .replace(/\*\*([^*]+)\*\*/g, "$1")
-    // Italic (asterisk)
-    .replace(/\*([^*]+)\*/g, "$1")
-    // Italic (underscore)
-    .replace(/_([^_]+)_/g, "$1")
-    // Inline code
-    .replace(/`([^`]+)`/g, "$1")
+    // Italic (asterisk) — only at word boundaries, so "2 * 3 * 4" is left alone
+    .replace(/(^|\s)\*([^*\s][^*]*?)\*(?=\s|$)/g, "$1$2")
+    // Italic (underscore) — boundary-anchored so snake_case identifiers and
+    // filenames like user_id_field are NOT mangled
+    .replace(/(^|\s)_([^_\s][^_]*?)_(?=\s|$)/g, "$1$2")
     // Links
     .replace(/\[([^\]]+)\]\([^)]+\)/g, "$1")
     // List markers

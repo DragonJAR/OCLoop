@@ -2,6 +2,8 @@ import {
   createContext,
   useContext,
   createSignal,
+  onCleanup,
+  Show,
   type JSX,
   type Accessor,
 } from "solid-js"
@@ -53,6 +55,11 @@ export function ToastProvider(props: ToastProviderProps) {
     })
   }
 
+  // Avoid firing a timer on a disposed signal if the provider unmounts.
+  onCleanup(() => {
+    if (timeoutId) clearTimeout(timeoutId)
+  })
+
   const value: ToastContextValue = {
     show,
     error,
@@ -79,13 +86,6 @@ export function Toast() {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
 
-  // Use a derived signal for safe access
-  const toast = () => currentToast()
-  
-  // Only render if there is a toast
-  // Note: standard SolidJS control flow in JSX
-  if (!toast()) return null
-
   const getBorderColor = (variant: ToastVariant) => {
     switch (variant) {
       case "info": return theme().info
@@ -98,28 +98,34 @@ export function Toast() {
 
   const maxWidth = () => Math.min(50, dimensions().width - 6)
 
+  // Render reactively via <Show> so the toast appears, updates, and auto-hides.
+  // (An early `return null` in the body would run once at mount and never react.)
   return (
-    <box
-      style={{
-        position: "absolute",
-        top: 2,
-        right: 2,
-        width: maxWidth(),
-        borderStyle: "single",
-        borderColor: getBorderColor(toast()!.variant),
-        backgroundColor: theme().backgroundPanel,
-        padding: 1,
-        flexDirection: "column",
-      }}
-    >
-      {toast()!.title && (
-        <text>
-           <span style={{ bold: true, fg: getBorderColor(toast()!.variant) }}>
-            {toast()!.title}
-          </span>
-        </text>
+    <Show when={currentToast()} keyed>
+      {(toast) => (
+        <box
+          style={{
+            position: "absolute",
+            top: 2,
+            right: 2,
+            width: maxWidth(),
+            borderStyle: "single",
+            borderColor: getBorderColor(toast.variant),
+            backgroundColor: theme().backgroundPanel,
+            padding: 1,
+            flexDirection: "column",
+          }}
+        >
+          {toast.title && (
+            <text>
+              <span style={{ bold: true, fg: getBorderColor(toast.variant) }}>
+                {toast.title}
+              </span>
+            </text>
+          )}
+          <text>{toast.message}</text>
+        </box>
       )}
-      <text>{toast()!.message}</text>
-    </box>
+    </Show>
   )
 }

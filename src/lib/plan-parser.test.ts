@@ -34,6 +34,14 @@ describe("parseTaskLine", () => {
     })
   })
 
+  it("should not misclassify words starting with BLOCKED as blocked", () => {
+    // The keyword must be anchored: "BLOCKEDABC" is not a blocked marker.
+    expect(parseTaskLine("- [BLOCKEDABC] Task")).toEqual({
+      type: "not-a-task",
+      description: "",
+    })
+  })
+
   it("should parse BLOCKED tasks as tag after checkbox", () => {
     expect(parseTaskLine("- [ ] [BLOCKED: reason] Task")).toEqual({ 
       type: "blocked", 

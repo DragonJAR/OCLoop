@@ -66,10 +66,11 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
       stderr: "pipe",
     });
 
-    // Write text to stdin
+    // Write text to stdin, awaiting the flush + close so the child receives
+    // the full payload before we wait on its exit (avoids truncation/hangs).
     if (proc.stdin) {
-      proc.stdin.write(text);
-      proc.stdin.end();
+      await proc.stdin.write(text);
+      await proc.stdin.end();
     }
 
     const exitCode = await proc.exited;

@@ -48,4 +48,16 @@ describe("format utilities", () => {
     expect(stripMarkdown("1. Numbered item")).toBe("Numbered item");
     expect(stripMarkdown("Mixed **bold** and `code`")).toBe("Mixed bold and code");
   });
+
+  test("stripMarkdown preserves snake_case identifiers and code contents", () => {
+    // Underscores inside identifiers must NOT be treated as italic markers.
+    expect(stripMarkdown("Update user_id_field here")).toBe("Update user_id_field here");
+    expect(stripMarkdown("rename src/lib/with_timeout.ts")).toBe("rename src/lib/with_timeout.ts");
+    // Code spans are stripped of backticks but their contents are untouched.
+    expect(stripMarkdown("Fix `user_id_field` now")).toBe("Fix user_id_field now");
+    // Arithmetic with asterisks isn't emphasis.
+    expect(stripMarkdown("compute 2 * 3 * 4")).toBe("compute 2 * 3 * 4");
+    // Real emphasis still strips.
+    expect(stripMarkdown("a _word_ here")).toBe("a word here");
+  });
 });
