@@ -1,5 +1,37 @@
+# Dependencies
 node_modules/
+
+# Build output
 dist/
+
+# OCLoop runtime artifacts (logs, state, prompts)
 .loop*
+
+# OpenCode server runtime state & local project config
+# NOTE: /opencode.json is anchored to the repo root so it does NOT match the
+# bundled theme src/lib/themes/opencode.json
 .opencode
+/opencode.json
+
+# Spec / AI tooling state (local)
 .ai/
+.atl/
+.openspec/
+
+# Bun
+bunfig.toml.lock
+
+# Environment
+.env
+.env.*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
