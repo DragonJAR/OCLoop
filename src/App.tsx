@@ -63,7 +63,7 @@ import {
   type KnownTerminal 
 } from "./lib/terminal-launcher"
 import { copyToClipboard } from "./lib/clipboard"
-import { ThemeProvider } from "./context/ThemeContext"
+import { ThemeProvider, useTheme } from "./context/ThemeContext"
 import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
 import { CommandProvider, useCommand, type CommandOption } from "./context/CommandContext"
 import { ToastProvider, Toast, useToast } from "./context/ToastContext"
@@ -125,6 +125,7 @@ export function App(props: AppProps) {
  */
 function AppContent(props: AppProps) {
   const renderer = useRenderer()
+  const { theme } = useTheme()
   const dialog = useDialog()
   const toast = useToast()
   const command = useCommand()
@@ -1726,7 +1727,7 @@ function AppContent(props: AppProps) {
   })
 
   return (
-    <box style={{ flexDirection: "column", flexGrow: 1 }}>
+    <box style={{ flexDirection: "column", flexGrow: 1, backgroundColor: theme().background }}>
       {/* Dashboard at the top */}
       <Dashboard
         isActive={true}
