@@ -1,59 +1,38 @@
----
-description: Execute loop
----
-
-Execute the next task from {{PLAN_FILE}}.
+You run EXACTLY ONE iteration of this loop, then stop. Do ONE task (or one coupled batch within a single phase), then end your turn. Do NOT continue to the next task in this session - OCLoop re-invokes you in a fresh session for the next task. The only exception is the Completion check, where you exit the whole run.
 
 Before starting:
-1. Check `git status` for uncommitted changes - a previous iteration may have been interrupted
-   - If changes exist, assess whether they complete a task (commit and mark done) or need to be continued
-2. Read {{PLAN_FILE}} fully
-3. Before web searching or consulting reference repos, check if AGENTS.md ## Research has relevant @ references and load them with Read tool
+1. Run `git status`. A previous iteration may have been interrupted.
+   - If uncommitted changes complete a task: verify they pass checks, commit them, and mark the task done.
+   - If they are partial: continue that task instead of starting a new one.
+2. Read {{PLAN_FILE}} fully. Choose the task ONLY from {{PLAN_FILE}} - do not scan the codebase for `[ ]` (tests, examples, and docs contain false positives).
+3. Before any web search or consulting reference repos, check AGENTS.md `## Research` for relevant `@` references and read them.
 
 Task selection (CRITICAL):
-- Work through phases IN ORDER - complete Phase N before starting Phase N+1
-- Pick the FIRST uncompleted task in the earliest incomplete phase
-- Skip [MANUAL] and [BLOCKED] items
-- NEVER batch tasks across different phases - each phase is a commit boundary
-- Within a SINGLE phase, you may batch tasks ONLY if they are in the same file AND logically coupled
+- If no uncompleted, non-[MANUAL], non-[BLOCKED] tasks remain, go straight to the Completion check. Do not invent work.
+- Work through phases IN ORDER - finish Phase N before starting Phase N+1.
+- Pick the FIRST uncompleted task in the earliest incomplete phase.
+- Skip [MANUAL] and [BLOCKED] items.
+- NEVER batch across phases - each phase is a commit boundary.
+- Within a SINGLE phase, batch tasks ONLY if they are in the same file AND logically coupled.
 
 Execute:
-1. Make the code changes
-2. Glob for test files (*test*, *spec*, *.test.*). If relevant tests exist, run them.
-3. Commit with a descriptive message. NEVER push.
+1. Make the code changes for that one task or coupled batch.
+2. Run the project's checks using the exact commands in AGENTS.md `## Project Operations` (e.g. `bun test`). If none are defined and no test files exist, skip this step.
+3. Commit ONLY if the checks pass (or there are none).
+   - If a check fails and you can fix it this iteration, fix it and re-run.
+   - If you cannot fix it this iteration, revert your changes for this task (`git checkout -- .` and delete any new files you added), mark the task `[BLOCKED: <reason>]`, and go to "After completion".
+   - Never commit failing code. Never use `--no-verify` or bypass hooks.
+4. Commit with a descriptive message, following the commit rules in AGENTS.md (one logical change; never `git add .`; respect `.gitignore`). NEVER push.
 
 After completion:
-1. Update {{PLAN_FILE}} marking completed items with [x]
-
-2. If you discovered external knowledge (API behavior, library quirks, external repo details):
-   - Create docs/ directory if missing
-   - Create or update docs/<topic>.md with your findings
-   - Update AGENTS.md ## Research section (create file/section if missing), e.g:
-     ```markdown
-     ## Research
-     
-     Check these before web searching (load with Read tool as needed):
-     - @docs/browser-commands-api.md - Firefox/Chrome commands API behavior
-     - @docs/pcm-audio-streaming.md - Web Audio API streaming patterns
-     ```
-
-3. If you learned something about THIS PROJECT through trial/error:
-   - Update AGENTS.md ## Project Operations section (create file/section if missing), e.g:
-     ```markdown
-     ## Project Operations
-     
-     - Package manager: `bun` (not npm)
-     - Build: `bun run build`
-     - Tests: `bun test` from repo root
-     - Lint must pass before commit: `bun run lint`
-     ```
-
-4. If you cannot complete a task (permissions, external service, needs human input):
-   - Add [BLOCKED: reason] to that task line in {{PLAN_FILE}}
-   - Continue with other tasks
+1. In {{PLAN_FILE}}, mark completed items `[x]`.
+2. If you discovered EXTERNAL knowledge (API behavior, library quirks, external repo details), write the detail to `docs/<topic>.md` (create `docs/` if missing) and add a one-line `@docs/...` reference under AGENTS.md `## Research` (matching the format already there). Keep AGENTS.md lean - it loads every session; detail stays in `docs/`.
+3. If you learned something about THIS PROJECT by trial and error (build/test commands, gotchas), record it concisely under AGENTS.md `## Project Operations`.
+4. If you could not complete a task (permissions, external service, needs human input), add `[BLOCKED: <reason>]` to its line in {{PLAN_FILE}} and do not retry it this iteration.
 
 Completion check:
-- If all non-[MANUAL] tasks are either [x] or [BLOCKED]:
-  - Append `<plan-complete>SUMMARY_OF_WORK_DONE_AND_REMAINING_MANUAL_TASKS</plan-complete>` to the end of {{PLAN_FILE}}
-  - Exit the session
-- Do NOT skip automatable tasks - if a task seems hard but doable, attempt it
+- If every non-[MANUAL] task in {{PLAN_FILE}} is `[x]` or `[BLOCKED]`, append to the end of {{PLAN_FILE}}:
+  `<plan-complete>SUMMARY_OF_WORK_DONE_AND_REMAINING_MANUAL_TASKS</plan-complete>`
+  then exit the session.
+- Otherwise, end your turn now - OCLoop starts the next task in a fresh session.
+- Do NOT skip automatable tasks: if a task looks hard but doable, attempt it.
