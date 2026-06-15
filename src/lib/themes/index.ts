@@ -93,10 +93,3 @@ export const themes: Record<string, ThemeDefinition> = {
  * #0A0A0A with blanco-roto text) — used unless overridden in ocloop.json.
  */
 export const DEFAULT_THEME = "dragonjar";
-
-/**
- * Get a theme by name, falling back to the default theme if not found
- */
-export function getTheme(name: string): ThemeDefinition {
-  return themes[name] ?? themes[DEFAULT_THEME];
-}

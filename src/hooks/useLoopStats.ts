@@ -19,7 +19,6 @@ export interface UseLoopStatsReturn {
   pause: () => void;
   resume: () => void;
   endIteration: () => number; // Returns active duration in ms
-  getHistory: () => number[];
 
   // Computed values (reactive)
   elapsedTime: () => number; // Current iteration elapsed time in ms
@@ -166,12 +165,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     return activeTime;
   }
 
-  /**
-   * Get the current history array
-   */
-  function getHistory(): number[] {
-    return state().history;
-  }
 
   /**
    * Current iteration elapsed time (active time only, excluding pauses)
@@ -239,7 +232,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     pause,
     resume,
     endIteration,
-    getHistory,
     elapsedTime,
     averageTime,
     totalActiveTime,

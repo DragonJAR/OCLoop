@@ -13,7 +13,7 @@ import {
 
 import { useServer } from "./hooks/useServer"
 import { useSSE, classifySessionError, type FileDiff } from "./hooks/useSSE"
-import { useLoopState } from "./hooks/useLoopState"
+import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -166,6 +166,8 @@ function AppContent(props: AppProps) {
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
   // Monotonic timestamp of the last iteration kickoff, for minIterationGap.
   let lastIterationStartAt = 0
+  // Guards startIteration against re-entry while createSession is in flight.
+  let startingIteration = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
 
@@ -245,9 +247,7 @@ function AppContent(props: AppProps) {
       reconcile: () =>
         chaos.reconcile(async () => {
           const url = server.url()
-          const s = loop.state()
-          const sid =
-            s.type === "running" || s.type === "pausing" ? s.sessionId : ""
+          const sid = getActiveSessionId(loop.state())
           if (!url || !sid) return "unknown"
           return reconcileSession(createClient(url), sid)
         }),
@@ -265,9 +265,7 @@ function AppContent(props: AppProps) {
       abortAndRetry: async () => {
         activityLog.addEvent("task", t("actGuardAbort"))
         const url = server.url()
-        const s = loop.state()
-        const sid =
-          s.type === "running" || s.type === "pausing" ? s.sessionId : ""
+        const sid = getActiveSessionId(loop.state())
         if (url && sid) {
           try {
             await abortSession(createClient(url), sid)
@@ -483,7 +481,15 @@ function AppContent(props: AppProps) {
       },
       onStepFinish: (part) => {
         heartbeat()
-        sessionStats.addTokens(part.tokens)
+        // Map the nested cache shape to the flat SessionTokens fields — passing
+        // part.tokens directly left cacheRead/cacheWrite undefined (always 0).
+        sessionStats.addTokens({
+          input: part.tokens.input,
+          output: part.tokens.output,
+          reasoning: part.tokens.reasoning,
+          cacheRead: part.tokens.cache.read,
+          cacheWrite: part.tokens.cache.write,
+        })
       },
       onSessionDiff: (diffs: FileDiff[]) => {
         // Filter out .loop.log files
@@ -580,11 +586,7 @@ function AppContent(props: AppProps) {
    */
   async function reconcileAndAdvance(): Promise<ReconcileResult> {
     const url = server.url()
-    const state = loop.state()
-    const sid =
-      state.type === "running" || state.type === "pausing"
-        ? state.sessionId
-        : ""
+    const sid = getActiveSessionId(loop.state())
     if (!url || !sid) return "unknown"
 
     const client = createClient(url)
@@ -705,26 +707,32 @@ function AppContent(props: AppProps) {
    * Create a new session and start an iteration
    */
   async function startIteration(): Promise<void> {
+    // In-flight guard: the iteration driver re-runs whenever state becomes
+    // running(""), and createSession is async. Without this, a second trigger
+    // arriving mid-flight would create a second session and orphan the first
+    // (it keeps running on the server, burning tokens, never aborted).
+    if (startingIteration) return
     const url = server.url()
     if (!url) {
       console.error("Cannot start iteration: server not ready")
       return
     }
-
-    // Check for plan completion first
-    if (await checkPlanComplete()) {
-      const planPath = props.planFile || DEFAULTS.PLAN_FILE
-      // We know it's complete, but getPlanCompleteSummary returns string | null
-      const summaryContent = await getPlanCompleteSummary(planPath)
-      
-      loop.dispatch({ 
-        type: "plan_complete", 
-        summary: { summary: summaryContent || "Plan marked as complete." } 
-      })
-      return
-    }
+    startingIteration = true
 
     try {
+      // Check for plan completion first
+      if (await checkPlanComplete()) {
+        const planPath = props.planFile || DEFAULTS.PLAN_FILE
+        // We know it's complete, but getPlanCompleteSummary returns string | null
+        const summaryContent = await getPlanCompleteSummary(planPath)
+
+        loop.dispatch({
+          type: "plan_complete",
+          summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
+        })
+        return
+      }
+
       // Enforce a minimum spacing between iterations so very short iterations
       // don't hammer the provider. Uses the monotonic clock; default 0 = off.
       const gap = resilience().minIterationGapMs
@@ -774,6 +782,8 @@ function AppContent(props: AppProps) {
     } catch (err) {
       // Rate limits → cooldown + retry; anything else → recoverable error.
       handleIterationError(err)
+    } finally {
+      startingIteration = false
     }
   }
 
@@ -859,7 +869,7 @@ function AppContent(props: AppProps) {
       })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
-      toast.show({ variant: "error", message: `Failed to send prompt: ${errorMessage}` })
+      toast.show({ variant: "error", message: t("toastSendPromptFailed", { message: errorMessage }) })
     }
   }
 
@@ -1112,7 +1122,7 @@ function AppContent(props: AppProps) {
       loop.dispatch({
         type: "error",
         source: "server",
-        message: server.error()?.message || "Failed to start server",
+        message: server.error()?.message || t("errServerStart"),
         recoverable: true,
       })
     }
@@ -1184,8 +1194,7 @@ function AppContent(props: AppProps) {
       s.type === "paused" ||
       s.type === "cooldown"
     ) {
-      const sid =
-        s.type === "running" || s.type === "pausing" ? s.sessionId : null
+      const sid = getActiveSessionId(s) || null
       const snapshot: PersistedLoopState = {
         version: 1,
         iteration: loop.iteration(),
@@ -1281,7 +1290,7 @@ function AppContent(props: AppProps) {
      if (!result.success) {
         showTerminalError(
            terminalConfig.type === 'known' ? terminalConfig.name : 'Custom',
-           result.error || "Unknown error"
+           result.error || t("errUnknown")
         )
      }
   }
@@ -1710,22 +1719,8 @@ function AppContent(props: AppProps) {
       return
     }
 
-    // Error state - handle R for retry and Q for quit
-    if (loop.isError()) {
-      if (key.name === "r") {
-        if (loop.canRetry()) {
-          loop.dispatch({ type: "retry" })
-        }
-        key.preventDefault()
-        return
-      }
-      if (key.name === "q") {
-        handleQuit(1)
-      }
-      // consume other input in error state
-      key.preventDefault()
-      return
-    }
+    // Error state R/Q is handled inside DialogError (it owns the keyboard while
+    // open; this global handler already returned early via hasDialogs()).
 
     // Let opentui handle other input (scrolling, etc.)
   })

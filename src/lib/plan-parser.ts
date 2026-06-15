@@ -127,7 +127,10 @@ export function parsePlan(content: string): PlanProgress {
 
   const pending = total - completed - manual - blocked
   const automatable = pending
-  const denominator = total - manual
+  // Blocked tasks are terminal (the loop treats [x] OR [BLOCKED] as done), so
+  // they must leave the denominator — otherwise a fully-resolved plan with
+  // blocked items never reaches 100%.
+  const denominator = total - manual - blocked
   const percentComplete = denominator > 0 ? Math.round((completed / denominator) * 100) : 100
 
   return {
@@ -156,9 +159,12 @@ export function parsePlanComplete(content: string): string | null {
   // m                : Multiline flag to allow ^ to match start of lines
   // g                : Global flag for matchAll
   // 
-  // We look for tags that start a line to avoid matching documentation examples inside backticks
-  const matches = [...content.matchAll(/^<plan-complete>([\s\S]*?)<\/plan-complete>/gm)]
-  
+  // Strip fenced code blocks first: a ```fence``` documenting the mechanism can
+  // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
+  // premature completion. Real completion tags live at the document's top level.
+  const withoutFences = content.replace(/```[\s\S]*?```/g, "")
+  const matches = [...withoutFences.matchAll(/^<plan-complete>([\s\S]*?)<\/plan-complete>/gm)]
+
   if (matches.length === 0) return null
   
   // Return the last match found

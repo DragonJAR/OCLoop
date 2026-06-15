@@ -106,7 +106,9 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     const actualPort = parseInt(parsedUrl.port, 10)
 
     setUrl(serverRef.url)
-    setServerPort(actualPort)
+    // Keep null (not NaN) when the URL has no explicit port, so restart()'s
+    // `serverPort() ?? port ?? 0` fallback works (?? doesn't catch NaN).
+    setServerPort(Number.isFinite(actualPort) ? actualPort : null)
     setStatus("ready")
     setLastHealthyAt(monotonicNow())
   }

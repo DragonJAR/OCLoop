@@ -516,8 +516,14 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     setStatus("connecting")
     setError(undefined)
 
-    abortController = new AbortController()
-    
+    // Per-invocation controller. `reconnect()`/`disconnect()` replace
+    // `abortController`; an old connect() detects it's been superseded by
+    // comparing its own controller against the current one and bails WITHOUT
+    // mutating shared status — otherwise a stale loop's "disconnected" could
+    // clobber a fresh connection (the post-restart reconnect wedge).
+    const myController = new AbortController()
+    abortController = myController
+
     log.info("sse", "Connecting", { url: currentUrl, directory })
 
     try {
@@ -530,8 +536,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       // Subscribe to events
       const events = await client.event.subscribe(
         { directory },
-        { signal: abortController.signal },
+        { signal: myController.signal },
       )
+
+      // Superseded while awaiting the subscription? Leave status to the winner.
+      if (abortController !== myController) return
 
       // Check if subscription was successful
       if (!events.stream) {
@@ -545,8 +554,12 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
       // Process events from the stream
       for await (const event of events.stream) {
+        if (abortController !== myController) return
         processEvent(event)
       }
+
+      // Superseded after the stream ended? The newer connect() owns status.
+      if (abortController !== myController) return
 
       // Stream ended normally (server closed it or it was exhausted). Treat as a
       // disconnect and reconnect — never fall silent.
@@ -558,9 +571,12 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         scheduleReconnect()
       }
     } catch (err) {
-      // Handle abort (not an error)
-      if (err instanceof Error && err.name === "AbortError") {
-        setStatus("disconnected")
+      // Superseded by a newer connect()/disconnect(), or our own controller was
+      // aborted: stay silent so we don't fight the current connection.
+      if (
+        abortController !== myController ||
+        (err instanceof Error && err.name === "AbortError")
+      ) {
         return
       }
 
@@ -641,6 +657,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       clearTimeout(reconnectTimeout)
       reconnectTimeout = null
     }
+
+    // Reset status so connect()'s "already connecting/connected" guard passes —
+    // otherwise reconnecting after a server restart silently no-ops and SSE
+    // stays bound to the dead URL.
+    setStatus("disconnected")
 
     // Start fresh connection
     connect()

@@ -1,9 +1,11 @@
 import { createMemo, Show } from "solid-js"
+import { useTerminalDimensions } from "@opentui/solid"
 import type { LoopState, PlanProgress } from "../types"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { formatDuration } from "../hooks/useLoopStats"
 import { stripMarkdown } from "../lib/format"
+import { truncate } from "../lib/locale"
 import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
 import { ProgressIndicator } from "./ProgressIndicator"
@@ -81,6 +83,7 @@ function getStateBadge(state: LoopState): { icon: string; text: string; colorKey
  */
 export function Dashboard(props: DashboardProps) {
   const { theme } = useTheme()
+  const dimensions = useTerminalDimensions()
 
   // State badge info
   const badge = createMemo(() => getStateBadge(props.state))
@@ -243,9 +246,11 @@ export function Dashboard(props: DashboardProps) {
     const task = props.currentTask
     if (!task) return null
     const cleanedTask = stripMarkdown(task)
-    const maxLen = 60 // Reasonable default, could be dynamic
-    if (cleanedTask.length <= maxLen) return cleanedTask
-    return cleanedTask.substring(0, maxLen - 3) + "..."
+    // Fit to the real terminal width: total minus the border (2), padding (2),
+    // and the "Task: " prefix. Re-runs on resize via dimensions(). Floored so a
+    // very narrow terminal still shows something.
+    const maxLen = Math.max(20, dimensions().width - t("lblTaskPrefix").length - 4)
+    return truncate(cleanedTask, maxLen)
   })
 
   // Border color based on active state

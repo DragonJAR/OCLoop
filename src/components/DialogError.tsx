@@ -1,4 +1,5 @@
 import { Show } from "solid-js"
+import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
 import { useTheme } from "../context/ThemeContext"
 import { t } from "../lib/i18n"
@@ -13,6 +14,19 @@ export interface DialogErrorProps {
 
 export function DialogError(props: DialogErrorProps) {
   const { theme } = useTheme()
+
+  // Own the keyboard while open. The global handler in App ignores input when a
+  // dialog is shown, so retry/quit MUST be handled here (R only when recoverable).
+  useKeyboard((key) => {
+    if (key.name === "escape" || key.name === "q") {
+      props.onQuit()
+      return
+    }
+    if (props.recoverable && key.name === "r") {
+      props.onRetry?.()
+      return
+    }
+  })
 
   // Calculate dialog height based on content
   const dialogHeight = () => {

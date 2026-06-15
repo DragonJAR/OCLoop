@@ -24,6 +24,20 @@ export interface UseLoopStateReturn {
 }
 
 /**
+ * The session id of the in-flight iteration, or "" when there is none.
+ *
+ * Only `running` and `pausing` carry a live iteration session; every other
+ * state (cooldown, paused, debug, …) has no session to act on. Single source of
+ * truth for the "is there an active session, and what is it" check the
+ * watchdog, reconcile, and persistence paths all need.
+ */
+export function getActiveSessionId(state: LoopState): string {
+  return state.type === "running" || state.type === "pausing"
+    ? state.sessionId
+    : ""
+}
+
+/**
  * Reducer function that handles state transitions.
  * Implements the state machine defined in PLAN.md.
  */
@@ -114,6 +128,10 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     case "session_idle": {
       // Handle session completion
       if (state.type === "running") {
+        // Already between iterations: return the SAME state so a redundant idle
+        // (e.g. watchdog reconcile + wake both synthesizing idle) doesn't emit a
+        // new object and re-fire the iteration driver into a second session.
+        if (state.sessionId === "") return state
         // Stay in running with empty sessionId, ready for next iteration
         return {
           type: "running",

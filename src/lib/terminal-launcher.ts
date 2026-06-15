@@ -57,13 +57,6 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
 ]
 
 /**
- * Get the full list of known terminals
- */
-export function getKnownTerminals(): KnownTerminal[] {
-  return KNOWN_TERMINALS
-}
-
-/**
  * Lookup a known terminal by name
  */
 export function getKnownTerminalByName(name: string): KnownTerminal | undefined {

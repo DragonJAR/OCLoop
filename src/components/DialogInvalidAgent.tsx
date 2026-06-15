@@ -1,7 +1,8 @@
 import { createSignal } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
-import { useTheme, selectedForeground } from "../context/ThemeContext"
+import { useTheme } from "../context/ThemeContext"
+import { DialogHeader, DialogButton } from "../ui/DialogControls"
 import { t } from "../lib/i18n"
 
 export interface DialogInvalidAgentProps {
@@ -44,15 +45,7 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
       width={60} 
       height={14}
     >
-      {/* Header */}
-      <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
-        <text>
-          <span style={{ bold: true, fg: theme().text }}>{t("dlgInvalidAgent")}</span>
-        </text>
-        <text>
-          <span style={{ fg: theme().textMuted }}>{t("dlgEscToQuit")}</span>
-        </text>
-      </box>
+      <DialogHeader title={t("dlgInvalidAgent")} hint={t("dlgEscToQuit")} />
 
       {/* Message */}
       <box style={{ flexGrow: 1, marginBottom: 1, flexDirection: "column" }}>
@@ -74,47 +67,22 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
 
       {/* Buttons */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "flex-end", gap: 2 }}>
-        {/* Quit Button */}
-        <box
-          style={{
-            paddingLeft: 1,
-            paddingRight: 1,
-            backgroundColor: activeButton() === "quit" ? theme().primary : undefined,
-          }}
-          onMouseUp={() => {
+        <DialogButton
+          label={t("dlgQuitConfirm")}
+          active={activeButton() === "quit"}
+          onPress={() => {
             setActiveButton("quit")
             props.onQuit()
           }}
-        >
-          <text>
-            <span style={{ 
-              fg: activeButton() === "quit" ? selectedForeground(theme()) : theme().textMuted
-            }}>
-              {t("dlgQuitConfirm")}
-            </span>
-          </text>
-        </box>
-
-        {/* Use Default Button */}
-        <box
-          style={{
-            paddingLeft: 1,
-            paddingRight: 1,
-            backgroundColor: activeButton() === "default" ? theme().primary : undefined,
-          }}
-          onMouseUp={() => {
+        />
+        <DialogButton
+          label={`${t("dlgUseDefault")}${props.defaultAgent ? ` (${props.defaultAgent})` : ""}`}
+          active={activeButton() === "default"}
+          onPress={() => {
             setActiveButton("default")
             props.onUseDefault()
           }}
-        >
-          <text>
-            <span style={{ 
-              fg: activeButton() === "default" ? selectedForeground(theme()) : theme().textMuted
-            }}>
-              {t("dlgUseDefault")}{props.defaultAgent ? ` (${props.defaultAgent})` : ""}
-            </span>
-          </text>
-        </box>
+        />
       </box>
     </Dialog>
   )

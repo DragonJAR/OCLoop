@@ -74,6 +74,9 @@ class ShutdownManager {
       } finally {
         clearTimeout(failsafe)
       }
+      // Handler finished without exiting (e.g. programmatic shutdown): make sure
+      // we terminate rather than hang now that the failsafe is cleared.
+      process.exit(0)
     } else {
       // No handler registered, exit immediately
       clearTimeout(failsafe)

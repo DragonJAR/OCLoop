@@ -17,10 +17,21 @@ import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./config"
 export type { OpencodeClient, SessionStatus }
 
 /**
- * Create an OpenCode SDK client
+ * Create (or reuse) an OpenCode SDK client for a URL.
+ *
+ * Memoized per URL: the client is a thin stateless wrapper, and App.tsx asks for
+ * one on nearly every action — caching avoids rebuilding it ~10×. A server
+ * restart that reuses the same URL reuses the same client (correct); a restart
+ * on a fresh ephemeral port just gets a new entry.
  */
+const clientCache = new Map<string, OpencodeClient>()
 export function createClient(url: string): OpencodeClient {
-  return createOpencodeClient({ baseUrl: url })
+  let client = clientCache.get(url)
+  if (!client) {
+    client = createOpencodeClient({ baseUrl: url })
+    clientCache.set(url, client)
+  }
+  return client
 }
 
 /**

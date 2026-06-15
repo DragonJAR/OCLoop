@@ -198,8 +198,8 @@ describe("parsePlan", () => {
     expect(result.manual).toBe(2)
     expect(result.blocked).toBe(1)
     expect(result.automatable).toBe(2)
-    // percentComplete = completed / (total - manual) = 2 / 5 = 40%
-    expect(result.percentComplete).toBe(40)
+    // percentComplete = completed / (total - manual - blocked) = 2 / 4 = 50%
+    expect(result.percentComplete).toBe(50)
   })
 
   it("should handle indented checkboxes", () => {
@@ -278,6 +278,28 @@ End
   it("should handle tag at end of file", () => {
     const content = "Tasks...\n<plan-complete>Done</plan-complete>"
     expect(parsePlanComplete(content)).toBe("Done")
+  })
+
+  it("should ignore a tag documented inside a fenced code block", () => {
+    const content = [
+      "## How it works",
+      "When the plan is done, write:",
+      "```",
+      "<plan-complete>example summary</plan-complete>",
+      "```",
+      "- [ ] Real task still pending",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  it("should still find a real tag alongside a documented one", () => {
+    const content = [
+      "```",
+      "<plan-complete>doc example</plan-complete>",
+      "```",
+      "<plan-complete>actually done</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBe("actually done")
   })
 })
 

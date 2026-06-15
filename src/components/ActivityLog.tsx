@@ -1,4 +1,5 @@
 import { For, createMemo, Show } from "solid-js";
+import { useTerminalDimensions } from "@opentui/solid";
 import { useTheme } from "../context/ThemeContext";
 import type { ActivityEvent, ActivityEventType } from "../hooks/useActivityLog";
 import type { SessionTokens, SessionDiff } from "../hooks/useSessionStats";
@@ -86,6 +87,10 @@ function formatTime(date: Date): string {
  */
 export function ActivityLog(props: ActivityLogProps) {
   const { theme } = useTheme();
+  const dimensions = useTerminalDimensions();
+  // Width left for the message after the "HH:MM:SS  [label] " prefix (~20) and
+  // the panel border/padding. Re-runs on resize; floored for narrow terminals.
+  const contentWidth = () => Math.max(20, dimensions().width - 24);
 
   // Get color for event label
   const getLabelColor = (type: ActivityEventType): string => {
@@ -209,7 +214,7 @@ export function ActivityLog(props: ActivityLogProps) {
                       }}
                     >
                       {" "}
-                      {truncateText(content, 40)}
+                      {truncateText(content, contentWidth())}
                     </span>
                   </text>
                 </box>

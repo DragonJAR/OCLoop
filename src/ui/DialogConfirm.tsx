@@ -1,7 +1,8 @@
 import { createSignal } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
-import { useTheme, selectedForeground } from "../context/ThemeContext"
+import { useTheme } from "../context/ThemeContext"
+import { DialogHeader, DialogButton } from "./DialogControls"
 import { DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
 
@@ -46,15 +47,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
       width={50} 
       height={10}
     >
-      {/* Header */}
-      <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
-        <text>
-          <span style={{ bold: true, fg: theme().text }}>{props.title}</span>
-        </text>
-        <text>
-          <span style={{ fg: theme().textMuted }}>esc</span>
-        </text>
-      </box>
+      <DialogHeader title={props.title} />
 
       {/* Message */}
       <box style={{ flexGrow: 1, marginBottom: 1 }}>
@@ -65,47 +58,22 @@ export function DialogConfirm(props: DialogConfirmProps) {
 
       {/* Buttons */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "flex-end", gap: 2 }}>
-        {/* Cancel Button */}
-        <box
-          style={{
-            paddingLeft: 1,
-            paddingRight: 1,
-            backgroundColor: activeButton() === "cancel" ? theme().primary : undefined,
-          }}
-          onMouseUp={() => {
+        <DialogButton
+          label={props.cancelLabel || t("dlgCancel")}
+          active={activeButton() === "cancel"}
+          onPress={() => {
             setActiveButton("cancel")
             if (props.onCancel) props.onCancel()
           }}
-        >
-          <text>
-            <span style={{ 
-              fg: activeButton() === "cancel" ? selectedForeground(theme()) : theme().textMuted 
-            }}>
-              {props.cancelLabel || t("dlgCancel")}
-            </span>
-          </text>
-        </box>
-
-        {/* Confirm Button */}
-        <box
-          style={{
-            paddingLeft: 1,
-            paddingRight: 1,
-            backgroundColor: activeButton() === "confirm" ? theme().primary : undefined,
-          }}
-          onMouseUp={() => {
+        />
+        <DialogButton
+          label={props.confirmLabel || t("dlgConfirm")}
+          active={activeButton() === "confirm"}
+          onPress={() => {
             setActiveButton("confirm")
             if (props.onConfirm) props.onConfirm()
           }}
-        >
-          <text>
-            <span style={{ 
-              fg: activeButton() === "confirm" ? selectedForeground(theme()) : theme().textMuted 
-            }}>
-              {props.confirmLabel || t("dlgConfirm")}
-            </span>
-          </text>
-        </box>
+        />
       </box>
     </Dialog>
   )
