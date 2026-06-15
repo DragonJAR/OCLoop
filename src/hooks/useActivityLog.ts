@@ -1,5 +1,6 @@
 import { createSignal } from "solid-js";
 import type { Accessor } from "solid-js";
+import type { Level } from "../lib/activity-format";
 
 /**
  * Activity event types that can appear in the log
@@ -19,6 +20,12 @@ export type ActivityEventType =
 /**
  * A single activity event in the log
  */
+export interface ActivityProgress {
+  current?: number;
+  total?: number;
+  phase?: string;
+}
+
 export interface ActivityEvent {
   /** Unique identifier for this event */
   id: number;
@@ -32,6 +39,19 @@ export interface ActivityEvent {
   dimmed?: boolean;
   /** Additional detail text (e.g. tool command/args) */
   detail?: string;
+  /** Severity; defaults are derived from `type` when omitted. */
+  level?: Level;
+  /** Times this identical event repeated consecutively (collapsed). */
+  count?: number;
+  /** Long-operation progress (X/Y, phase). */
+  progress?: ActivityProgress;
+}
+
+export interface AddEventOptions {
+  dimmed?: boolean;
+  detail?: string;
+  level?: Level;
+  progress?: ActivityProgress;
 }
 
 /**
@@ -49,7 +69,7 @@ export interface UseActivityLogReturn {
   addEvent: (
     type: ActivityEventType,
     message: string,
-    options?: { dimmed?: boolean; detail?: string }
+    options?: AddEventOptions
   ) => void;
   /** Clear all events from the log */
   clear: () => void;
@@ -95,18 +115,37 @@ export function useActivityLog(): UseActivityLogReturn {
   function addEvent(
     type: ActivityEventType,
     message: string,
-    options?: { dimmed?: boolean; detail?: string }
+    options?: AddEventOptions
   ): void {
-    const event: ActivityEvent = {
-      id: nextId++,
-      timestamp: new Date(),
-      type,
-      message,
-      dimmed: options?.dimmed,
-      detail: options?.detail,
-    };
-
     setEvents((prev) => {
+      // Collapse repetition: an identical consecutive event (same type, message
+      // and detail) bumps a counter on the last line instead of flooding.
+      const last = prev[prev.length - 1];
+      if (
+        last &&
+        last.type === type &&
+        last.message === message &&
+        last.detail === options?.detail
+      ) {
+        const merged: ActivityEvent = {
+          ...last,
+          count: (last.count ?? 1) + 1,
+          timestamp: new Date(),
+        };
+        return [...prev.slice(0, -1), merged];
+      }
+
+      const event: ActivityEvent = {
+        id: nextId++,
+        timestamp: new Date(),
+        type,
+        message,
+        dimmed: options?.dimmed,
+        detail: options?.detail,
+        level: options?.level,
+        progress: options?.progress,
+        count: 1,
+      };
       const updated = [...prev, event];
       // Cap at MAX_EVENTS by removing from the beginning
       if (updated.length > MAX_EVENTS) {

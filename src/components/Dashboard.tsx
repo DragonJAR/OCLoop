@@ -6,6 +6,7 @@ import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { formatDuration } from "../hooks/useLoopStats"
 import { stripMarkdown } from "../lib/format"
 import { truncate } from "../lib/locale"
+import { getLayout } from "../lib/layout"
 import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
 import { ProgressIndicator } from "./ProgressIndicator"
@@ -84,6 +85,8 @@ function getStateBadge(state: LoopState): { icon: string; text: string; colorKey
 export function Dashboard(props: DashboardProps) {
   const { theme } = useTheme()
   const dimensions = useTerminalDimensions()
+  // Responsive layout, recomputed on every resize.
+  const layout = createMemo(() => getLayout(dimensions().width, dimensions().height))
 
   // State badge info
   const badge = createMemo(() => getStateBadge(props.state))
@@ -246,10 +249,9 @@ export function Dashboard(props: DashboardProps) {
     const task = props.currentTask
     if (!task) return null
     const cleanedTask = stripMarkdown(task)
-    // Fit to the real terminal width: total minus the border (2), padding (2),
-    // and the "Task: " prefix. Re-runs on resize via dimensions(). Floored so a
-    // very narrow terminal still shows something.
-    const maxLen = Math.max(20, dimensions().width - t("lblTaskPrefix").length - 4)
+    // Fit to the responsive task budget minus the "Task: " prefix. Re-runs on
+    // resize via layout(); floored so a very narrow terminal still shows text.
+    const maxLen = Math.max(16, layout().taskWidth - t("lblTaskPrefix").length)
     return truncate(cleanedTask, maxLen)
   })
 
@@ -280,16 +282,16 @@ export function Dashboard(props: DashboardProps) {
           </span>
         </text>
 
-        {/* Model display */}
-        <Show when={props.model}>
+        {/* Model display — dropped on narrow terminals to save space */}
+        <Show when={props.model && !layout().compact}>
           <text style={{ marginLeft: 2 }}>
             <span style={{ fg: theme().textMuted }}>{t("lblModel")}</span>
             <span style={{ fg: theme().text }}> {props.model}</span>
           </text>
         </Show>
 
-        {/* Agent display */}
-        <Show when={props.agent}>
+        {/* Agent display — dropped on narrow terminals to save space */}
+        <Show when={props.agent && !layout().compact}>
           <text style={{ marginLeft: 2 }}>
             <span style={{ fg: theme().textMuted }}>{t("lblAgent")}</span>
             <span style={{ fg: theme().text }}> {props.agent}</span>
@@ -314,13 +316,13 @@ export function Dashboard(props: DashboardProps) {
             <ProgressIndicator
               completed={props.progress!.completed}
               total={props.progress!.total - props.progress!.manual}
-              width={10}
+              width={layout().progressWidth}
             />
           </box>
         </Show>
 
-        {/* Watchdog health indicator */}
-        <Show when={watchdogIndicator()}>
+        {/* Watchdog health indicator — dropped on narrow terminals */}
+        <Show when={watchdogIndicator() && !layout().compact}>
           <text style={{ marginLeft: 2 }}>
             <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
             <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> ●</span>
@@ -336,15 +338,20 @@ export function Dashboard(props: DashboardProps) {
           <span style={{ fg: theme().text }}> {formatDuration(props.stats.elapsedTime())}</span>
         </text>
 
-        <text style={{ marginLeft: 2 }}>
-          <span style={{ fg: theme().textMuted }}>{t("lblAvg")}</span>
-          <span style={{ fg: theme().text }}> {averageDisplay()}</span>
-        </text>
+        {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
+        <Show when={props.stats.averageTime() !== null}>
+          <text style={{ marginLeft: 2 }}>
+            <span style={{ fg: theme().textMuted }}>{t("lblAvg")}</span>
+            <span style={{ fg: theme().text }}> {averageDisplay()}</span>
+          </text>
+        </Show>
 
-        <text style={{ marginLeft: 2 }}>
-          <span style={{ fg: theme().textMuted }}>{t("lblEta")}</span>
-          <span style={{ fg: theme().text }}> {estimatedDisplay()}</span>
-        </text>
+        <Show when={estimatedDisplay() !== "N/A"}>
+          <text style={{ marginLeft: 2 }}>
+            <span style={{ fg: theme().textMuted }}>{t("lblEta")}</span>
+            <span style={{ fg: theme().text }}> {estimatedDisplay()}</span>
+          </text>
+        </Show>
       </box>
 
       {/* Row 3: Cooldown countdown (during rate limits) or current task */}

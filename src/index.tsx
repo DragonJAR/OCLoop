@@ -8,6 +8,7 @@ import { DEFAULTS } from "./lib/constants"
 import type { CLIArgs } from "./types"
 import { loadConfig } from "./lib/config"
 import { parseArgs } from "./lib/cli-args"
+import { bar, titleBar, terminalCols } from "./lib/layout"
 import { withTimeout } from "./lib/with-timeout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
@@ -161,9 +162,10 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
       }
       plan = stripCodeFences(text)
 
-      console.log("\n" + t("cpProposedTop") + "\n")
+      const w = terminalCols()
+      console.log("\n" + titleBar(t("cpProposedTitle"), w) + "\n")
       console.log(plan)
-      console.log("\n" + t("cpProposedBottom"))
+      console.log("\n" + bar(w))
 
       const choice = (prompt(t("cpAskApprove")) || "").trim().toLowerCase()
 

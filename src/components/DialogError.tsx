@@ -48,7 +48,7 @@ export function DialogError(props: DialogErrorProps) {
         {/* Header */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
           <text>
-            <span style={{ fg: theme().error, bold: true }}>{t("dlgErrorTitle")}</span>
+            <span style={{ fg: theme().error, bold: true }}>{t("errorTitle")}</span>
           </text>
           <text>
             <span style={{ fg: theme().textMuted }}>esc</span>

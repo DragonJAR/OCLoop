@@ -3,6 +3,15 @@
 All notable changes to OCLoop are documented here. Format based on
 [Keep a Changelog](https://keepachangelog.com/); this project uses semantic versioning.
 
+## [Unreleased]
+
+### Changed
+- **Watchdog T2 default raised 5 min → 10 min** (`watchdogConfirmMs`). A single
+  silent, output-free tool (large build, test suite, install, download, or a
+  server-side rate-limit wait) emits no heartbeat for its whole duration and was
+  being aborted+retried at 5 min as if wedged. 10 min gives long tools room while
+  still catching a genuine wedge promptly. Still configurable per run.
+
 ## [0.5.0]
 
 Full-codebase audit (logic, dead code, functional behavior, ES/EN parity) plus

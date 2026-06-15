@@ -205,7 +205,7 @@ export function DialogSelect(props: DialogSelectProps) {
           ref={input}
           value={search()}
           onInput={(v) => setSearch(v)}
-          placeholder={props.placeholder || "Search..."}
+          placeholder={props.placeholder || t("dlgSearchPlaceholder")}
           focusedBackgroundColor={theme().backgroundPanel}
           cursorColor={theme().primary}
           focusedTextColor={theme().textMuted}

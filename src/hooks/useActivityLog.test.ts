@@ -88,7 +88,37 @@ describe("useActivityLog", () => {
       
       clear();
       expect(events()).toHaveLength(0);
-      
+
+      dispose();
+    });
+  });
+
+  it("collapses identical consecutive events into one (×N) line", () => {
+    createRoot((dispose) => {
+      const { events, addEvent } = useActivityLog();
+      addEvent("task", "Guardian: reconnecting SSE");
+      addEvent("task", "Guardian: reconnecting SSE");
+      addEvent("task", "Guardian: reconnecting SSE");
+      expect(events()).toHaveLength(1);
+      expect(events()[0].count).toBe(3);
+      // A different message starts a new line.
+      addEvent("task", "something else");
+      expect(events()).toHaveLength(2);
+      dispose();
+    });
+  });
+
+  it("carries level and progress options through", () => {
+    createRoot((dispose) => {
+      const { events, addEvent } = useActivityLog();
+      addEvent("error", "rate limited", {
+        level: "warn",
+        progress: { current: 2, total: 8 },
+      });
+      const e = events()[0];
+      expect(e.level).toBe("warn");
+      expect(e.progress).toEqual({ current: 2, total: 8 });
+      expect(e.count).toBe(1);
       dispose();
     });
   });

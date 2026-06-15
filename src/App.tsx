@@ -264,7 +264,7 @@ function AppContent(props: AppProps) {
         loop.dispatch({ type: "session_idle" })
       },
       abortAndRetry: async () => {
-        activityLog.addEvent("task", t("actGuardAbort"))
+        activityLog.addEvent("task", t("actGuardAbort"), { level: "warn" })
         const url = server.url()
         const sid = getActiveSessionId(loop.state())
         if (url && sid) {
@@ -432,7 +432,7 @@ function AppContent(props: AppProps) {
           // Cover `pausing` too (the reducer accepts it) so a rate limit while
           // pausing can't wedge the loop waiting for a session.idle that the
           // errored session will never emit.
-          activityLog.addEvent("error", t("actRateLimit", { message: error.message }))
+          activityLog.addEvent("error", t("actRateLimit", { message: error.message }), { level: "warn" })
           if (st === "running" || st === "pausing") {
             enterCooldown(error.message, error.retryAfter)
           }
@@ -659,6 +659,7 @@ function AppContent(props: AppProps) {
     activityLog.addEvent(
       "error",
       t("cooldownText", { secs: Math.ceil(delayMs / 1000), attempt: rateLimitAttempts }),
+      { level: "warn", progress: { current: rateLimitAttempts, total: r.maxRateLimitRetries } },
     )
 
     loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts })
@@ -789,7 +790,9 @@ function AppContent(props: AppProps) {
   }
 
   /**
-   * Helper to insert sample activity for UI testing
+   * Helper to insert sample activity for UI testing.
+   * The strings below are intentional debug-only fixture data (behind the debug
+   * "I" keybind); they are deliberately NOT routed through i18n.
    */
   const insertSampleActivity = () => {
     activityLog.addEvent("session_start", "Session started")
@@ -1517,23 +1520,23 @@ function AppContent(props: AppProps) {
           title: string,
           value: string,
           run: () => void,
-          message: string,
+          done: string,
         ): CommandOption => ({
           title,
           value,
-          category: "Chaos",
+          category: t("catChaos"),
           onSelect: () => {
             run()
-            toast.show({ variant: "info", message })
+            toast.show({ variant: "info", message: done })
             dialog.clear()
           },
         })
         opts.push(
-          chaosCmd("Chaos: kill server", "chaos_kill", () => chaos.killServer(), "Chaos: server killed"),
-          chaosCmd("Chaos: revive server", "chaos_revive", () => chaos.reviveServer(), "Chaos: server revived"),
-          chaosCmd("Chaos: freeze session", "chaos_freeze", () => chaos.freezeSession(), "Chaos: session frozen"),
-          chaosCmd("Chaos: unfreeze session", "chaos_unfreeze", () => chaos.unfreezeSession(), "Chaos: session unfrozen"),
-          chaosCmd("Chaos: inject rate limit", "chaos_429", () => enterCooldown("chaos: injected 429", 5), "Chaos: rate limit injected"),
+          chaosCmd(t("chaosKill"), "chaos_kill", () => chaos.killServer(), t("chaosKillDone")),
+          chaosCmd(t("chaosRevive"), "chaos_revive", () => chaos.reviveServer(), t("chaosReviveDone")),
+          chaosCmd(t("chaosFreeze"), "chaos_freeze", () => chaos.freezeSession(), t("chaosFreezeDone")),
+          chaosCmd(t("chaosUnfreeze"), "chaos_unfreeze", () => chaos.unfreezeSession(), t("chaosUnfreezeDone")),
+          chaosCmd(t("chaosRateLimit"), "chaos_429", () => enterCooldown("chaos: injected 429", 5), t("chaosRateLimitDone")),
         )
       }
 

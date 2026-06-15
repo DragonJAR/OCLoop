@@ -109,6 +109,14 @@ type PromptAsyncParams = Parameters<OpencodeClient["session"]["promptAsync"]>[0]
  * Create a new session
  * @returns The created session data
  */
+/** Consistent message for a failed SDK response (single-sourced). */
+function httpErr(
+  op: string,
+  response: { status: number; statusText: string },
+): string {
+  return `Failed to ${op}: ${response.status} ${response.statusText}`
+}
+
 export async function createSession(
   client: OpencodeClient,
   opts: ApiCallOptions = {},
@@ -121,9 +129,7 @@ export async function createSession(
   )
 
   if (!result.response.ok || !result.data) {
-    throw new Error(
-      `Failed to create session: ${result.response.status} ${result.response.statusText}`,
-    )
+    throw new Error(httpErr("create session", result.response))
   }
 
   return result.data
@@ -154,9 +160,7 @@ export async function sendPromptAsync(
   )
 
   if (!result.response.ok) {
-    throw new Error(
-      `Failed to send prompt: ${result.response.status} ${result.response.statusText}`,
-    )
+    throw new Error(httpErr("send prompt", result.response))
   }
 }
 
@@ -177,9 +181,7 @@ export async function abortSession(
   )
 
   if (!result.response.ok) {
-    throw new Error(
-      `Failed to abort session: ${result.response.status} ${result.response.statusText}`,
-    )
+    throw new Error(httpErr("abort session", result.response))
   }
 
   return result.data ?? false
@@ -206,9 +208,7 @@ export async function getSessionStatus(
   )
 
   if (!result.response.ok || !result.data) {
-    throw new Error(
-      `Failed to get session status: ${result.response.status} ${result.response.statusText}`,
-    )
+    throw new Error(httpErr("get session status", result.response))
   }
 
   return result.data[sessionId]

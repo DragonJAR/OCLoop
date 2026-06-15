@@ -80,7 +80,13 @@ export interface ResilienceConfig {
   watchdogTickMs: number
   /** No heartbeat for this long → SUSPECT and begin confirming (T1, ms). */
   watchdogSuspectMs: number
-  /** No heartbeat for this long with a "working" session → wedged (T2, ms). */
+  /**
+   * No heartbeat for this long with a "working" session → wedged (T2, ms).
+   * This is also the hard ceiling for a single silent operation: a tool that
+   * emits no SSE events for longer than this (a long build, test suite, install
+   * or download) is indistinguishable from a real wedge and gets aborted+retried.
+   * Raise it for workloads with long, output-free tools.
+   */
   watchdogConfirmMs: number
   /** Recovery attempts per iteration before escalating to a recoverable error. */
   maxRecoveryAttempts: number
@@ -114,7 +120,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 
   watchdogTickMs: 15_000,
   watchdogSuspectMs: 90_000,
-  watchdogConfirmMs: 300_000,
+  watchdogConfirmMs: 600_000,
   maxRecoveryAttempts: 3,
 
   resume: false,

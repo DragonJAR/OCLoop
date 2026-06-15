@@ -1,9 +1,12 @@
 import { For, createMemo, Show } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import { useTheme } from "../context/ThemeContext";
-import type { ActivityEvent, ActivityEventType } from "../hooks/useActivityLog";
+import type { ActivityEvent } from "../hooks/useActivityLog";
 import type { SessionTokens, SessionDiff } from "../hooks/useSessionStats";
-import { formatTokenCount, formatDiffSummary, truncateText } from "../lib/format";
+import { formatTokenCount, formatDiffSummary } from "../lib/format";
+import { formatActivityLine, formatTime, type ColorKey } from "../lib/activity-format";
+import { getLayout } from "../lib/layout";
+import { t } from "../lib/i18n";
 
 /**
  * Props for the ActivityLog component
@@ -17,46 +20,6 @@ export interface ActivityLogProps {
   diff?: SessionDiff;
   /** Whether to show the scrollbar */
   showScrollbar?: boolean;
-}
-
-/**
- * Get the label for an event type
- */
-function getEventLabel(type: ActivityEventType): string {
-  switch (type) {
-    case "session_start":
-      return "[start]";
-    case "session_idle":
-      return "[idle] ";
-    case "task":
-      return "[task] ";
-    case "file_edit":
-      return "[edit] ";
-    case "error":
-      return "[error]";
-    case "user_message":
-      return "[user] ";
-    case "assistant_message":
-      return "[ai]   ";
-    case "reasoning":
-      return "[think]";
-    case "tool_use":
-      return "[tool] ";
-    case "file_read":
-      return "[read] ";
-    default:
-      return "[???]  ";
-  }
-}
-
-/**
- * Format a Date to HH:MM:SS
- */
-function formatTime(date: Date): string {
-  const hours = date.getHours().toString().padStart(2, "0");
-  const minutes = date.getMinutes().toString().padStart(2, "0");
-  const seconds = date.getSeconds().toString().padStart(2, "0");
-  return `${hours}:${minutes}:${seconds}`;
 }
 
 /**
@@ -88,33 +51,20 @@ function formatTime(date: Date): string {
 export function ActivityLog(props: ActivityLogProps) {
   const { theme } = useTheme();
   const dimensions = useTerminalDimensions();
-  // Width left for the message after the "HH:MM:SS  [label] " prefix (~20) and
-  // the panel border/padding. Re-runs on resize; floored for narrow terminals.
-  const contentWidth = () => Math.max(20, dimensions().width - 24);
+  // Message width, derived from the real terminal size (re-runs on resize).
+  const contentWidth = () => getLayout(dimensions().width, dimensions().height).logContentWidth;
 
-  // Get color for event label
-  const getLabelColor = (type: ActivityEventType): string => {
-    switch (type) {
-      case "user_message":
-        return theme().info;
-      case "assistant_message":
-        return theme().success;
-      case "reasoning":
-        return theme().warning;
-      case "tool_use":
-      case "task":
-        return theme().primary;
-      case "file_read":
-      case "file_edit":
-        return theme().info;
-      case "error":
-        return theme().error;
-      case "session_start":
-        return theme().primary;
-      case "session_idle":
-        return theme().textMuted;
-      default:
-        return theme().text;
+  // Map a semantic color key (from the pure formatter) to a theme color.
+  const colorOf = (k: ColorKey): string => {
+    const th = theme();
+    switch (k) {
+      case "info": return th.info;
+      case "error": return th.error;
+      case "warning": return th.warning;
+      case "primary": return th.primary;
+      case "success": return th.success;
+      case "textMuted": return th.textMuted;
+      default: return th.text;
     }
   };
 
@@ -146,13 +96,13 @@ export function ActivityLog(props: ActivityLogProps) {
         >
           <text>
             <span style={{ fg: theme().textMuted }}>
-              Tokens: {formatTokenCount(props.tokens!.input + props.tokens!.output + props.tokens!.reasoning)}
-              {" "}(in:{formatTokenCount(props.tokens!.input)} out:{formatTokenCount(props.tokens!.output)} rsn:{formatTokenCount(props.tokens!.reasoning)})
+              {t("logTokens")}{formatTokenCount(props.tokens!.input + props.tokens!.output + props.tokens!.reasoning)}
+              {" "}({t("logTokenIn")}{formatTokenCount(props.tokens!.input)} {t("logTokenOut")}{formatTokenCount(props.tokens!.output)} {t("logTokenRsn")}{formatTokenCount(props.tokens!.reasoning)})
             </span>
           </text>
           <text>
             <span style={{ fg: theme().textMuted }}>
-              Diff: {formatDiffSummary(props.diff!.additions, props.diff!.deletions, props.diff!.files)}
+              {t("logDiff")}{formatDiffSummary(props.diff!.additions, props.diff!.deletions, props.diff!.files)}
             </span>
           </text>
         </box>
@@ -182,10 +132,17 @@ export function ActivityLog(props: ActivityLogProps) {
       >
         <For each={displayEvents()}>
           {(event, index) => {
-            const content =
-              event.type === "tool_use" && event.detail
-                ? `${event.detail}: ${event.message}`
-                : event.message;
+            const f = formatActivityLine(
+              {
+                type: event.type,
+                message: event.message,
+                detail: event.detail,
+                level: event.level,
+                count: event.count,
+                progress: event.progress,
+              },
+              contentWidth(),
+            );
 
             return (
               <>
@@ -205,16 +162,14 @@ export function ActivityLog(props: ActivityLogProps) {
                       {formatTime(event.timestamp)}
                     </span>
                     {"  "}
-                    <span style={{ fg: getLabelColor(event.type) }}>
-                      {getEventLabel(event.type)}
-                    </span>
+                    <span style={{ fg: colorOf(f.glyphColor) }}>{f.glyph} </span>
+                    <span style={{ fg: colorOf(f.labelColor) }}>{f.label}</span>
                     <span
                       style={{
                         fg: event.dimmed ? theme().textMuted : theme().text,
                       }}
                     >
-                      {" "}
-                      {truncateText(content, contentWidth())}
+                      {f.text}
                     </span>
                   </text>
                 </box>

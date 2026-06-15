@@ -277,7 +277,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `caffeinate` | Keep the system awake while running (`true`/`false`) |
 | `watchdogTickMs` | Watchdog evaluation interval |
 | `watchdogSuspectMs` | T1 — no heartbeat before suspecting |
-| `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged |
+| `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged (default 10 min; raise it if your agent runs long, output-free tools like big builds/test suites/installs) |
 | `maxRecoveryAttempts` | Recovery attempts before escalating to a recoverable error |
 | `resume` | Auto-resume a persisted run on startup |
 | `chaos` | Enable chaos fault-injection |

@@ -277,7 +277,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `caffeinate` | Mantener el sistema despierto mientras corre (`true`/`false`) |
 | `watchdogTickMs` | Intervalo de evaluación del watchdog |
 | `watchdogSuspectMs` | T1 — sin latido antes de sospechar |
-| `watchdogConfirmMs` | T2 — sin latido (estando "working") antes de declarar bloqueo |
+| `watchdogConfirmMs` | T2 — sin latido (estando "working") antes de declarar bloqueo (por defecto 10 min; súbelo si tu agente corre herramientas largas y silenciosas como builds/test suites/instalaciones grandes) |
 | `maxRecoveryAttempts` | Intentos de recuperación antes de escalar a error recuperable |
 | `resume` | Reanudar automáticamente una ejecución persistida al arrancar |
 | `chaos` | Activar la inyección de fallos |

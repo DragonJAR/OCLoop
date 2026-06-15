@@ -23,7 +23,40 @@ export function isLocale(v: unknown): v is Locale {
   return v === "en" || v === "es"
 }
 
+// Locale-identical UI strings — written once here and spread into BOTH `en` and
+// `es` below. This single-sources values that never differ by language (acronyms,
+// short labels, the rate-limit prefix) while `es: Record<MessageKey, Msg>` still
+// makes the compiler flag any missing/typo'd key.
+const shared = {
+  // Dashboard
+  badgeError: "ERROR",
+  badgeDebug: "DEBUG",
+  lblIter: "Iter",
+  lblEta: "ETA",
+  guardOk: "OK",
+  // Keybind hints (same word in both locales)
+  hintTerminal: "terminal",
+  hintPrompt: "prompt",
+  // Command palette categories
+  catTerminal: "Terminal",
+  catLoop: "Loop",
+  catChaos: "Chaos",
+  // Shared titles / dialog labels
+  errorTitle: "Error",
+  dlgArgsColon: "Args:    ",
+  // Activity-log stats header
+  logTokens: "Tokens: ",
+  logTokenIn: "in:",
+  logTokenOut: "out:",
+  logTokenRsn: "rsn:",
+  logDiff: "Diff: ",
+  // Runtime
+  actRateLimit: (p: Params) => `Rate limit: ${p.message}`,
+} satisfies Record<string, Msg>
+
 const en = {
+  ...shared,
+
   // --- Plan generator (CLI: --create-plan) ---
   cpTitle: "OCLoop — plan generator",
   cpConfig: (p: Params) => `Model: ${p.model}${p.note} · Agent: ${p.agent}`,
@@ -38,8 +71,7 @@ const en = {
     `Failed to generate the plan: ${p.status} ${p.statusText}`,
   cpNoContent:
     "The model returned no content. Try again with a different goal.",
-  cpProposedTop: "════════════════════ PROPOSED PLAN ════════════════════",
-  cpProposedBottom: "═══════════════════════════════════════════════════════",
+  cpProposedTitle: "PROPOSED PLAN",
   cpAskApprove: "\nApprove this plan? [y = save · e = edit · n = cancel]: ",
   cpSaved: (p: Params) => `\n✓ Saved to ${p.path}`,
   cpRunHint: (p: Params) => `Now run 'ocloop'${p.planArg} to start.`,
@@ -165,25 +197,20 @@ const en = {
   badgeStopping: "STOPPING",
   badgeStopped: "STOPPED",
   badgeComplete: "COMPLETE",
-  badgeError: "ERROR",
-  badgeDebug: "DEBUG",
   badgeUnknown: "UNKNOWN",
 
   // --- Dashboard: labels ---
   lblModel: "Model",
   lblAgent: "Agent",
-  lblIter: "Iter",
   lblTasks: "Tasks",
   lblTime: "Time",
   lblAvg: "Avg",
-  lblEta: "ETA",
   lblTaskPrefix: "Task: ",
   lblWaiting: "waiting...",
   lblGuard: "Guard",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
-  hintTerminal: "terminal",
   hintPause: "pause",
   hintResume: "resume",
   hintCancel: "cancel",
@@ -192,13 +219,11 @@ const en = {
   hintRetry: "retry",
   hintNewSession: "new session",
   hintSampleActivity: "sample activity",
-  hintPrompt: "prompt",
   hintPausingMsg: "Pausing after current task —",
   hintCooldownMsg: "Rate limited, waiting...",
   hintCompleteMsg: "Press any key to exit",
 
   // --- Watchdog health labels ---
-  guardOk: "OK",
   guardSuspect: "SUSPECT",
   guardCheck: "CHECK",
   guardStuck: "STUCK",
@@ -210,7 +235,6 @@ const en = {
 
   // --- Runtime / activity log messages ---
   actSessionAborted: "Session aborted by user",
-  actRateLimit: (p: Params) => `Rate limit: ${p.message}`,
   actSessionError: (p: Params) => `Session error: ${p.message}`,
   actSessionIdle: "Session idle",
   actRateExhausted: (p: Params) =>
@@ -218,7 +242,8 @@ const en = {
   errRatePersistent: (p: Params) =>
     `Persistent rate limit after ${p.attempts} attempts: ${p.reason}`,
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
-  errServerStart: "Failed to start server",
+  errServerStart:
+    "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
   errUnknown: "Unknown error",
   dlgPlanCompleteFallback: "Plan marked as complete.",
   toastSendPromptFailed: (p: Params) => `Failed to send prompt: ${p.message}`,
@@ -244,12 +269,22 @@ const en = {
   cmdCancelPause: "Cancel pending pause",
   cmdRestartServer: "Restart OpenCode server",
   cmdQuit: "Quit OCLoop",
-  catTerminal: "Terminal",
-  catLoop: "Loop",
   catView: "View",
   catLanguage: "Language",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
+  // Chaos fault-injection (debug + --chaos). One label + one "done" per action,
+  // so the command title and its toast are single-sourced.
+  chaosKill: "Chaos: kill server",
+  chaosKillDone: "Chaos: server killed",
+  chaosRevive: "Chaos: revive server",
+  chaosReviveDone: "Chaos: server revived",
+  chaosFreeze: "Chaos: freeze session",
+  chaosFreezeDone: "Chaos: session frozen",
+  chaosUnfreeze: "Chaos: unfreeze session",
+  chaosUnfreezeDone: "Chaos: session unfrozen",
+  chaosRateLimit: "Chaos: inject rate limit",
+  chaosRateLimitDone: "Chaos: rate limit injected",
 
   // --- Dialogs ---
   dlgQuitTitle: "Quit OCLoop?",
@@ -263,9 +298,9 @@ const en = {
   dlgResumeCancel: "Start fresh",
   dlgConfirm: "Confirm",
   dlgRetry: "Retry",
-  dlgErrorTitle: "Error",
   dlgEscToQuit: "esc to quit",
   dlgNoResults: "No results found",
+  dlgSearchPlaceholder: "Search...",
   dlgSendPrompt: "Send Prompt",
   dlgPromptHint: "Enter send · Esc cancel",
   dlgPlanComplete: "Plan Complete",
@@ -284,7 +319,6 @@ const en = {
   dlgConfigureTerminal: "Configure Terminal",
   dlgCustomTerminal: "Custom Terminal",
   dlgCommandColon: "Command: ",
-  dlgArgsColon: "Args:    ",
   dlgInstalledTerminals: "Installed Terminals",
   dlgCustomEllipsis: "Custom...",
   dlgManualConfig: "Manual Configuration",
@@ -300,13 +334,13 @@ const en = {
   toastCopied: "Copied to clipboard",
   toastSampleInserted: "Sample activity inserted",
   toastNoSessionAttach: "No active session to attach to",
-  toastErrorTitle: "Error",
 } satisfies Record<string, Msg>
 
 type MessageKey = keyof typeof en
 
 /** Spanish mirror — the type forces every English key to be present here. */
 const es: Record<MessageKey, Msg> = {
+  ...shared,
   cpTitle: "OCLoop — generador de planes",
   cpConfig: (p) => `Modelo: ${p.model}${p.note} · Agente: ${p.agent}`,
   cpModelNote:
@@ -319,8 +353,7 @@ const es: Record<MessageKey, Msg> = {
   cpGenFail: (p) => `Fallo al generar el plan: ${p.status} ${p.statusText}`,
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
-  cpProposedTop: "════════════════════ PLAN PROPUESTO ════════════════════",
-  cpProposedBottom: "═════════════════════════════════════════════════════════",
+  cpProposedTitle: "PLAN PROPUESTO",
   cpAskApprove: "\n¿Apruebas el plan? [y = guardar · e = editar · n = cancelar]: ",
   cpSaved: (p) => `\n✓ Guardado en ${p.path}`,
   cpRunHint: (p) => `Ahora ejecuta 'ocloop'${p.planArg} para empezar.`,
@@ -441,23 +474,18 @@ const es: Record<MessageKey, Msg> = {
   badgeStopping: "DETENIENDO",
   badgeStopped: "DETENIDO",
   badgeComplete: "COMPLETO",
-  badgeError: "ERROR",
-  badgeDebug: "DEBUG",
   badgeUnknown: "DESCONOCIDO",
 
   lblModel: "Modelo",
   lblAgent: "Agente",
-  lblIter: "Iter",
   lblTasks: "Tareas",
   lblTime: "Tiempo",
   lblAvg: "Prom",
-  lblEta: "ETA",
   lblTaskPrefix: "Tarea: ",
   lblWaiting: "esperando...",
   lblGuard: "Guardián",
 
   hintStart: "iniciar",
-  hintTerminal: "terminal",
   hintPause: "pausar",
   hintResume: "reanudar",
   hintCancel: "cancelar",
@@ -466,12 +494,10 @@ const es: Record<MessageKey, Msg> = {
   hintRetry: "reintentar",
   hintNewSession: "nueva sesión",
   hintSampleActivity: "actividad de ejemplo",
-  hintPrompt: "prompt",
   hintPausingMsg: "Pausando tras la tarea actual —",
   hintCooldownMsg: "Rate limit, esperando...",
   hintCompleteMsg: "Pulsa cualquier tecla para salir",
 
-  guardOk: "OK",
   guardSuspect: "SOSPECHA",
   guardCheck: "VERIF",
   guardStuck: "BLOQUEO",
@@ -481,14 +507,14 @@ const es: Record<MessageKey, Msg> = {
     `Rate limited — reintentando en ${p.secs}s (intento ${p.attempt})`,
 
   actSessionAborted: "Sesión abortada por el usuario",
-  actRateLimit: (p) => `Rate limit: ${p.message}`,
   actSessionError: (p) => `Error de sesión: ${p.message}`,
   actSessionIdle: "Sesión inactiva",
   actRateExhausted: (p) => `Rate limit persistente tras ${p.attempts} intentos`,
   errRatePersistent: (p) =>
     `Rate limit persistente tras ${p.attempts} intentos: ${p.reason}`,
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
-  errServerStart: "Fallo al iniciar el servidor",
+  errServerStart:
+    "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",
   errUnknown: "Error desconocido",
   dlgPlanCompleteFallback: "Plan marcado como completado.",
   toastSendPromptFailed: (p) => `Fallo al enviar el prompt: ${p.message}`,
@@ -512,12 +538,20 @@ const es: Record<MessageKey, Msg> = {
   cmdCancelPause: "Cancelar la pausa pendiente",
   cmdRestartServer: "Reiniciar el servidor OpenCode",
   cmdQuit: "Salir de OCLoop",
-  catTerminal: "Terminal",
-  catLoop: "Loop",
   catView: "Vista",
   catLanguage: "Idioma",
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
+  chaosKill: "Chaos: matar servidor",
+  chaosKillDone: "Chaos: servidor terminado",
+  chaosRevive: "Chaos: revivir servidor",
+  chaosReviveDone: "Chaos: servidor revivido",
+  chaosFreeze: "Chaos: congelar sesión",
+  chaosFreezeDone: "Chaos: sesión congelada",
+  chaosUnfreeze: "Chaos: descongelar sesión",
+  chaosUnfreezeDone: "Chaos: sesión descongelada",
+  chaosRateLimit: "Chaos: inyectar rate limit",
+  chaosRateLimitDone: "Chaos: rate limit inyectado",
 
   dlgQuitTitle: "¿Salir de OCLoop?",
   dlgQuitMsg: "¿Seguro que quieres salir?",
@@ -530,9 +564,9 @@ const es: Record<MessageKey, Msg> = {
   dlgResumeCancel: "Empezar de cero",
   dlgConfirm: "Confirmar",
   dlgRetry: "Reintentar",
-  dlgErrorTitle: "Error",
   dlgEscToQuit: "esc para salir",
   dlgNoResults: "Sin resultados",
+  dlgSearchPlaceholder: "Buscar...",
   dlgSendPrompt: "Enviar prompt",
   dlgPromptHint: "Enter enviar · Esc cancelar",
   dlgPlanComplete: "Plan completado",
@@ -551,7 +585,6 @@ const es: Record<MessageKey, Msg> = {
   dlgConfigureTerminal: "Configurar terminal",
   dlgCustomTerminal: "Terminal personalizada",
   dlgCommandColon: "Comando: ",
-  dlgArgsColon: "Args:    ",
   dlgInstalledTerminals: "Terminales instaladas",
   dlgCustomEllipsis: "Personalizada...",
   dlgManualConfig: "Configuración manual",
@@ -567,7 +600,6 @@ const es: Record<MessageKey, Msg> = {
   toastCopied: "Copiado al portapapeles",
   toastSampleInserted: "Actividad de ejemplo insertada",
   toastNoSessionAttach: "No hay sesión activa para conectar",
-  toastErrorTitle: "Error",
 }
 
 // Reactive locale: a Solid signal so the TUI re-renders live when the language

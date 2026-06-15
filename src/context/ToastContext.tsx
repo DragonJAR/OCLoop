@@ -50,7 +50,7 @@ export function ToastProvider(props: ToastProviderProps) {
   const error = (err: unknown) => {
     const message = err instanceof Error ? err.message : String(err)
     show({
-      title: t("toastErrorTitle"),
+      title: t("errorTitle"),
       message,
       variant: "error",
     })
