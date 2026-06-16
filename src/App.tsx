@@ -176,6 +176,19 @@ function AppContent(props: AppProps) {
   // reducer's `iteration_started` dispatch is the source of truth for
   // "we have a session".
   let startingIteration = false
+  // Process-scoped re-entry guard for handleQuit. Closes the
+  // SIGINT-during-Q race window: a user who confirms the quit dialog
+  // and then hits Ctrl+C (or any other concurrent trigger) would
+  // otherwise enter handleQuit a second time while the first call's
+  // awaits are still in flight, producing a wasted `abortSession`
+  // HTTP request. Mirrors the `ShutdownManager.isShuttingDown` flag
+  // in `src/lib/shutdown.ts:17` for the SIGINT/SIGTERM path, and
+  // follows the same closure-bound `let` pattern as
+  // `startingIteration` above. Intentionally NOT persisted: a fresh
+  // process always starts with no in-flight quit, and `process.exit`
+  // at the end of handleQuit guarantees the flag is reset by process
+  // death. Source: MEJORAS.md Finding 15.4.A.
+  let isShuttingDown = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
 
@@ -1056,8 +1069,26 @@ function AppContent(props: AppProps) {
    * @param exitCode - Exit code to use (default: 0)
    */
   async function handleQuit(exitCode: number = 0): Promise<void> {
+    // Re-entry guard. Closes the SIGINT-during-Q race: a user who
+    // confirms the quit dialog and then hits Ctrl+C (or any other
+    // concurrent trigger — e.g. parallel dialog close + signal
+    // handler) would otherwise re-enter handleQuit while the first
+    // call's awaits are still in flight. The first call's
+    // reducer-dispatched `quit` action is a no-op from `stopping`
+    // and the per-operation idempotency of clearCooldownTimers /
+    // watchdog.stop / sleepDetector.stop / power.stop /
+    // clearLoopState / sse.disconnect / server.stop covers the
+    // remaining steps — but `abortSession` (line ~1081 below)
+    // issues a non-idempotent HTTP request to the OpenCode server.
+    // The flag is set synchronously (no `await` before it) so the
+    // window closes the moment a second handleQuit call is invoked.
+    // Source: MEJORAS.md Finding 15.4.A. See also
+    // `ShutdownManager.isShuttingDown` (`src/lib/shutdown.ts:17`)
+    // which closes the parallel race for the SIGINT/SIGTERM path.
+    if (isShuttingDown) return
+    isShuttingDown = true
+
     log.info("app", "Quit initiated", { exitCode, currentSessionId: sessionId() })
-    
     loop.dispatch({ type: "quit" })
 
     // Stop resilience machinery: cooldown timers, watchdog, sleep detector, caffeinate
