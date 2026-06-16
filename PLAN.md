@@ -303,10 +303,34 @@ explícitamente. `bun test` verde: 678 pass / 0 fail (era 672). Commit
 
 ### Mejora 12 — Finding 4.1.A — LOW — `console.error` used in TUI flow where `log.error` is the project convention
 
-- [ ] Evaluar la mejora 12 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 12 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 12 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 12 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 12 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 12 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 12 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 12 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es la convención documentada en
+`docs/project-context.md:82-85`: "`log.*` en todo el TUI;
+`console.error` reservado para handlers de crash-time y para la CLI
+headless `--create-plan`". Las tres call sites de TUI flow listadas
+en el finding (`App.tsx:803` `Cannot start iteration: server not
+ready`, `App.tsx:903` `Cannot create debug session: server not
+ready`,
+`App.tsx:1180` `Failed to initialize session`) violan esa convención.
+Ya hay 52 call sites de `log.*` en `App.tsx` y el import
+`import { log } from "./lib/debug-logger"` está en `App.tsx:21` —
+no hay costo adicional por usarlo. Adicionalmente, el branch
+`createDebugSession` estaba **doble-loggeando** (línea 902 ya
+usaba `log.error` y la 903 repetía con `console.error`), así que
+eliminar la duplicación es estrictamente una mejora sin pérdida.
+Implementación mínima: 3 edits puntuales a `App.tsx` — dos
+sustituciones 1-a-1 (`console.error` → `log.error(ctx, msg [, err])`)
+y una eliminación de duplicado. Cero cambios a la TUI, cero
+impacto en el lifecycle de iteración, cero impacto en tests
+(ningún test dependía de la presencia de `console.error` en estos
+paths — los matches encontrados están en `cli-args.ts`,
+`index.tsx`, `debug-logger.ts` y `shutdown.ts`, que están fuera del
+scope del finding). `bun test` verde: 678 pass / 0 fail (sin
+cambio en el conteo). Commit `2fd8af7`.
 
 ### Mejora 13 — Finding 4.1.B — MEDIUM — Empty / whitespace-only prompt file is sent verbatim
 
@@ -903,9 +927,9 @@ explícitamente. `bun test` verde: 678 pass / 0 fail (era 672). Commit
 - [ ] Si la mejora 97 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
 - [ ] Ejecutar la verificación mínima aplicable después de la mejora 97 y corregir cualquier regresión causada por el cambio.
 
-- [ ] Procesar el siguiente bloque explícito de mejora agregado a esta Fase 2 después de leer `MEJORAS.md`.
-- [ ] Confirmar que no quedan mejoras de `MEJORAS.md` sin bloque explícito de tareas en este `PLAN.md`.
-- [ ] Si falta alguna mejora, actualizar este `PLAN.md` agregando sus tareas explícitas antes de continuar con la consolidación.
+- [x] Procesar el siguiente bloque explícito de mejora agregado a esta Fase 2 después de leer `MEJORAS.md`.
+- [x] Confirmar que no quedan mejoras de `MEJORAS.md` sin bloque explícito de tareas en este `PLAN.md`.
+- [x] Si falta alguna mejora, actualizar este `PLAN.md` agregando sus tareas explícitas antes de continuar con la consolidación.
 
 ## Fase 3 — Consolidación
 
