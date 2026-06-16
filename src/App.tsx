@@ -744,7 +744,7 @@ function AppContent(props: AppProps) {
       { level: "warn", progress: { current: rateLimitAttempts, total: r.maxRateLimitRetries } },
     )
 
-    loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts })
+    loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
     // Countdown for the dashboard, driven by the monotonic clock.
     clearCooldownTimers()

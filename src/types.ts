@@ -19,15 +19,20 @@ export type LoopState =
   | { type: "running"; iteration: number; sessionId: string }
   | { type: "pausing"; iteration: number; sessionId: string }
   | { type: "paused"; iteration: number }
-  // Waiting out a provider rate limit before retrying the SAME iteration. This
-  // is a healthy waiting state, deliberately distinct from `error`, so the
-  // watchdog stays quiet and the user sees a countdown instead of a failure.
+  // Waiting out a provider rate limit (or a transient connection blip) before
+  // retrying the SAME iteration. This is a healthy waiting state, deliberately
+  // distinct from `error`, so the watchdog stays quiet and the user sees a
+  // countdown instead of a failure. `kind` lets the UI distinguish a real
+  // rate-limit ("Rate limited — retrying in Ns") from a transient connection
+  // issue ("Connection issue — retrying in Ns") so we never call a flaky
+  // network "rate limit". See MEJORAS.md Finding 5.1.A.
   | {
       type: "cooldown"
       iteration: number
       reason: string
       resumeAt: number // monotonic ms when the retry will fire
       attempt: number // consecutive rate-limit attempt number
+      kind: "rate_limit" | "transient"
     }
   | { type: "stopping" }
   | { type: "stopped" }
@@ -61,8 +66,18 @@ export type LoopAction =
   | { type: "plan_complete"; summary: CompletionSummary }
   | { type: "error"; source: ErrorSource; message: string; recoverable: boolean }
   | { type: "retry" }
-  // Enter cooldown after a rate limit; resumeAt is monotonic ms.
-  | { type: "rate_limited"; reason: string; resumeAt: number; attempt: number }
+  // Enter cooldown after a rate limit (or a transient connection blip);
+  // resumeAt is monotonic ms. `kind` is optional for backward compat with the
+  // chaos path (`chaos_429` injects a synthetic 429 and doesn't need to
+  // specify a kind); when absent, the reducer defaults to "rate_limit". See
+  // MEJORAS.md Finding 5.1.A.
+  | {
+      type: "rate_limited"
+      reason: string
+      resumeAt: number
+      attempt: number
+      kind?: "rate_limit" | "transient"
+    }
   // Cooldown elapsed: go back to running and retry the same plan task. The plan
   // progress is preserved; a new session (and thus a new attempt) is created.
   | { type: "resume_cooldown" }

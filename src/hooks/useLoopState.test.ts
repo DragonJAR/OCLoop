@@ -513,6 +513,39 @@ describe("loopReducer", () => {
       expect(result.type).toBe("cooldown")
     })
 
+    it("propagates kind=\"transient\" from rate_limited into the cooldown state (Finding 5.1.A)", () => {
+      const result = loopReducer(
+        { type: "running", iteration: 2, sessionId: "s" },
+        {
+          type: "rate_limited",
+          reason: "connection reset",
+          resumeAt: 5000,
+          attempt: 1,
+          kind: "transient",
+        },
+      )
+      expect(result.type).toBe("cooldown")
+      if (result.type === "cooldown") {
+        expect(result.kind).toBe("transient")
+      }
+    })
+
+    it("defaults kind to \"rate_limit\" when the action omits it (chaos_429 compat, Finding 5.1.A)", () => {
+      const result = loopReducer(
+        { type: "running", iteration: 2, sessionId: "s" },
+        {
+          type: "rate_limited",
+          reason: "429",
+          resumeAt: 5000,
+          attempt: 1,
+        },
+      )
+      expect(result.type).toBe("cooldown")
+      if (result.type === "cooldown") {
+        expect(result.kind).toBe("rate_limit")
+      }
+    })
+
     it("does not enter cooldown from ready/paused", () => {
       expect(
         loopReducer({ type: "ready" }, {
@@ -539,6 +572,7 @@ describe("loopReducer", () => {
         reason: "rate limit",
         resumeAt: 555,
         attempt: 3,
+        kind: "rate_limit",
       }
       const result = loopReducer(state, { type: "resume_cooldown" })
       expect(result.type).toBe("running")
@@ -555,6 +589,7 @@ describe("loopReducer", () => {
         reason: "r",
         resumeAt: 1,
         attempt: 1,
+        kind: "rate_limit",
       }
       expect(loopReducer(state, { type: "quit" }).type).toBe("stopping")
     })
@@ -566,6 +601,7 @@ describe("loopReducer", () => {
         reason: "r",
         resumeAt: 1,
         attempt: 8,
+        kind: "rate_limit",
       }
       const result = loopReducer(state, {
         type: "error",
@@ -630,6 +666,7 @@ describe("loopReducer", () => {
         reason: "rate limit",
         resumeAt: 12345,
         attempt: 2,
+        kind: "rate_limit",
       }
       const result = loopReducer(state, {
         type: "plan_complete",
@@ -715,6 +752,7 @@ describe("loopReducer", () => {
         reason: "429",
         resumeAt: 5000,
         attempt: 2,
+        kind: "rate_limit",
       }
       const result = loopReducer(state, {
         type: "error",
@@ -774,6 +812,7 @@ describe("loopReducer", () => {
         reason: "rate limit",
         resumeAt: 9999,
         attempt: 1,
+        kind: "rate_limit",
       }
       const result = loopReducer(state, { type: "quit" })
       expect(result.type).toBe("stopping")
@@ -869,7 +908,7 @@ describe("loopReducer", () => {
       running: { type: "running", iteration: 3, sessionId: "ses-3" },
       pausing: { type: "pausing", iteration: 3, sessionId: "ses-3" },
       paused: { type: "paused", iteration: 3 },
-      cooldown: { type: "cooldown", iteration: 3, reason: "r", resumeAt: 1, attempt: 1 },
+      cooldown: { type: "cooldown", iteration: 3, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
       stopping: { type: "stopping" },
       stopped: { type: "stopped" },
       complete: { type: "complete", iterations: 3, summary: { summary: "x" } },
@@ -1042,7 +1081,7 @@ describe("loopReducer", () => {
     })
     it("plan_complete: from cooldown(4) preserves iteration (does NOT reset to 0)", () => {
       const result = loopReducer(
-        { type: "cooldown", iteration: 4, reason: "r", resumeAt: 1, attempt: 1 },
+        { type: "cooldown", iteration: 4, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
         { type: "plan_complete", summary: { summary: "x" } },
       )
       if (result.type !== "complete") throw new Error("expected complete")
@@ -1101,7 +1140,7 @@ describe("loopReducer", () => {
     })
     it("error: from cooldown(N) carries N into lastIteration (Finding 3.1.A)", () => {
       const result = loopReducer(
-        { type: "cooldown", iteration: 5, reason: "r", resumeAt: 1, attempt: 1 },
+        { type: "cooldown", iteration: 5, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
         { type: "error", source: "api", message: "x", recoverable: true },
       )
       expect(result.type).toBe("error")
@@ -1151,6 +1190,7 @@ describe("loopReducer", () => {
           reason: "x",
           resumeAt: 0,
           attempt: 1,
+          kind: "rate_limit",
         },
         { type: "stopping" },
         { type: "stopped" },

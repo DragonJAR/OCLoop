@@ -160,6 +160,10 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
 
     case "rate_limited": {
       // Enter cooldown from running (or pausing) — a healthy wait, not an error.
+      // Carry `kind` so the dashboard can show "Connection issue" for
+      // transient blips and "Rate limited" for real provider 429s. See
+      // MEJORAS.md Finding 5.1.A. The `??` keeps callers that omit the field
+      // (e.g. the chaos 429 injector at App.tsx:1675) on the existing path.
       if (state.type === "running" || state.type === "pausing") {
         return {
           type: "cooldown",
@@ -167,6 +171,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           reason: action.reason,
           resumeAt: action.resumeAt,
           attempt: action.attempt,
+          kind: action.kind ?? "rate_limit",
         }
       }
       return state
