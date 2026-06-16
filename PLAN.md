@@ -500,10 +500,40 @@ el conteo). Commit `0ee1de0`.
 
 ### Mejora 18 — Finding 5.1.C — LOW — `setCooldownRemainingMs(delayMs)` briefly shows the *full* delay
 
-- [ ] Evaluar la mejora 18 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 18 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 18 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 18 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 18 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 18 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 18 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 18 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es cosmética — la guarda funcional
+ya estaba en su sitio (el ticker en `App.tsx:765` ya hace
+`Math.max(0, resumeAt - monotonicNow())` en su callback de 250ms
+y el Dashboard acota `secs` con `Math.max(0, ...)` en
+`Dashboard.tsx:100`). El lag del primer frame es invisible
+en cualquier TUI con refresh rate normal; solo aparece si el
+renderer se congela (debugger break, scroll-jump, sleep
+waking). La opción del fix propuesta en `MEJORAS.md:3727-3729`
+(usar la misma fórmula del ticker en el `set` inicial) es
+claramente superior a la alternativa de "no aplicar fix": es
+una línea, cero cambio de comportamiento, y la fórmula ya
+está importada y validada por el ticker — reusarla es
+estrictamente gratis. Implementación mínima: 1 línea
+(`setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))`)
++ 4 líneas de comentario extendiendo el existente
+(`// Countdown for the dashboard, driven by the monotonic clock.`)
+para nombrar la decisión y el source (`Source: MEJORAS.md
+Finding 5.1.C.`), siguiendo el patrón de Mejora 17. Cero
+cambios al reducer, cero cambios al ticker, cero cambios al
+Dashboard, cero impacto en el camino feliz (el valor inicial
+sigue siendo `delayMs` salvo por los pocos microsegundos
+transcurridos entre el `set` y la primera línea del callback).
+Sin nuevos tests — el guard es `Math.max(0, ...)` (idéntico
+al del ticker) y un test que pinea el valor inicial requeriría
+mockear `monotonicNow` Y el reducer `rate_limited` Y
+`cooldownTicker`, lo cual es integration-territory y no
+aporta sobre la inspección directa del cálculo. `bun test`
+verde: 680 pass / 0 fail, 1680 expect() calls, 324 ms — sin
+cambio en el conteo de tests. Commit `95bf219`.
 
 ### Mejora 19 — Finding 5.1.D — LOW — `clearInterval` inside the ticker relies on closure-captured `cooldownTicker`
 
