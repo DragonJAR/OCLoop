@@ -1299,10 +1299,48 @@ gratis: POSIX `setsid()` + `windowsHide` solo en Windows.
 
 ### Mejora 34 — Finding 11.2.B — LOW — Empty `config.args` for a custom terminal silently launches without the attach command
 
-- [ ] Evaluar la mejora 34 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 34 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 34 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 34 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 34 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 34 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 34 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 34 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13477-13511`): un `config.args = ""` produce
+`argsPattern = []` en `terminal-launcher.ts:143`, que `buildArgs`
+pasa intacto, y `Bun.spawn([command])` lanza la terminal sin
+comando — el usuario obtiene un shell vacío sin el attach
+command. La opción del fix (defensa en dos capas: dialog
+rechaza en save + launcher como backstop) es estrictamente la
+mínima útil y reusa el patrón ya establecido en el codebase
+(Mejora 13, Finding 4.1.B: throw-at-trust-boundary + UX
+clara en el call site). Implementación: 9 líneas en
+`src/lib/terminal-launcher.ts:144-157` (1 `if` con 1
+`return` + 7 líneas de comentario que nombran el source
+`MEJORAS.md Finding 11.2.B`, el paralelo con Mejora 13, y la
+garantía estructural del path known-terminal) + 10 líneas
+en `src/components/DialogTerminalConfig.tsx:62-74`
+(reestructuración del `if` con `cmd && args`, mismo patrón
+"silent no-op on Enter" que el check original del command).
+Cero cambios a la firma de `launchTerminal` (`Promise<LaunchResult>`
+intacta), cero cambios a `KNOWN_TERMINALS`, cero cambios
+a `getAttachCommand` / `buildArgs` / `detectInstalledTerminals`,
+cero impacto en la ruta `known` (sus entries siempre tienen
+`args.length > 0` por construcción, verificado por grep
+en la fase de audit `MEJORAS.md:13529`), cero impacto en
+los call sites existentes (`App.tsx:1353-1376` ya
+pre-valida `if (!url) return`, así que la única ruta
+donde `args = ""` puede entrar es la rama custom desde
+el dialog — exactamente el caso que este fix cierra).
+El error del launcher es user-facing (`"Custom terminal
+args must include the {cmd} placeholder"`), surface el
+mismo string que Mejora 35 (Finding 11.2.C) usará para
+el caso "args presente pero sin {cmd}" — ambos fixes
+comparten la misma copy porque comparten la misma
+condición de fallo desde la perspectiva del usuario.
+Cero impacto en tests (694 pass / 0 fail, sin cambio en
+el conteo — `terminal-launcher.test.ts` no existe, Mejora
+92 lo cubrirá cuando llegue su turno, mismo argumento
+que Mejora 33). Commit `c8398c5`.
 
 ### Mejora 35 — Finding 11.2.C — LOW — Missing `{cmd}` placeholder in custom args silently launches without the attach command
 
