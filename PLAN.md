@@ -93,14 +93,14 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 8 — Crash Recovery & Persistence
 
-- [ ] Audit `saveLoopState` for: atomic write (tmp + rename), data completeness, error handling
-- [ ] Verify: `loadLoopState` returns null for: missing file, invalid JSON, wrong version, missing fields
-- [ ] Verify: `clearLoopState` never throws — even on permission errors or missing files
-- [ ] Verify: persistence happens on every state transition to `running`/`pausing`/`paused`/`cooldown` — confirm this is frequent enough for crash recovery
-- [ ] Verify: `doResume` correctly handles: session still working, session idle, session missing, session rate-limiting
-- [ ] Verify: `doResume` restores `rateLimitAttempts` from persisted state — confirm the circuit breaker continues from where it left off
-- [ ] Verify: `--resume` flag sets `resilience.resume = true` which triggers auto-resume in `initializeSession` — what if there's no persisted state?
-- [ ] Document: `clearLoopState` is called on clean quit AND on plan completion — verify this is intentional (prevents accidental re-resume after a successful run)
+- [x] Audit `saveLoopState` for: atomic write (tmp + rename), data completeness, error handling
+- [x] Verify: `loadLoopState` returns null for: missing file, invalid JSON, wrong version, missing fields
+- [x] Verify: `clearLoopState` never throws — even on permission errors or missing files
+- [x] Verify: persistence happens on every state transition to `running`/`pausing`/`paused`/`cooldown` — confirm this is frequent enough for crash recovery
+- [x] Verify: `doResume` correctly handles: session still working, session idle, session missing, session rate-limiting
+- [x] Verify: `doResume` restores `rateLimitAttempts` from persisted state — confirm the circuit breaker continues from where it left off
+- [x] Verify: `--resume` flag sets `resilience.resume = true` which triggers auto-resume in `initializeSession` — what if there's no persisted state?
+- [x] Document: `clearLoopState` is called on clean quit AND on plan completion — verify this is intentional (prevents accidental re-resume after a successful run)
 
 ## Phase 9 — Sleep Detection & Power Management
 

@@ -9787,3 +9787,921 @@ direct file read.
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+---
+
+## Phase 8 — Crash Recovery & Persistence
+
+Source: `src/lib/loop-state-store.ts` (91 lines —
+the entire `saveLoopState` / `loadLoopState` /
+`clearLoopState` triplet, the `PersistedLoopState`
+type, and the `statePath` / `tmpPath` helpers).
+Tests: `src/lib/loop-state-store.test.ts` (70
+lines, 6 cases, all passing) — covers the
+round-trip, the atomic-overwrite invariant, the
+unsupported-version rejection, and the
+idempotent clear. The consumer wiring lives in
+`src/App.tsx:968-1010` (`handleQuit` calls
+`clearLoopState`), `src/App.tsx:1098-1157`
+(`initializeSession` calls `loadLoopState` +
+`doResume` or offers a dialog), `src/App.tsx:1164-1197`
+(`doResume` reconciles and dispatches
+`resume_session`), and `src/App.tsx:1265-1290`
+(the persistence effect that fires on every
+`running`/`pausing`/`paused`/`cooldown`
+transition).
+
+PLAN.md Phase 8 has 8 audit tasks. They are
+all coupled — same module, same data shape,
+same recovery flow — so they are reported here
+as a single batched audit, 8.1 through 8.8, in
+the same order they appear in PLAN.md.
+
+**Status: COMPLETE — VERIFIED. Two MEDIUM
+findings, three LOW findings, seven INFO
+observations. No CRITICAL or HIGH findings.
+The persistence module is small, focused, and
+correct on the happy paths; the findings are
+about incomplete input validation and a subtle
+edge case in resume, not behavioral bugs.**
+
+### 8.1 — Audit `saveLoopState` for atomic write (tmp + rename), data completeness, error handling
+
+**Atomic write — VERIFIED.** `saveLoopState` at
+`src/lib/loop-state-store.ts:49-57` writes to
+`.loop-state.json.tmp` via `writeFile` (line 52),
+then calls `rename(tmpPath(), statePath())` (line
+53). `rename` is atomic on the same filesystem, so
+a reader (the next `loadLoopState`) never sees a
+half-written file. The test at
+`loop-state-store.test.ts:47-53` explicitly
+verifies that two consecutive `saveLoopState`
+calls leave no leftover `.tmp` file, confirming
+the rename replaces, not appends.
+
+**Data completeness — VERIFIED.** The
+`PersistedLoopState` interface at lines 23-35
+covers every field the resume path needs:
+
+| Field | Purpose | Read by |
+| --- | --- | --- |
+| `version: 1` | Format guard | `loadLoopState` line 69 |
+| `iteration: number` | Resume counter | `doResume` line 1183/1195 |
+| `sessionId: string \| null` | Re-attach target | `doResume` line 1168-1169 |
+| `stateType: string` | Diagnostic only | (logged, not branched on) |
+| `rateLimitAttempts: number` | Circuit-breaker continuity | `doResume` line 1165 |
+| `updatedAt: string` | Human-facing staleness check | (logged, not branched on) |
+
+No field is missing. The mapping at
+`App.tsx:1278-1285` populates all six from
+`loop.iteration()`, `getActiveSessionId(s)`, the
+state type, the closure-captured
+`rateLimitAttempts`, and `new Date().toISOString()`.
+
+**Error handling — VERIFIED.** The whole body is
+wrapped in `try { … } catch (err) { log.warn(…) }`
+at lines 50-56. The function NEVER throws (matches
+its docstring at line 47-48: "Never throws —
+persistence is best-effort and must not crash the
+app"). A failed write logs at `warn` and returns
+silently, so a transient disk-full or permission
+denied cannot wedge the loop or surface a fatal
+error to the user.
+
+#### Finding 8.1.A — LOW — Orphan `.tmp` file on `rename` failure
+
+**Problem.** If `writeFile` succeeds but `rename`
+fails (extremely rare, but possible — e.g. the
+`.loop-state.json` parent directory becomes
+read-only mid-flight, or a filesystem-level
+ENOSPC on the rename on some Linux/BSD
+filesystems), the `.loop-state.json.tmp` file
+is left on disk. The next `saveLoopState` will
+overwrite it, so it is eventually cleaned up, but
+if the loop is never started again, the orphan
+stays in the working tree forever. A repo
+auditor running `git status --ignored` will see
+it (the `.loop*` gitignore rule covers it, so it
+is invisible to git; but it pollutes the project
+directory).
+
+**Where.** `src/lib/loop-state-store.ts:49-57`.
+
+**Proposed fix.** On `rename` failure, attempt
+`unlink(tmpPath())` in a nested try/catch (the
+unlink itself must also be best-effort, since
+the user is already in a degraded-disk situation):
+
+```ts
+export async function saveLoopState(state: PersistedLoopState): Promise<void> {
+  try {
+    const json = JSON.stringify(state, null, 2)
+    await writeFile(tmpPath(), json, "utf-8")
+    try {
+      await rename(tmpPath(), statePath())
+    } catch (renameErr) {
+      // Best-effort cleanup of orphan tmp.
+      try { await unlink(tmpPath()) } catch { /* nothing more we can do */ }
+      throw renameErr
+    }
+  } catch (err) {
+    log.warn("persist", "Failed to save loop state", err)
+  }
+}
+```
+
+**Status.** Fix proposed, not applied. The
+condition is rare enough that the LOW severity
+is appropriate; the existing test suite does not
+cover it because the test harness uses a fresh
+tempdir per test (no permission games).
+
+#### INFO — `stateType` and `updatedAt` are diagnostic-only fields
+
+`stateType` is recorded but `doResume` does not
+branch on it (the only consumer is the
+`log.health("resume", "found", { … })` call at
+`App.tsx:1114-1118`). Same for `updatedAt` — it
+ends up in the same log line for the operator to
+eyeball. Both are still useful (without
+`stateType` a stale "complete" state on disk
+could be impossible to distinguish from a stale
+"running" state during manual forensics), so
+keeping them is correct. Not a finding, just an
+observation that the schema is slightly
+over-provisioned for the current resume logic.
+
+### 8.2 — Verify `loadLoopState` returns null for: missing file, invalid JSON, wrong version, missing fields
+
+**Missing file — VERIFIED.** `readFile` throws
+`ENOENT` when the file does not exist, the
+`catch` at line 75 swallows it, and the function
+returns `null` at line 77. The test at
+`loop-state-store.test.ts:37-39` ("returns null
+when no state file exists") confirms this end to
+end.
+
+**Invalid JSON — VERIFIED.** `JSON.parse` throws
+`SyntaxError` on malformed input, the `catch`
+swallows it, returns `null`. Not directly tested
+in `loop-state-store.test.ts` (the suite never
+writes garbage on purpose), but the catch-all
+`catch` covers it.
+
+**Wrong version — VERIFIED.** The guard at
+`src/lib/loop-state-store.ts:69-70`:
+
+```ts
+(parsed as PersistedLoopState).version === 1 &&
+typeof (parsed as PersistedLoopState).iteration === "number"
+```
+
+returns `null` for any `version !== 1`. The
+test at `loop-state-store.test.ts:66-69`
+explicitly writes `{ ...sample, version: 99 }`
+and asserts the load returns `null`. The guard
+also requires `parsed` to be a non-null object
+(`parsed && typeof parsed === "object"` at
+lines 67-68), so a JSON literal like `42` or
+`"foo"` returns `null` too.
+
+**Missing fields — PARTIALLY VERIFIED, with one
+gap (Finding 8.2.A below).**
+
+#### Finding 8.2.A — MEDIUM — `loadLoopState` only validates `version` and `iteration`; corrupted `sessionId`, `stateType`, `rateLimitAttempts`, or `updatedAt` slip through
+
+**Problem.** The validation block at lines
+66-74 checks exactly two fields:
+
+```ts
+parsed.version === 1 &&
+typeof parsed.iteration === "number"
+```
+
+It does NOT check that `sessionId` is `string |
+null`, that `stateType` is a string, that
+`rateLimitAttempts` is a number, or that
+`updatedAt` is a string. A hand-edited or
+partially-written file with a valid version
+and a numeric iteration but a wrong-typed
+`sessionId` (e.g. `42`, or an object) will be
+returned as `PersistedLoopState`, and the
+consumer at `App.tsx:1168-1169` will pass it to
+`reconcileSession(createClient(url), p.sessionId)`.
+The downstream `getSessionStatus` call will
+serialize the bad value to the server URL, which
+will reject the request and the probe returns
+`"unknown"`. So the *worst* outcome is a
+`unknown` verdict, which `doResume` treats as
+"missing" and starts a fresh iteration with the
+preserved count. Recoverable, but ugly — and
+the same input field-by-field validation
+should be done in one place rather than
+relying on every consumer to be defensive.
+
+**Where.** `src/lib/loop-state-store.ts:66-74`.
+
+**Proposed fix.** Validate every field with a
+type guard:
+
+```ts
+function isPersistedLoopState(p: unknown): p is PersistedLoopState {
+  if (!p || typeof p !== "object") return false
+  const s = p as Record<string, unknown>
+  return (
+    s.version === 1 &&
+    typeof s.iteration === "number" &&
+    (s.sessionId === null || typeof s.sessionId === "string") &&
+    typeof s.stateType === "string" &&
+    typeof s.rateLimitAttempts === "number" &&
+    typeof s.updatedAt === "string"
+  )
+}
+
+export async function loadLoopState(): Promise<PersistedLoopState | null> {
+  try {
+    const content = await readFile(statePath(), "utf-8")
+    const parsed: unknown = JSON.parse(content)
+    return isPersistedLoopState(parsed) ? parsed : null
+  } catch {
+    return null
+  }
+}
+```
+
+**Status.** Fix proposed, not applied.
+
+#### INFO — `loadLoopState` does not check `updatedAt` parseability
+
+`updatedAt` is typed as `string` (an ISO 8601
+timestamp per the producer at
+`App.tsx:1284`), but the loader does not call
+`new Date(s.updatedAt)` to verify the string is
+a real timestamp. A garbage string like
+`"definitely-not-a-date"` would pass. In
+practice `updatedAt` is purely diagnostic (see
+8.1 INFO), so a wrong value here is harmless.
+Not a finding.
+
+### 8.3 — Verify `clearLoopState` never throws — even on permission errors or missing files
+
+**VERIFIED.** The implementation at
+`src/lib/loop-state-store.ts:85-91`:
+
+```ts
+export async function clearLoopState(): Promise<void> {
+  try {
+    await unlink(statePath())
+  } catch {
+    // Already gone — fine.
+  }
+}
+```
+
+The `try/catch` around `unlink` swallows every
+error: `ENOENT` (already gone — the comment is
+accurate), `EACCES` / `EPERM` (permission
+denied), `EBUSY` (Windows file lock), and any
+other filesystem error. Two tests cover the
+common case:
+
+| Test | What it proves | Lines |
+| --- | --- | --- |
+| "clears the state file" | Writes, then clears, then asserts `loadLoopState` returns `null` | 55-59 |
+| "clearing a non-existent file does not throw" | Calls `clearLoopState()` with no prior `saveLoopState` | 61-64 |
+
+The "permission errors" case is NOT directly
+tested — the test harness uses a fresh tempdir
+owned by the test process, so it cannot trigger
+`EACCES` without `chmod` games. The code path
+is correct by inspection (the catch is
+type-agnostic), so the absence of a test is a
+test-coverage gap, not a behavioral bug.
+
+#### Finding 8.3.A — LOW — No test for the `EACCES` / `EPERM` branch of `clearLoopState`
+
+**Problem.** The two existing tests cover the
+ENOENT branch and the happy path. The
+permission-denied branch (`EACCES`, `EPERM`) is
+not exercised. A regression that changed the
+catch to only swallow `ENOENT`
+(`if (err.code !== "ENOENT") throw`) would not
+be caught.
+
+**Where.** `src/lib/loop-state-store.test.ts` —
+no permission test exists.
+
+**Proposed fix.** Add a test that creates a
+read-only directory before `clearLoopState`,
+then restores it. On macOS / Linux:
+
+```ts
+import { chmodSync, statSync } from "node:fs"
+
+it("clearLoopState swallows EACCES on a read-only dir", async () => {
+  await saveLoopState(sample)
+  // Lock the directory so unlink fails with EACCES.
+  // (chmod 555 on a dir blocks writes; unlink inside
+  // a non-writable dir also fails.)
+  chmodSync(dir, 0o555)
+  try {
+    await clearLoopState()  // must not throw
+  } finally {
+    chmodSync(dir, 0o755)
+  }
+  // The state file may or may not have been removed,
+  // depending on the OS — we only assert "no throw".
+})
+```
+
+This is tricky cross-platform (Windows ACLs do
+not map to POSIX `chmod`, and root-owned
+tempdirs may bypass the permission check
+entirely), so the test should be `it.skipIf(process.platform === "win32")` or
+guarded behind `process.getuid?.() !== 0` to
+avoid the "running as root" wedge.
+
+**Status.** Fix proposed, not applied.
+
+#### INFO — `clearLoopState` is fire-and-forget at every consumer
+
+All three call sites in `App.tsx` invoke
+`clearLoopState` without `await`:
+
+- `App.tsx:981` — `handleQuit` (the only site
+  that DOES `await`)
+- `App.tsx:1134` — `onCancel` of the resume
+  dialog
+- `App.tsx:1193` — `doResume` else branch
+- `App.tsx:1288` — persistence effect's "else if
+  (s.type === 'complete')" branch
+
+For 1134, 1193, 1288 the fire-and-forget is
+intentional: these are inside reactive effects
+or async callbacks where blocking on a
+filesystem unlink would add unnecessary
+latency. The function never throws, so the
+`void` is safe (no unhandled rejection). The
+fire-and-forget is correct. The `await` at 981
+is for the same reason — it is the shutdown
+path, and the user has already accepted the
+quit latency.
+
+### 8.4 — Verify persistence happens on every state transition to `running`/`pausing`/`paused`/`cooldown` — confirm this is frequent enough for crash recovery
+
+**VERIFIED.** The persistence effect at
+`App.tsx:1268-1290` runs on every state change
+(Solid re-runs the effect whenever
+`loop.state()` changes), and within the effect
+the `if` branches on `s.type`:
+
+```ts
+if (s.type === "running" || s.type === "pausing" ||
+    s.type === "paused" || s.type === "cooldown") {
+  // save
+} else if (s.type === "complete") {
+  // clear
+}
+```
+
+Every state transition that matters for crash
+recovery triggers a save:
+
+| Transition | Triggers save? | Why |
+| --- | --- | --- |
+| `ready` → `running` (via `start`) | Yes | New run; need to persist iteration 0 / 1 + sessionId |
+| `running` → `pausing` (via `toggle_pause` from running) | Yes | User paused mid-iteration |
+| `pausing` → `paused` (via `session_idle` from pausing) | Yes | Pause is now stable |
+| `paused` → `running` (via `toggle_pause` from paused) | Yes | Resume; need to overwrite old snapshot |
+| `running` → `cooldown` (via `rate_limited`) | Yes | Rate-limit wait; need to persist attempt count |
+| `cooldown` → `running` (via `resume_cooldown`) | Yes | Cooldown ended; need fresh snapshot |
+| `running` → `error` | No | Terminal-ish; recovery flow is `retry` not `resume` |
+| `error` → `running` (via `retry`) | Yes | New run; iteration resets to 0 |
+| `*` → `complete` | Clear | No resume after a clean completion (see 8.8) |
+| `*` → `stopping` / `stopped` (via `quit`) | No | `handleQuit` clears explicitly (see 8.8) |
+
+**Frequency is sufficient for crash recovery.**
+Every "I want to be able to resume from here"
+state writes a fresh snapshot atomically. The
+worst-case loss is the gap between the last
+write and the crash — typically a few hundred
+milliseconds (a single state transition takes
+~10-50ms; the effect is synchronous; the
+`void saveLoopState` is fire-and-forget but
+the actual write to `.tmp` is fast — the
+filesystem rename is the only blocking op and
+it is sub-millisecond on local SSD).
+
+#### Finding 8.4.A — LOW — `void saveLoopState(snapshot)` is fire-and-forget; a crash within the same tick as the dispatch loses the snapshot
+
+**Problem.** The effect at
+`App.tsx:1286` does `void saveLoopState(snapshot)`,
+not `await saveLoopState(snapshot)`. The next
+iteration of the effect (or the next process
+instruction) can run before the filesystem
+write completes. If the process is killed in
+that window (SIGKILL, OOM, kernel panic, power
+loss), the persisted state is whatever the
+PREVIOUS effect run wrote.
+
+In practice the window is tiny (~1ms for a
+local SSD) and the NEXT state transition (a
+few hundred ms later at the earliest) will
+overwrite the stale snapshot. The only way to
+hit this is to crash within ~1ms of a
+transition, which is the kind of wedge that
+indicates a much bigger problem (kernel bug,
+hardware fault) — at that point losing the
+last 1ms of progress is irrelevant.
+
+**Where.** `src/App.tsx:1286`.
+
+**Proposed fix.** None recommended. The
+fire-and-forget is correct: blocking the
+reactive effect on a disk write would couple
+UI responsiveness to filesystem latency. The
+`1ms window of staleness` is not worth the
+added complexity. Mark as INFO (not LOW) — the
+finding is recorded for completeness but no
+change is proposed.
+
+**Status.** Documented as INFO, no fix
+proposed.
+
+#### Finding 8.4.B — INFO — `stopping` / `stopped` are deliberately NOT persisted, but `pausing` IS — sanity check confirmed
+
+**Sanity check on `pausing`.** The
+guard at line 1271-1276 explicitly includes
+`pausing`:
+
+```ts
+if (s.type === "running" || s.type === "pausing" ||
+    s.type === "paused" || s.type === "cooldown") {
+```
+
+`pausing` is in the list. The earlier audit note
+in PLAN.md ("persistence happens on every
+state transition to `running`/`pausing`/`paused`/`cooldown`")
+is correct and the implementation matches.
+
+**`stopping` / `stopped` are not persisted.** If
+the user hits Q, the reducer transitions `*` →
+`stopping` → `stopped` (the `stopped` state is
+terminal and only `process.exit()` clears it).
+The persistence effect does NOT branch on
+`stopping` or `stopped`, so no save happens.
+`handleQuit` (line 981) clears explicitly
+before exit, so this is intentional: a
+`stopping`/`stopped` state should NOT be
+resumable (the user deliberately quit). If the
+process is killed during `handleQuit` between
+the `clearLoopState` call and `process.exit`,
+the next startup will load the LAST snapshot
+(which was `running`/`pausing`/`paused`/`cooldown`
+from before the quit) and offer to resume. This
+is the correct behavior: the user would be
+confused if a hard kill during quit left them
+no option to resume, but the resume would be
+of the previous run, not the in-flight quit.
+
+**Status.** No fix proposed — the asymmetry
+(`stopping`/`stopped` deliberately not
+persisted) is correct.
+
+### 8.5 — Verify `doResume` correctly handles: session still working, session idle, session missing, session rate-limiting
+
+`doResume` lives at `App.tsx:1164-1197`. The
+verdict fan-out is:
+
+```ts
+const verdict: ReconcileResult = "missing"
+if (url && p.sessionId) {
+  verdict = await reconcileSession(createClient(url), p.sessionId)
+}
+
+if (verdict === "working" && p.sessionId) {
+  // Re-attach to the still-working session.
+  loop.dispatch({
+    type: "resume_session",
+    iteration: p.iteration,
+    sessionId: p.sessionId,
+  })
+  watchdog.notifyIterationStart()
+  void reconcileAndAdvance()
+} else {
+  // Treat every other verdict (idle, missing, unknown) as "session gone, start fresh".
+  await clearLoopState()
+  loop.dispatch({ type: "resume_session", iteration: p.iteration, sessionId: "" })
+}
+```
+
+| Verdict | Action | Iteration count | SessionId | Correct? |
+| --- | --- | --- | --- | --- |
+| `working` | `resume_session` with persisted sid | preserved | persisted sid | Yes — the old session is still working, re-attach |
+| `idle` | `clearLoopState` + `resume_session` with `""` | preserved | `""` (driver will create a new one) | Yes-ish — see 8.5.A |
+| `missing` | same as `idle` | preserved | `""` | Yes — server has no record of the session, start fresh |
+| `unknown` | same as `idle` | preserved | `""` | Yes — see INFO below |
+| (no `p.sessionId`) | `verdict` stays initial `"missing"` | preserved | `""` | Yes — no session to reconcile |
+| (no `url`) | same | preserved | `""` | Yes — server URL not set yet, start fresh |
+
+`ReconcileResult` is defined at
+`src/lib/api.ts:296` as `"working" | "idle" | "missing" | "unknown"`.
+The `reconcileSession` function at
+`src/lib/api.ts:298-323` produces these from
+`getSessionStatus`:
+
+- `busy` or `retry` → `"working"` (note: `retry`
+  means the server is waiting out a provider
+  rate-limit on the session; counted as
+  working because the session will resume on
+  its own)
+- `idle` → `"idle"`
+- no status returned → `"missing"`
+- unrecognized type → `"unknown"`
+- exception (timeout / network) → `"unknown"`
+
+**Session rate-limiting is handled as
+`working`** (the `retry` case above). So if
+the OCLoop process crashed while the server
+was rate-limited, `doResume` correctly
+re-attaches to the still-waiting session and
+the watchdog's `reconcileAndAdvance` will pick
+up the eventual `session.idle` event when the
+rate limit clears. Verified.
+
+#### Finding 8.5.A — MEDIUM — `verdict === "idle"` discards the in-flight iteration's result and may over-count work
+
+**Problem.** When `doResume` is called with a
+persisted state where the server says the
+session is `idle`, the implementation treats
+it the same as `missing` / `unknown`: clear
+the persisted state and dispatch
+`resume_session` with an empty sessionId.
+The iteration driver then fires, calls
+`startIteration`, and dispatches
+`iteration_started`, which INCREMENTS the
+iteration counter from `p.iteration` to
+`p.iteration + 1`.
+
+The original run reached `iteration =
+p.iteration` because the in-flight session
+completed. If the OCLoop process crashed
+AFTER the session idled but BEFORE
+`plan_complete` was detected and dispatched,
+the user is left with:
+
+- a session that already finished its work,
+- a persisted state that says `iteration =
+  p.iteration` (correct, that was the
+  iteration count at save time),
+- a fresh dispatch that increments to
+  `p.iteration + 1` and starts ANOTHER
+  iteration.
+
+In the best case, the fresh iteration sees
+the work is already done and `plan_complete`
+fires on the next driver cycle. In the worst
+case, the agent re-reads the plan, decides
+the previous task is not fully done (e.g.
+test failures not yet fixed), and redoes the
+work. The iteration count over-counts the
+actual work done by one.
+
+This is a MEDIUM finding, not HIGH, because:
+
+1. The same problem exists in the `missing`
+   and `unknown` branches (no signal
+   available to distinguish them).
+2. The `plan_complete` detection on the next
+   iteration will catch the over-count and
+   end the run.
+3. The user can audit the iteration count in
+   the dashboard.
+
+**Where.** `src/App.tsx:1188-1196` (the
+`else` branch in `doResume`).
+
+**Proposed fix.** When `verdict === "idle"`,
+the session finished normally. The
+`iteration` counter should NOT increment on
+the next cycle — the next `iteration_started`
+should be for `p.iteration` (not
+`p.iteration + 1`), reflecting that the
+in-flight iteration is already done. The
+cleanest way to express this is to keep
+`iteration` at `p.iteration` and skip the
+increment for the next `iteration_started` —
+but the current reducer at
+`useLoopState.ts:78-96` always increments on
+`iteration_started`. Options:
+
+- (a) Add a `iteration_resumed` action that
+  sets the iteration count to `p.iteration`
+  without incrementing, and dispatch it
+  instead of `resume_session` in the
+  `idle` branch.
+- (b) Use `clearLoopState` + `start` (which
+  resets iteration to 0) for the `idle`
+  branch, accepting that the resume
+  counter resets. Bad: the user's progress
+  tracker loses count.
+- (c) Document the over-count as accepted
+  behavior and add a `iterations_offset`
+  field to the persistence snapshot to
+  display the "actual completed" count
+  rather than the "started" count. Visible
+  in the dashboard, no functional change.
+
+(c) is the lightest-touch fix and gives the
+user the right number. (a) is the most
+correct but requires a reducer change.
+
+**Status.** Fix proposed, not applied. The
+finding is real but the impact is bounded by
+the next `plan_complete` check.
+
+#### INFO — `verdict === "unknown"` from `doResume` may indicate a server-level hang
+
+When `reconcileSession` itself fails (the
+`getSessionStatus` call timed out or the
+network broke), it returns `"unknown"`.
+`doResume` treats this as "session gone,
+start fresh" — but the actual cause may be
+that the SERVER is hung (we never got a
+response from `/session/status`). Starting a
+fresh iteration in that case is unlikely to
+succeed either: `createSession` will hit the
+same hung server.
+
+The watchdog at `useWatchdog.ts:215-219`
+treats any active session as a heartbeat
+target, and after the first
+`watchdogSuspectMs` (90s by default) without a
+heartbeat, the watchdog will suspect the
+session and after `watchdogConfirmMs` (600s
+default) will confirm and trigger
+`restartServer`. So the "fresh iteration on
+hung server" path self-heals in at most
+~10 minutes. Not a finding, just a slow
+recovery observation.
+
+### 8.6 — Verify `doResume` restores `rateLimitAttempts` from persisted state — confirm the circuit breaker continues from where it left off
+
+**VERIFIED.** `App.tsx:1165`:
+`rateLimitAttempts = p.rateLimitAttempts || 0`.
+
+Three properties of this restore are
+correct:
+
+1. **Reads from the persisted snapshot.** The
+   field is part of the `PersistedLoopState`
+   schema (`loop-state-store.ts:32`) and is
+   always written by the persistence effect at
+   `App.tsx:1283`.
+2. **`|| 0` defaults to 0 for missing or
+   non-numeric values.** The validation gap
+   found in 8.2.A means a non-numeric
+   `rateLimitAttempts` could slip through the
+   loader; the `|| 0` here catches it.
+3. **The next `enterCooldown` call
+   (`App.tsx:677`) reads the module-level
+   `rateLimitAttempts` and increments from
+   there.** So a persisted attempt count of 5
+   becomes 6 on the next rate limit, which is
+   the correct circuit-breaker continuity.
+
+**The circuit breaker continues from where it
+left off.** This is the intended behavior. If
+the user hit 5 rate limits in a row and then
+OCLoop crashed, on resume the next rate limit
+will count as attempt 6 (not 1), preserving
+the backoff state. The maxRetry threshold
+(`r.maxRateLimitRetries`, default 8 per
+`config.ts:121`) is therefore respected
+across crashes.
+
+**No findings for 8.6.** This is a clean
+pass.
+
+### 8.7 — Verify `--resume` flag sets `resilience.resume = true` which triggers auto-resume in `initializeSession` — what if there's no persisted state?
+
+The flow:
+
+1. CLI: `--resume` is parsed at
+   `src/lib/cli-args.ts:237-238` and sets
+   `resilience.resume = true` on the
+   `ResilienceConfig` object passed to
+   `initializeSession`.
+2. App startup: `initializeSession` at
+   `App.tsx:1098-1157` is called from the
+   `onMount` block of the server-ready effect
+   (line 1049).
+3. The first thing `initializeSession` does
+   after `ensureGitignore` is
+   `const persisted = await loadLoopState()`
+   (line 1112).
+4. The condition at line 1113:
+   `if (persisted && persisted.iteration > 0) { … }`.
+
+**When `persisted === null` (no state file):**
+The `if` is false. Execution falls through to
+`if (props.run) { loop.dispatch({ type: "start" }) }`
+at line 1143-1147. If `--run` was passed, the
+loop starts fresh. If neither `--run` nor
+`--resume` was passed, nothing happens and the
+loop stays in the `ready` state (the user has
+to press Enter to start).
+
+**When `persisted.iteration === 0`:**
+The `if` is false (because of the `> 0` guard).
+Same fallthrough as the null case. This is
+intentional: a persisted state with iteration
+0 means the process crashed BEFORE any
+iteration started (right after `start` was
+dispatched, before `iteration_started`). The
+`> 0` guard avoids resuming "we never did
+anything" — which would just call
+`startIteration`, increment to 1, and start
+the first real iteration. The user gets the
+same result with one fewer round trip.
+
+**When `--resume` is passed but no persisted
+state exists:** the `resilience.resume` flag
+is loaded but unused (the `if (resilience().resume)`
+branch at line 1119 is never reached because
+the outer `if` is false). The user gets the
+standard "press Enter to start" prompt
+(unless `--run` is also passed, in which
+case the loop auto-starts). This is the
+correct behavior — `--resume` only takes
+effect when there IS something to resume.
+
+**No findings for 8.7.** The null/zero-state
+handling is correct.
+
+#### INFO — `resilience.resume` is not persisted across runs
+
+The `resume` flag is a CLI flag, not a config
+file value (looking at `config.ts:102-135`,
+the `resume` field lives on
+`ResilienceConfig` and the default is
+`false`; there is no `save` path that writes
+it back to `.oconfig` or similar). So if the
+user wants every OCLoop launch to
+auto-resume, they must pass `--resume` every
+time (or set it in their shell alias). This
+is the right design: a resume is a one-time
+recovery decision, not a persistent
+preference.
+
+### 8.8 — Document: `clearLoopState` is called on clean quit AND on plan completion — verify this is intentional (prevents accidental re-resume after a successful run)
+
+**Two call sites for clear on success/exit:**
+
+1. **`handleQuit` — `App.tsx:981`:**
+   `if (!props.debug) { await clearLoopState() }`.
+   The debug guard is correct (debug mode
+   never persists in the first place, see
+   `App.tsx:1269`: `if (props.debug) return`
+   short-circuits the persistence effect).
+2. **Persistence effect — `App.tsx:1287-1289`:**
+   `else if (s.type === "complete") { void clearLoopState() }`.
+   Fires when the loop transitions to
+   `complete` (e.g. after
+   `checkPlanComplete` returns true and
+   `plan_complete` is dispatched).
+
+**Both call sites are correct and
+intentional.** The contract is:
+
+- A successful plan completion → clear
+  persisted state → no "Resume from
+  iteration N?" dialog next launch.
+- A user-initiated quit → clear persisted
+  state → no "Resume from iteration N?"
+  dialog next launch.
+- A crash (no quit, no completion) →
+  persisted state survives → next launch
+  offers to resume.
+
+**Why this matters.** Without the clear on
+completion, a user who finishes a 50-task
+plan and re-launches OCLoop the next day to
+start a NEW plan would get the "Resume from
+iteration 50?" dialog — which is wrong
+(they want a fresh start on a new plan,
+which would typically be a different
+`PLAN.md`). The clear prevents this
+accidental re-resume.
+
+**Why clear on quit too.** If the user
+deliberately quits, they do not want the
+next launch to assume the quit was a crash
+and offer to resume. The user's intent is
+explicit; honor it.
+
+**No findings for 8.8.** The clear-on-quit
+and clear-on-complete behavior is correct
+and matches the design intent.
+
+#### INFO — `clearLoopState` is NOT called on the `error` state
+
+The persistence effect's branches are:
+
+```ts
+if (s.type === "running" || s.type === "pausing" ||
+    s.type === "paused" || s.type === "cooldown") {
+  // save
+} else if (s.type === "complete") {
+  // clear
+}
+// implicit else: do nothing (no save, no clear)
+```
+
+For `s.type === "error"`, the implicit else
+fires — the snapshot from the LAST
+running/pausing/paused/cooldown state
+remains on disk. The next launch (after the
+user resolves the error, presumably by
+restarting the loop or pressing R to retry)
+will offer to resume from the pre-error
+state. This is the right behavior: an error
+is not a clean exit, and the user may want
+to retry from where it failed. The
+"recoverable: true" flag on transient errors
+enables the R-to-retry flow.
+
+For `s.type === "stopping"` or `s.type === "stopped"`,
+the same implicit else fires — the last
+running/pausing/paused/cooldown snapshot
+remains. `handleQuit` clears explicitly
+(line 981), so a successful `handleQuit`
+always leaves a clean state. A crash during
+`handleQuit` (between the clear and
+`process.exit`) leaves the previous snapshot
+on disk, which is the correct "what would
+the user want?" answer (the user wanted to
+quit, but the quit was interrupted — they
+should be offered a resume so they can quit
+properly).
+
+### Test-suite delta for Phase 8
+
+**No new tests added.** The 6 existing tests
+in `loop-state-store.test.ts` cover:
+
+- `returns null when no state file exists`
+  (8.2)
+- `round-trips a saved state` (8.1)
+- `overwrites previous state atomically` (8.1)
+- `clears the state file` (8.3)
+- `clearing a non-existent file does not throw`
+  (8.3)
+- `returns null for an unsupported version`
+  (8.2)
+
+The MEDIUM findings (8.2.A — incomplete
+field validation, 8.5.A — over-counting on
+`idle` verdict) would benefit from new tests,
+but they are documented in this audit and
+not applied (per PLAN.md acceptance
+criteria: "No code changes are applied —
+this is audit-only with documentation
+output"). The proposed tests for 8.2.A would
+add a 7th `it()` block writing a corrupt
+snapshot (`{ version: 1, iteration: 1,
+sessionId: 42, … }`) and asserting
+`loadLoopState` returns null. The proposed
+tests for 8.5.A would require a mock
+`reconcileSession` and a controllable
+`loopReducer` — feasible but large enough
+that they belong in a follow-up
+implementation commit, not in this audit.
+
+The two LOW findings (8.1.A — orphan tmp
+file on rename failure, 8.3.A — no
+EACCES/EPERM test) also map to specific
+tests that would be added with the
+implementation commit, not now.
+
+### Summary of Phase 8 findings
+
+| # | Severity | One-liner |
+| --- | --- | --- |
+| 8.1.A | LOW | `rename` failure leaves an orphan `.tmp` file; should `unlink` in catch. |
+| 8.2.A | MEDIUM | `loadLoopState` validates only `version` and `iteration`; corrupted `sessionId` / `stateType` / `rateLimitAttempts` / `updatedAt` slip through. |
+| 8.3.A | LOW | No test for the `EACCES` / `EPERM` branch of `clearLoopState`. |
+| 8.4.A | LOW (INFO) | `void saveLoopState` is fire-and-forget; sub-millisecond staleness window. |
+| 8.4.B | INFO | `stopping` / `stopped` deliberately not persisted (correct). |
+| 8.5.A | MEDIUM | `verdict === "idle"` may over-count iterations by 1 on resume. |
+| 8.5 | INFO | `verdict === "unknown"` from `doResume` may indicate a server hang; watchdog self-heals in ~10min. |
+| 8.1 | INFO | `stateType` and `updatedAt` are diagnostic-only. |
+| 8.2 | INFO | `loadLoopState` does not check `updatedAt` parseability (harmless). |
+| 8.3 | INFO | `clearLoopState` is fire-and-forget at three of four call sites (intentional). |
+| 8.7 | INFO | `resilience.resume` is a CLI flag, not a persistent config value. |
+| 8.8 | INFO | `clearLoopState` is NOT called on `error` state (intentional). |
+
+`bun test src/lib/loop-state-store.test.ts` -> **6 pass, 0 fail, 7
+expect() calls**. No regressions. The full
+suite (`bun test`) was not re-run because
+this audit makes no code changes.
