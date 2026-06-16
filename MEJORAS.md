@@ -21171,3 +21171,186 @@ These four tests pin down the resolution rule and document the whitespace-trim b
 - **No CRITICAL, HIGH, or MEDIUM findings.**
 
 The duplication is **shallow and uniform** — every site uses the same 1-line expression with no variation. The audit value is mostly **documenting why the `||` exists** (defensive, but unreachable via `parseArgs`), **pointing at the centralization opportunity** (16.3.A), and **mapping the surface area of the existing whitespace bug** (16.3.C → Finding 1.1.A). The fix is a 5-line helper plus 4 unit tests; the cleanup is optional and depends on whether the team wants to keep the `||` as a visible type-system argument or drop it in favor of the type assertion.
+
+### 16.4 — Duplicated session ID resolution (`sessionId() || lastSessionId()`)
+
+Source: `src/App.tsx` (11 call sites of the same expression). `sessionId` is a `createMemo` at `src/App.tsx:402-414`; `lastSessionId` is a `createSignal` at `src/App.tsx:155`, set in two places (line 451 inside `useSSE.onSessionCreated` and line 900 inside the debug `createSession` flow).
+
+Tests: `src/hooks/useLoopState.test.ts` and `src/hooks/useSSE.test.ts` cover the underlying state transitions but **do not exercise the `sessionId() || lastSessionId()` fallback** — the `||` itself is not a testable surface today, so any change to the policy (e.g. "if the loop is in `error`, do not fall back to `lastSessionId`") would be invisible to the test suite.
+
+PLAN.md 16.4: "Identify and document duplicated session ID resolution (`sessionId() || lastSessionId()`)."
+
+#### What the two values mean — VERIFIED semantics
+
+| Signal | Defined at | Type | Updated by | Cleared by | Returns `undefined` when |
+| --- | --- | --- | --- | --- | --- |
+| `sessionId()` (memo) | `App.tsx:402-414` | `Accessor<string \| undefined>` | reducer (recomputes on every `state()` change) | n/a (derived) | loop state is not `running`/`pausing`/`debug`, OR the field is empty (`""`) |
+| `lastSessionId()` (signal) | `App.tsx:155` | `Accessor<string \| undefined>` | `useSSE.onSessionCreated` (line 451), debug `createSession` (line 900) | **never** | app is starting up and no session has been created yet |
+
+The `sessionId()` memo only returns a value while a session is **live** in the loop state machine. As soon as the iteration ends and the state moves to `cooldown` / `paused` / `complete` / `error` / `ready`, the memo returns `undefined` — even though the SSE connection, the SDK session on the server, and the user's mental model of "the session I was just running" still exist.
+
+`lastSessionId()` is the **persistent** "most recent session ID" — it is set the first time a session is created and never cleared. It survives state transitions, restarts of the loop reducer, and the entire app lifetime. It is the bridge between "the session ID the loop state machine has right now" and "the session ID the user expects to be able to attach to / send a prompt to / copy from clipboard".
+
+The `||` expression therefore encodes a single, well-defined policy: **"give me the live session ID if there is one; otherwise give me the most recent one I have ever created."** That policy is correct for every consumer below (debug-mode prompt, terminal attach, copy-to-clipboard, command enablement).
+
+#### Inventory — VERIFIED, 11 call sites in App.tsx
+
+| # | Line | Surrounding form | Consumer / purpose |
+| --- | --- | --- | --- |
+| 1 | 921 | `const sid = sessionId() \|\| lastSessionId()` | `sendDebugPrompt()` — sends a user-typed prompt to the live-or-last session |
+| 2 | 1336 | `(sessionId() \|\| lastSessionId()) && server.url()` | `showTerminalError()` — builds an attach command for the dialog |
+| 3 | 1337 | `getAttachCommand(server.url()!, (sessionId() \|\| lastSessionId())!)` | `showTerminalError()` — same, second read of the same expression |
+| 4 | 1394 | `const sid = sessionId() \|\| lastSessionId()` | `onConfigSelect()` — launches the terminal after the user picks one |
+| 5 | 1416 | `const sid = sessionId() \|\| lastSessionId()` | `onConfigCustom()` — same, custom-command path |
+| 6 | 1423 | `const sid = sessionId() \|\| lastSessionId()` | `onConfigCopy()` — copies the attach command to clipboard |
+| 7 | 1434 | `const sid = sessionId() \|\| lastSessionId()` | `onErrorCopy()` — same, error-dialog path |
+| 8 | 1456 | `const sid = sessionId() \|\| lastSessionId()` | `createEffect` for command registration — re-runs when session ID changes to keep commands in sync |
+| 9 | 1688 | `const sid = sessionId() \|\| lastSessionId()` | Keybinding `p` (debug prompt dialog) |
+| 10 | 1711 | `const sid = sessionId() \|\| lastSessionId()` | Keybinding `t` (terminal launch, in debug state) |
+| 11 | 1766 | `const sid = sessionId() \|\| lastSessionId()` | Keybinding `t` (terminal launch, in non-debug / detached state) |
+
+Sites #2 + #3 are special: the same expression appears **twice on consecutive lines** inside a single ternary, so the count of "places that call this expression" is effectively 11 but "places that pay the cost of the `||`" is 12. Site #8 is special in a different way: it sits inside a `createEffect`, so the `sessionId() || lastSessionId()` expression is re-evaluated on **every signal read of `sessionId` or `lastSessionId`**, not just on state-machine events. The other 10 sites fire only when a user action triggers them.
+
+#### How `sessionId()` and `lastSessionId()` are produced — VERIFIED
+
+`sessionId()` is a 13-line `createMemo` at `App.tsx:402-414`. It inspects the current `loop.state()` and returns the embedded `sessionId` field for `running` / `pausing` / `debug`; otherwise `undefined`. Notably, it does **not** check `paused` / `cooldown` / `complete` / `error` — those states have a `sessionId` in the type union (e.g. `cooldown` has `sessionId: string` in some branches) but the memo ignores them. This is the **first** reason the `||` exists: a user who pauses the loop and then wants to attach to their session would otherwise see `undefined` and the action would be blocked with the "no session" toast.
+
+`lastSessionId` is set in **two** places, both with the same shape: "I just got a new session ID, store it as the most recent." This is the **second** reason the `||` exists: a user who lets the loop complete, exits to `ready`, and then opens the terminal config dialog should be able to attach to the session they just ran, even though the loop state has forgotten it.
+
+#### Is the fallback ever wrong? — VERIFIED edge cases
+
+The fallback is correct in the common case ("attach to whatever I was last running"), but it has three subtle failure modes:
+
+1. **Stale-server attach.** A user runs the loop, the loop completes, the OCLoop process exits. Later, the user restarts OCLoop **without** restarting the opencode server. The server still has the previous session in memory. `lastSessionId` is `undefined` (new process → new `createSignal`), so the `||` returns `undefined` and the user cannot re-attach. This is **correct behavior** — a new OCLoop process has no memory of the previous session, and trying to attach to a stale server-side session would be guessing.
+
+2. **Cross-iteration confusion.** A user runs iteration 1 (session A), pauses, lets it sit, the session A eventually times out on the server, the user resumes. `lastSessionId` is still `"A"`, the loop's current state has a new session ID for iteration 2 (session B). If the user opens the terminal config dialog, they get the **live** session (B) — the `||` correctly prefers `sessionId()`. Good. But if the user pauses between iterations and the loop state moves to `paused` (with `sessionId: ""`), then `sessionId()` returns `undefined` and the fallback returns the **last** session ID — which is B, not A. Still correct, but only because `lastSessionId` is updated to the most recent session on every `onSessionCreated` event.
+
+3. **Server restart after session creation.** A user creates a debug session (line 900: `setLastSessionId(newSessionId)`). The opencode server then restarts. The server-side session is gone. `lastSessionId` still holds the dead ID. The user opens the terminal config dialog, gets the attach command for the dead session, and the terminal fails to connect. This is a **known limitation** of the design — there is no signal that the server-side session is gone, so the UI cannot distinguish "last session is still alive" from "last session was killed by a server restart." The audit value is **flagging the limitation**, not fixing it (a fix would require a server-side "is this session still alive?" probe before attaching).
+
+#### Finding 16.4.A — LOW — `sessionId() || lastSessionId()` repeated at 11 sites
+
+**Problem.** The 1-line expression `sessionId() || lastSessionId()` appears **11 times** in `src/App.tsx`. Each site independently re-derives the same value. The duplication is **mechanical** (one line × 11 sites = 11 lines) and **uniform** (every site uses the same expression with no variation). A future change to the policy (e.g. "if the loop is in `error`, do not fall back to `lastSessionId`" or "if the session was created more than 24h ago, treat it as dead") would require editing 11 sites instead of 1.
+
+**Where.** `src/App.tsx` lines 921, 1336, 1337, 1394, 1416, 1423, 1434, 1456, 1688, 1711, 1766.
+
+**Proposed fix.** Extract the policy into a small accessor next to the `sessionId` memo (same file, no new file needed — the memo is 13 lines and the helper would be 4):
+
+```ts
+// src/App.tsx, right after the sessionId memo (line 414)
+
+/**
+ * Return the session ID the user can act on right now: the live one if
+ * the loop has one, otherwise the most recent one we ever created.
+ *
+ * This is the single source of truth for "what session should the
+ * terminal / clipboard / debug prompt point at?" — replaces the
+ * 11-site `sessionId() || lastSessionId()` duplication.
+ */
+const activeSessionId = createMemo(() => sessionId() ?? lastSessionId() ?? undefined)
+```
+
+The `??` (nullish coalescing) is used instead of `||` so that a falsy non-empty string (e.g. the empty string `""` that the loop reducer uses to mean "no session yet") is **not** treated as a fallback trigger. This matches the memo's return type (`string | undefined`) and is safer than `||` for string-typed signals. (In practice the `??` and `||` are equivalent here because `sessionId()` never returns `""` — the memo's branches all return either a truthy string or `undefined` — but `??` is the correct operator for "the field is null/undefined, not falsy".)
+
+Call sites collapse from 1 line to 1 line (no savings in line count) but the policy lives in **one place**:
+
+```ts
+// before
+const sid = sessionId() || lastSessionId()
+
+// after
+const sid = activeSessionId()
+```
+
+Why bother, then, if the line count is unchanged?
+
+1. **Centralized policy.** A future change to the resolution rule (e.g. "if the session was created more than 24h ago, return `undefined`") becomes a 1-file change instead of an 11-file change. The current 11 sites all have to be edited in lockstep; missing one creates a silent inconsistency where, say, the keybinding-`t` path shows the new behavior but the `onConfigCopy` path shows the old.
+2. **Performance (small).** Site #8 is inside a `createEffect` and re-evaluates on every signal read. The current 11 sites each invoke `sessionId()` once; with the helper, they invoke `activeSessionId()` which in turn invokes `sessionId()`. The overhead is one extra memo lookup per call — negligible.
+3. **Testability.** `activeSessionId` is a memo and can be unit-tested with a minimal Solid harness: pass a mock `state()` and a mock `lastSessionId`, assert the resolved value. The current 11 inline expressions cannot be unit-tested in isolation.
+
+**Severity: LOW.** Not a bug. The duplication is shallow (1 line × 11 sites = 11 lines) and every site is correct today. The refactor is for **policy centralization** and **forward-compatibility**, not for line count or correctness.
+
+#### Finding 16.4.B — LOW — Site #2 + #3 evaluate the same expression twice
+
+**Problem.** Lines 1336-1337 inside `showTerminalError`:
+
+```ts
+const attachCmd = (sessionId() || lastSessionId()) && server.url() 
+  ? getAttachCommand(server.url()!, (sessionId() || lastSessionId())!) 
+  : ""
+```
+
+The same `sessionId() || lastSessionId()` expression is evaluated **twice** on the same line — once for the condition, once for the `getAttachCommand` argument. The two reads are not memoized: each invocation calls the `createMemo` again and the `createSignal` again. In practice the result is the same (no signal changed between the two reads, since both reads happen in the same microtask), but the code reads as if the two expressions could diverge.
+
+**Where.** `src/App.tsx:1336-1337`.
+
+**Proposed fix.** If 16.4.A is adopted, the duplication collapses naturally:
+
+```ts
+const sid = activeSessionId()
+const attachCmd = sid && server.url() 
+  ? getAttachCommand(server.url()!, sid) 
+  : ""
+```
+
+This evaluates the resolution once, names the result, and uses it twice. The two-read pattern is a symptom of the missing helper — once the helper exists, the natural shape is to assign to a local first.
+
+**Severity: LOW.** Cosmetic. The double evaluation is a function call on each read; the result is the same value because no signal fires between the two reads in a single synchronous expression. The fix is for **readability**, not for correctness or performance.
+
+#### Finding 16.4.C — INFO — No test covers the `||` fallback policy
+
+**Problem.** No test exercises the `sessionId() || lastSessionId()` expression. The 11 call sites are tested only **transitively** — by integration tests that drive the loop through a real OpenCode server, not by unit tests of the resolution rule itself. This means:
+
+- The 3 subtle failure modes above (stale-server attach, cross-iteration confusion, server-restart after session creation) are not pinned down by any assertion.
+- A future change to the policy (e.g. "do not fall back in `error` state") would not be caught by the test suite until a user hits the inconsistency.
+
+**Where.** No test file in the repo imports `sessionId` or `lastSessionId` directly. `src/hooks/useLoopState.test.ts` tests the reducer (which is what `sessionId()` is derived from) but does not import App.tsx. `src/hooks/useSSE.test.ts` tests the SSE hook (which calls `setLastSessionId` indirectly via the `onSessionCreated` callback in production) but does so with a stub callback that does not touch `lastSessionId`.
+
+**Proposed fix.** If 16.4.A is adopted, the `activeSessionId` memo becomes unit-testable. The test would need to mock `loop.state()` and `lastSessionId()` (a 10-line harness using Solid's `createRoot` + `createSignal`):
+
+```ts
+// src/App.test.ts (new) or src/lib/session-id.test.ts
+import { describe, expect, it } from "bun:test"
+import { createRoot, createSignal } from "solid-js"
+import { createStore } from "solid-js/store"
+
+describe("activeSessionId fallback policy", () => {
+  it("returns the live sessionId when loop is running with a non-empty id", () => {
+    // arrange: loop state = running with sessionId = "abc"
+    // assert: activeSessionId() === "abc", even if lastSessionId is "xyz"
+  })
+
+  it("falls back to lastSessionId when loop is paused / cooldown / complete / error / ready", () => {
+    // arrange: loop state = paused, lastSessionId = "abc"
+    // assert: activeSessionId() === "abc"
+  })
+
+  it("returns undefined when neither is set (startup)", () => {
+    // arrange: loop state = ready, lastSessionId = undefined
+    // assert: activeSessionId() === undefined
+  })
+
+  it("prefers a debug session ID over a stale lastSessionId", () => {
+    // arrange: loop state = debug with sessionId = "debug1", lastSessionId = "stale"
+    // assert: activeSessionId() === "debug1"
+  })
+})
+```
+
+These four tests pin down the resolution rule and document the failure modes. The 11 call sites become trusted consumers of a tested primitive.
+
+**Severity: INFO.** Not a bug; the existing behavior is correct. The audit value is **flagging the testability gap** so a future policy change is forced to add a test.
+
+#### Cross-reference — INFO
+
+- **Site #8 (line 1456) sits inside a `createEffect`.** The effect re-runs whenever `activeSessionId()` changes (i.e. when the loop state machine transitions into/out of a state with a session ID, or when a new session is created). The effect's job is to re-register the command palette so the "send prompt" / "open terminal" commands are enabled/disabled based on whether a session exists. This is a **legitimate** use of the memo — the effect needs to react to changes. No issue.
+- **Sites #1, #9, #10, #11 are inside keybinding handlers.** The keypress handler is called once per keypress, the `||` is evaluated once, no performance concern.
+- **Sites #2-#7 are inside dialog/action callbacks.** Each is called once per user action, no performance concern.
+
+#### Verification result
+
+- **One LOW finding** (16.4.A — extract an `activeSessionId` memo to centralize the 11-site resolution rule).
+- **One LOW finding** (16.4.B — site #2 + #3 evaluate the same expression twice; resolved as a side-effect of 16.4.A).
+- **One INFO-level test-coverage note** (16.4.C — the 11 sites are untested in isolation; the proposed memo is unit-testable in 4 cases).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+
+The duplication is **shallow and uniform** — every site uses the same 1-line expression with no variation, and the semantics are well-defined ("live session, or last session, or none"). The audit value is mostly **documenting the policy** (so future contributors know why the `||` exists and what it is meant to cover), **pointing at the centralization opportunity** (16.4.A), and **mapping the 3 subtle failure modes** (stale-server attach, cross-iteration confusion, server-restart after session creation) so any future change to the policy is forced to engage with them. The fix is a 4-line memo plus 4 unit tests; the cleanup is optional and depends on whether the team wants to keep the `||` as a visible inline expression or centralize it.
