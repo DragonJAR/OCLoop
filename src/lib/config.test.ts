@@ -271,8 +271,13 @@ describe("saveConfig — round-trip (Finding 12.2.A)", () => {
   })
 
   it("returns void and does not throw on the happy path", () => {
-    // Pin the contract from Finding 12.2.E: callers `await` this sync
-    // function, so the return value must be `void` (i.e., `undefined`).
+    // Pin the contract from Finding 12.2.E: the function is synchronous
+    // (returns `void`, i.e., `undefined`, not `Promise<void>`). Callers in
+    // `App.tsx` MUST NOT `await` it — an `await` on a `void` expression
+    // silently introduces a microtask delay that couples local-state updates
+    // to the wrong tick. If the function is ever refactored to use
+    // `fs/promises`, this test will need to be updated to assert the new
+    // shape and the four call sites will need to add `await` back.
     const result = saveConfig({})
     expect(result).toBeUndefined()
   })

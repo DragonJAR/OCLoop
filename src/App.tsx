@@ -1511,8 +1511,10 @@ function AppContent(props: AppProps) {
            name: terminal.name
         }
      }
-     
-     await saveConfig(newConfig)
+
+     // saveConfig is synchronous (returns `void`, not `Promise<void>`) — do
+     // not `await` it. Source: MEJORAS.md Finding 12.2.E.
+     saveConfig(newConfig)
      setOcloopConfig(newConfig)
      dialog.clear()
      
@@ -1533,8 +1535,10 @@ function AppContent(props: AppProps) {
            args
         }
      }
-     
-     await saveConfig(newConfig)
+
+     // saveConfig is synchronous (returns `void`, not `Promise<void>`) — do
+     // not `await` it. Source: MEJORAS.md Finding 12.2.E.
+     saveConfig(newConfig)
      setOcloopConfig(newConfig)
      dialog.clear()
      
@@ -1708,7 +1712,9 @@ function AppContent(props: AppProps) {
             scrollbar_visible: !current
           }
           setOcloopConfig(newConfig)
-          await saveConfig(newConfig)
+          // saveConfig is synchronous (returns `void`, not `Promise<void>`)
+          // — do not `await` it. Source: MEJORAS.md Finding 12.2.E.
+          saveConfig(newConfig)
           dialog.clear()
         },
       },
@@ -1722,7 +1728,9 @@ function AppContent(props: AppProps) {
           setLocale(next)
           const newConfig = { ...ocloopConfig(), language: next }
           setOcloopConfig(newConfig)
-          await saveConfig(newConfig)
+          // saveConfig is synchronous (returns `void`, not `Promise<void>`)
+          // — do not `await` it. Source: MEJORAS.md Finding 12.2.E.
+          saveConfig(newConfig)
           toast.show({ variant: "success", message: t("toastLanguageChanged") })
           dialog.clear()
         },

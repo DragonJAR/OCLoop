@@ -307,6 +307,13 @@ export function loadConfig(): OcloopConfig {
  * Save the configuration to disk.
  * Creates the config directory if it doesn't exist.
  *
+ * Synchronous: the function returns `void` (not `Promise<void>`). Callers
+ * MUST NOT `await` it — there is nothing to await, and an `await` here
+ * silently introduces a microtask delay that couples local-state updates
+ * to the wrong tick. If this function is ever refactored to use
+ * `fs/promises`, the four `App.tsx` call sites will need to be updated to
+ * match the new `Promise<void>` shape.
+ *
  * Never throws — persistence is best-effort and must not crash the app. The
  * contract mirrors `saveLoopState` in `loop-state-store.ts`: any I/O failure
  * (EACCES on a read-only mount, ENOSPC on a full disk, EROFS on a sandbox,
@@ -319,9 +326,11 @@ export function loadConfig(): OcloopConfig {
  *
  * Source: MEJORAS.md Finding 12.2.A. Side effects: also closes Finding 12.2.C
  * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path,
- * and Finding 12.2.D (the `mkdirSync({ recursive: true })` call is invoked
+ * Finding 12.2.D (the `mkdirSync({ recursive: true })` call is invoked
  * unconditionally — it is idempotent on an existing dir, so the previous
- * `existsSync` guard added a wasted syscall plus a TOCTOU window).
+ * `existsSync` guard added a wasted syscall plus a TOCTOU window), and
+ * Finding 12.2.E (the function returns `void`, not `Promise<void>` — see
+ * the synchronous-contract paragraph above).
  */
 export function saveConfig(config: OcloopConfig): void {
   const configDir = getConfigDir()
