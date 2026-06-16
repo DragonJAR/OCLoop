@@ -476,10 +476,27 @@ actualizaron con `kind: "rate_limit"`. `bun test` verde: 680 pass /
 
 ### Mejora 17 — Finding 5.1.B — MEDIUM — `clearCooldownTimers` is called *after* the dispatch, not before
 
-- [ ] Evaluar la mejora 17 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 17 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 17 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 17 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 17 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 17 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 17 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 17 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es de orden y no de corrección: la guarda
+funcional ya estaba en su sitio (los IDs de timer son `let`-bound del
+closure, no signals de Solid, así que ningún path observable
+interactúa con ellos entre el dispatch y el set de los nuevos timers).
+El valor de la fix es estructural — preservar la invariante
+"todo el estado de cooldown se limpia antes de despachar cualquier
+estado nuevo", patrón que ya usa `handleWake` (`App.tsx:220-221`:
+`clearCooldownTimers()` → `loop.dispatch({ type: "resume_cooldown" })`).
+Implementación mínima: 1 línea movida + 8 líneas de comentario
+explicando la racionalidad defensiva y nombrando el patrón de
+`handleWake` que se está alineando. Cero cambios al camino feliz,
+cero impacto en la rama de exhaustión (su `clearCooldownTimers()`
+línea 720 ya estaba antes del return), cero impacto en tests
+(la reordenación es observable-equivalente y un test sería
+tautológico). `bun test` verde: 680 pass / 0 fail (sin cambio en
+el conteo). Commit `0ee1de0`.
 
 ### Mejora 18 — Finding 5.1.C — LOW — `setCooldownRemainingMs(delayMs)` briefly shows the *full* delay
 
