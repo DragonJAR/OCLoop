@@ -85,7 +85,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Audit `useSSE` for: connection lifecycle, reconnection logic, event filtering by sessionId, error classification
 - [x] Verify: `classifySessionError` correctly categorizes rate limits (429), transient errors (5xx, timeouts), auth errors, and fatal errors
-- [ ] Verify: SSE `onSessionError` ignores errors from stale sessions — confirm the sessionId comparison is correct
+- [x] Verify: SSE `onSessionError` ignores errors from stale sessions — confirm the sessionId comparison is correct
 - [ ] Verify: SSE `onSessionIdle` ignores idle events from stale sessions — confirm this matches the behavior in `onSessionError`
 - [ ] Verify: SSE reconnection threshold (6 attempts) triggers a server restart — is this configurable?
 - [ ] Verify: `sse.reconnect()` is called on wake, on watchdog recovery, and on server restart — no double-reconnection issues?

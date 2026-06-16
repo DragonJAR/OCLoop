@@ -7441,3 +7441,400 @@ hygiene task (Phase 18).
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+### 7.2 — Verify `onSessionError` ignores errors from stale sessions; confirm the sessionId comparison is correct
+
+PLAN.md 7.2: "Verify: SSE `onSessionError`
+ignores errors from stale sessions — confirm
+the sessionId comparison is correct."
+
+**Status: COMPLETE — VERIFIED. The
+comparison is correct for the actual data
+shape (OpenCode SDK always populates
+`sessionID` on `session.error` events). One
+MEDIUM observation (the asymmetric filter
+shape is consistent across both layers but
+not identical to the symmetric shape of
+`session.idle`). No CRITICAL or HIGH
+findings.**
+
+#### Two layers of stale-session filtering
+
+The `onSessionError` path has a hook-layer
+filter (in `useSSE.ts`) and a consumer-layer
+filter (in `App.tsx`). The hook filter is
+the primary guard; the consumer filter is
+defense-in-depth. Both must agree for the
+end-to-end behavior to be safe.
+
+#### Layer 1: Hook filter at `useSSE.ts:369-386`
+
+The `session.error` case in the switch at
+`useSSE.ts:369-386`:
+
+```ts
+case "session.error": {
+  const eventSessionId = (event.properties as { sessionID?: string })
+    .sessionID
+
+  const rawError = (event.properties as any).error
+  const sessionError = classifySessionError(rawError)
+
+  // Filter by session if a filter is set
+  if (
+    filterSessionId &&
+    eventSessionId &&
+    eventSessionId !== filterSessionId
+  ) {
+    return
+  }
+  handlers.onSessionError?.(eventSessionId, sessionError)
+  break
+}
+```
+
+The filter is the standard
+"per-session skip" pattern used by the
+other per-session events. It is loaded with
+`filterSessionId = sessionId()` from the
+Solid accessor at the top of `processEvent`
+(line 336), so it always reflects the
+currently-active session that the App wired
+up via the `sessionId` prop in
+`useSSE({...})` (`App.tsx:446`).
+
+**The skip is triggered** when ALL three
+hold:
+
+1. `filterSessionId` is truthy (the SSE
+   hook was given a filter — true whenever
+   a session is active).
+2. `eventSessionId` is truthy (the event
+   carries a `sessionID` field).
+3. `eventSessionId !== filterSessionId`
+   (the event is for a different session).
+
+The asymmetric shape: if `eventSessionId`
+is missing or empty, the skip is **NOT**
+triggered and the event is delivered to
+the handler. The OpenCode SDK always
+populates `sessionID` on `session.error`
+events (verified at
+`node_modules/@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts:585`
+— the type is `sessionID: SessionID`, a
+required branded string), so this gap is
+dormant. See Finding 7.1.A for the wider
+asymmetry discussion (which spans the hook
+filter only, not the consumer filter).
+
+#### Layer 2: Consumer filter at `App.tsx:454-463`
+
+The App-side handler at `App.tsx:454-463`
+adds a second guard before doing any
+work:
+
+```ts
+onSessionError: (eventSessionId, error) => {
+  const state = loop.state()
+  // Ignore errors for a session that is no longer the active one. A stale
+  // aborted error from a just-replaced session (arriving in the brief
+  // running("") window) would otherwise toggle_pause and wedge the loop in
+  // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
+  const debugSid = state.type === "debug" ? state.sessionId : undefined
+  if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
+    return
+  }
+  // ... rest of the handler (isAborted / rate_limit / fatal branches)
+}
+```
+
+The skip is triggered when ALL three hold:
+
+1. `eventSessionId` is truthy (the event
+   carries a `sessionID`).
+2. `eventSessionId !== getActiveSessionId(state)`.
+   `getActiveSessionId` is defined at
+   `useLoopState.ts:34-38` and returns
+   `state.sessionId` for `running` /
+   `pausing` states, `""` otherwise. So
+   the comparison is "the event's session
+   ID is not the session the loop is
+   currently working on."
+3. `eventSessionId !== debugSid`. The
+   `debugSid` is `state.sessionId` when
+   the loop is in `debug` state, else
+   `undefined`. This handles the debug
+   mode where the loop has a session
+   outside the `running`/`pausing`
+   normal-flow branch.
+
+The consumer filter has the same asymmetric
+shape as the hook filter: an un-attributed
+event passes through the guard and reaches
+the handler logic.
+
+#### The two layers are complementary, not redundant
+
+The hook filter compares against the
+**Solid accessor** `filterSessionId = sessionId()`.
+The consumer filter compares against
+`getActiveSessionId(state)` plus
+`debugSid`. These two can diverge:
+
+- The Solid accessor `sessionId()` is set
+  on the most recent session the loop
+  started (it's the "current session"
+  signal updated by the iteration driver
+  in `App.tsx`).
+- `getActiveSessionId(state)` is the
+  session stored in the reducer state
+  (`LoopState.sessionId`), which lags the
+  Solid accessor by one transition in the
+  `running("")` window (the moment between
+  `startIteration` dispatching the new
+  `running("")` state and the SDK
+  returning the new `sessionID` via
+  `session.created`).
+
+The consumer filter is the load-bearing
+guard for the `running("")` window: the
+comment at `App.tsx:456-459` documents this
+explicitly. The hook filter would also
+match (the Solid accessor is also "the new
+session" once it updates), but the comment
+shows the author specifically chose to put
+the guard at the consumer layer so the
+filter source is explicit (`getActiveSessionId`
++ `debugSid`) rather than implicit (the
+Solid accessor value).
+
+#### Consistency with `onSessionIdle`
+
+The `onSessionIdle` handler at
+`App.tsx:491-507` has the same guard shape
+at lines 498:
+
+```ts
+if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
+  // ... process idle
+}
+```
+
+This is the **positive** form ("process if
+it matches") rather than the negative form
+("skip if it does not match"). The two
+handlers use opposite polarity but the
+same logical content: ignore events for
+sessions that are not the active one.
+Both handlers reference `debugSessionId`
+(a `state.type === "debug" ? state.sessionId
+: undefined` shape) to cover debug mode.
+
+The comment at `App.tsx:456-459` says
+"Mirrors the session-id guard onSessionIdle
+already applies" — confirming the
+author's intent to keep the two handlers
+in lock-step.
+
+#### The "stale aborted" wedge scenario
+
+The comment at `App.tsx:456-459` is the
+specific concern that motivates the
+consumer guard. Walk-through:
+
+1. Loop is in `running("old-session-id")`,
+   processing iteration N.
+2. Iteration N completes; the driver
+   dispatches `session_idle`; the next
+   iteration starts; `startIteration`
+   dispatches `running("")` (empty session
+   ID, awaiting the new session).
+3. The OLD session emits a delayed
+   `session.error` event with
+   `sessionID: "old-session-id"`, kind
+   `aborted` (the SDK sent the abort
+   signal after the new session started).
+4. The hook filter check:
+   - `filterSessionId` = "old-session-id"
+     (the Solid accessor hasn't yet
+     updated to the new session ID)
+   - `eventSessionId` = "old-session-id"
+   - Comparison: `"old-session-id" !==
+     "old-session-id"` → false → no skip
+   - **The event passes through to the
+     handler.** This is a stale error for
+     the session the loop just left.
+5. The consumer filter check:
+   - `eventSessionId` = "old-session-id"
+   - `getActiveSessionId(state)` = "" (the
+     `running("")` window)
+   - `debugSid` = undefined
+   - Comparison: `"old-session-id" !== ""`
+     → true, `&& "old-session-id" !==
+     undefined` → true → **skip
+     triggered** ✓
+6. Without the consumer guard, the handler
+   would reach `error.isAborted` →
+   `toggle_pause` (the state is
+   `running("")`, the comment says the
+   abort error would otherwise `toggle_pause`
+   and "wedge the loop in pausing("")").
+   The comment is correct: pausing("") is
+   unreachable via the `startIteration`
+   invariant (`running("")` is the
+   "starting a new session" state, not
+   "pausing" the loop), so a `toggle_pause`
+   dispatched from `running("")` would
+   create a state the loop doesn't know
+   how to recover from.
+
+**The consumer-layer guard is
+load-bearing.** Removing it would re-introduce
+the wedge.
+
+#### Comparison correctness — VERIFIED
+
+The sessionId comparison in `onSessionError`
+is **correct** for all four cases that
+matter:
+
+1. **Stale session (old ID, loop has
+   moved on)** → consumer filter triggers
+   (case 5 above). ✓
+2. **Active session (ID matches
+   `getActiveSessionId`)** → both filters
+   pass, handler processes. ✓
+3. **Debug session (state.type === "debug",
+   debugSid matches)** → consumer filter
+   passes via the `debugSid` branch. ✓
+4. **Un-attributed event
+   (`eventSessionId` undefined)** → both
+   filters pass (the `eventSessionId &&`
+   guard short-circuits the comparison).
+   The OpenCode SDK guarantees this is
+   never observed in practice (the SDK
+   type at `v2/gen/types.gen.d.ts:585`
+   makes `sessionID` a required branded
+   string on `SessionError`).
+
+The two layers are consistent in
+asymmetry (both require an attributed
+event to skip), and they cover the
+specific wedge scenario documented at
+`App.tsx:456-459`.
+
+#### Finding 7.2.A — MEDIUM — Consumer filter and hook filter share an asymmetric shape that could be made symmetric with no behavioral change
+
+The hook filter at `useSSE.ts:377-383` and
+the consumer filter at `App.tsx:461` both
+require `eventSessionId &&` to be truthy
+before applying the comparison. If
+`eventSessionId` is undefined, both skip
+the guard. This is the same asymmetric
+shape flagged in Finding 7.1.A (which
+covered the hook filter in isolation).
+
+**The asymmetry is a deliberate
+choice, but the policy is not documented
+inline.** A future maintainer reading the
+code cannot tell whether the `eventSessionId
+&&` is "deliberate: pass un-attributed
+errors through" or "oversight: this should
+require an explicit 'has sessionID'
+check."
+
+**Where.** `useSSE.ts:377-383` (hook
+filter); `App.tsx:461` (consumer filter).
+
+**Proposed fix.** Document the policy in a
+single comment at the hook level, then
+mirror it at the consumer level. The
+current behavior (pass un-attributed
+errors through) is the correct one because
+the App handler is the authoritative
+arbiter and already short-circuits on
+state (e.g., it only dispatches `error`
+when `st === "running" || "pausing" ||
+"debug"`):
+
+```ts
+// useSSE.ts:374 — add a policy comment
+// Policy: un-attributed session.error events
+// are passed through. The App handler is the
+// authoritative arbiter of which states accept
+// errors (running/pausing/debug only) and
+// ignores the rest. Mirrors the session.idle
+// filter shape for consistency.
+```
+
+```ts
+// App.tsx:456 — mirror the policy comment
+// Policy: un-attributed errors pass through
+// and reach the state-aware handler below.
+// See the policy comment in useSSE.ts:374.
+```
+
+**Status.** Fix proposed, not applied
+(audit-only per PLAN.md acceptance
+criteria). Severity is MEDIUM because the
+asymmetry is dormant (the OpenCode SDK
+always populates `sessionID`) and the
+consumer filter is load-bearing for the
+`running("")` wedge case — the fix is
+purely documentary.
+
+#### Verifier checklist for Task 7.2
+
+- [x] Hook filter at `useSSE.ts:377-383`
+  triggers a skip when both `filterSessionId`
+  and `eventSessionId` are truthy and
+  differ — verified by direct file read.
+- [x] Consumer filter at `App.tsx:461`
+  triggers a skip when `eventSessionId`
+  is truthy and differs from BOTH
+  `getActiveSessionId(state)` and
+  `debugSid` — verified by direct file
+  read.
+- [x] `getActiveSessionId` is defined at
+  `useLoopState.ts:34-38` and returns the
+  session for `running`/`pausing` states,
+  `""` otherwise — verified.
+- [x] The `debugSid` branch covers the
+  `debug` state where the loop has a
+  session outside the `running`/`pausing`
+  normal flow — verified.
+- [x] `onSessionIdle` (lines 491-507) has
+  the same `debugSessionId` shape and the
+  same logical content (ignore events for
+  non-active sessions) — verified.
+- [x] The `running("")` wedge scenario
+  (stale aborted error from the old
+  session) is correctly handled by the
+  consumer filter — verified by the
+  walk-through above.
+- [x] The OpenCode SDK always populates
+  `sessionID` on `session.error` events
+  — verified by type at
+  `v2/gen/types.gen.d.ts:585`.
+
+#### Test-suite delta for Task 7.2
+
+No new tests added. The 21-case
+`classifySessionError` test suite at
+`useSSE.test.ts:1-199` does not cover the
+hook or consumer stale-session filters
+(those tests would require a Solid render
+context and a fake SSE stream; both are
+out of scope for unit tests per
+`docs/testing.md`). The wedge scenario
+documented above would be most cleanly
+covered by an integration test that
+exercises a real `useSSE` instance, but
+the OpenCode SDK does not expose a
+synchronous mock for `client.event.subscribe`
+and the existing test harness uses the
+classifier in isolation.
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.
