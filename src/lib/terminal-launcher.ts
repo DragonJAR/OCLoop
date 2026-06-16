@@ -157,6 +157,23 @@ export async function launchTerminal(
           error: "Custom terminal args must include the {cmd} placeholder",
         }
       }
+
+      // Defensive guard: a non-empty args pattern that does not contain the
+      // `{cmd}` placeholder is silently passed through `buildArgs` unchanged,
+      // so `Bun.spawn` would launch the terminal with the literal args
+      // (e.g. `wezterm -e bash`) and the user gets a plain shell — the
+      // attach command is never substituted. The custom dialog rejects
+      // placeholder-less args on save (see DialogTerminalConfig.tsx); this
+      // guard is the last-line backstop for hand-edited configs and
+      // programmatic writes. The known-terminal path is safe: every entry
+      // in `KNOWN_TERMINALS` carries a `{cmd}` token (verified by grep,
+      // 12 matches — one per entry). Source: MEJORAS.md Finding 11.2.C.
+      if (!argsPattern.includes("{cmd}")) {
+        return {
+          success: false,
+          error: "Custom terminal args must include the {cmd} placeholder",
+        }
+      }
       args = buildArgs(argsPattern, attachCmd)
     }
 
