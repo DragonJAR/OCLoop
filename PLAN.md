@@ -1181,10 +1181,83 @@ cambio en el conteo (era 686 antes de la anotación).
 
 ### Mejora 32 — Finding 8.5.A — MEDIUM — `verdict === "idle"` discards the in-flight iteration's result and may over-count work
 
-- [ ] Evaluar la mejora 32 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 32 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 32 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 32 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 32 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 32 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 32 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 32 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:10332-10446` y la opción (a)
+del fix propuesto ("Add a iteration_resumed action
+that sets the iteration count to p.iteration
+without incrementing, and dispatch it instead of
+resume_session in the idle branch") es claramente
+superior a la opción (b) (reset a 0, que pierde el
+progreso del usuario) y a la opción (c) (offset de
+display, que introduce inconsistencia entre el
+conteo interno y el valor mostrado en dashboard,
+dialog de completion y activity log — y no captura
+el problema en logs de post-mortem). Implementar la
+opción (a) con un flag de estado one-shot (mismo
+patrón que `lastIteration` introducido por Mejora 11
+para Finding 3.1.A) es estrictamente la mínima útil:
+
+- `src/types.ts:19-29` — el campo `resumedFromIdle?:
+  boolean` se añade a la variante `running` del
+  `LoopState`; la action union gana un nuevo
+  variante `iteration_resumed` con la misma shape
+  que `resume_session` (`iteration`, `sessionId`).
+- `src/hooks/useLoopState.ts:81-90` — el reducer
+  para `iteration_started` consulta el flag: si
+  está presente, retorna `running(iteration, …)`
+  SIN incrementar y sin el flag (consume one-shot);
+  en cualquier otro caso, el comportamiento
+  existente (`iteration + 1`) se preserva
+  exactamente.
+- `src/hooks/useLoopState.ts:220-238` — nuevo
+  reducer case `iteration_resumed`: como
+  `resume_session` pero agregando
+  `resumedFromIdle: true` al estado resultante.
+- `src/App.tsx:1295-1311` — el branch `else` de
+  `doResume` dispatcha `iteration_resumed` (en vez
+  de `resume_session`) cuando `verdict === "idle"`;
+  para `missing`/`unknown` mantiene `resume_session`
+  porque el outcome de la sesión in-flight es
+  desconocido y la nueva iteración representa
+  trabajo genuino (count de `p.iteration + 1`
+  correcto).
+
+Cero impacto en el camino feliz: el flag solo se
+establece vía `iteration_resumed` desde `doResume`,
+que solo se ejecuta al startup. Cero impacto en la
+rama `verdict === "working"`: dispatcha
+`resume_session` con el sessionId real (sin flag).
+Cero impacto en `iteration_started` para estados
+sin flag: 8 tests existentes en `useLoopState.test.ts`
+(más 1 nuevo explícito) pinean el comportamiento
+estándar. Cero impacto en paused → running via
+iteration_started: 1 test pinea el increment normal.
+
+Cubierto por 8 tests nuevos en
+`src/hooks/useLoopState.test.ts`:
+
+- 3 para `iteration_resumed` (ready → running con
+  flag, ready → running con sessionId no-vacío +
+  flag, no-op desde non-ready)
+- 4 para `iteration_started` con flag (no increment
+  cuando flag=true, increment normal cuando
+  flag=false/undefined, one-shot semantics
+  verificando que la SIGUIENTE iteration_started
+  después del flag-clear incrementa normal, paused
+  → running via iteration_started incrementa
+  normal)
+- 1 en el table-driven `Phase 3` suite que verifica
+  que `iteration_resumed` es no-op desde
+  starting/running/pausing/paused/cooldown/etc.
+
+`bun test` verde: 694 pass / 0 fail (era 686 antes
+del fix), 1714 expect() calls, 23 files, 311 ms.
+Commit `4e64e13`.
 
 ### Mejora 33 — Finding 11.2.A — MEDIUM — `Bun.spawn` is missing `detached: true`
 
