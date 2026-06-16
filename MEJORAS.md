@@ -6467,9 +6467,369 @@ to pin the `notifyIdle` contract:
    arrives, `notifyIdle` is called, and the
    next wedge starts at attempt 1. This is
    the strongest assertion that
-   `recoveryAttempts` is a *hard* reset
-   inside `notifyIdle`, not a soft hint.
+    `recoveryAttempts` is a *hard* reset
+    inside `notifyIdle`, not a soft hint.
 
 `bun test` -> **638 pass, 0 fail, 1591
+expect() calls** across 21 files.
+
+### Task 6.6 — `abortAndRetry` in watchdog actions re-enters the iteration driver; the circuit breaker prevents infinite retry loops
+
+PLAN.md 6.6: "Verify: `abortAndRetry` in
+watchdog actions dispatches `session_idle` —
+this re-enters the iteration driver; confirm
+there's no infinite loop if the session keeps
+failing."
+
+**Status: COMPLETE — VERIFIED. No CRITICAL /
+HIGH / MEDIUM findings. Two new tests pin
+the full end-to-end no-infinite-loop
+guarantee.**
+
+#### End-to-end flow traced
+
+The flow is a six-step chain spanning the
+watchdog, the loop reducer, the App-level
+iteration driver, and `startIteration`:
+
+1. **Watchdog tick declares STUCK.**
+   `useWatchdog.ts:275-279` — when
+   `dt >= confirmMs` and `verdict === "working"`,
+   the watchdog sets `STUCK` and calls
+   `recover("session_wedged", dt, verdict)`.
+2. **`recover()` selects the action via the
+   escalation ladder** at
+   `useWatchdog.ts:201-208`:
+
+   ```ts
+   options.actions.reconnectSSE()
+   if (reason === "server_hung" || recoveryAttempts >= 2) {
+     await options.actions.restartServer()
+   } else {
+     await options.actions.abortAndRetry()
+   }
+   ```
+
+   On the first attempt (`recoveryAttempts`
+   just incremented to 1, reason is
+   `session_wedged` not `server_hung`), the
+   watchdog calls `abortAndRetry()`.
+3. **`abortAndRetry` (App.tsx:267-281) aborts
+   the active session and dispatches
+   `session_idle`.** The body is:
+
+   ```ts
+   const url = server.url()
+   const sid = getActiveSessionId(loop.state())
+   if (url && sid) {
+     try { await abortSession(createClient(url), sid) }
+     catch { /* best effort */ }
+   }
+   loop.dispatch({ type: "session_idle" })
+   ```
+
+   The `abortSession` call is wrapped in
+   `try/catch` (best-effort — the session may
+   already be gone) and the dispatch always
+   fires, so a failed abort doesn't strand the
+   loop.
+4. **`session_idle` reducer transitions
+   `running("sid") → running("")`.** At
+   `useLoopState.ts:130-143`. The iteration
+   count is preserved (the loop is mid-iteration
+   retrying the same task, not advancing to a
+   new task). A redundant `session_idle` on
+   `running("")` short-circuits to the same
+   state object (idempotency guard at line
+   132-137), so a double dispatch from the
+   watchdog's own tick + a race with SSE
+   `onSessionIdle` cannot re-fire the iteration
+   driver into a second session.
+5. **Iteration driver effect detects
+   `running("")` and calls `startIteration()`.**
+   At `App.tsx:1217-1222`:
+
+   ```ts
+   createEffect(() => {
+     const state = loop.state()
+     if (state.type === "running" && state.sessionId === "") {
+       startIteration()
+     }
+   })
+   ```
+
+   `startIteration` has an in-flight guard
+   (`startingIteration`, set at App.tsx:781,
+   cleared in `finally` at line 854) so a
+   second trigger arriving mid-flight cannot
+   create a second session and orphan the
+   first.
+6. **`startIteration` (App.tsx:776-856) creates
+   a new session, reads the prompt file, sends
+   the prompt, and calls
+   `watchdog.notifyIterationStart()` (line 824)
+   to reset the heartbeat baseline for the
+   fresh silence window.** It also calls
+   `checkPlanComplete()` at line 791 — if the
+   plan is already complete (the user marked
+   all remaining tasks while the previous
+   session was aborting), the loop dispatches
+   `plan_complete` and exits cleanly,
+   short-circuiting the retry.
+
+#### The anti-infinite-loop circuit breaker
+
+The critical invariant is the contract
+between `notifyIterationStart` and the
+watchdog's recovery counter. This contract
+is documented inline at
+`useWatchdog.ts:140-149`:
+
+```ts
+function notifyIterationStart(): void {
+  // Fresh silence window for the new session,
+  // but DELIBERATELY do not reset
+  // recoveryAttempts: an abort+retry advances
+  // the loop into a new iteration (which calls
+  // this), so resetting here would hand a
+  // chronically wedging task an unlimited
+  // abort/retry budget — it would never
+  // escalate to a restart or trip the circuit
+  // breaker. The budget is cleared only by
+  // genuine progress (recordHeartbeat /
+  // notifyIdle) or by the breaker firing.
+  lastHeartbeatAt = clock.monotonicNow()
+  setHealth("HEALTHY")
+}
+```
+
+Three layers of defense prevent an infinite
+loop:
+
+1. **Escalation ladder
+   (`recoveryAttempts >= 2` branch).** After
+   the first `abortAndRetry`, the recovery
+   counter is 1. The next wedge — even on
+   the same `session_wedged` reason — triggers
+   `recoveryAttempts >= 2`, so the watchdog
+   calls `restartServer()` (not another
+   `abortAndRetry`). A chronically wedging
+   task is restarted, not retried.
+2. **Hard cap (`recoveryAttempts >
+   maxRecoveryAttempts`).** At
+   `useWatchdog.ts:189-199`, after the counter
+   increment the watchdog checks the cap. If
+   exceeded, it calls `actions.fail()` with
+   full diagnostics and returns without
+   taking any action. `fail()` in
+   `App.tsx:283-295` dispatches an
+   `error` action with `recoverable: true`,
+   which transitions the loop to the
+   `error` state and surfaces a user dialog
+   — the loop halts.
+3. **`startIteration` failure path.** If
+   `createSession`, `sendPromptAsync`, or
+   the prompt-file read throws,
+   `handleIterationError` at
+   `App.tsx:754-771` classifies the error:
+
+   - **rate_limit** → `enterCooldown` →
+     respects `maxRateLimitRetries` (default
+     5) before dispatching a `recoverable`
+     `error` state. Independent of the
+     watchdog's counter.
+   - **transient** (5xx, timeout, network) →
+     `enterCooldown(... "transient")` — same
+     breaker as rate limit.
+   - **fatal** (auth, schema, etc.) →
+     immediate `error` dispatch. No retry.
+
+   In all three cases the loop either
+   eventually halts via a `recoverable:
+   true` error state (user dialog) or
+   succeeds on the next attempt.
+
+#### `maxRecoveryAttempts` default and tunability
+
+The default is `3` at `src/lib/config.ts:131`
+(set by `resolveResilience` from defaults).
+It is overridable via
+`--resilience maxRecoveryAttempts=N` and via
+the on-disk config file. A user can raise
+or lower the bound without code changes.
+
+#### INFO — `fail()` leaves `health` in `RECOVERING` (not `HEALTHY`); this is benign
+
+When the breaker trips at
+`useWatchdog.ts:189-198`, the function
+returns after `setHealth("RECOVERING")` at
+line 176. The `health` signal is therefore
+still `RECOVERING` from the `App`'s point of
+view. This is benign because the
+`App.tsx:283-295` `fail` action dispatches
+`{ type: "error" }`, which transitions the
+loop to `error`. The watchdog's `isActive`
+probe at `App.tsx:242-247` then returns
+`false` (the `error` state has no
+`sessionId`), and the next `tick()`
+short-circuits to `HEALTHY` at
+`useWatchdog.ts:216-219`. The new test
+"chronically wedging session via abortAndRetry
+hits the circuit breaker" pins this
+behavior: after the breaker trips, the
+next tick (with a still-wedged session
+that would otherwise re-fire) starts
+attempt 1 (`abortAndRetry` count increases
+to 2, no new `fail`), proving the
+counter was reset inline at
+`useWatchdog.ts:197` and the watchdog
+resumed its post-breaker cycle.
+
+#### INFO — The existing test at lines 262-281 already pins the budget-survives-iteration invariant
+
+The pre-existing test "recovery budget
+survives an abort+retry iteration restart
+(re-wedge escalates)" (line 262-281 of
+`useWatchdog.test.ts`) asserts that after
+abort+retry → `notifyIterationStart` → a
+second wedge, the watchdog escalates to
+`restartServer` (attempt 2), not another
+`abortAndRetry`. The new tests below
+extend this to cover the full
+maxRecoveryAttempts+1 cycle and the
+explicit "second attempt always escalates
+to restartServer" threshold from the
+recovery ladder at useWatchdog.ts:204.
+
+#### Verifier checklist for Task 6.6
+
+- [x] `abortAndRetry` body at `App.tsx:267-281`
+  is best-effort (`try/catch` around
+  `abortSession`) and always dispatches
+  `session_idle` — verified by direct file
+  read.
+- [x] `session_idle` reducer at
+  `useLoopState.ts:130-143` transitions
+  `running("sid") → running("")` and is
+  idempotent on `running("")` (line 132-137)
+  — verified by direct file read and by
+  the pre-existing test at
+  `useLoopState.test.ts:616-624`.
+- [x] Iteration driver at `App.tsx:1217-1222`
+  reacts to `running("")` and calls
+  `startIteration()` — verified by direct
+  file read.
+- [x] `startIteration` has an in-flight guard
+  (`startingIteration` at App.tsx:781,
+  cleared in `finally` at line 854) —
+  verified by direct file read.
+- [x] `startIteration` calls
+  `watchdog.notifyIterationStart()` at
+  App.tsx:824 — verified by direct file
+  read.
+- [x] `notifyIterationStart` resets
+  `lastHeartbeatAt` and sets `HEALTHY`, but
+  DELIBERATELY does NOT reset
+  `recoveryAttempts` (useWatchdog.ts:140-149,
+  source comment is explicit) — verified
+  by direct file read and by the
+  pre-existing test at
+  `useWatchdog.test.ts:262-281` and the
+  new test at lines below.
+- [x] The escalation ladder at
+  `useWatchdog.ts:201-208` routes
+  `recoveryAttempts >= 2` to
+  `restartServer` regardless of `reason` —
+  verified by direct file read and by the
+  pre-existing test at
+  `useWatchdog.test.ts:214-224` and the
+  new test "abortAndRetry is called only on
+  the first attempt — escalation to
+  restartServer on attempt 2+" (lines
+  below).
+- [x] The hard cap at `useWatchdog.ts:189-199`
+  trips `fail()` with full diagnostics when
+  `recoveryAttempts > maxRecoveryAttempts`
+  — verified by direct file read and by
+  the pre-existing test at
+  `useWatchdog.test.ts:344-371` and the
+  new test "chronically wedging session via
+  abortAndRetry hits the circuit breaker
+  (no infinite loop)" (lines below).
+- [x] `App.tsx:283-295` `fail` action
+  dispatches `error` with
+  `recoverable: true`, transitioning the
+  loop to `error` state — verified by
+  direct file read.
+- [x] The error state deactivates the
+  watchdog's `isActive` probe (the `error`
+  state has no `sessionId`) — verified by
+  the `isActive` body at `App.tsx:242-247`
+  and by the pre-existing test at
+  `useWatchdog.test.ts:285-294`.
+- [x] `startIteration` failure path
+  (`handleIterationError` at App.tsx:754-771)
+  has its own breaker via
+  `enterCooldown` + `maxRateLimitRetries`
+  (App.tsx:679-698) — verified by direct
+  file read.
+- [x] `startIteration` calls
+  `checkPlanComplete` at App.tsx:791 before
+  creating a session, so a plan that
+  finished while the watchdog was
+  aborting exits cleanly via
+  `plan_complete` — verified by direct
+  file read.
+
+#### Test-suite delta for Task 6.6
+
+Added 2 new tests to `useWatchdog.test.ts`
+to pin the full no-infinite-loop
+guarantee across the `abortAndRetry`
+path:
+
+1. **`chronically wedging session via
+   abortAndRetry hits the circuit breaker
+   (no infinite loop)`** — drives the
+   watchdog through the full
+   `maxRecoveryAttempts + 1` wedge cycle,
+   simulating the App-level
+   `abortAndRetry → session_idle →
+   iteration driver → startIteration →
+   notifyIterationStart` chain on every
+   iteration. The test asserts:
+   - Attempt 1 = `abortAndRetry` (not
+     `restartServer`).
+   - After `notifyIterationStart`, the
+     re-wedge escalates to `restartServer`
+     (attempt 2), proving the budget was
+     preserved.
+   - After `notifyWake` (simulating
+     `restartServer` completion), the
+     third wedge is another
+     `restartServer` (attempt 3).
+   - The fourth wedge trips the circuit
+     breaker: `fail()` is called with
+     `reason: "session_wedged"` and
+     `attempts: 3`, no new
+     `abortAndRetry` or `restartServer`
+     is fired.
+   - Post-breaker, the recovery counter
+     is reset (verified by a fifth wedge
+     starting at attempt 1 again —
+     `abortAndRetry` count increases,
+     `fail` count stays 1).
+2. **`abortAndRetry is called only on
+   the first attempt — escalation to
+   restartServer on attempt 2+`** —
+   pins the exact threshold from the
+   escalation ladder: the SECOND attempt
+   is always `restartServer`. This is
+   what guarantees a chronically wedging
+   task is restarted, not retried, even
+   when the `session_wedged` reason
+   alone would route to `abortAndRetry`.
+
+`bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.

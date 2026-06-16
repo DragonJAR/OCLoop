@@ -790,4 +790,131 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.calls.abortAndRetry).toBe(2) // new attempt 1 of next cycle
     expect(s.calls.restartServer).toBe(0) // not attempt 2
   })
+
+  // --- Phase 6.6: abortAndRetry no-infinite-loop audit coverage ---
+
+  it("chronically wedging session via abortAndRetry hits the circuit breaker (no infinite loop)", async () => {
+    // PLAN.md 6.6: "Verify: abortAndRetry in watchdog actions
+    // dispatches session_idle — this re-enters the iteration driver;
+    // confirm there's no infinite loop if the session keeps failing."
+    //
+    // The end-to-end flow is:
+    //   1. Watchdog tick sees a wedged session (working + dt >= T2)
+    //      → recover("session_wedged", ...) → abortAndRetry (attempt 1).
+    //   2. abortAndRetry calls abortSession() + dispatches session_idle.
+    //   3. session_idle reducer transitions running("sid") → running("").
+    //   4. Iteration driver effect (App.tsx:1217-1222) detects
+    //      running("") and calls startIteration().
+    //   5. startIteration creates a new session and re-sends the prompt.
+    //   6. Inside startIteration, watchdog.notifyIterationStart() resets
+    //      lastHeartbeatAt (fresh silence window) but DELIBERATELY does
+    //      NOT reset recoveryAttempts (otherwise a chronically wedging
+    //      task would abort→retry forever).
+    //   7. The new session wedges again → tick → recover → attempt 2.
+    //      Escalation ladder (useWatchdog.ts:204): attempt 2+ always
+    //      restarts the server (regardless of reason).
+    //   8. Eventually recoveryAttempts > maxRecoveryAttempts → fail()
+    //      dispatches a recoverable error to the loop.
+    //
+    // This test pins the full chain end-to-end on the framework-agnostic
+    // core. The App-level effects (step 4, 5, 6) are simulated by
+    // calling notifyIterationStart() and notifyWake() at the right
+    // moment — both are public API and represent what the App does.
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 3 })
+
+    // --- Tick 1: wedge → abortAndRetry (attempt 1) ---
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(0)
+    expect(s.calls.fail.length).toBe(0)
+    expect(s.wd.health()).toBe("RECOVERING")
+
+    // --- Simulate App.tsx:280 abortAndRetry body → startIteration ---
+    // In production, abortAndRetry dispatches session_idle which
+    // transitions to running(""), which fires the iteration driver
+    // effect, which calls startIteration, which calls
+    // watchdog.notifyIterationStart() at App.tsx:824.
+    s.wd.notifyIterationStart()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // --- Tick 2: re-wedge → restartServer (attempt 2) ---
+    // The re-wedge MUST escalate. If recoveryAttempts had been reset by
+    // notifyIterationStart, this would be another abortAndRetry and the
+    // session would loop forever. The test pins that escalation happens.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1) // unchanged
+    expect(s.calls.restartServer).toBe(1) // attempt 2 = restart (recoveryAttempts >= 2)
+    expect(s.calls.fail.length).toBe(0)
+    expect(s.wd.health()).toBe("RECOVERING")
+
+    // --- Simulate App.tsx:649-663 restartServer body ---
+    // In production, restartServer awaits server.restart(), reconnects
+    // SSE, reconciles. If verdict === "working", it calls
+    // watchdog.notifyWake() (line 661) to grant a fresh grace window.
+    s.wd.notifyWake()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // --- Tick 3: re-wedge → restartServer (attempt 3) ---
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1) // unchanged
+    expect(s.calls.restartServer).toBe(2) // attempt 3 = restart
+    expect(s.calls.fail.length).toBe(0)
+    expect(s.wd.health()).toBe("RECOVERING")
+    s.wd.notifyWake() // server "recovered" again
+
+    // --- Tick 4: re-wedge → circuit breaker trips → fail() ---
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    // recoveryAttempts was 3 going in; after increment it's 4, which is
+    // > maxRecoveryAttempts=3, so the breaker fires BEFORE any action.
+    expect(s.calls.abortAndRetry).toBe(1) // unchanged
+    expect(s.calls.restartServer).toBe(2) // unchanged — no new restart
+    expect(s.calls.fail.length).toBe(1)
+    expect(s.calls.fail[0].reason).toBe("session_wedged")
+    expect(s.calls.fail[0].attempts).toBe(3) // attempts before this one
+    // After fail() the watchdog's health is whatever recover() left it
+    // in (setHealth("RECOVERING") at useWatchdog.ts:176 runs before the
+    // breaker check). The App-level fail handler dispatches an error
+    // state which transitions the loop to "error", deactivating the
+    // watchdog (isActive() returns false), so the next tick short-
+    // circuits to HEALTHY. Recovery counter is reset inline at
+    // useWatchdog.ts:197 — verified by the post-breaker tick below.
+
+    // --- Post-circuit-breaker: counter is reset, next wedge starts at 1 ---
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(2) // new attempt 1 of next cycle
+    expect(s.calls.restartServer).toBe(2) // unchanged
+    expect(s.calls.fail.length).toBe(1) // no new fail
+  })
+
+  it("abortAndRetry is called only on the first attempt — escalation to restartServer on attempt 2+", async () => {
+    // The escalation ladder at useWatchdog.ts:204 is:
+    //   if (reason === "server_hung" || recoveryAttempts >= 2) → restartServer
+    //   else → abortAndRetry
+    //
+    // The `recoveryAttempts >= 2` clause is what guarantees a chronically
+    // wedging task (which always takes the session_wedged reason, NOT
+    // server_hung) eventually escalates past abortAndRetry. This test
+    // pins the exact threshold: the SECOND attempt always restarts.
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 5 })
+
+    // Attempt 1 → abortAndRetry
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(0)
+
+    // Simulate the abort → startIteration loop
+    s.wd.notifyIterationStart()
+    s.clk.advance(T2 + 1_000)
+
+    // Attempt 2 → MUST be restartServer (the escalation trigger)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1) // unchanged
+    expect(s.calls.restartServer).toBe(1) // escalated
+  })
 })
