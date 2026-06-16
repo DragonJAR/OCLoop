@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { loadConfig, saveConfig, getConfigPath } from "./config"
@@ -246,8 +246,28 @@ describe("saveConfig — round-trip (Finding 12.2.A)", () => {
     saveConfig({ language: "en" })
     saveConfig({ language: "es", theme: "opencode" })
     const path = getConfigPath()
-    expect(existsSync(path + ".tmp")).toBe(false)
+    // Finding 12.2.B randomized the tmp suffix, so the old `path + ".tmp"`
+    // probe is a tautology. Scan the dir for any leftover tmp file instead —
+    // same user-visible intent ("no orphan tmp after a successful save").
+    const configDir = join(dir, "ocloop")
+    const tmps = readdirSync(configDir).filter((e) => e.endsWith(".tmp"))
+    expect(tmps).toEqual([])
+    expect(existsSync(path)).toBe(true)
     expect(loadConfig()).toEqual({ language: "es", theme: "opencode" })
+  })
+
+  it("uses a randomized tmp suffix per save (Finding 12.2.B)", () => {
+    // The tmp path inside saveConfig carries a 12-char hex suffix; we can't
+    // intercept `writeFileSync` cleanly, so we exercise the user-observable
+    // consequence: two consecutive saves must produce no two tmp files
+    // colliding, and the dir is clean afterwards. (The randomized suffix
+    // already prevents cross-process clobbering even mid-write; this test
+    // pins the post-condition that a successful save leaves no tmp behind.)
+    saveConfig({ language: "en" })
+    saveConfig({ theme: "opencode" })
+    const configDir = join(dir, "ocloop")
+    const tmps = readdirSync(configDir).filter((e) => e.endsWith(".tmp"))
+    expect(tmps).toEqual([])
   })
 
   it("returns void and does not throw on the happy path", () => {

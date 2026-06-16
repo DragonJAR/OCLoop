@@ -6,6 +6,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs"
+import { randomBytes } from "node:crypto"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./debug-logger"
@@ -322,7 +323,15 @@ export function loadConfig(): OcloopConfig {
 export function saveConfig(config: OcloopConfig): void {
   const configDir = getConfigDir()
   const configPath = getConfigPath()
-  const tmpPath = configPath + ".tmp"
+  // Random hex suffix on the tmp file: two `ocloop` processes pointing at
+  // the same `$XDG_CONFIG_HOME` (e.g. a TUI plus a `--create-plan` run in a
+  // second terminal) would otherwise race on the same fixed `.tmp` name and
+  // interleave each other's mid-write bytes. The final `renameSync` to
+  // `ocloop.json` is still last-writer-wins (atomic rename on POSIX), so the
+  // user-observable behavior is unchanged; the fix only prevents the
+  // intermediate-state clobbering of the tmp. Source: MEJORAS.md Finding
+  // 12.2.B.
+  const tmpPath = `${configPath}.${randomBytes(6).toString("hex")}.tmp`
 
   try {
     // Create directory if needed
