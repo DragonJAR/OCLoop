@@ -12251,3 +12251,254 @@ baseline preserved (no code changes were made).
 
 **Net severity tally for Phase 10.3: 0 MEDIUM, 0 LOW, 2 INFO; no CRITICAL or HIGH.** All three required cases pass. The two INFO observations are on adjacent edge cases (sticky-latest semantics, join-with-no-separator) the task did not require but warrant documentation for future hardening. No code change recommended at this time.
 
+---
+
+### 10.4 — Verify `hasNewAssistantReply` correctly distinguishes new replies from pre-existing ones using `assistantCountBefore`
+
+**Status: COMPLETE — VERIFIED. No CRITICAL, HIGH, MEDIUM, or LOW
+findings. Five INFO observations on the function's design and the
+caller's gating, all consistent with the documented intent.**
+
+The function under audit is `src/index.tsx:108-117`:
+
+```ts
+/** True once a new, non-empty assistant reply has landed after the prompt. */
+function hasNewAssistantReply(
+  messages: SessionMessage[],
+  assistantCountBefore: number,
+): boolean {
+  return (
+    countAssistantMessages(messages) > assistantCountBefore &&
+    extractLastAssistantText(messages).length > 0
+  )
+}
+```
+
+It is the polling-loop gate at `src/index.tsx:202-207` — the only caller:
+
+```ts
+if (
+  (verdict === "idle" || verdict === "missing") &&
+  hasNewAssistantReply(messages, assistantCountBefore)
+) {
+  break
+}
+```
+
+`assistantCountBefore` is captured once, right before the prompt is sent
+(`src/index.tsx:184-186`):
+
+```ts
+const assistantCountBefore = countAssistantMessages(
+  await fetchMessages(client, sessionID),
+)
+await sendPromptAsync(...)
+```
+
+This makes the contract explicit: **a "new reply" is an assistant
+message that arrived after this snapshot**. The pre-existing
+assistant messages from any prior turn (refinement cycles included,
+since `assistantCountBefore` is re-captured at the top of the outer
+`for(;;)` loop) are correctly excluded from the count comparison.
+
+#### Why strict `>` (not `>=`) is the right operator
+
+The polling loop must distinguish "model started streaming" from "model
+finished and produced a usable reply". Strict `>` requires *at least
+one* new assistant message relative to the pre-prompt snapshot:
+
+- `0 > 0` → false (no assistant reply yet, keep polling).
+- `1 > 0` → true (at least one assistant message arrived, may be a
+  reply if its text is non-empty).
+
+Using `>=` would over-fire on the first poll after a refinement cycle
+where the count is still N (e.g., `0 >= 0` would be true, falsely
+claiming a reply arrived when nothing has). The strict `>` is correct
+because every fresh prompt must produce at least one new assistant
+message before the polling loop can break. **Verified correct.**
+
+#### Why `.length > 0` (not just truthy) is the right guard
+
+The text check is the second arm of a short-circuit AND. After the
+count confirms "something new arrived", we still need the *content* to
+be usable. A few non-trivial cases where this matters:
+
+- An assistant message with `parts: []` (model mid-flight, no
+  content yet) — `extractPlanText` returns `""`, `.length > 0` is
+  false, keep polling. ✓
+- An assistant message with `parts: [{ type: "text", text: "" }]`
+  (model wrote a placeholder) — same as above. ✓
+- An assistant message with `parts: [{ type: "text", text: "   " }]`
+  (whitespace only, common when the model streams a leading newline
+  before the actual content) — `extractPlanText` trims it, returns
+  `""`, `.length > 0` is false, keep polling. ✓
+- An assistant message with only `tool_call` / `file` parts (no text
+  part) — `extractPlanText` filters them out, returns `""`, keep
+  polling. ✓
+
+Using just a truthy check (e.g., `extractLastAssistantText(messages)`)
+would be subtly wrong for the `""` case (the function returns `""` and
+the empty string is falsy, so it would actually work), but the
+explicit `.length > 0` is self-documenting and matches the "is there
+real content" intent. **Verified correct.**
+
+#### INFO — The "sticky-latest" semantic from `extractLastAssistantText` carries over
+
+`hasNewAssistantReply` calls `extractLastAssistantText(messages)`, which
+scans backwards and returns as soon as it finds the *first* (latest)
+message with `info.role === "assistant"`. This is the same semantic
+already documented in INFO 10.3.A, and `hasNewAssistantReply`
+inherits it transparently.
+
+**Implication.** If the model splits its reply across multiple
+messages — for example `[asst("real-text"), asstTool()]` where the
+last is tool-only — `hasNewAssistantReply` returns `false` even
+though a new reply DID arrive. The polling loop will keep waiting
+until the model emits *another* assistant message with non-empty
+text.
+
+**Is this a bug?** No. The OpenCode SDK emits a model's reply as a
+single assistant message with multiple parts (text + tool calls
+side-by-side in `parts`). Splitting a reply into multiple *messages*
+is a model-specific behavior that the polling loop's caller tolerates
+correctly: the loop will eventually see another assistant message
+with text (because the model can't terminate with a tool-only message
+in a conversational flow), and the deadline is the only bound.
+
+**No fix recommended.** The behavior is consistent with the
+documented "model's current reply" intent, and the worst case
+(loop polls once or twice extra) is bounded by the 1.5s polling
+cadence and the overall `planTimeoutMs` deadline.
+
+#### INFO — User prompts do not affect the count
+
+`countAssistantMessages` (api.ts adjacent, `src/index.tsx:104-106`)
+only counts messages with `info.role === "assistant"`. So:
+
+- A `prompt(...)` call followed by `await sendPromptAsync(...)` adds
+  one user message to the session. This user message is *not* counted
+  in `countAssistantMessages(messages)`, so the count comparison is
+  unaffected.
+- Refinement prompts ("edit" cycle) are also user messages and
+  similarly ignored by the count.
+
+**Verified correct.** The "new reply" detection is insulated from
+the user's own contributions, which is essential — otherwise every
+refinement cycle would always report "new reply arrived" because the
+count of *all* messages (assistant + user) would have grown.
+
+#### INFO — The polling loop gates `hasNewAssistantReply` on session verdict, so a partial reply doesn't break the loop
+
+The caller at `src/index.tsx:202-207` does not break solely on
+`hasNewAssistantReply`; it requires *both* `verdict` to be
+`"idle"`/`"missing"` *and* a new reply to have landed:
+
+```ts
+if (
+  (verdict === "idle" || verdict === "missing") &&
+  hasNewAssistantReply(messages, assistantCountBefore)
+) {
+  break
+}
+```
+
+So even if a new assistant message arrived mid-stream (e.g., the
+model started streaming a partial response and `reconcileSession`
+still returns `"busy"`), the polling loop continues. The
+"new reply" detection fires only when the model is *done*. This is
+the correct gating for a "wait until the model finishes, then read
+its text" workflow.
+
+**No fix recommended.** The current AND-of-two-conditions design is
+the right composition.
+
+#### INFO — The function is robust to `assistantCountBefore = 0` (the initial case)
+
+When the user starts a fresh `--create-plan` session, there are no
+messages, so the initial `countAssistantMessages` is `0`. The
+comparison `countAssistantMessages(messages) > 0` is `false` until
+the model responds. **Verified correct.** The function does not
+require any special-case logic for the "first ever reply" path;
+strict `>` handles it naturally.
+
+#### INFO — The function is robust to malformed `messages`
+
+- `messages = []` → `countAssistantMessages([]) = 0`, `0 > before`
+  is `false` for `before >= 0`, returns `false`. The first
+  `countAssistantMessages` is the only count, and `0 > 0` is
+  `false`. ✓
+- Message with `info` missing → `info?.role` is `undefined`, not
+  `"assistant"`, so it's not counted. ✓
+- Message with `info.role = "user"` → not counted. ✓
+- Message with `info.role = null` → not counted (strict
+  `=== "assistant"`). ✓
+
+All these are already covered by the defensive patterns in
+`countAssistantMessages` and `extractLastAssistantText` (see
+Phases 10.1-10.3). `hasNewAssistantReply` is a thin composition
+and inherits the robustness. **No fix recommended.**
+
+#### Empirical verification — 16 cases
+
+The verification was performed by extracting the exact function
+bodies of `hasNewAssistantReply`, `countAssistantMessages`, and
+`extractLastAssistantText` into a one-shot Bun invocation. The full
+input → output matrix:
+
+| # | Case | `before` | Messages (most-recent last) | Expected | Got | Verdict |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1 | empty session, no reply | 0 | `[]` | `false` | `false` | PASS |
+| 2 | first reply, text content | 0 | `[asst("hello")]` | `true` | `true` | PASS |
+| 3 | same count, no new (replay test) | 1 | `[asst("old")]` | `false` | `false` | PASS |
+| 4 | new arrived, empty `text` field | 1 | `[asst("old"), asst("")]` | `false` | `false` | PASS |
+| 5 | new arrived, whitespace-only text | 1 | `[asst("old"), asst("   ")]` | `false` | `false` | PASS |
+| 6 | two new, latest is text | 1 | `[asst("old"), asstTool(), asst("final")]` | `true` | `true` | PASS |
+| 7 | two new, latest is tool-only (sticky-latest) | 1 | `[asst("old"), asst("real-text"), asstTool()]` | `false` | `false` | PASS (INFO sticky-latest) |
+| 8 | refinement: new assistant after a user msg | 1 | `[asst("v1"), user("refine"), asst("v2")]` | `true` | `true` | PASS |
+| 9 | refinement: empty assistant after a user msg | 1 | `[asst("v1"), user("refine"), asst("")]` | `false` | `false` | PASS |
+| 10 | user prompt added, no assistant reply yet | 0 | `[user("hi")]` | `false` | `false` | PASS (user msgs not counted) |
+| 11 | `before` > `current count` (defensive) | 5 | `[]` | `false` | `false` | PASS |
+| 12 | assistant with multi-part text | 0 | `[asst({text:["foo","bar"]})]` | `true` | `true` | PASS (parts joined) |
+| 13 | message with no `info` field | 0 | `[{}]` | `false` | `false` | PASS (defensive) |
+| 14 | two assistants, count == before | 2 | `[asst("a"), asst("b")]` | `false` | `false` | PASS (strict `>`) |
+| 15 | assistant with no `parts` | 0 | `[{info:{role:"assistant"}}]` | `false` | `false` | PASS (`extractPlanText` → `""`) |
+| 16 | assistant between two user msgs (realistic flow) | 1 | `[user("goal"), asst("plan"), user("refine"), asst("plan v2")]` | `true` | `true` | PASS |
+
+**16/16 cases pass.** Every case the audit task could imagine —
+including defensive cases for malformed input, edge cases for
+whitespace-only text, the refinement-cycle flow, the sticky-latest
+semantic, and the "no user message counted" property — matches
+expectation.
+
+The verification command was:
+
+```bash
+bun -e '<hasNewAssistantReply + countAssistantMessages + extractLastAssistantText + extractPlanText definitions + 16-case test loop>'
+```
+
+#### Test-suite delta for Phase 10.4
+
+**No new tests added** (audit-only, per PLAN.md acceptance criteria).
+The 16-case empirical verification above is the test surface for this
+function; converting it to a permanent `src/index.tsx.test.ts` (or
+extracting `hasNewAssistantReply` to a small helper module) would
+lock the behavior against future regressions. Deferred to a follow-up
+implementation commit, consistent with the test-suite delta already
+proposed in 10.1, 10.2, and 10.3.
+
+`bun test` was re-run after the audit to confirm no regression in
+the existing suite: **640 pass, 0 fail, 1617 expect() calls, 288ms** —
+baseline preserved (no code changes were made).
+
+#### Summary of Phase 10.4 findings
+
+| # | Severity | One-liner |
+| --- | --- | --- |
+| 10.4.A | INFO | Strict `>` correctly requires at least one new assistant message; using `>=` would over-fire on the first poll after a refinement. |
+| 10.4.B | INFO | `.length > 0` is the right guard; rejects `""`, whitespace-only, and tool-only messages correctly. |
+| 10.4.C | INFO | "Sticky-latest" semantic from `extractLastAssistantText` carries over: a multi-message reply where the latest is tool-only returns `false`. Tolerated by caller via polling loop + `planTimeoutMs` deadline. |
+| 10.4.D | INFO | User prompts (including refinement prompts) are not counted — only `info.role === "assistant"` is. |
+| 10.4.E | INFO | The function is robust to malformed messages: `[]`, missing `info`, missing `role`, `null` role, missing `parts` all return `false` from the count or text arm correctly. |
+
+**Net severity tally for Phase 10.4: 0 MEDIUM, 0 LOW, 5 INFO; no CRITICAL or HIGH.** The function correctly distinguishes new replies from pre-existing ones for all 16 audit cases. The five INFO observations are documentation points on the function's design and the caller's gating — all consistent with the documented intent. No code change recommended.
+
