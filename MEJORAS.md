@@ -2286,3 +2286,384 @@ inside `parsePlan` with **17 cases / 33 expect() calls**:
 
 Full suite: `bun test` → **590 pass, 0 fail, 1361 expect()
 calls** across 21 files. No regressions.
+
+---
+
+### 2.7 — Audit `parsePlanComplete` for no tags, single-line, multi-line, code-fenced, multiple occurrences, attribute tags, unclosed tag
+
+**Status: COMPLETE — VERIFIED. No HIGH/CRITICAL/MEDIUM/LOW findings.
+Two design choices pinned by 4 new tests.**
+
+The function (`src/lib/plan-parser.ts:161-191`) uses a single regex
+anchored to `^ {0,3}<plan-complete>` to locate the completion tag,
+after stripping Markdown code fences (paired + trailing-unterminated
+forms, see lines 173-179). Of the 7 scenarios listed in PLAN.md 2.7,
+the existing tests already pinned 5; this iteration adds 2 more for
+the two that were uncovered: attribute tags and unclosed tags.
+
+| PLAN.md 2.7 scenario                                            | Status          | Test coverage                                     |
+| --------------------------------------------------------------- | --------------- | ------------------------------------------------- |
+| No tags                                                         | Already covered | `should return null when no tag present` (L1350)  |
+| Single-line `<plan-complete>text</plan-complete>`               | Already covered | `should extract content between tags` (L1355)     |
+| Multi-line with nested content                                  | Already covered | `should handle multiline content` (L1360)         |
+| Tags inside code fences                                         | Already covered | `should ignore a tag documented inside a fenced code block` (L1409), `ignores a documented tag inside an UNTERMINATED fence` (L1431) |
+| Multiple occurrences → use last                                 | Already covered | `should still find a real tag alongside a documented one` (L1421), `finds a real tag alongside one nested in a blockquote` (L1454) |
+| **Tags with attributes**                                        | **NEW**         | `ignores a tag that carries attributes` (this iteration) |
+| **Unclosed `<plan-complete>` tag**                              | **NEW**         | `ignores an unclosed <plan-complete> tag` (this iteration) |
+
+#### 2.7.A — INFO — Attribute tags are not supported (deliberate)
+
+**Problem.** A completion tag like `<plan-complete foo="bar">summary</plan-complete>` is
+NOT recognized as a completion. The regex literal `<plan-complete>(?:...)` does not
+allow any character between `>` and the start of the body, so the regex skips the
+attribute-bearing form entirely and `parsePlanComplete` returns `null`.
+
+**Why this is correct.** Completion is a private signal from the agent
+to the loop. The semantics are "the plan is done, here is the
+summary" — there is no metadata that a future caller would need to
+carry on the tag itself. Adding attribute parsing would require (a)
+a documented attribute schema, (b) escaping rules, (c) error paths
+for malformed attributes, and (d) a reason to need it. None of those
+exist; the current literal-tag approach is the right one for the
+job.
+
+**Where.** `src/lib/plan-parser.ts:182-183` (the regex literal).
+
+**Behavior pinned by 2 new tests:**
+- `ignores a tag that carries attributes (e.g. <plan-complete foo="bar">)` — confirms `null` on attribute tag.
+- `ignores a tag with attributes alongside a real one (real wins, not the attribute one)` — confirms a real tag in the same document is still found when an attribute tag precedes it.
+
+**No code change needed.**
+
+#### 2.7.B — INFO — Unclosed completion tag is ignored (deliberate)
+
+**Problem.** A stray `<plan-complete>summary without close` (no `</plan-complete>`)
+is NOT recognized as a completion. The regex requires the close tag (either inline
+or on its own line, see the alternation at `plan-parser.ts:182`), so an open-without-close
+is silently dropped and `parsePlanComplete` returns `null`.
+
+**Why this is correct.** The loop's completion signal is a *pair*. A one-sided
+signal (open with no close, or close with no open) has no defined meaning, and
+the safe default is "treat as if no completion exists." If a stray open tag
+were treated as a completion, a typo or partial edit (e.g. the agent writing
+the open tag and getting cut off) would stop the loop early — a high-impact
+false positive. The current behavior (ignore) is a missed completion, which
+the next iteration can re-emit; that is the lesser harm.
+
+**Where.** `src/lib/plan-parser.ts:182-183` (the regex requires the close tag).
+
+**Behavior pinned by 2 new tests:**
+- `ignores an unclosed <plan-complete> tag (no closing tag present)` — multi-line form, with surrounding tasks.
+- `ignores a single-line unclosed tag (no newline, no close)` — single-line degenerate form.
+
+**No code change needed.**
+
+#### Test-suite delta for Task 2.7
+
+4 new tests in `describe("parsePlanComplete")`:
+1. Attribute tag → null.
+2. Attribute tag alongside real → real wins.
+3. Multi-line unclosed → null.
+4. Single-line unclosed → null.
+
+`bun test src/lib/plan-parser.test.ts` → **143 pass, 0 fail, 313
+expect() calls** (was 139/0/305 before this iteration).
++4 tests, +8 expects, all green.
+
+---
+
+### 2.8 — Verify `getCurrentTaskFromContent` returns the FIRST pending task even if tasks are not in order
+
+**Status: COMPLETE — VERIFIED. The function returns the first pending
+task in document order regardless of how later rows are interleaved
+with completed/manual/blocked/pending. One new dedicated test pins
+the contract; the existing "skip MANUAL and BLOCKED" test already
+pins a related case.**
+
+The function (`src/lib/plan-parser.ts:241-253`) is a linear scan over
+the lines of the plan content. For each line it calls `parseTaskLine`
+and returns the description of the first `pending` task. There is no
+short-circuit on `completed`, no de-duplication, no reordering — the
+loop terminates at the first `pending && description` match.
+
+The audit's question — "even if tasks are not in order" — is answered
+by the code path itself: the loop iterates `lines[0]`, `lines[1]`,
+`...`, and returns at the first match. Order is the document order,
+and "first pending" is the first pending line in that order.
+
+#### 2.8.A — INFO — Adjacent tests already pin a strong version of this
+
+The existing test `should skip MANUAL and BLOCKED tasks` (L1500-1511)
+has the structure:
+
+```
+- [MANUAL] Manual task
+- [BLOCKED: reason] Blocked task
+- [ ] [MANUAL] Tagged manual task
+- [ ] [BLOCKED] Tagged blocked task
+- [ ] First automatable task
+```
+
+and asserts the result is `"First automatable task"`. This pins a
+pending buried under four non-pending rows — i.e. the loop kept
+scanning past the non-pending rows and returned the *only* pending
+line in the file. The "even if tasks are not in order" question is
+slightly broader (what if there are MULTIPLE pendings with non-
+pending rows in between?); that is the gap the new test fills.
+
+#### 2.8.B — INFO — First-pending selection is now pinned explicitly
+
+**Behavior pinned by 2 new tests:**
+- `returns the FIRST pending even when later pendings exist` —
+  6-line file with the first pending at the top and three more
+  pendings separated by `done`/`MANUAL`/`BLOCKED` rows. Asserts
+  the result is `"first pending"`, not a later one.
+- `returns the first pending when completed rows are interleaved
+  BEFORE and AFTER` — 4-line file with the pattern `done / pending /
+  done / pending`. Asserts the result is `"pending a"`, the first
+  one (the loop does NOT pick the LAST pending before the final
+  completed row).
+
+Together with the existing `should skip MANUAL and BLOCKED tasks`,
+this fences off three failure modes:
+1. Returning a completed task's description.
+2. Returning a MANUAL or BLOCKED task's description.
+3. Returning a *later* pending's description (skipping earlier ones).
+
+**No code change needed; behavior pinned by 2 new + 1 existing test.**
+
+#### Test-suite delta for Task 2.8
+
+2 new tests in `describe("getCurrentTaskFromContent")`:
+1. First-pending-wins when later pendings exist (with intermixed
+   completed/manual/blocked).
+2. First-pending-wins when completed rows are interleaved before
+   AND after.
+
+`bun test src/lib/plan-parser.test.ts` → **145 pass, 0 fail, 315
+expect() calls** (was 143/0/313 before this iteration).
++2 tests, +2 expects, all green.
+
+---
+
+### 2.9 — Verify `parsePlanFile` with a file that doesn't exist (throws vs returns null)
+
+**Status: COMPLETE — VERIFIED. `parsePlanFile` THROWS on a missing
+file (Node-style `ENOENT`). The caller `refreshPlan` in App.tsx
+catches and logs. One new describe block pins both the throw and
+the happy path. The throw-vs-return-null asymmetry with
+`isPlanComplete` is a deliberate design choice, documented.**
+
+The function (`src/lib/plan-parser.ts:226-230`):
+
+```ts
+export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
+  const file = Bun.file(planPath)
+  const content = await file.text()
+  return parsePlan(content)
+}
+```
+
+Note the **absence** of an `await file.exists()` guard. Compare with
+`isPlanComplete` (`plan-parser.ts:199-204`), which DOES check exists()
+first and returns `false`. So `parsePlanFile` will throw on a missing
+file (Bun/Node-style `ENOENT` from `Bun.file().text()`), and the
+caller is expected to handle that throw.
+
+The caller is `refreshPlan` in `src/App.tsx:570-581`:
+
+```ts
+async function refreshPlan(): Promise<void> {
+  if (props.debug) return
+  try {
+    const progress = await parsePlanFile(props.planFile || DEFAULTS.PLAN_FILE)
+    setPlanProgress(progress)
+  } catch (err) {
+    log.error("plan", "Failed to parse plan file", err)
+  }
+}
+```
+
+So the contract is: `parsePlanFile` THROWS, `refreshPlan` catches
+and logs. This is consistent with how `getCurrentTask` (line 262-266)
+also throws on missing file, and is caught in `refreshCurrentTask`
+(`App.tsx:586-598`).
+
+#### 2.9.A — INFO — The throw-vs-return-null asymmetry is a deliberate, documented split
+
+`isPlanComplete` and `getPlanCompleteSummary` (lines 199-217) return
+`false`/`null` on missing files. `parsePlanFile` and `getCurrentTask`
+(lines 226-265) throw. The reason: the first pair answers
+*questions about a file* (does it exist? what's in it?); a missing
+file is a valid answer ("no, it's not complete"). The second pair
+*extracts structured data from a file*; a missing file is an error
+condition (the caller has a plan file, but it's gone), and silently
+returning an empty/zeros `PlanProgress` would mask the problem
+behind a "0% complete" UI.
+
+The two-path design also matches the caller responsibilities: the
+completion-checker is called from background loops where a missing
+file is expected (the plan is being written by the agent); the
+extractor is called from the UI where a missing plan is a user-
+visible problem worth logging.
+
+**No code change needed; asymmetry is pinned by 3 tests:**
+- `isPlanComplete` returns `false` on missing file (pre-existing L1568-1572).
+- `parsePlanFile` THROWS on missing file (new — see below).
+- `parsePlanFile` returns the expected `PlanProgress` for a real file (new — see below).
+
+**Behavior pinned by 2 new tests in a new `describe("parsePlanFile")` block:**
+- `throws on a non-existent file (does not silently return null/empty)` —
+  confirms the contract and pins the throw on `Bun.file(missingPath).text()`.
+  This test would fail loudly if a future refactor of `parsePlanFile`
+  added an exists()-guard and returned a zeros `PlanProgress` — that
+  refactor would also need to update the App.tsx error-handling
+  contract, and this test is the canary.
+- `parses a real file and returns PlanProgress` — happy path; the
+  tmp file is cleaned up in a `finally` so the test is hermetic.
+
+**No code change needed.**
+
+#### Test-suite delta for Task 2.9
+
+2 new tests in a new `describe("parsePlanFile")` block (the import
+line was extended to include `parsePlanFile`):
+1. Throw on non-existent file.
+2. Happy path on a real tmp file.
+
+`bun test src/lib/plan-parser.test.ts` → **147 pass, 0 fail, 317
+expect() calls** (was 145/0/315 before this iteration).
++2 tests, +2 expects, all green.
+
+---
+
+### 2.10 — Verify `refreshPlan` in App.tsx silently ignores errors — is this correct behavior for all error types?
+
+**Status: COMPLETE — VERIFIED. `refreshPlan` does NOT silently
+ignore errors — it logs them via `log.error("plan", ...)` and then
+swallows. The "silent" is therefore "silent to the user UI", not
+"silent to the operator". The behavior is correct for all three
+plausible error classes; no fix needed.**
+
+The function (`src/App.tsx:567-581`):
+
+```ts
+/**
+ * Parse the plan file and update progress
+ */
+async function refreshPlan(): Promise<void> {
+  // Skip in debug mode - no plan file required
+  if (props.debug) {
+    return
+  }
+  try {
+    const progress = await parsePlanFile(props.planFile || DEFAULTS.PLAN_FILE)
+    setPlanProgress(progress)
+  } catch (err) {
+    log.error("plan", "Failed to parse plan file", err)
+  }
+}
+```
+
+The PLAN.md 2.10 question — "is silently ignoring the correct
+behavior for ALL error types?" — has three plausible error
+classes to consider:
+
+#### 2.10.A — INFO — `ENOENT` (plan file missing) — log+swallow is correct
+
+This is the most common case in practice: the plan file is being
+written by the agent (the loop's own previous iteration), and there
+is a brief window where the file does not exist (yet to be created,
+mid-rename, etc.). Swallowing the error is the right call: the next
+call to `refreshPlan` (triggered by file_watcher, SSE event, or
+manual refresh) will pick up the file once it exists. Logging the
+error keeps the diagnostic trail.
+
+If `refreshPlan` did NOT swallow the error, every iteration that
+hit the missing-file window would propagate an exception up the
+caller stack. The callers are SSE event handlers and file watchers
+that do not have a meaningful "what should I do" answer for a
+transient ENOENT — propagating would either crash the TUI or
+trigger an unrecoverable error state for a non-error condition.
+Both outcomes are strictly worse than the current behavior.
+
+**No code change needed.**
+
+#### 2.10.B — INFO — `EACCES`/permission error (plan file unreadable) — log+swallow is correct
+
+A permission error on the plan file is a configuration problem
+that the user must fix on their end (e.g. a wrong `chmod` on the
+plan file, or a filesystem ACL change). The loop has no way to
+recover automatically. Swallowing + logging is the right call: the
+user will see the error in the log when they go to debug, and the
+TUI continues to render whatever the previous successful
+`setPlanProgress` call stored. A loud crash would be a worse user
+experience (an unrelated run becomes unkillable from the TUI).
+
+**No code change needed.**
+
+#### 2.10.C — INFO — `parsePlan` throws on a syntactically-broken plan (e.g. `Bun.file().text()` succeeds but `parsePlan` returns an internal throw) — log+swallow is correct
+
+`parsePlan` itself does not throw on its happy path (it counts
+tasks and returns a `PlanProgress`). The only realistic throw
+inside the try-block is the one from `Bun.file().text()`. So
+category C collapses to category A or B in practice.
+
+If `parsePlan` were ever extended to throw (e.g. a future "strict
+mode" that rejects plans with unparseable markers), the
+log+swallow contract in `refreshPlan` would still be the right
+call: a structural problem with the plan is a user-fixable issue
+worth logging, not a TUI-crash-worthy condition.
+
+**No code change needed.**
+
+#### 2.10.D — INFO — `refreshCurrentTask` (the sibling function) uses bare `catch {}` — same analysis
+
+For symmetry, the sibling function `refreshCurrentTask`
+(`App.tsx:586-599`) uses a bare `catch {}` with the comment
+"Silently ignore errors - current task display is non-critical." This
+is also correct: a failure to fetch the current task text should
+NEVER crash the TUI, because the task text is purely a display
+nice-to-have (the loop's own state machine tracks the current task
+internally via SSE events). A bare `catch` is appropriate here for
+exactly the same reasons as `refreshPlan`'s `catch + log.error`:
+the display will fall back to the last successful value, and the
+loop's state machine is unaffected.
+
+**No code change needed.**
+
+#### Test-suite delta for Task 2.10
+
+No new unit tests. `refreshPlan` is a React component closure that
+captures `props.planFile`, `props.debug`, `setPlanProgress`, and
+`log` — testing it would require either (a) a React component
+test harness with mocked dependencies, or (b) a refactor to make
+the function pure. Neither is in scope for an audit task.
+
+The behavior is, however, *indirectly* pinned by the `parsePlanFile`
+contract from Task 2.9: the throw-on-missing-file test guarantees
+that `refreshPlan`'s catch block is the path that actually fires
+for an ENOENT. If `parsePlanFile` were refactored to not throw,
+`refreshPlan`'s log.error would never fire for the missing-file
+case — that regression would be caught by an integration test
+mocking both the file system and the logger, not by a unit test
+on `parsePlanFile` itself.
+
+**No code change needed; behavior verified by code reading +
+indirect pinning via the Task 2.9 throw contract.**
+
+---
+
+## Combined test-suite delta for Tasks 2.7–2.10
+
+8 new tests added (4 in `parsePlanComplete`, 2 in
+`getCurrentTaskFromContent`, 2 in a new `parsePlanFile` describe
+block). The test file's import line was extended to include
+`parsePlanFile`.
+
+`bun test src/lib/plan-parser.test.ts` → **147 pass, 0 fail, 317
+expect() calls** (was 139/0/305 before this iteration).
++8 tests, +12 expects, all green.
+
+Full suite: `bun test` → **598 pass, 0 fail, 1373 expect() calls**
+across 21 files. No regressions.

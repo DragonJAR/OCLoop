@@ -29,10 +29,10 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify `percentComplete` math: denominator = total - manual - blocked; what if total = 0? (returns 100% — confirm this is correct)
 - [x] Verify `percentComplete` when all tasks are manual/blocked (denominator = 0, returns 100%)
 - [x] Verify `percentComplete` with only one pending task (0 completed / 1 automatable = 0%)
-- [ ] Audit `parsePlanComplete` for: no tags, single-line `<plan-complete>text</plan-complete>`, multi-line with nested content, tags inside code fences, multiple occurrences (should use last), tags with attributes, unclosed `<plan-complete>` tag
-- [ ] Verify `getCurrentTaskFromContent` returns the FIRST pending task even if tasks are not in order
-- [ ] Verify `parsePlanFile` with a file that doesn't exist (throws vs returns null)
-- [ ] Verify `refreshPlan` in App.tsx silently ignores errors — is this correct behavior for all error types?
+- [x] Audit `parsePlanComplete` for: no tags, single-line `<plan-complete>text</plan-complete>`, multi-line with nested content, tags inside code fences, multiple occurrences (should use last), tags with attributes, unclosed `<plan-complete>` tag
+- [x] Verify `getCurrentTaskFromContent` returns the FIRST pending task even if tasks are not in order
+- [x] Verify `parsePlanFile` with a file that doesn't exist (throws vs returns null)
+- [x] Verify `refreshPlan` in App.tsx silently ignores errors — is this correct behavior for all error types?
 
 ## Phase 3 — State Machine (useLoopState)
 

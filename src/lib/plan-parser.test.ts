@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete, parsePlanFile } from "./plan-parser"
 
 describe("parseTaskLine", () => {
   it("should parse completed tasks", () => {
@@ -1458,6 +1458,46 @@ End
     ].join("\n")
     expect(parsePlanComplete(content)).toBe("actually done")
   })
+
+  // PLAN.md 2.7 — attributes on the completion tag are not supported.
+  // The regex is literal: `^ {0,3}<plan-complete>(?:...)`, so a tag
+  // like `<plan-complete foo="bar">` is NOT matched (the `>` is followed
+  // by `f`, not the start of the body capture). An attribute-bearing
+  // completion tag is therefore treated as if no completion tag exists.
+  // This is a deliberate, documented design choice — completion is a
+  // private signal from the agent to the loop, not a public HTML-like
+  // element that needs to carry metadata.
+  it("ignores a tag that carries attributes (e.g. <plan-complete foo=\"bar\">)", () => {
+    const content = `<plan-complete foo="bar">summary</plan-complete>`
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  it("ignores a tag with attributes alongside a real one (real wins, not the attribute one)", () => {
+    const content = [
+      `<plan-complete data-meta="x">with attributes</plan-complete>`,
+      `<plan-complete>real completion</plan-complete>`,
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBe("real completion")
+  })
+
+  // PLAN.md 2.7 — an unclosed <plan-complete> tag must NOT trigger
+  // completion. The regex requires `</plan-complete>` (either inline
+  // or on its own line), so a stray open tag with no close is ignored.
+  // This pins the "loop keeps running" invariant: a malformed completion
+  // signal is never treated as a real one.
+  it("ignores an unclosed <plan-complete> tag (no closing tag present)", () => {
+    const content = [
+      "Tasks...",
+      "- [x] Done task",
+      "<plan-complete>summary without close",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  it("ignores a single-line unclosed tag (no newline, no close)", () => {
+    const content = `<plan-complete>summary without close`
+    expect(parsePlanComplete(content)).toBeNull()
+  })
 })
 
 describe("getCurrentTaskFromContent", () => {
@@ -1563,11 +1603,90 @@ describe("getCurrentTaskFromContent", () => {
 
     expect(result).toBe("Create `src/components/Dashboard.tsx` with props")
   })
+
+  // PLAN.md 2.8 — "returns the FIRST pending task even if tasks are not in
+  // order" is the contract. This test fences it off: even when the first
+  // pending is followed by completed/manual/blocked/pending rows, the
+  // function must still return that first pending and never a later one.
+  // (The existing "skip MANUAL and BLOCKED" test already pins a pending
+  // buried under non-pending rows; this test pins the FIRST-PENDING
+  // selection specifically when later pendings exist.)
+  it("returns the FIRST pending even when later pendings exist", () => {
+    const content = [
+      "- [ ] first pending",
+      "- [x] done",
+      "- [MANUAL] manual",
+      "- [ ] second pending",
+      "- [BLOCKED: r] blocked",
+      "- [ ] third pending",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("first pending")
+  })
+
+  it("returns the first pending when completed rows are interleaved BEFORE and AFTER", () => {
+    const content = [
+      "- [x] done a",
+      "- [ ] pending a",
+      "- [x] done b",
+      "- [ ] pending b",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("pending a")
+  })
 })
 
 describe("isPlanComplete", () => {
   it("should return false for a non-existent file", async () => {
     const result = await isPlanComplete("/tmp/ocloop-nonexistent-plan-test-xyz.md")
     expect(result).toBe(false)
+  })
+})
+
+// PLAN.md 2.9 — `parsePlanFile` behavior on a missing plan path.
+// The function signature (line 226-230 of plan-parser.ts) is:
+//   async function parsePlanFile(planPath: string): Promise<PlanProgress>
+// It calls `await file.text()` WITHOUT an `await file.exists()` guard.
+// Compare with `isPlanComplete` (line 199-204) which DOES check exists()
+// first and returns false. So `parsePlanFile` THROWS on a missing file
+// (Node-style ENOENT) and the caller (App.tsx:576, `refreshPlan`) is
+// expected to wrap it in a try/catch — which it does, at line 578.
+//
+// The contract being pinned here: "parsePlanFile does NOT silently return
+// null/empty on a missing file — it throws, and that throw is what
+// triggers the refreshPlan error path (logged via log.error)." If a
+// future refactor changes parsePlanFile to "be safe and return null",
+// the App.tsx refreshPlan error log would never fire for ENOENT —
+// this test catches that regression by asserting the throw.
+describe("parsePlanFile", () => {
+  it("throws on a non-existent file (does not silently return null/empty)", async () => {
+    const missingPath = "/tmp/ocloop-no-such-plan-file-xyz-12345.md"
+    // Sanity: the file really must not exist for this test to be meaningful.
+    const exists = await Bun.file(missingPath).exists()
+    expect(exists).toBe(false)
+
+    let threw = false
+    try {
+      await parsePlanFile(missingPath)
+    } catch (err) {
+      threw = true
+      // The error is a Node-style ENOENT, but we don't pin the exact
+      // message — just that it threw something.
+      expect(err).toBeInstanceOf(Error)
+    }
+    expect(threw).toBe(true)
+  })
+
+  it("parses a real file and returns PlanProgress", async () => {
+    const tmp = "/tmp/ocloop-parse-plan-file-test.md"
+    await Bun.write(tmp, "- [x] done\n- [ ] pending\n")
+    try {
+      const result = await parsePlanFile(tmp)
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+    } finally {
+      await Bun.$`rm -f ${tmp}`.quiet()
+    }
   })
 })
