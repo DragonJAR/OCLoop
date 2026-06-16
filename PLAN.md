@@ -537,10 +537,41 @@ cambio en el conteo de tests. Commit `95bf219`.
 
 ### Mejora 19 — Finding 5.1.D — LOW — `clearInterval` inside the ticker relies on closure-captured `cooldownTicker`
 
-- [ ] Evaluar la mejora 19 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 19 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 19 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 19 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 19 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 19 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 19 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 19 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural: la callback
+del ticker (líneas 765-772) leía `cooldownTicker` del
+closure del `let` del componente, no del valor del ID de
+intervalo que el propio `setInterval` devolvió. Si
+`clearCooldownTimers` corría entre la guarda
+`remaining <= 0` y la línea `clearInterval`, el outer ref
+se nulificaba y la self-clear recibía `null` (no-op según
+`setInterval`, pero la asignación `cooldownTicker = null`
+se omitía, dejando un ref obsoleto). La propuesta de
+`MEJORAS.md:3763-3769` es claramente correcta: capturar
+el ID en un `const tickerId` local para que la self-clear
+use el ID exacto, mientras el outer `cooldownTicker`
+queda para uso exclusivo de `clearCooldownTimers`.
+Implementación mínima: 1 línea de captura local + 1
+asignación explícita al final, remover la guarda redundante
+`&& cooldownTicker` (el local siempre está definido), y
+un comentario de 5 líneas nombrando la invariante y la
+referencia al finding. Cero cambios al `clearCooldownTimers`,
+cero cambios a la rama de exhaustion (su `clearCooldownTimers`
+línea 720 ya está antes del return), cero impacto en la
+TUI, cero impacto en el reducer, cero impacto en el camino
+feliz. Sin nuevos tests — el audit (`MEJORAS.md:3771-3772`)
+ya justificó que la race es latente y no observable
+(ninguno de los 4 call sites de `clearCooldownTimers` corre
+en los 250ms del tick del ticker en práctica); un test de
+race requeriría mockear `setInterval` + forzar la ordenación
+entre dos `clearInterval` y no aporta sobre la inspección
+del código. `bun test` verde: 680 pass / 0 fail, 1680
+expect() calls, 321 ms — sin cambio en el conteo. Commit
+`21f53d0`.
 
 ### Mejora 20 — Finding 5.1.E — LOW — `log.health` for the exhausted branch omits `retryAfter`
 
