@@ -192,10 +192,24 @@ falsos positivos en `planTimeoutMs`/etc., y orden estable.
 
 ### Mejora 8 — Finding 1.7.B — LOW — `--create-plan --prompt X` skips the prompt-file validation
 
-- [ ] Evaluar la mejora 8 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 8 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 8 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 8 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 8 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 8 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 8 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 8 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la Mejora 7 (commit `602f2f5`, Finding 1.7.A) ya implementó la
+opción (a) del fix propuesto en `MEJORAS.md`: `create-plan-warning.ts:33`
+añade `--prompt` a la lista de flags ignorados cuando
+`args.promptFile !== DEFAULTS.PROMPT_FILE`, y `src/index.tsx:324-330`
+emite el warning no-fatal a stderr en la rama `args.createPlan`. El test
+propuesto "parsed but not validated" ya está en `cli-args.test.ts:909-924`
+(`--create-plan + --prompt: parsed but not validated (validatePrerequisites
+is skipped)`). La opción (b) — llamar `validatePrerequisites` antes del
+short-circuit — fue descartada en el audit porque `runCreatePlan` no usa
+`args.promptFile` (los prompts son inline: `buildPlanPrompt`,
+`buildRefinePrompt`); validar un archivo que el flujo nunca lee sería una
+restricción engañosa. Implementación mínima: anotación en este plan; cero
+cambios de código. Test suite verde: `667 pass / 0 fail`.
 
 ### Mejora 9 — Finding 1.8.A — MEDIUM — Cross-reference a 1.7.A: `--resume` is silently swallowed by `--create-plan`
 
