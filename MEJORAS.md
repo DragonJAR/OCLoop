@@ -15729,3 +15729,220 @@ non-idempotency of `resolveResilience`, etc.).
 12.1.A (the `validateConfigShape` helper). It is the highest-leverage
 change and folds most of the 12.x findings into a single 30-line
 refactor.
+
+---
+
+## Phase 13 — Chaos Module & Debug Mode
+
+Source: `src/lib/chaos.ts` · `src/App.tsx` (chaos wiring + debug keybindings)
+Tests: `src/lib/chaos.test.ts` (5 tests, all passing)
+
+### 13.1 — `createChaos` enable/disable conditions: `--chaos` AND `--debug` required
+
+**Status: COMPLETE — VERIFIED, one MEDIUM (test-coverage gap) and two INFO observations.**
+
+The chaos fault-injection module is a **debug-and-soak-testing tool** that
+must be inert outside of its narrow activation window. The audit traced
+every code path that depends on the gate to confirm the AND semantics
+are enforced end-to-end, and to document the two intentional escape
+hatches that exist for the test harness.
+
+#### Audit methodology
+
+The gate is a single closure passed to `createChaos` at `App.tsx:225`:
+
+```ts
+const chaos = createChaos(() => resilience().chaos && !!props.debug)
+```
+
+The audit followed every consumer of `chaos.*` to verify each one
+honors the gate:
+
+| # | File:line | Consumer | What it gates |
+|---|-----------|----------|---------------|
+| 1 | `chaos.ts:55-58` | `isEnabled()` / internal `on()` | Returns the live value of the closure (re-evaluated on every call) |
+| 2 | `chaos.ts:75-80` | `takeRateLimit()` | Returns `null` when `on()` is false, regardless of `pendingRateLimit` |
+| 3 | `chaos.ts:82-86` | `ping(real)` | Pass-through when `on()` is false |
+| 4 | `chaos.ts:87-92` | `reconcile(real)` | Pass-through when `on()` is false |
+| 5 | `App.tsx:1593-1617` | Chaos command palette | Wrapped in `if (chaos.isEnabled())` so the menu items are hidden |
+| 6 | `App.tsx:248` | Watchdog `pingServer` probe | Wraps `chaos.ping(() => server.ping())` — pass-through when off |
+| 7 | `App.tsx:250-255` | Watchdog `reconcile` probe | Wraps `chaos.reconcile(async …)` — pass-through when off |
+
+#### 13.1.A — AND-gate is correctly enforced: VERIFIED
+
+Both `resilience().chaos` and `!!props.debug` must be truthy for `on()` to
+return true. The closure re-evaluates on every call (no caching, no
+`createMemo`), so the gate is always live. The four cases:
+
+| `resilience().chaos` | `props.debug` | `on()` | Menu visible? | Probes intercept? |
+|----------------------|---------------|--------|----------------|-------------------|
+| `false`              | `false`       | `false` | No           | No (pass-through) |
+| `false`              | `true`        | `false` | No           | No (pass-through) |
+| `true`               | `false`       | `false` | No           | No (pass-through) |
+| `true`               | `true`        | `true`  | Yes          | Yes (faults apply) |
+
+The `!!` on `props.debug` is defensive belt-and-suspenders: `props.debug`
+is typed as `boolean | undefined` in the `AppProps` interface, so without
+the `!!` a literal `undefined` would short-circuit the `&&` chain to
+`undefined` (falsy, but not strictly `false`). The `!!` normalizes the
+result to a strict boolean, which keeps the return type predictable for
+downstream code that does `if (chaos.isEnabled())`.
+
+**Verdict: VERIFIED.** The AND-gate is correct, the closure is live, and
+both flags are independently checked. The wiring at `App.tsx:225` is the
+single point of truth; no other code path constructs a `createChaos`
+controller (verified by grep for `createChaos` — only one call site in
+`App.tsx:225`).
+
+#### 13.1.B — MEDIUM — No test verifies the AND composition of the gate
+
+**Problem.** The test file `src/lib/chaos.test.ts` exercises
+`createChaos` with `() => false` and `() => true` only. The two
+predicates at the call site (`resilience().chaos` and `!!props.debug`)
+are *not* unit-tested as a composition. A regression in `App.tsx:225`
+that changed `&&` to `||`, or dropped one of the two checks, would
+leave every existing test green. The wiring is correct *today* (the
+audit walked it manually), but nothing in CI guards it.
+
+**Where.** `src/App.tsx:225` (the gate) and `src/lib/chaos.test.ts` (the
+missing test cases).
+
+**Proposed fix.** Add a small parameterized test to `chaos.test.ts` that
+exercises the AND composition directly against `createChaos`:
+
+```ts
+it("AND-gate: requires BOTH predicates to be true", async () => {
+  // Both false → disabled
+  const a = createChaos(() => false && false)
+  a.killServer()
+  expect(await a.ping(async () => true)).toBe(true) // pass-through
+
+  // Only one true → still disabled
+  const b = createChaos(() => true && false)
+  b.killServer()
+  expect(await b.ping(async () => true)).toBe(true) // pass-through
+
+  const c = createChaos(() => false && true)
+  c.killServer()
+  expect(await c.ping(async () => true)).toBe(true) // pass-through
+
+  // Both true → enabled
+  const d = createChaos(() => true && true)
+  d.killServer()
+  expect(await d.ping(async () => true)).toBe(false) // fault active
+})
+```
+
+This is a 15-line test that closes the gap without touching the gate
+itself. The same shape works for `takeRateLimit` and `reconcile`.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria).
+
+#### 13.1.C — INFO — State mutators are NOT gated by `on()` (intentional fate-sharing)
+
+**Observation.** `killServer`, `reviveServer`, `freezeSession`,
+`unfreezeSession`, and `injectRateLimit` set internal state without
+consulting the gate:
+
+```ts
+killServer() { serverDead = true },   // no on() check
+freezeSession() { sessionFrozen = true }, // no on() check
+injectRateLimit(retryAfterSeconds) {
+  pendingRateLimit = { retryAfterSeconds } // no on() check
+},
+```
+
+Only the *consumers* of that state (`ping`, `reconcile`, `takeRateLimit`)
+check `on()`. The result is a **fate-sharing** model: the state can be
+written at any time, but it is observed only when the gate is open.
+
+This is intentional. The test suite in `chaos.test.ts` (line 5-13)
+deliberately calls `chaos.killServer()` and `chaos.freezeSession()`
+while the controller is `() => false` to prove the pass-through path —
+which only works if the mutators ignore the gate. If the mutators were
+gated, the test would have to enable the controller first, defeating
+the test's purpose of verifying pass-through.
+
+**Where.** `src/lib/chaos.ts:60-74` (the five mutators).
+
+**Proposed action.** None. Document the fate-sharing contract in the
+file header so a future maintainer does not "fix" the mutators by
+gating them and silently break the test. One-line addition to the
+existing JSDoc at `chaos.ts:1-16`:
+
+```ts
+/**
+ * Chaos fault injection — debug-only (`--chaos` + `--debug`).
+ *
+ * Fate-sharing: the state mutators (killServer, freezeSession, etc.) do
+ * NOT consult the gate. They are always callable so the test suite can
+ * set faults and verify pass-through (mutate state → observe pass-through
+ * because the consumers are gated). Only the consumers (ping, reconcile,
+ * takeRateLimit) honor `enabled()`.
+ *
+ * …
+ */
+```
+
+**Status.** No fix applied. Documented as an intentional design
+contract; comment addition proposed for the next maintenance pass.
+
+#### 13.1.D — INFO — `snapshot()` reports raw state, not effective state
+
+**Observation.** `snapshot()` returns `{ enabled, serverDead,
+sessionFrozen, pendingRateLimit }`. The `enabled` field is the gate; the
+other three are raw internal state, independent of the gate. So in
+disabled mode it is possible (via the mutators above) to have
+`enabled: false, serverDead: true` simultaneously — a "fault is set
+but inert" snapshot. A reader of the snapshot must mentally AND
+`enabled` with the three raw fields to compute the *effective* state.
+
+The single caller of `snapshot()` in the codebase is the test suite
+(`chaos.test.ts:42-49`); no production code path consumes the snapshot
+for display, gating, or persistence. So the ambiguity is invisible to
+end users. It is a faithful representation of internal state, not a
+bug.
+
+**Where.** `src/lib/chaos.ts:94-101` (the `snapshot` definition).
+
+**Proposed action.** None. If a future consumer (a debug overlay, a
+log line) ever reads the snapshot, the consumer must AND `enabled`
+with the raw fields. The shape is the right shape for a debug
+introspection API; an "effective state" view would lose information
+that a debugger wants.
+
+**Status.** No fix applied. Documented.
+
+#### 13.1.E — INFO — Gate is re-evaluated on every call (no memoization)
+
+**Observation.** `const on = () => enabled()` is called on every probe
+invocation. The closure re-reads `resilience().chaos` and `props.debug`
+each time. There is no `createMemo` wrapper. This is correct: both
+inputs are reactive signals in the App context, and the cheapest way
+to stay live is to read them on demand. The cost is one property access
+per call — negligible compared to the network round-trip the probes
+wrap. No finding.
+
+**Where.** `src/lib/chaos.ts:55` (the `on` binding).
+
+**Proposed action.** None.
+
+**Status.** Documented as intentional.
+
+#### Summary of Phase 13.1 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 13.1.A  | INFO     | AND-gate verified: `resilience().chaos && !!props.debug` correctly requires both flags; closure is live; menu + probes honor the gate. |
+| 13.1.B  | MEDIUM   | No test exercises the AND composition; a regression at `App.tsx:225` (e.g. `&&` → `\|\|`) would not be caught by CI. |
+| 13.1.C  | INFO     | State mutators are intentionally not gated (fate-sharing) so tests can verify pass-through. Document the contract in the file header. |
+| 13.1.D  | INFO     | `snapshot()` returns raw state, not effective state; no production consumer exists today. |
+| 13.1.E  | INFO     | Gate re-evaluates on every call (no memo); correct for reactive signals, negligible cost. |
+
+**Net severity tally for Phase 13.1: 1 MEDIUM; no CRITICAL, HIGH, or LOW.**
+
+The MEDIUM is a test-coverage gap, not a behavior defect. The audit
+walked the wiring manually and confirmed it is correct today. The
+proposed 15-line test in 13.1.B would close the gap. No code change
+required for correctness.
