@@ -31,8 +31,6 @@ const shared = {
   // Dashboard
   badgeError: "ERROR",
   badgeDebug: "DEBUG",
-  lblIter: "Iter",
-  lblEta: "ETA",
   guardOk: "OK",
   // Keybind hints (same word in both locales)
   hintTerminal: "terminal",
@@ -48,7 +46,6 @@ const shared = {
   logTokens: "Tokens: ",
   logTokenIn: "in:",
   logTokenOut: "out:",
-  logTokenRsn: "rsn:",
   logDiff: "Diff: ",
   // BottomPanel metric (same abbrev in both locales)
   lblRate: "Tokens/min",
@@ -206,15 +203,19 @@ const en = {
   // --- Dashboard: labels ---
   lblModel: "Model",
   lblAgent: "Agent",
+  lblIter: "Iteration",
   lblTasks: "Tasks",
   lblTime: "Task Time",
-  lblAvg: "Avg",
+  lblAvg: "Avg/task",
+  lblEta: "Remaining",
   lblTaskPrefix: "Task: ",
   lblWaiting: "waiting...",
-  lblGuard: "Guard",
+  lblGuard: "Health",
   // --- BottomPanel labels ---
   lblTotal: "Total Time",
   lblTaskTokens: "Task Tokens",
+  // Token breakdown: reasoning differs by locale (en reasoning / es razonando)
+  logTokenRsn: "reasoning:",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
@@ -231,10 +232,10 @@ const en = {
   hintCompleteMsg: "Press any key to exit",
 
   // --- Watchdog health labels ---
-  guardSuspect: "SUSPECT",
-  guardCheck: "CHECK",
-  guardStuck: "STUCK",
-  guardRecover: "RECOVER",
+  guardSuspect: "Suspect",
+  guardCheck: "Checking",
+  guardStuck: "Stuck",
+  guardRecover: "Recovering",
 
   // --- Cooldown / dashboard countdown ---
   cooldownText: (p: Params) =>
@@ -513,14 +514,17 @@ const es: Record<MessageKey, Msg> = {
 
   lblModel: "Modelo",
   lblAgent: "Agente",
+  lblIter: "Iteración",
   lblTasks: "Tareas",
   lblTime: "Tiempo de Tarea",
-  lblAvg: "Prom",
+  lblAvg: "Prom/tarea",
+  lblEta: "Restante",
   lblTaskPrefix: "Tarea: ",
   lblWaiting: "esperando...",
-  lblGuard: "Guardián",
+  lblGuard: "Salud",
   lblTotal: "Tiempo total",
   lblTaskTokens: "Tokens de Tarea",
+  logTokenRsn: "razonando:",
 
   hintStart: "iniciar",
   hintPause: "pausar",
@@ -535,10 +539,10 @@ const es: Record<MessageKey, Msg> = {
   hintCooldownMsg: "Rate limit, esperando...",
   hintCompleteMsg: "Pulsa cualquier tecla para salir",
 
-  guardSuspect: "SOSPECHA",
-  guardCheck: "VERIF",
-  guardStuck: "BLOQUEO",
-  guardRecover: "RECUPER",
+  guardSuspect: "Sospechoso",
+  guardCheck: "Verificando",
+  guardStuck: "Atascado",
+  guardRecover: "Recuperando",
 
   cooldownText: (p) =>
     `Rate limited — reintentando en ${p.secs}s (intento ${p.attempt})`,
