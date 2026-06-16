@@ -74,8 +74,13 @@ export function parseTaskLine(line: string): ParsedTask {
     }
   }
   
-  // Empty checkbox = pending
+  // Empty checkbox = pending, but reject if there is no description.
+  // A bare `- [ ]` with only whitespace inside brackets and no trailing text
+  // is not an actionable task — OCLoop would have nothing to execute.
   if (checkboxContent === "") {
+    if (!afterCheckbox) {
+      return { type: "not-a-task", description: "" }
+    }
     return { type: "pending", description: afterCheckbox }
   }
   

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete } from "./plan-parser"
 
 describe("parseTaskLine", () => {
   it("should parse completed tasks", () => {
@@ -42,6 +42,27 @@ describe("parseTaskLine", () => {
     })
   })
 
+  it("should capture full multi-word BLOCKED reason in checkbox", () => {
+    expect(parseTaskLine("- [BLOCKED: multi word reason here] Task")).toEqual({
+      type: "blocked",
+      description: "Task",
+      blockedReason: "multi word reason here",
+    })
+  })
+
+  it("should handle BLOCKED with no trailing description", () => {
+    expect(parseTaskLine("- [BLOCKED]")).toEqual({
+      type: "blocked",
+      description: "",
+      blockedReason: "",
+    })
+    expect(parseTaskLine("- [BLOCKED: reason]")).toEqual({
+      type: "blocked",
+      description: "",
+      blockedReason: "reason",
+    })
+  })
+
   it("should parse BLOCKED tasks as tag after checkbox", () => {
     expect(parseTaskLine("- [ ] [BLOCKED: reason] Task")).toEqual({ 
       type: "blocked", 
@@ -58,7 +79,7 @@ describe("parseTaskLine", () => {
   it("should return not-a-task for invalid lines", () => {
     expect(parseTaskLine("Not a task")).toEqual({ type: "not-a-task", description: "" })
     expect(parseTaskLine("- Item")).toEqual({ type: "not-a-task", description: "" })
-    expect(parseTaskLine("- [ ]")).toEqual({ type: "pending", description: "" }) // Valid but empty description
+    expect(parseTaskLine("- [ ]")).toEqual({ type: "not-a-task", description: "" }) // Empty checkbox with no description → not a task
   })
 })
 
@@ -346,6 +367,24 @@ End
     ].join("\n")
     expect(parsePlanComplete(content)).toBeNull()
   })
+
+  it("ignores a documented tag inside a blockquote (nested, not top-level)", () => {
+    const content = [
+      "> <plan-complete>nested inside blockquote</plan-complete>",
+      "- [ ] Real task still pending",
+    ].join("\n")
+    // The `> ` prefix makes the line start with "> ", not 0-3 spaces + "<plan-complete>",
+    // so the regex anchored to ^ {0,3}<plan-complete> won't match.
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  it("finds a real tag alongside one nested in a blockquote", () => {
+    const content = [
+      "> <plan-complete>nested inside blockquote</plan-complete>",
+      "<plan-complete>actually done</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBe("actually done")
+  })
 })
 
 describe("getCurrentTaskFromContent", () => {
@@ -408,6 +447,18 @@ describe("getCurrentTaskFromContent", () => {
     expect(result).toBe("Indented pending task")
   })
 
+  it("should return null when all tasks are MANUAL or BLOCKED", () => {
+    const content = `
+- [MANUAL] Manual task one
+- [MANUAL] Manual task two
+- [BLOCKED: reason] Blocked task
+- [ ] [MANUAL] Tagged manual
+- [ ] [BLOCKED] Tagged blocked
+`
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBeNull()
+  })
+
   it("should return null for empty task description", () => {
     const content = `
 - [ ] 
@@ -415,9 +466,8 @@ describe("getCurrentTaskFromContent", () => {
 `
     const result = getCurrentTaskFromContent(content)
 
-    // First one is empty, so it returns "Next task" because getCurrentTaskFromContent logic calls parseTaskLine
-    // parseTaskLine("- [ ] ") returns { type: "pending", description: "" }
-    // getCurrentTaskFromContent checks for task.type === "pending" && task.description
+    // First one has no description, so parseTaskLine returns not-a-task (skipped).
+    // getCurrentTaskFromContent returns "Next task" from the second line.
     
     expect(result).toBe("Next task")
   })
@@ -439,5 +489,12 @@ describe("getCurrentTaskFromContent", () => {
     const result = getCurrentTaskFromContent(content)
 
     expect(result).toBe("Create `src/components/Dashboard.tsx` with props")
+  })
+})
+
+describe("isPlanComplete", () => {
+  it("should return false for a non-existent file", async () => {
+    const result = await isPlanComplete("/tmp/ocloop-nonexistent-plan-test-xyz.md")
+    expect(result).toBe(false)
   })
 })
