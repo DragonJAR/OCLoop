@@ -1156,3 +1156,192 @@ describe("parseArgs — --resume combined with --run, --create-plan, standalone 
     expect(argv.length).toBe(argvCopy.length)
   })
 })
+
+describe("parseArgs — requireValue lone-dash and flag-shaped semantics (Phase 1 Task 1.9)", () => {
+  // The function under test (src/lib/cli-args.ts:137-143):
+  //
+  //   function requireValue(value: string | undefined, flag: string): string {
+  //     if (!value || (value.startsWith("-") && value !== "-")) {
+  //       console.error(`Error: ${flag} requires a value`)
+  //       process.exit(1)
+  //     }
+  //     return value
+  //   }
+  //
+  // The rule is: a value is rejected iff it is falsy OR it starts with `-`
+  // and is longer than one character. The lone `-` (length 1, starts with `-`)
+  // is the explicit escape hatch — `-` is a legal filename on every Unix-like
+  // filesystem (the standard `stdin`/`stdout` convention), and a user with a
+  // file literally named `-` must be able to reference it.
+  //
+  // The tests below pin BOTH halves of the rule (reject && accept) for every
+  // value flag that uses requireValue, plus a matrix of "looks like a flag"
+  // rejections (short `-X`, long `--X`, with a mix of unrelated flags). The
+  // existing tests at line 211-218 (--flag --debug) and line 524-537
+  // (--flag -) cover the two extreme cases; the matrix here proves the rule
+  // is uniformly applied across all three value flags AND across the full
+  // alphabet of other flags the user might accidentally chain.
+
+  // --- The lone-dash ACCEPT case for every value flag -------------------
+
+  it("accepts --agent - (lone dash is a valid filename per requireValue)", () => {
+    // Mirror of the --prompt / --plan lone-dash tests (line 524-537). The
+    // function is shared, so the behavior must be identical across all
+    // three callers. Pin the third caller's behavior here.
+    const { args, exitCode } = runParse(["--agent", "-"])
+    expect(exitCode).toBeNull()
+    expect(args?.agent).toBe("-")
+  })
+
+  // --- The "looks like a flag" REJECT matrix ----------------------------
+
+  // Every value flag must reject a single-dash short form (e.g. `-d`). The
+  // user typed `--plan -d` and almost certainly meant `--plan` (value) and
+  // `-d` (debug) as separate flags; silently consuming `-d` as the plan
+  // filename would set args.planFile = "-d" and drop -d.
+  const shortReject: Array<[string, string, string]> = [
+    ["--prompt", "-d", "debug"],
+    ["--prompt", "-r", "run"],
+    ["--prompt", "-c", "create-plan"],
+    ["--prompt", "-h", "help"],
+    ["--plan", "-d", "debug"],
+    ["--plan", "-r", "run"],
+    ["--plan", "-c", "create-plan"],
+    ["--plan", "-a", "agent"],
+    ["--agent", "-d", "debug"],
+    ["--agent", "-c", "create-plan"],
+    ["--agent", "-p", "port"],
+    ["--agent", "-m", "model"],
+  ]
+  for (const [flag, value, label] of shortReject) {
+    it(`rejects ${flag} ${value} (single-dash short flag ${label})`, () => {
+      const r = runParse([flag, value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain(`${flag} requires a value`)
+    })
+  }
+
+  // Every value flag must reject a long-form flag-shaped value. The
+  // existing line-211-218 block covers --debug; extend to the other
+  // unrelated flags. The error must come from requireValue (not from
+  // the inner helper for the next flag), confirming the value was
+  // rejected as a missing value rather than mis-parsed.
+  const longReject: Array<[string, string]> = [
+    ["--prompt", "--chaos"],
+    ["--prompt", "--verbose"],
+    ["--prompt", "--resume"],
+    ["--prompt", "--no-caffeinate"],
+    ["--prompt", "--create-plan"],
+    ["--prompt", "--lang"],
+    ["--plan", "--chaos"],
+    ["--plan", "--verbose"],
+    ["--plan", "--resume"],
+    ["--plan", "--no-caffeinate"],
+    ["--plan", "--lang"],
+    ["--plan", "--model"],
+    ["--agent", "--chaos"],
+    ["--agent", "--verbose"],
+    ["--agent", "--resume"],
+    ["--agent", "--no-caffeinate"],
+    ["--agent", "--resilience"],
+  ]
+  for (const [flag, value] of longReject) {
+    it(`rejects ${flag} ${value} (long-form flag-shaped value)`, () => {
+      const r = runParse([flag, value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain(`${flag} requires a value`)
+    })
+  }
+
+  // --- The required PLAN.md cases: --plan --debug rejects, --plan - accepts ---
+
+  it("PLAN.md 1.9: --plan --debug is rejected (the diagnostic case)", () => {
+    // The case that motivated the rule. A user who types
+    //   ocloop --plan --debug
+    // almost certainly meant two flags, not a plan file named "--debug".
+    // requireValue catches this; without it, parseArgs would set
+    // args.planFile = "--debug" and silently drop --debug.
+    const r = runParse(["--plan", "--debug"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("--plan requires a value")
+  })
+
+  it("PLAN.md 1.9: --plan - is accepted (the lone-dash escape hatch)", () => {
+    // The case that motivated the lone-dash exception. A user with a file
+    // literally named `-` in the working directory needs to be able to
+    // reference it without being told "looks like a flag, try again".
+    const { args, exitCode } = runParse(["--plan", "-"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("-")
+  })
+
+  // --- Cross-flag interactions: --plan and --prompt both reject --debug ---
+
+  it("the same --debug rejection fires for every value flag (uniformity)", () => {
+    // Both --prompt and --agent use the same requireValue helper; verify
+    // they all fire the same error message format ("<flag> requires a value").
+    const r1 = runParse(["--prompt", "--debug"])
+    expect(r1.exitCode).toBe(1)
+    expect(r1.errors.join("\n")).toContain("--prompt requires a value")
+    const r2 = runParse(["--plan", "--debug"])
+    expect(r2.exitCode).toBe(1)
+    expect(r2.errors.join("\n")).toContain("--plan requires a value")
+    const r3 = runParse(["--agent", "--debug"])
+    expect(r3.exitCode).toBe(1)
+    expect(r3.errors.join("\n")).toContain("--agent requires a value")
+  })
+
+  // --- requireValue does not run for value flags that read inline (--port, --model) ---
+
+  it("--port --debug is rejected by parsePort, not by requireValue (different error path)", () => {
+    // --port reads its value inline (parsePort at line 119-130) and the
+    // PORT_RE check fires first. The error message is "--port requires
+    // a full integer argument", not "--port requires a value". The
+    // requireValue rule is for --prompt/--plan/--agent; --port and
+    // --model use stricter per-flag helpers. Pin the boundary so a
+    // future refactor that unifies them is visible as a behavioral
+    // change (the same input would then produce "requires a value").
+    const r = runParse(["--port", "--debug"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("--port")
+    expect(r.errors.join("\n")).not.toContain("--port requires a value")
+  })
+
+  it("--model --debug is rejected by parseModel, not by requireValue (different error path)", () => {
+    const r = runParse(["--model", "--debug"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("--model")
+    expect(r.errors.join("\n")).not.toContain("--model requires a value")
+  })
+
+  // --- The error message embeds the requesting flag, not a generic word ---
+
+  it("error message names the requesting flag (helps the user locate the typo)", () => {
+    // The user pasted a long command and got an error; the message must
+    // point at the specific flag, not a generic "an argument requires a
+    // value". Pin this so a future refactor that simplifies the message
+    // is visible.
+    const r = runParse(["--plan", "--debug"])
+    expect(r.errors.join("\n")).toBe("Error: --plan requires a value")
+  })
+
+  // --- Negative tests: legitimate values that LOOK like they could trip the rule ---
+
+  it("accepts a value that starts with letters but contains a dash mid-string", () => {
+    // The rule is `value.startsWith("-")`, not `value.includes("-")`. A
+    // filename like "build-artifacts/v1.md" must be accepted.
+    const { args, exitCode } = runParse(["--plan", "build-artifacts/v1.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("build-artifacts/v1.md")
+  })
+
+  it("accepts a value that starts with `--` in the middle (not the first char)", () => {
+    // "x--debug" starts with "x", not "-". The flag-shape guard does
+    // not fire. The value is stored verbatim. (Whether the OS can
+    // actually open such a file is a downstream concern, not a
+    // parseArgs concern.)
+    const { args, exitCode } = runParse(["--plan", "x--debug"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("x--debug")
+  })
+})

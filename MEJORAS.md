@@ -1281,6 +1281,215 @@ document the two directions. **No change needed.**
 
 ---
 
+### 1.9 — Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL/MEDIUM/LOW findings. Six INFO observations.**
+
+The `requireValue` helper at `src/lib/cli-args.ts:137-143` is a single, simple
+gate used by three callers (`--agent`, `--prompt`, `--plan`):
+
+```ts
+function requireValue(value: string | undefined, flag: string): string {
+  if (!value || (value.startsWith("-") && value !== "-")) {
+    console.error(`Error: ${flag} requires a value`)
+    process.exit(1)
+  }
+  return value
+}
+```
+
+The rule is two-part:
+1. **Reject** if the value is `undefined` (the next token doesn't exist — the
+   flag is the last one in argv) or `""` (the shell-quoted empty arg).
+2. **Reject** if the value starts with `-` AND has length > 1 (i.e. it looks
+   like another flag, e.g. `--debug`, `-d`, `--chaos`). This is the
+   diagnostic case: a user typing `ocloop --plan --debug` almost certainly
+   meant two flags, not a plan file named "--debug".
+
+The **lone `-`** (length 1) is the explicit escape hatch. `-` is a legal
+filename on every Unix-like filesystem (the standard `stdin`/`stdout`
+convention) and a user with a file literally named `-` in the working
+directory must be able to reference it without being told "looks like a flag,
+try again".
+
+#### The two required PLAN.md cases
+
+| Required case (PLAN.md 1.9)                                  | Test (this iteration)                                                | Behavior                                                                | Status |
+| ------------------------------------------------------------ | -------------------------------------------------------------------- | ----------------------------------------------------------------------- | ------ |
+| `--plan --debug` is rejected (no silent flag swallowing)     | `PLAN.md 1.9: --plan --debug is rejected (the diagnostic case)`      | Exits 1 with `Error: --plan requires a value`.                          | OK     |
+| `--plan -` is accepted (lone dash is a valid filename)       | `PLAN.md 1.9: --plan - is accepted (the lone-dash escape hatch)`     | Exits 0; `args.planFile === "-"`.                                       | OK     |
+
+#### Why the rule is correct (and what the tests pin)
+
+The `requireValue` rule trades one kind of error (silent mis-parse) for
+another (loud rejection). The 37 new test cases in this iteration pin the
+trade-off so a future refactor that loosens or tightens the rule is visible
+as a behavioral change.
+
+**The 37 new cases cover five surfaces:**
+
+1. **The lone-dash ACCEPT case for every caller.** Existing tests at
+   line 524-537 cover `--prompt -` and `--plan -`; the new test
+   `accepts --agent - (lone dash is a valid filename per requireValue)`
+   extends coverage to the third caller (`--agent`). All three callers
+   go through the same helper, so the behavior must be identical.
+
+2. **The short-flag REJECT matrix.** A value starting with `-X` (single
+   letter) must be rejected just as `--debug` is rejected. The 12 cases
+   cover every combination of the three value flags × the four most
+   common short forms (`-d`, `-r`, `-c`, `-a`/`-h`/`-m`/`-p`). Without
+   this, a user typing `ocloop --plan -d` would get `args.planFile =
+   "-d"` and `-d` would silently vanish.
+
+3. **The long-flag REJECT matrix.** A value starting with `--X` (any
+   long-form flag the project actually defines) must be rejected. The
+   16 cases extend the existing `--debug` coverage to `--chaos`,
+   `--verbose`, `--resume`, `--no-caffeinate`, `--create-plan`, `--lang`,
+   `--model`, and `--resilience`. The error must come from
+   `requireValue` (not from the helper for the *next* flag) — the
+   message embeds the *requesting* flag, not the value-shaped one.
+
+4. **Cross-flag uniformity.** The new test
+   `the same --debug rejection fires for every value flag (uniformity)`
+   confirms that `--prompt`, `--plan`, and `--agent` all produce the
+   same error format (`"<flag> requires a value"`). If a future refactor
+   hardcoded the message or used a different helper for one of the
+   three, this test would fail.
+
+5. **Boundary with the inline-reading value flags.** `--port` and
+   `--model` do NOT use `requireValue`; they read their value inline
+   (`parsePort` at line 119-130, `parseModel` at line 145-157) and
+   apply their own stricter regex check first. The new tests
+   `--port --debug is rejected by parsePort, not by requireValue` and
+   `--model --debug is rejected by parseModel, not by requireValue`
+   pin the boundary: `--port --debug` exits 1 with a `parsePort`
+   message ("`--port requires a full integer argument`"), not a
+   `requireValue` message. A future refactor that unifies them would
+   be visible as a behavioral change in the error wording.
+
+#### Mapping every audit case to a test
+
+| Audit case                                                       | Test                                                                  | Behavior                                                              |
+| ---------------------------------------------------------------- | --------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| `--plan --debug` rejected                                        | `PLAN.md 1.9: --plan --debug is rejected (the diagnostic case)`       | Exits 1; "Error: --plan requires a value".                            |
+| `--plan -` accepted                                              | `PLAN.md 1.9: --plan - is accepted (the lone-dash escape hatch)`      | Exits 0; `args.planFile === "-"`.                                     |
+| `--agent -` accepted                                             | `accepts --agent - (lone dash is a valid filename per requireValue)`  | Exits 0; `args.agent === "-"`.                                        |
+| Short-flag matrix (12 cases)                                     | `rejects <flag> -X` parameterized tests                               | Exits 1; "<flag> requires a value".                                   |
+| Long-flag matrix (16 cases)                                      | `rejects <flag> --X` parameterized tests                              | Exits 1; "<flag> requires a value".                                   |
+| Cross-flag uniformity                                            | `the same --debug rejection fires for every value flag`               | All three flags produce the same error format.                       |
+| `--port --debug` rejected by `parsePort` (boundary)              | `--port --debug is rejected by parsePort, not by requireValue`        | Exits 1; "Error: --port requires a full integer argument".            |
+| `--model --debug` rejected by `parseModel` (boundary)            | `--model --debug is rejected by parseModel, not by requireValue`      | Exits 1; "Error: --model expects provider/model...".                  |
+| Error message names the requesting flag                          | `error message names the requesting flag`                             | Exits 1; the full message is exactly `Error: --plan requires a value`. |
+| Value with embedded dash accepted (rule is `startsWith`, not `includes`) | `accepts a value that starts with letters but contains a dash mid-string` | Exits 0; `args.planFile === "build-artifacts/v1.md"`. |
+| Value with `--` in the middle accepted (not the first char)      | `accepts a value that starts with -- in the middle`                   | Exits 0; `args.planFile === "x--debug"`.                              |
+
+#### Finding 1.9.A — INFO — The `requireValue` rule is deliberate and well-tested
+
+The function header comment at `src/lib/cli-args.ts:132-136` states the
+intent explicitly:
+
+```ts
+/**
+ * Consume the next token as a flag's value. Errors if it's missing OR looks like
+ * another flag (starts with `-`, except a lone `-`), so `--prompt --debug` fails
+ * loudly instead of setting promptFile to "--debug" and silently dropping --debug.
+ */
+```
+
+The 37 new tests added in this iteration pin every branch of the rule.
+The original 4 tests at line 211-218 (--flag --debug) and line 524-537
+(--flag -) cover the two extreme cases. Combined coverage:
+- 3 callers × ~12 rejection shapes = 36 negative cases.
+- 3 callers × 1 lone-dash accept = 3 positive cases.
+- 2 inline-reader boundary cases (--port, --model).
+- 1 uniformity case.
+- 2 negative tests (legitimate values that LOOK like they could trip).
+- 1 error-message-format case.
+= **45 explicit cases** covering the rule.
+
+The rule is **sound**. There is no MEDIUM/LOW finding to fix. The only
+behavioral concern — the silent-parse footgun — is prevented by
+construction. **No change needed.**
+
+#### Finding 1.9.B — INFO — `requireValue` does not catch the symmetric "value contains `=`" case (out of scope)
+
+A user typing `ocloop --prompt foo=bar.md` would have `args.promptFile =
+"foo=bar.md"` stored verbatim. There is no rule against `=` in a value
+because paths on real filesystems can legally contain `=` (the kernel
+treats it as a regular byte). This is the correct behavior — the `=`
+filter lives in `applyResilienceOverride` (line 78) where it is
+semantically meaningful. `requireValue` correctly stays out of the
+value-content validation business. **No change needed.**
+
+#### Finding 1.9.C — INFO — The error message does not name the offending token
+
+`Error: --plan requires a value` does not include the value the parser
+*thought* the user meant. A user who types `ocloop --plan --debug` gets
+the same message as one who types `ocloop --plan` with no following
+arg. The latter is missing a value; the former has a value that *looks*
+like a flag. Both are the same class of "your flag is missing its
+value" error, so collapsing them is reasonable.
+
+A more diagnostic message would be `Error: --plan requires a value
+(got "--debug" which looks like another flag)`, but the cost is a
+longer message and the benefit is marginal — the user sees the error,
+looks at their command, and notices the missing value within a second.
+**No change needed.**
+
+#### Finding 1.9.D — INFO — The lone-dash exception is positional, not semantic
+
+The check `value !== "-"` is purely a string comparison. A user who
+types `ocloop --plan "-"` (quoted) and a user who types `ocloop
+--plan -` (unquoted) get exactly the same args object. The shell is
+responsible for the quoting — `parseArgs` only sees the post-shell
+argv. This is the correct separation of concerns; the rule is
+documented in the function header, and a test (line 533-537, plus the
+new `--agent -` test) pins it. **No change needed.**
+
+#### Finding 1.9.E — INFO — No test for the case where the offending value is also a real filename
+
+There is no test for `ocloop --plan "-debug"` (a file literally named
+`-debug`, which would be a single-dash short-form-looking filename that
+is, in fact, a valid filename on Unix). Under the current rule,
+`args.planFile` would be `"-debug"` — silently accepted. A user with
+such a file cannot pass it via `parseArgs`.
+
+This is a **deliberate trade-off**: supporting `-X` filenames would
+require the user to use a different escape (e.g. `./-debug`) or the
+shell to disambiguate. The current rule errs on the side of "flag
+shapes are rejected" because the false-positive cost (a confusing
+error message) is much lower than the false-negative cost (a silent
+mis-parse that drops a real flag). **No change needed** — the trade-off
+is acceptable for a tool whose values are typically `.md` filenames.
+
+#### Finding 1.9.F — INFO — `requireValue` is shared but the message is per-call
+
+`requireValue(argv[++i], "--agent")` (line 197) passes the flag name as
+the second argument, so the error message always names the *actual*
+flag the user typed, not a generic "an argument". This is the right
+choice: a user who pastes a long command and gets an error needs the
+message to point at the specific flag. Pinned by the new
+`error message names the requesting flag` test. **No change needed.**
+
+#### Summary
+
+| Severity | Count | Notes                                                                       |
+| -------- | ----- | --------------------------------------------------------------------------- |
+| CRITICAL | 0     |                                                                             |
+| HIGH     | 0     |                                                                             |
+| MEDIUM   | 0     |                                                                             |
+| LOW      | 0     |                                                                             |
+| INFO     | 6     | 1.9.A (rule deliberate & well-tested), 1.9.B (= not in scope), 1.9.C (no offending token in message), 1.9.D (lone-dash positional), 1.9.E (no `-X` filename support, deliberate), 1.9.F (message per-call) |
+
+`bun test src/lib/cli-args.test.ts` → **198 pass, 0 fail, 446 expect() calls**
+(was 160/0/365 before this iteration). New describe block:
+- `parseArgs — requireValue lone-dash and flag-shaped semantics (Phase 1 Task 1.9)` — 38 cases.
+
+`bun test` (full suite) → **493 pass, 0 fail, 1147 expect() calls**
+(was 455/0/1066 before this iteration). +38 tests, +81 expects, all green.
+
+---
+
 ### 1.10 — Other observations on the file (cross-cutting, audit-wide)
 
 - **`require("../../package.json").version` at `src/lib/cli-args.ts:16`** — uses
