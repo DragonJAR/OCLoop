@@ -4162,3 +4162,194 @@ No new unit tests added. Rationale:
 
 `bun test` -> **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
+
+---
+
+### 5.4 — `cooldownRemainingMs` signal updates every 250ms with `monotonicNow()`
+
+**Status: COMPLETE — VERIFIED, no findings.**
+
+The question: does the `cooldownRemainingMs` signal
+(App.tsx:174) update at the expected 250ms cadence, and does
+the dashboard countdown (Dashboard.tsx:97) display correctly
+when the remaining-time math is driven by the monotonic
+clock?
+
+#### Signal lifecycle
+
+| Step | Location | Action |
+| --- | --- | --- |
+| Create | App.tsx:174 | `createSignal(0)` — initial value 0 |
+| Set on enter | App.tsx:727 | `setCooldownRemainingMs(delayMs)` — full delay BEFORE first tick |
+| Tick (250ms) | App.tsx:728-735 | `setInterval(..., 250)` reads `monotonicNow()`, computes `Math.max(0, resumeAt - monotonicNow())`, publishes; self-stops on `remaining <= 0` |
+| Reset (re-enter) | App.tsx:726-727 | `clearCooldownTimers()` (clears interval) THEN `setCooldownRemainingMs(delayMs)` — no overlap |
+| Reset (exhaust) | (none) | Signal value persists; Dashboard short-circuits on `state.type !== "cooldown"` (Dashboard.tsx:96) — stale value invisible |
+| Reset (handleWake) | App.tsx:214 | `clearCooldownTimers()` clears interval; state transitions via dispatch; signal value becomes invisible |
+| Read | App.tsx:1819 | Passed to `<Dashboard cooldownRemainingMs={cooldownRemainingMs()} />` |
+| Display | Dashboard.tsx:97 | `Math.max(0, Math.ceil((cooldownRemainingMs ?? 0) / 1000))` → `t("cooldownText", { secs, attempt })` |
+
+#### Tick-rate analysis
+
+- 250ms = 4 Hz update rate (App.tsx:735, `}, 250)`).
+- Default `backoffBaseMs: 1_000` (config.ts:118) → displayed
+  countdown steps at 1-second resolution.
+- 4 ticks per visible second-step → smooth human-perceived
+  countdown, no skipping, no visible jumps.
+- Default `backoffMaxMs: 60_000` (config.ts:119) → 60 visible
+  steps × 4 ticks/step = 240 ticks over the longest backoff.
+  Each tick is one closure call reading two monotonic
+  integers and writing a signal; negligible CPU.
+- No finding: the 250ms cadence is correct for a
+  1-second-resolution human-facing display.
+
+#### Monotonic vs wall-clock correctness
+
+- `resumeAt` set ONCE at App.tsx:706 as
+  `monotonicNow() + delayMs`.
+- Tick read at App.tsx:729 as `monotonicNow()` (same source).
+- `clock.ts:35-41` guarantees `monotonicNow()` is
+  `Bun.nanoseconds() / 1_000_000` (or `performance.now()`
+  fallback) — never runs backwards, immune to NTP / wall-clock
+  jumps / DST.
+- Display at Dashboard.tsx:97 derives seconds from
+  `cooldownRemainingMs` only — no `Date.now()` involvement,
+  no timezone dependence, no wall-clock timestamp.
+- Test pin: `clock.test.ts:7-11` ("monotonicNow returns a
+  finite, non-negative number") and `:13-20` ("monotonicNow
+  never runs backwards and advances with real time").
+- No wall-clock vulnerability.
+
+#### Edge case — system sleep
+
+- During sleep, `monotonicNow()` may continue at a slower
+  rate (macOS `Bun.nanoseconds()` is typically clock-suspended
+  during sleep) or pause; either way,
+  `resumeAt - monotonicNow()` shrinks monotonically (or holds
+  at 0 via `Math.max(0, ...)`).
+- On wake, `handleWake` (App.tsx:199-221) checks
+  `monotonicNow() >= st.resumeAt`:
+  - true → `clearCooldownTimers()` then `dispatch
+    resume_cooldown` (App.tsx:214-215). State transitions to
+    `running("")`; Dashboard short-circuits; countdown text
+    disappears.
+  - false → no action; ticker resumes from the next interval
+    tick.
+- The ticker self-stops on `remaining <= 0` (App.tsx:731-734),
+  which is also the natural backoff end.
+- Both paths converge correctly. No state divergence, no
+  negative remaining, no leaked ticker (the wake path
+  explicitly clears; the regular path is covered by Finding
+  5.3.A from the prior commit, severity LOW, no observed
+  misbehavior).
+
+#### Edge case — multiple cooldowns in sequence
+
+- `enterCooldown` calls `clearCooldownTimers()` on line 726
+  BEFORE scheduling new timers.
+- Signal value is overwritten on line 727.
+- No overlapping intervals. No leak.
+
+#### Edge case — last-tick "0s" flicker
+
+- The ticker publishes `0` on its final tick (App.tsx:729,
+  `Math.max(0, ...)`).
+- The `cooldownTimer` setTimeout fires at the same `delayMs`
+  boundary (within a few ms), dispatches `resume_cooldown`,
+  and the reducer transitions `cooldown → running("")`.
+- In Solid, signal writes are immediate and synchronous. The
+  order between the interval's last tick and the setTimeout
+  firing depends on the event loop's tie-breaking at the
+  `delayMs` boundary. If the interval fires first, the
+  Dashboard's memo briefly sees `cooldownRemainingMs() = 0`
+  while `state().type === "cooldown"`, returning "0s" for at
+  most one render frame. If the setTimeout fires first, the
+  state transitions before the memo re-runs, and the memo
+  short-circuits immediately.
+- Real-world impact: invisible. The Dashboard is a TUI, not
+  a 60fps canvas; one extra render frame is imperceptible.
+  No action required.
+
+#### Edge case — pause during cooldown (or vice versa)
+
+- `pausing` → `cooldown` is accepted by the reducer
+  (useLoopState.ts:163, `if (state.type === "running" ||
+  state.type === "pausing")`).
+- The Dashboard's `cooldownText` memo (Dashboard.tsx:94-99)
+  only returns non-null when `state.type === "cooldown"`, so
+  the text appears only after the reducer transition.
+- `cooldown` → `paused` is not accepted by the reducer
+  (`toggle_pause` from `cooldown` is a no-op per the matrix
+  test at useLoopState.test.ts). The user cannot pause
+  during cooldown.
+- The only escape from `cooldown` is `resume_cooldown` (the
+  timer firing) or `error` (exhaustion) or `quit`. All three
+  paths either transition the state (Dashboard short-circuits)
+  or clear the timers (Finding 5.3.A / Finding 5.2.A from
+  prior audits).
+
+#### Cross-cutting note (not a Task 5.4 finding)
+
+- The Dashboard's `cooldownText` (Dashboard.tsx:98) always
+  uses the `cooldownText` i18n key, which renders
+  "Rate limited — retrying in {secs}s (attempt N)" in
+  i18n.ts:240-241. The activity log at App.tsx:716 already
+  distinguishes between `cooldownText` (rate limit) and
+  `cooldownRetryText` (transient) — but the Dashboard does
+  not. This means a transient-error cooldown displays
+  "Rate limited" on the Dashboard, which is misleading.
+- This is the explicit scope of Task 5.6 ("Verify: transient
+  errors ... confirm the cooldown state display shows
+  'retry' instead of 'rate limit'") and is documented here
+  only for cross-reference. Out of scope for Task 5.4.
+
+#### Verifier checklist for Task 5.4
+
+- [x] `cooldownRemainingMs` updates at 250ms cadence (App.tsx:735, `}, 250)`) — verified.
+- [x] Tick reads `monotonicNow()` (App.tsx:729) and computes `Math.max(0, resumeAt - monotonicNow())` — verified.
+- [x] `resumeAt` is set once at entry (App.tsx:706) from the same `monotonicNow()` — no clock-source mismatch.
+- [x] `setCooldownRemainingMs(delayMs)` on entry (App.tsx:727) sets the initial value before the first tick — no race.
+- [x] Ticker self-stops on `remaining <= 0` (App.tsx:731-734) — no leaked interval.
+- [x] Dashboard short-circuits on `state.type !== "cooldown"` (Dashboard.tsx:96) — stale signal invisible.
+- [x] `Math.ceil(remaining / 1000)` rounds up at the second boundary (Dashboard.tsx:97) — countdown never skips a value, never shows a negative value.
+- [x] `handleWake` (App.tsx:199-221) handles sleep via `clearCooldownTimers()` + `dispatch resume_cooldown` — no divergence between the two timer paths.
+- [x] `enterCooldown` calls `clearCooldownTimers()` (App.tsx:726) BEFORE scheduling new timers — no overlapping intervals across multiple cooldowns.
+- [x] Wall-clock immunity: no `Date.now()` involvement in the countdown math or display — only `monotonicNow()` and the `cooldownRemainingMs` signal value.
+- [x] `clock.test.ts:7-20` pins the monotonic invariants (finite, non-negative, never-runs-backwards).
+- [x] Reducer matrix at `useLoopState.test.ts:953-969` (`rate_limited` only from `running`/`pausing`) and `:971-1000` (`resume_cooldown` only from `cooldown`) pins the state-machine half of the contract.
+- [x] `Math.max(0, ...)` floor at both App.tsx:729 and Dashboard.tsx:97 — no negative remaining ever published or displayed.
+
+#### Test-suite delta for Task 5.4
+
+No new unit tests added. Rationale:
+
+- The 250ms tick rate is a literal at App.tsx:735; testing it
+  would require mocking `setInterval` and asserting the
+  delay argument, which is what the code already shows
+  verbatim. A regression here would be obvious on code review.
+- The monotonic-math correctness is already pinned by
+  `clock.test.ts:7-20`. The integration
+  (`resumeAt - monotonicNow()`) is a one-liner with no
+  branching; the only meaningful assertion is "result is
+  non-negative and decreasing", which `Math.max(0, ...)` plus
+  the monotonic clock guarantee.
+- The display rounding (`Math.ceil(remaining / 1000)`) is a
+  one-liner at Dashboard.tsx:97 — reviewable in isolation,
+  and the rounding direction (up) is the conventional
+  countdown UX choice.
+- The Dashboard's state short-circuit
+  (`state.type !== "cooldown"`) is the same pattern used for
+  the watchdog indicator (Dashboard.tsx:76) and several other
+  state-gated memos; it's a stable contract, not an
+  interaction.
+- The "no last-tick flicker" claim is bounded by the
+  Solid signal contract (synchronous writes, scheduled
+  reactive re-runs), which is the framework's guarantee —
+  testing it would mean testing the framework.
+- A full integration test of "render the dashboard in
+  cooldown state, advance a fake clock 250ms, assert the
+  memo updated" would require a full App.tsx harness with
+  the OpenCode server mocked out; the cost exceeds the value
+  since the components are individually trivial.
+
+`bun test` -> **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
