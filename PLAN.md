@@ -2464,10 +2464,85 @@ verde. Commit `d15efe8`.
 
 ### Mejora 55 — Finding 15.4.A — LOW — `handleQuit` lacks a module-level `isShuttingDown` guard
 
-- [ ] Evaluar la mejora 55 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 55 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 55 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 55 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 55 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 55 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 55 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 55 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:19111-19222`): la signal path de
+`shutdownManager` ya tiene su propia `isShuttingDown`
+(`shutdown.ts:17, 51-53`) que cierra la race de dos SIGINTs
+concurrentes, pero el path Q-key (y los paths `onQuit` de los
+dials: `App.tsx:1075`, `:1305`, `:1326`, y el handler del
+`complete` state en `:1916`) no tienen guard equivalente.
+La ventana de race entre `dialog.clear()` y `process.exit(0)`
+es de pocos ms durante los awaits, pero no es cero: un usuario
+que confirma el dialog y simultáneamente dispara Ctrl+C (o un
+close de dialog en paralelo con un signal handler en un test)
+entra a `handleQuit` una segunda vez. El reducer `quit` es
+no-op desde `stopping`, y `clearCooldownTimers` / `watchdog.stop`
+/ `sleepDetector.stop` / `power.stop` / `clearLoopState` /
+`sse.disconnect` / `server.stop` son individualmente
+idempotentes — el ÚNICO step no-idempotente es `abortSession`
+(`App.tsx:1081`), que envía un segundo HTTP request al
+OpenCode server. La opción del fix propuesta en
+`MEJORAS.md:19144-19157` (módulo-level `isShuttingDown` con
+guard al top de `handleQuit`) es estrictamente la mínima útil
+y reusa el patrón ya establecido en el codebase: el `let` al
+lado de `startingIteration` (`App.tsx:178`) para
+`createSession`-in-flight, y la `private isShuttingDown` en
+`ShutdownManager` (`shutdown.ts:17`) para SIGINT/SIGTERM.
+Implementación mínima: (1) `let isShuttingDown = false` al
+lado de `startingIteration` (1 línea de código + 12 líneas
+de comentario que nombran el source `MEJORAS.md Finding 15.4.A`,
+la racionalidad del race, el paralelo con
+`ShutdownManager.isShuttingDown`, y la invariante "no
+persistido: el reset lo garantiza `process.exit`"); (2) guard
+`if (isShuttingDown) return; isShuttingDown = true;` al top
+de `handleQuit` (2 líneas de código + 16 líneas de comentario
+que renombran el docstring existente, listan los 6 calls
+sites homeólogos del codebase, y explican por qué el set
+síncrono cierra la ventana). El order del guard es
+deliberado: el `isShuttingDown = true` corre ANTES de
+`log.info`/`loop.dispatch`/cualquier await, así que la
+segunda invocación no produce ni siquiera un segundo
+`log.info("app", "Quit initiated", …)` en el `.loop.log`
+(el audit lo nombra explícitamente: "the activity log
+would otherwise show two `Quit initiated` lines for the
+single observable quit"). Cero cambios a la firma de
+`handleQuit` (`(number?) => Promise<void>` intacta), cero
+cambios a `loop.dispatch`, cero cambios al `ShutdownManager`,
+cero cambios a los 6 call sites existentes (su invocación
+sigue siendo `handleQuit(...)` con la misma shape de retorno),
+cero cambios a `process.exit` (la última línea del body
+intacta), cero impacto en el reducer, cero impacto en la
+TUI, cero impacto en tests.
+
+Sin nuevos tests: el audit (`MEJORAS.md:19170-19204`) ya
+justificó que `handleQuit` integration testing requeriría
+un OpenCode server corriendo (o un mock profundo de
+`createClient`/`abortSession`/`server.stop`/`sse.disconnect`/
+`shutdownManager`/renderer), y que el primitive-level coverage
+existente es suficiente:
+- `useWatchdog.test.ts:495-507` pinea `stop() is idempotent`.
+- `useSSE.ts:596-611` es estructuralmente simétrico a
+  `clearCooldownTimers` y está ejercitado por los reconnect/
+  disconnect tests en `useSSE.test.ts`.
+- `loop-state-store.test.ts:55-65` pinea `clearLoopState`
+  con missing file + double-call.
+- `useLoopState.test.ts:198-249` pinea el reducer `quit`
+  con un positive case por active state, y `:988-1001`
+  pinea los no-op cases desde `starting`/`stopping`/
+  `stopped`/`complete`/`error`.
+
+El único código NUEVO es el par trivial
+`if (isShuttingDown) return; isShuttingDown = true` — un
+structural guard de 2 líneas, no computacional, que code
+review cubre sin gap de cobertura. `bun test` verde: 750
+pass / 1 skip / 0 fail, 1784 expect() calls, 25 files, 333 ms
+— sin cambio en el conteo (era 750 / 1 / 0 antes del fix).
+`bun run build` verde. Commit `7ae53da`.
 
 ### Mejora 56 — Finding 15.5.A — LOW — No debounce on rapid-fire `file.edited` events for PLAN.md
 
