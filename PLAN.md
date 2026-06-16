@@ -749,10 +749,35 @@ pendiente.
 
 ### Mejora 24 — Finding 6.2.A — LOW — Duplicated predicate in `App.tsx` invites drift
 
-- [ ] Evaluar la mejora 24 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 24 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 24 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 24 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 24 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 24 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 24 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 24 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la descrita en
+`MEJORAS.md:5386-5427`: la `isActive` probe en `App.tsx:247-253`
+re-derivaba el predicado `getActiveSessionId` inline, mientras
+los otros 5 call sites de `App.tsx` (líneas 258, 276, 467, 651,
+1380) usan el helper exportado de `useLoopState.ts:34-38`.
+La propuesta del audit — sustituir el cuerpo inline por
+`getActiveSessionId(loop.state()) !== ""` — es estrictamente la
+mínima útil: 1 línea de código por lado, cero cambio de
+comportamiento, y la truth table de la probe queda derivada de
+la misma fuente que los otros 5 call sites (los 12 variants de
+`LoopState` ya están pineados en `useLoopState.test.ts:1181-1220`,
+incluido el outlier `debug{"abc"}` que correctamente retorna
+`""`). Implementación: 5 líneas → 1 línea en `src/App.tsx:247-252`
+(más 3 líneas de comentario que nombran el source `MEJORAS.md
+Finding 6.2.A` y los 5 call sites homólogos, siguiendo el
+patrón de Mejoras 17-22). El import `getActiveSessionId` ya
+estaba en `App.tsx:16` (sin cambios de imports). Cero impacto
+en la watchdog behavior, cero impacto en la TUI, cero impacto
+en el reducer, cero impacto en el Dashboard, cero impacto en
+el resto del flujo. Sin nuevos tests — la verdad del predicado
+está pineada en `useLoopState.test.ts:1181-1220` y añadir un
+test que pinea "el call site llama al helper" sería tautológico.
+`bun test` verde: 680 pass / 0 fail, 1680 expect() calls,
+23 files, 318 ms — sin cambio en el conteo. Commit `868cc40`.
 
 ### Mejora 25 — Finding 7.2.A — MEDIUM — Consumer/hook filter share an asymmetric shape
 
