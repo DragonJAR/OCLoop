@@ -3833,4 +3833,147 @@ No new unit tests added. Rationale:
 `bun test` → **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
 
+### 5.2 — `clearCooldownTimers` coverage of error-dispatch paths
+
+**Status: COMPLETE — VERIFIED, one LOW finding.**
+
+The question: is `clearCooldownTimers()` called when a
+cooldown is interrupted by an `error` dispatch? **Answer: no
+— not from every path that can dispatch `error` from
+`cooldown` state, and no — the existing self-stop logic
+prevents any concrete harm today.**
+
+#### All `clearCooldownTimers()` call sites (4)
+
+| Site | Line | What triggers it | Cleared after dispatch? |
+| --- | --- | --- | --- |
+| `handleWake` | 214 | Sleep/wake past the cooldown deadline | n/a — clears then dispatches `resume_cooldown` (same effect) |
+| `enterCooldown` exhaustion path | 696 | `rateLimitAttempts > maxRateLimitRetries` → dispatch `error` | **Yes** — sequence is `dispatch(error) → clearCooldownTimers()` |
+| `enterCooldown` regular path | 726 | Every fresh cooldown replaces its predecessor | n/a — clears then schedules new timers (self-replace) |
+| `handleQuit` | 974 | SIGINT, `Q` key, shutdown manager, completion quit | n/a — process is about to exit |
+
+`clearCooldownTimers` is a pure side-effect on closure-bound
+`let`s (App.tsx:167-168), so the reducer cannot call it. The
+App is responsible for calling it around every dispatch that
+leaves `cooldown` state.
+
+#### All `error` dispatch sites (6)
+
+| Site | Line | Guard | Fires from `cooldown`? |
+| --- | --- | --- | --- |
+| Watchdog `fail` | 285 | Unguarded dispatch, but `isActive` probe (App.tsx:242-247) short-circuits the tick when state is `cooldown` (only `running`/`pausing` are active) | **No** — probe blocks it |
+| SSE `onSessionError` non-rate-limit | 483 | `if (st === "running" \|\| st === "pausing" \|\| st === "debug")` | **No** — explicit guard |
+| `enterCooldown` exhaustion | 687 | Fires only when `rateLimitAttempts++ > max`; `clearCooldownTimers` is called at line 696 right after | n/a — covered |
+| `handleIterationError` non-recoverable | 766 | Triggers on iteration-start failure; gated by the iteration-driver effect (App.tsx:1217) on `running`+`sessionId === ""` | **No** — driver only runs in `running` |
+| Debug session create failure | 908 | Inside `createDebugSession`; debug state only | **No** — debug only |
+| **Server error effect** | 1203 | **Unguarded** — fires whenever `server.status() === "error"` | **Yes** — can fire from any state |
+
+#### Finding 5.2.A — LOW — `error` dispatched from `cooldown` by the server-error effect does not clear cooldown timers
+
+**Problem.** The server-error effect at App.tsx:1200-1209
+unconditionally dispatches `error` when
+`server.status() === "error" && server.error()`. The reducer
+at `useLoopState.ts:245` accepts the transition from
+`cooldown` → `error`, but the closure-bound `cooldownTimer`
+(setTimeout, App.tsx:739) and `cooldownTicker` (setInterval
+250ms, App.tsx:728) are not cleared. Concrete sequence:
+
+1. Loop enters `cooldown` (`rate_limited` action,
+   `enterCooldown` sets `cooldownTimer` and `cooldownTicker`
+   with `resumeAt = monotonicNow() + delayMs`).
+2. The OpenCode server crashes while the loop is waiting
+   (`useSSE.ts:555` or `useServer.ts:133`/`224` sets
+   `status = "error"`).
+3. The server-error effect fires; `loop.dispatch({ type:
+   "error", source: "server", … })` runs.
+4. Reducer transitions `cooldown` → `error`. The UI shows the
+   error screen. `canRetry` is true (recoverable).
+5. `cooldownTimer` and `cooldownTicker` keep running.
+6. `cooldownTicker` continues calling
+   `setCooldownRemainingMs(remaining)` every 250ms with a
+   stale positive value (e.g. "5s remaining") for the entire
+   original `delayMs` window. The Dashboard's `cooldownText`
+   memo (Dashboard.tsx:94-99) returns `null` because
+   `state.type !== "cooldown"`, so **the user does not see
+   the stale value**.
+7. `cooldownTimer` fires at the original deadline, runs
+   `if (loop.state().type === "cooldown")`, sees `error`,
+   no-ops. Self-clears (`cooldownTimer = null`).
+8. `cooldownTicker` self-clears when
+   `resumeAt - monotonicNow() <= 0` (App.tsx:731-734).
+
+The timers self-resolve, no user-visible state goes wrong,
+and the next `enterCooldown` or `handleQuit` clears the
+references. The only persistent artifact is the
+`cooldownRemainingMs` signal holding a stale positive value
+for the duration of the original `delayMs` window — invisible
+because the Dashboard short-circuits on state.
+
+**Where.** `src/App.tsx:1200-1209` (server-error effect,
+unguarded dispatch) and the absence of a `clearCooldownTimers`
+call at the App level for the "cooldown → error" path.
+
+**Proposed fix.** Add a `createEffect` that watches for the
+`cooldown` → `error` transition and calls
+`clearCooldownTimers()`:
+
+```ts
+createEffect(() => {
+  const state = loop.state()
+  const prev = prevState
+  if (prev?.type === "cooldown" && state.type === "error") {
+    clearCooldownTimers()
+  }
+})
+```
+
+This mirrors the existing transition-detector pattern at
+App.tsx:319-389 (which already watches `running`→`cooldown`
+to pause stats). Alternatively, the cheap fix is to add
+`if (state.type === "cooldown") clearCooldownTimers()` inside
+the server-error effect. Either closes the gap; the
+`createEffect` is preferred because it covers *any* future
+unguarded `error` dispatch (e.g. a new chaos fault that
+dispatches `error` directly).
+
+**Status.** Fix proposed, not applied. Latent; no observed
+misbehavior. Severity is LOW because the Dashboard does not
+read the stale signal in non-cooldown states and the timers
+self-resolve.
+
+#### Verifier checklist for Task 5.2
+
+- [x] `handleQuit` calls `clearCooldownTimers` — verified (line 974).
+- [x] Exhaustion path calls `clearCooldownTimers` — verified (line 696).
+- [x] `cooldownTicker` is a closure-captured `setInterval` with self-stop on `remaining <= 0` (line 731-734) and an internal `clearInterval` guard via `cooldownTicker` (line 731) — verified.
+- [x] `cooldownTimer` is a closure-captured `setTimeout` with a `cooldownTimer = null` self-null (line 740) and a state guard `if (loop.state().type === "cooldown")` before dispatching `resume_cooldown` (line 741) — verified.
+- [x] No `error` dispatch site calls `clearCooldownTimers` *except* the exhaustion path — verified by full grep of `type: "error"` dispatches in App.tsx (6 sites, only line 687 is paired with a clear at 696).
+- [x] The reducer accepts `error` from `cooldown` (useLoopState.ts:245) — confirmed by the matrix audit (Phase 3) and the test at `useLoopState.test.ts:684-703`.
+- [x] The Dashboard does not display `cooldownRemainingMs` in non-cooldown states (Dashboard.tsx:96) — confirmed; the stale signal is invisible.
+
+#### Test-suite delta for Task 5.2
+
+No new unit tests added. Rationale:
+
+- The reducer transition `cooldown` → `error` is already
+  pinned by `useLoopState.test.ts:684-703`
+  ("error transition from cooldown state works"). The
+  reducer is a pure function and is fully covered.
+- `clearCooldownTimers` operates on closure-bound `let`s in
+  App.tsx, which are not unit-testable without a heavy mock
+  harness. The existing `enterCooldown` exhaustion test in
+  `resilience-integration.test.ts` (which wires the real
+  reducer and a stub `enterCooldown`) does not exercise the
+  *closure* state — it only verifies the reducer contract.
+- A dedicated `App.test.tsx` for the
+  server-error-during-cooldown scenario would require a
+  mock Solid render tree, a stub server, and a stub
+  watchdog — a heavy test that re-states what the reducer
+  test already constrains. The proposed
+  `createEffect`-based fix (Finding 5.2.A) would be
+  integration-test territory.
+
+`bun test` → **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
+
 ---
