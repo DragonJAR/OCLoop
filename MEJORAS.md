@@ -11471,3 +11471,388 @@ audit makes no code changes.
 | 9.5.C | INFO | `enabled: () => boolean` thunk design is the right choice for signal-reactive config. |
 
 **Net severity tally for Phase 9: 2 MEDIUM, 4 LOW, 5 INFO; no CRITICAL or HIGH.** All findings are documentation-or-test gaps, not behavioral bugs. The sleep-detection and power-management logic is correct as written.
+
+---
+
+## Phase 10 — Plan Generator (`--create-plan`)
+
+The plan generator lives entirely in `src/index.tsx` (lines 60-261). It is a
+headless CLI flow that takes the place of the TUI when the user passes
+`--create-plan`: it asks for a goal, spins up a private OpenCode server,
+spawns one session, drives it through an interactive approve/edit/cancel
+loop, and writes the final markdown to the chosen plan path. The supporting
+helpers (`stripCodeFences`, `extractPlanText`, `extractLastAssistantText`,
+`countAssistantMessages`, `hasNewAssistantReply`, `buildPlanPrompt`,
+`buildRefinePrompt`) are also defined in `src/index.tsx` and have **zero
+direct test coverage** — they are exercised only indirectly through the
+`runCreatePlan` flow, which is itself un-instrumented.
+
+The generator is invoked by a single short-circuit in `main()` at
+`src/index.tsx:320-323`:
+
+```ts
+if (args.createPlan) {
+  await runCreatePlan(args)
+  process.exit(process.exitCode ?? 0)
+}
+```
+
+Because the TUI never starts in this mode, `tuiStarted` stays `false` and
+the `restoreTerminal()` exit handler (line 286-292) becomes a no-op. The
+`process.exit(...)` at line 322 is a hard exit: it bypasses the SolidJS
+lifecycle but that is fine because nothing solid-y is mounted.
+
+### 10.1 — Audit `runCreatePlan` for server startup, session creation, prompt send, and timeout handling
+
+**Status: COMPLETE — VERIFIED, no CRITICAL or HIGH findings.** Two MEDIUM
+findings (missing `id` guard, edit-cycle timeout reset), two LOW (redundant
+`timeoutMs` override, hard `process.exit(1)` on empty goal), and four INFO
+observations on the error funnel.
+
+The full code path under audit is `src/index.tsx:136-261`. The
+`surrounding try/catch/finally` is the safety net:
+
+```ts
+let server: { url: string; close: () => void } | null = null
+try {
+  server = await createOpencodeServer({ hostname: "127.0.0.1", port: args.port, timeout: 15000 })
+  const client = createOpencodeClient({ baseUrl: server.url })
+  // ... create session, prompt, poll, save plan ...
+} catch (err) {
+  console.error(
+    t("cpError", { message: err instanceof Error ? err.message : String(err) }),
+  )
+  process.exitCode = 1
+} finally {
+  try { server?.close() } catch { /* ignore */ }
+}
+```
+
+Every error class in the audit flows through the same `cpError` funnel and
+is preceded by an explicit `console.log` describing the current step. This
+is correct: the user always knows whether the failure was during startup,
+session creation, generation, or saving. The `finally` closes the server
+*if one was created* (the `?.` handles the `null` case where
+`createOpencodeServer` threw).
+
+#### Server startup failure (`src/index.tsx:164`)
+
+`createOpencodeServer({ hostname: "127.0.0.1", port: args.port, timeout: 15000 })`
+returns `Promise<{ url: string; close(): void }>` (see
+`node_modules/@opencode-ai/sdk/dist/server.d.ts:17-20`). On failure (port
+in use, port out of range, opencode binary missing on `$PATH`, opencode
+crashed during boot) the promise **rejects** — the function does not return
+a server with an empty `url`. The rejected promise propagates to the outer
+`catch`, which logs `cpError("createOpencodeServer: <reason>")` and sets
+`process.exitCode = 1`. The `finally` block then runs `server?.close()`,
+which is a no-op because `server` is still `null` (the assignment at
+line 164 never completed).
+
+The 15-second `timeout` passed to `createOpencodeServer` is the
+**server-boot** timeout (how long we wait for the opencode process to bind
+the port), not the per-SDK-call timeout. The 30-second per-SDK-call
+timeouts are applied through `configureApiTimeouts(resilience)` at
+line 146 (which uses the defaults — 15s create, 30s prompt, 15s status).
+
+**Verified correct.** The boot timeout is a sensible 15s, and the
+try/catch/finally correctly handles the unassigned `server` reference.
+
+#### Session creation failure (`src/index.tsx:167-172`)
+
+Three failure modes are explicitly handled:
+
+1. **HTTP/network failure** — `assertResponse(created, "create session")`
+   at line 168 throws `Failed to create session: <status> <statusText>` or
+   `Failed to create session: <transport error>`. Caught by outer `catch`,
+   logged via `cpError`.
+2. **Empty response body** — `if (!created.data)` at line 169-171 throws
+   the localized `cpSessionFail` ("Could not create the planning
+   session"). Caught.
+3. **Create timeout** — `client.session.create` flows through
+   `withTimeout` (see `api.ts:184-189`) using `apiTimeouts.create` (15s
+   default). A timeout throws `TimeoutError` from `with-timeout.ts`,
+   which `assertResponse` rethrows as `Failed to create session: timeout
+   exceeded` (the exact wording depends on the `TimeoutError.message`).
+
+The 15s create timeout is inherited from `DEFAULT_RESILIENCE` via
+`configureApiTimeouts(resilience)` at line 146. There is no per-call
+override for this one — `runCreatePlan` does not pass a `timeoutMs` to
+`createSession` directly (it calls the raw SDK method `client.session.create`
+and uses `assertResponse` itself, so it inherits the process-wide timeout
+through `apiTimeouts`). **Verified correct.**
+
+#### MEDIUM — `created.data.id` is read without a guard; a malformed-but-present `data` payload causes a confusing crash
+
+`src/index.tsx:172`:
+
+```ts
+const sessionID = created.data.id
+```
+
+The `if (!created.data)` check at line 169-171 guarantees `data` is
+defined, but does NOT guarantee that `data.id` is a non-empty string. If
+the server returns `{ data: { id: undefined } }` or `{ data: {} }` (a
+theoretically possible shape for a misbehaving server or a future SDK
+version), `sessionID` becomes `undefined` and the first `fetchMessages`
+or `sendPromptAsync` call (line 185 / 187) crashes with `Cannot read
+properties of undefined (reading 'sessionID')` from inside the SDK.
+
+The error is caught by the outer `catch` and reported via `cpError`, but
+the message would be the raw TypeError text — confusing to the user who
+expected a localized "could not create session" message.
+
+**Proposed fix.** Add a structural guard mirroring the pattern in
+`createSession` (api.ts:192-194):
+
+```ts
+const sessionID = created.data.id
+if (!sessionID || typeof sessionID !== "string") {
+  throw new Error(t("cpSessionFail"))
+}
+```
+
+**Severity: MEDIUM** (defensive — the current server always returns a
+valid id, but a future change or a mocked server could regress; the cost
+of the guard is one extra `typeof` check, the benefit is a localized error
+message).
+
+#### Prompt send failure (`src/index.tsx:187-191`)
+
+```ts
+await sendPromptAsync(
+  client,
+  { sessionID, agent, model, parts: [{ type: "text", text: currentPrompt }] },
+  { timeoutMs: 30_000 },
+)
+```
+
+`sendPromptAsync` (api.ts:203-231) wraps the SDK call in `withTimeout`
+and `assertResponse`. On failure it throws — the same funnel as
+session creation. The override `timeoutMs: 30_000` is **redundant** with
+`apiTimeouts.prompt` (which is also 30_000 per `DEFAULT_RESILIENCE` in
+config.ts:113), but it makes the intent explicit at the call site and
+protects the call against a future change to the default.
+
+**Verified correct.** The redundant override is intentional and
+self-documenting.
+
+#### LOW — `timeoutMs: 30_000` override is redundant with the configured default
+
+`src/index.tsx:190` and `config.ts:113`. The default
+`promptTimeoutMs: 30_000` already governs the timeout; the per-call
+override does not change behavior. If the override is intentional as a
+"future-proof" pin, a one-line comment would help. If it's accidental,
+removing it would simplify the call site. Either is acceptable.
+
+**Severity: LOW** (documentation gap, no behavioral change either way).
+
+#### Timeout handling — inner polling loop (`src/index.tsx:193-211`)
+
+```ts
+const deadline = Date.now() + planTimeoutMs
+let messages: SessionMessage[] = []
+for (;;) {
+  await Bun.sleep(1500)
+  const verdict = await reconcileSession(client, sessionID)
+  messages = await fetchMessages(client, sessionID)
+  if (
+    (verdict === "idle" || verdict === "missing") &&
+    hasNewAssistantReply(messages, assistantCountBefore)
+  ) {
+    break
+  }
+  if (Date.now() > deadline) {
+    throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
+  }
+}
+```
+
+The deadline is **wall-clock** (`Date.now()`), not monotonic. The plan
+generator runs only in a non-interactive CLI mode where a wall-clock
+adjustment during a 10-minute plan generation is essentially
+unreachable (a user changing the system clock mid-`--create-plan` is not
+a realistic scenario). **Verified acceptable for this context.** The TUI
+loop (Phase 4) correctly uses `monotonicNow()` for the same reason.
+
+The polling cadence is 1.5s. Worst case, the timeout fires 1.5s *after*
+the true deadline — an acceptable slop for a 10-minute budget.
+
+`reconcileSession` never throws (api.ts:298-324: every error becomes
+`"unknown"`, which keeps the loop polling). `fetchMessages` CAN throw on
+a network failure, and the throw escapes the inner loop and the outer
+`for(;;)` and lands in the outer `catch`. **Verified correct.**
+
+#### MEDIUM — Deadline resets on every edit cycle, so the budget is per-generation, not per-session
+
+The deadline at line 193 is set *inside* the outer `for(;;)` loop at
+line 177. When the user types `e` (edit) at line 236, the code builds a
+refinement prompt, `continue`s, and re-enters the outer loop — which
+recomputes the deadline. A user who edits the plan N times effectively
+gets N × `planTimeoutMs` of total wait time (up to N × 10 minutes by
+default), and the timeout message at each exhaustion point says
+"timed out after 600s" even though the user has been waiting much longer
+in real time.
+
+This is a footgun in two ways:
+
+1. **Confusion:** a user who edits 5 times and hits the 5th timeout has
+   waited ~50 minutes and sees "timed out after 600s" — they may think
+   the clock is wrong.
+2. **No upper bound:** an unattended session (theoretical — `prompt()`
+   blocks stdin, so this is unreachable in practice) could loop
+   forever. The current design is safe by accident (the user has to type
+   `e` each time), but the contract is undocumented.
+
+**Proposed fix.** Move the deadline setup to *before* the outer loop and
+pass it as a "remaining budget" into the inner loop, OR track the
+cumulative elapsed time and reset the deadline display when it changes.
+Simpler: compute the deadline once and `break` instead of `throw` when
+exceeded, so a refinement cycle after a timeout aborts the whole
+generation cleanly:
+
+```ts
+// before the outer for(;;):
+const sessionDeadline = Date.now() + planTimeoutMs
+
+for (;;) {
+  // ...refine or first-generate prompt...
+
+  // inside the inner loop, replace the per-iteration deadline:
+  if (Date.now() > sessionDeadline) {
+    throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
+  }
+}
+```
+
+The exact UX (cumulative vs per-cycle) is a product decision; the
+finding is that **the current behavior is undocumented and confusing**.
+
+**Severity: MEDIUM** (correctness is fine — every cycle is bounded —
+but the message is misleading and the contract is opaque).
+
+#### Empty goal exits the whole process with code 1 (`src/index.tsx:155-159`)
+
+```ts
+const goal = prompt(t("cpAskGoal"))
+if (!goal || !goal.trim()) {
+  console.error(t("cpNoGoal"))
+  process.exit(1)
+}
+```
+
+`process.exit(1)` here is a hard exit, not `process.exitCode = 1`. This
+is intentional and correct: a missing goal means the user changed their
+mind *before any work started*, so there is no state to clean up (no
+server, no session, no `finally` work). The `process.exit(1)` form
+ensures the code propagates even if a future refactor adds a `finally`
+that swallows the exit code (it can't, with `process.exit`).
+
+**Verified correct.** The hard exit is the right call here. **No fix
+recommended.**
+
+#### LOW — Hard `process.exit(1)` on empty goal is inconsistent with the rest of the function's error style
+
+The function otherwise uses `process.exitCode = 1` + `try/catch` to set
+the exit code, so the hard `process.exit(1)` at line 158 stands out.
+The behavior is correct (no server to clean up), but a future reader
+might "fix" it to `process.exitCode = 1` and skip the `break` / `return`,
+silently continuing to the server-startup phase with an empty goal.
+
+**Proposed fix.** Add a one-line comment explaining the hard exit:
+
+```ts
+if (!goal || !goal.trim()) {
+  console.error(t("cpNoGoal"))
+  // Hard exit: no server/session was created, no cleanup needed.
+  // The outer try/finally cannot run because we never entered it.
+  process.exit(1)
+}
+```
+
+**Severity: LOW** (documentation gap, defensive against a future
+refactor).
+
+#### INFO — All four failure modes funnel through the same `cpError` string
+
+The `catch (err)` at line 249 logs `cpError` regardless of which step
+failed (server, create, prompt, timeout, parse, save). The user sees
+`Error generating the plan: <message>` and has to look at the
+`console.log` lines emitted before the failure to know which step they
+were on. This is acceptable because:
+
+- The most recent `console.log` (e.g., `cpGenerating`, `cpStartingServer`)
+  is in the terminal scrollback, two-to-five lines above the error.
+- Distinguishing failure steps in the error message would require
+  either custom error subclasses or wrapping each call in its own
+  try/catch — both add complexity for marginal UX value.
+
+**No fix recommended.**
+
+#### INFO — `Date.now()` is fine for plan generation timing
+
+The plan generator's deadline uses `Date.now()` (wall clock). This is
+inconsistent with the TUI's `monotonicNow()` usage (Phase 4), but
+correct for this context:
+
+- A 10-minute plan generation is unlikely to span a manual clock
+  adjustment.
+- `Date.now()` is the documented "human time" and matches what
+  `planTimeoutMs` semantically represents (a number of seconds to wait).
+- The TUI uses monotonic because its loop can run for hours and span
+  sleeps — neither applies here.
+
+**No fix recommended.**
+
+#### INFO — `createOpencodeServer` `timeout: 15000` is the boot timeout, not the session timeout
+
+The 15s timeout on line 164 is the boot budget (how long to wait for
+the opencode process to bind the port). The session-create and
+prompt-send timeouts are separate and resolved through
+`configureApiTimeouts(resilience)` at line 146. A future reader might
+mistake the 15s for the overall plan budget. A one-line comment would
+help but is not required.
+
+**No fix recommended.**
+
+#### Test-suite delta for Phase 10.1
+
+**No new tests added.** The audit proposes a `typeof === "string"` guard
+at line 172 (MEDIUM) and either a deadline hoisting or a comment
+clarifying the per-cycle semantics (MEDIUM). Both are doc-or-defensive
+changes that would benefit from unit tests:
+
+- **`stripCodeFences`** (line 61-65) — pure function, easily testable.
+  No existing tests. The regex `/^```[a-zA-Z]*\n([\s\S]*?)\n```$/` is
+  non-trivial (language tag, no inner fences, must be the whole string)
+  and would benefit from 5-6 unit tests covering: empty input, plain
+  text, ````markdown\n...\n````, ````\n...\n````, nested fences, trailing
+  whitespace.
+- **`extractPlanText`** (line 68-77), **`extractLastAssistantText`**
+  (line 96-101), **`countAssistantMessages`** (line 104-106), and
+  **`hasNewAssistantReply`** (line 109-117) — all pure, all un-tested.
+  Each would benefit from 3-5 unit tests.
+- **`runCreatePlan`** itself is integration-only (needs a live opencode
+  server) and is reasonably out of scope for unit tests. The existing
+  9 `cli-args.test.ts` cases at lines 765-893 cover the arg-parse
+  surface, not the flow.
+
+All proposed tests are deferred to a follow-up implementation commit
+per PLAN.md acceptance criteria (audit-only).
+
+`bun test` was not re-run because this audit makes no code changes.
+The baseline of 640 passing tests is unchanged.
+
+#### Summary of Phase 10.1 findings
+
+| # | Severity | One-liner |
+| --- | --- | --- |
+| 10.1.A | MEDIUM | `created.data.id` is read without a `typeof === "string"` guard; malformed payloads crash with a confusing TypeError instead of the localized `cpSessionFail`. |
+| 10.1.B | MEDIUM | The polling-loop deadline is reset on every edit cycle, so the timeout message says "X seconds" even after a cumulative wait of N×X seconds. The contract is undocumented. |
+| 10.1.C | LOW | `timeoutMs: 30_000` override on `sendPromptAsync` is redundant with `DEFAULT_RESILIENCE.promptTimeoutMs`; keep as a self-documenting pin or remove. |
+| 10.1.D | LOW | Hard `process.exit(1)` on empty goal is correct but inconsistent with the rest of the function's `process.exitCode = 1` style; deserves a one-line comment. |
+| 10.1.E | INFO | All four failure modes funnel through one `cpError` message; acceptable because the preceding `console.log` identifies the failing step. |
+| 10.1.F | INFO | `Date.now()` is correct for plan generation timing; monotonic is unnecessary at the 10-minute scale. |
+| 10.1.G | INFO | The 15s `timeout` on `createOpencodeServer` is the boot budget, not the per-call timeout; a comment would help. |
+| 10.1.H | INFO | No tests for `stripCodeFences`, `extractPlanText`, `extractLastAssistantText`, `countAssistantMessages`, `hasNewAssistantReply`, or `runCreatePlan` — proposed in the test-suite delta above. |
+
+**Net severity tally for Phase 10.1: 2 MEDIUM, 2 LOW, 4 INFO; no CRITICAL or HIGH.** All findings are defensive guards, documentation gaps, or test-coverage gaps — no behavioral bug. The error funnel is consistent, the server is correctly cleaned up, and the timeout is honored.
