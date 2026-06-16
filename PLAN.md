@@ -32,11 +32,11 @@ Analizar el proyecto completo de forma sistemática: revisar cada flujo de ejecu
 
 ## Fase 4 — Auditoría estática: máquina de estados (LoopState)
 
-- [ ] Verificar que `loopReducer` en `src/hooks/useLoopState.ts` maneja todas las transiciones imposibles explícitamente con `return state` (ya lo hace), y que no hay transiciones que puedan perder datos (ej: `toggle_pause` desde `paused` pierde el `sessionId` — es intencional, pero documentarlo)
-- [ ] Auditar el caso `session_idle` cuando `state.sessionId === ""`: se retorna el mismo estado para evitar duplicar iteraciones — confirmar que esto no enmascara un `session_idle` legítimo sin sesión
-- [ ] Verificar que `plan_complete` desde estado `cooldown` o `error` no está contemplado — ¿puede el plan completarse mientras hay un error de rate limit activo?
-- [ ] Confirmar que `iteration_started` desde `paused` incrementa `iteration` correctamente — si se reanuda una sesión que ya estaba corriendo, ¿se salta una iteración?
-- [ ] Revisar que `resume_session` solo funciona desde `ready` — si el usuario cancela el diálogo de reanudación y el estado ya cambió, el `resume_session` se ignora silenciosamente
+- [x] Verificar que `loopReducer` en `src/hooks/useLoopState.ts` maneja todas las transiciones imposibles explícitamente con `return state` (ya lo hace), y que no hay transiciones que puedan perder datos (ej: `toggle_pause` desde `paused` pierde el `sessionId` — es intencional, pero documentarlo) — ✅ todos los cases tienen return state; toggle_pause from paused: sessionId intentionally "" (previous session completed during pause)
+- [x] Auditar el caso `session_idle` cuando `state.sessionId === ""`: se retorna el mismo estado para evitar duplicar iteraciones — confirmar que esto no enmascara un `session_idle` legítimo sin sesión — ✅ sessionId="" only occurs between iterations; a legitimate idle always has non-empty sessionId
+- [x] Verificar que `plan_complete` desde estado `cooldown` o `error` no está contemplado — ¿puede el plan completarse mientras hay un error de rate limit activo? — ✅ FIXED: added plan_complete handling from cooldown/error states
+- [x] Confirmar que `iteration_started` desde `paused` incrementa `iteration` correctamente — si se reanuda una sesión que ya estaba corriendo, ¿se salta una iteración? — ✅ correct: resuming starts a new session, so +1 is right
+- [x] Revisar que `resume_session` solo funciona desde `ready` — si el usuario cancela el diálogo de reanudación y el estado ya cambió, el `resume_session` se ignora silenciosamente — ✅ safe: ignoring resume when not in ready is correct
 
 ## Fase 5 — Auditoría estática: watchdog y resiliencia
 

@@ -115,7 +115,9 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         }
       }
       if (state.type === "paused") {
-        // Resume - will need iteration_started to set sessionId
+        // Resume from paused: sessionId is intentionally "" because the previous
+        // session completed when we transitioned pausing→paused (session_idle
+        // clears it). The next iteration_started action will set a fresh one.
         return {
           type: "running",
           iteration: state.iteration,
@@ -219,6 +221,15 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           state.type === "running" ? state.iteration : 
           state.type === "paused" ? state.iteration : 0
         return { type: "complete", iterations, summary: action.summary }
+      }
+      // Allow plan_complete from cooldown/error: the plan can be detected as
+      // complete even while waiting out a rate limit or after a transient error.
+      // In cooldown, preserve the iteration count for the summary.
+      if (state.type === "cooldown") {
+        return { type: "complete", iterations: state.iteration, summary: action.summary }
+      }
+      if (state.type === "error") {
+        return { type: "complete", iterations: 0, summary: action.summary }
       }
       return state
     }
