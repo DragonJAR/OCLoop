@@ -90,7 +90,7 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
 /**
  * Generate the opencode attach command for a session.
  *
- * Defensive guard: an empty `url` produces
+ * Defensive guard (url): an empty `url` produces
  * `"opencode attach  --session <sid>"` (literal double space), which
  * `buildArgs` then splits and filters, silently dropping the empty URL
  * token. `Bun.spawn` then runs `opencode attach --session <sid>` with
@@ -99,18 +99,27 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
  * `try/catch` in `launchTerminal` — the terminal opened, but the
  * attach command failed for an invisible reason.
  *
+ * Defensive guard (sessionId): an empty `sessionId` produces
+ * `"opencode attach <url> --session "` (trailing space). `buildArgs`
+ * passes the `--session` flag through to `Bun.spawn` with no value
+ * following, and opencode errors with
+ * `"opencode: error: argument --session requires a value"`.
+ *
  * The App-level guards in App.tsx:1356-1357 (`launchConfiguredTerminal`),
  * App.tsx:1425-1426, 1436-1437, 1526-1527, 1462-1464 all short-circuit
- * on falsy `url` before reaching this function, so the throw is
- * strictly defensive: it catches any future call site, hand-edited
- * config, or test path that passes `""` directly. The throw is caught
- * by the outer `try/catch` in `launchTerminal` (line 229) and
- * surfaces as a clear `LaunchResult.error` instead of a malformed
- * spawn argv. Source: MEJORAS.md Finding 11.3.A.
+ * on falsy `url` / falsy `sessionId` before reaching this function, so
+ * both throws are strictly defensive: they catch any future call site,
+ * hand-edited config, or test path that passes `""` directly. The
+ * throw is caught by the outer `try/catch` in `launchTerminal` (line
+ * 250) and surfaces as a clear `LaunchResult.error` instead of a
+ * malformed spawn argv. Source: MEJORAS.md Findings 11.3.A + 11.3.B.
  */
 export function getAttachCommand(url: string, sessionId: string): string {
   if (!url) {
     throw new Error("getAttachCommand: url is required")
+  }
+  if (!sessionId) {
+    throw new Error("getAttachCommand: sessionId is required")
   }
   return `opencode attach ${url} --session ${sessionId}`
 }
