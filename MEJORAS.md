@@ -4596,3 +4596,200 @@ No new unit tests added. Rationale:
 
 `bun test` -> **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
+
+---
+
+### 5.6 — Transient errors enter cooldown via `handleIterationError`, but Dashboard display is unconditional
+
+**Status: COMPLETE — VERIFIED, one MEDIUM finding.**
+
+The question: do transient errors (5xx, socket drop, timeout)
+also enter cooldown via `handleIterationError`? And does the
+cooldown state display distinguish a transient cooldown from
+a rate-limit cooldown, showing "retry" instead of "rate
+limit"? **Answer: yes on the first part, no on the second.**
+The activity log already differentiates; the Dashboard
+does not, because the `rate_limited` action carries no
+`kind` field.
+
+#### Transient → cooldown routing — verified
+
+`handleIterationError` (App.tsx:754-771) classifies the
+failure with `classifySessionError(err)` (the
+shared classifier in `useSSE.ts:139-176` and
+`classifySessionError` exports). The classification result
+drives the routing:
+
+```ts
+if (classified.kind === "rate_limit") {
+  enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+  return
+}
+if (classified.kind === "transient") {
+  enterCooldown(classified.message, undefined, "transient")
+  return
+}
+// else: dispatch error
+```
+
+Both branches funnel into `enterCooldown`, which is the
+*same* state machine path (`running`/`pausing` →
+`cooldown` via the `rate_limited` reducer, useLoopState.ts:161-173).
+So a transient socket drop and a 429 produce **the same
+reducer state** (`type: "cooldown"`) and the same
+user-facing countdown.
+
+The circuit-breaker counter (`rateLimitAttempts`) and the
+exhaustion path (App.tsx:679-697) are also shared. A
+flaky network consumes retries the same way a 429 does.
+This is intentional — both failure modes recover
+automatically and the user should not be interrupted for
+either — but it means a stream of transient errors
+eventually escalates to a "Connection issue — retries
+exhausted after N attempts" recoverable error, which is
+the right shape.
+
+The `kind` parameter is forwarded only to the
+`log.health` and `activityLog` calls; it is **not** carried
+by the dispatched `rate_limited` action (App.tsx:723,
+`{ type: "rate_limited", reason, resumeAt, attempt }`).
+
+#### Display differentiation — partial
+
+| Surface | Differentiates transient vs rate limit? | Where | Verdict |
+| --- | --- | --- | --- |
+| `log.health` structured log | **Yes** — `kind` field is included | App.tsx:708-713 (Finding 5.1.A also calls this out) | OK (observability) |
+| `activityLog.addEvent` | **Yes** — `cooldownText` for rate_limit, `cooldownRetryText` for transient | App.tsx:714-721 | OK (user sees correct label in the activity log) |
+| Exhaustion `log.health` and `activityLog` | **Yes** — `actRateExhausted` vs `actRetryExhausted`, `errRatePersistent` vs `errRetryPersistent` | App.tsx:681-693 | OK (terminal-event clarity) |
+| Dashboard countdown (Row 3) | **No** — always uses `cooldownText` ("Rate limited — retrying in {secs}s") | Dashboard.tsx:94-99 | **Gap** (Finding 5.6.A) |
+
+The cross-cutting note at the end of Task 5.4 (MEJORAS.md:4292-4303)
+already flagged this; Task 5.6 confirms the gap is real
+and assigns it severity.
+
+#### i18n keys — verified
+
+Both `cooldownText` and `cooldownRetryText` exist in both
+locales (i18n.ts:240-243 for `en`, i18n.ts:543-546 for `es`),
+have parallel structure (`{secs, attempt}` interpolation),
+and contain appropriate copy:
+
+- `en`: "Rate limited — retrying in {secs}s (attempt {attempt})"
+  vs "Connection issue — retrying in {secs}s (attempt {attempt})"
+- `es`: "Rate limited — reintentando en {secs}s (intento {attempt})"
+  vs "Problema de conexión — reintentando en {secs}s (intento {attempt})"
+
+The transient copy is i18n-correct, gender-neutral, and
+specific ("Connection issue" rather than generic "Error").
+No changes needed in `i18n.ts`.
+
+#### Finding 5.6.A — MEDIUM — Dashboard `cooldownText` always shows "Rate limited" even for transient cooldowns
+
+**Problem.** The Dashboard's `cooldownText` memo
+(Dashboard.tsx:94-99) reads only `state.type`, `secs`, and
+`state.attempt` from the `cooldown` state — the state
+itself has no `kind` field (types.ts:25-31). So a transient
+cooldown (a plain socket drop) renders the same
+"Rate limited" string as a real 429. A user who sees
+"Rate limited" on the Dashboard, then checks the activity
+log and sees "Connection issue — retrying in 5s" will
+perceive the UI as inconsistent or buggy. On a flaky
+network day, repeated "Rate limited" messages that are
+*actually* transient cooldowns erode trust in the real
+rate-limit signal.
+
+**Where.**
+- `src/components/Dashboard.tsx:98` — the
+  `t("cooldownText", …)` call.
+- `src/types.ts:25-31` — the `cooldown` state shape, missing
+  the `kind` field.
+- `src/types.ts:54` — the `rate_limited` action shape,
+  missing the `kind` field.
+- `src/App.tsx:723` — the dispatch site that *has* the
+  `kind` in scope but discards it.
+
+**Proposed fix.** Plumb the `kind` through the state
+machine and have the Dashboard read it. Minimal change
+set:
+
+1. Add `kind: "rate_limit" | "transient"` to the
+   `cooldown` state shape (types.ts:25-31).
+2. Add `kind: "rate_limit" | "transient"` to the
+   `rate_limited` action shape (types.ts:54).
+3. Pass `kind` from the call site (App.tsx:723 →
+   `loop.dispatch({ type: "rate_limited", reason, resumeAt,
+   attempt, kind })`).
+4. Forward `kind` in the reducer's new state copy
+   (useLoopState.ts:165-172).
+5. Update the Dashboard's memo (Dashboard.tsx:94-99) to
+   read `state.kind` and select the matching i18n key:
+   `t(state.kind === "transient" ? "cooldownRetryText" : "cooldownText", { secs, attempt })`.
+6. Update the existing reducer tests
+   (useLoopState.test.ts:476-560) to include `kind` in the
+   dispatched action and the resulting state.
+
+Alternative cheap fix (observation only, *not* the
+proposed fix): keep the existing UI copy and just add
+`kind` to the on-disk `log.health` record so an operator
+post-mortem can disambiguate. This is the same cheap fix
+noted in Finding 5.1.A. It does not address the
+user-facing inconsistency; the proposed fix above does.
+
+**Status.** Fix proposed, not applied (audit-only per
+PLAN.md acceptance criteria). Severity MEDIUM because the
+user-facing copy is misleading for a class of plausible
+inputs (transient network blips), but no correctness, no
+data loss, no functional regression. The activity log
+already shows the right text, so the information is
+available in-app.
+
+#### Verifier checklist for Task 5.6
+
+- [x] `handleIterationError` routes `transient` to
+  `enterCooldown(message, undefined, "transient")`
+  (App.tsx:761) — verified.
+- [x] `enterCooldown` accepts the `kind` parameter and
+  uses it for log/activity copy selection
+  (App.tsx:671-674, :716, :684, :689) — verified.
+- [x] The reducer's `rate_limited` action transitions
+  `running`/`pausing` to `cooldown` regardless of `kind`
+  (useLoopState.ts:161-173) — verified.
+- [x] The `cooldown` state has no `kind` field
+  (types.ts:25-31) — verified.
+- [x] The `rate_limited` action carries no `kind` field
+  (types.ts:54) — verified.
+- [x] The Dashboard's `cooldownText` memo always uses
+  `cooldownText` (Dashboard.tsx:98) — verified.
+- [x] `cooldownText` and `cooldownRetryText` exist in
+  both `en` and `es` locales with parallel interpolation
+  (i18n.ts:240-243, :543-546) — verified.
+- [x] The activity log line at App.tsx:714-721 selects
+  the right i18n key based on `kind` — verified.
+- [x] The exhaustion log lines at App.tsx:681-693 also
+  differentiate (`actRateExhausted` vs `actRetryExhausted`)
+  — verified.
+
+#### Test-suite delta for Task 5.6
+
+No new unit tests added. Rationale:
+
+- The transient → cooldown routing in
+  `handleIterationError` is a 3-line conditional
+  (App.tsx:760-762) where the observable contract is
+  "the activity log shows `cooldownRetryText`". The
+  activity log is an external store, not asserted in the
+  unit test surface.
+- The Dashboard's `cooldownText` memo is a 1-line
+  `t("cooldownText", …)` call (Dashboard.tsx:98) that
+  the test surface does not cover (no Solid render tests
+  in the repo). A regression here would be obvious on
+  code review because the literal "cooldownText" is a
+  search target.
+- The proposed fix (Finding 5.6.A) *will* require updates
+  to the reducer tests (useLoopState.test.ts:476-560) to
+  plumb the new `kind` field. Until the fix is applied,
+  there is no field to test for. The test plan for the
+  fix is in Finding 5.6.A step 6.
+
+`bun test` -> **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.

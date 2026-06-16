@@ -68,7 +68,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: `cooldownTicker` interval is cleaned up on cooldown resume — what if `resume_cooldown` dispatch happens before the `setTimeout(cooldownTimer)` fires? Both are cleared in `clearCooldownTimers`
 - [x] Verify: `cooldownRemainingMs` signal updates every 250ms — confirm the countdown displays correctly when `monotonicNow()` is used
 - [x] Verify: rate limit that arrives during pausing state is handled — `enterCooldown` is called for `pausing` state in SSE handler, and the reducer accepts `rate_limited` from `pausing`
-- [ ] Verify: transient errors (not rate limits) also enter cooldown via `handleIterationError` — confirm the cooldown state display shows "retry" instead of "rate limit"
+- [x] Verify: transient errors (not rate limits) also enter cooldown via `handleIterationError` — confirm the cooldown state display shows "retry" instead of "rate limit"
 - [ ] Verify: `maxRateLimitRetries` exhaustion resets `rateLimitAttempts` to 0 after dispatching error — is this correct? The error state is recoverable, so retry would start fresh
 
 ## Phase 6 — Watchdog & Health Probes
