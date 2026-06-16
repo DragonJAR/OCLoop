@@ -5794,3 +5794,320 @@ tick logic.
 
 `bun test` -> **632 pass, 0 fail, 1544 expect() calls**
 across 21 files. No regressions.
+
+
+### Task 6.4 — `notifyWake` resets the heartbeat baseline (prevents immediate re-trigger after a server restart)
+
+PLAN.md 6.4: "Verify: `notifyWake` resets the heartbeat
+baseline — confirm this prevents immediate re-triggering
+after a server restart."
+
+**Status: COMPLETE — VERIFIED. One INFO observation
+documenting the design symmetry between `notifyWake` and
+`notifyIterationStart`, no HIGH/CRITICAL findings.**
+
+#### What `notifyWake` actually does
+
+`useWatchdog.ts:156-167`:
+
+```ts
+function notifyWake(): void {
+  // Don't judge the session on the sleep gap. Reset the baseline so the model
+  // gets a fresh T1 window to prove it's alive; the wake handler does the
+  // ground-truth reconcile separately.
+  // Note: if a tick() is in progress (ticking=true), it will complete with
+  // the old lastHeartbeatAt. This is safe — the next tick will see the reset
+  // timestamp and evaluate correctly. The ticking guard only prevents overlap,
+  // it doesn't cause stale decisions.
+  lastHeartbeatAt = clock.monotonicNow()
+  setHealth("HEALTHY")
+  log("wake_reset", {})
+}
+```
+
+Three observable side effects, in order:
+
+1. **`lastHeartbeatAt = clock.monotonicNow()`** — the
+   heartbeat baseline is rewritten to "now" using the
+   monotonic clock. The pre-wake silence window is
+   discarded. This is the single most important line
+   for the Phase 6.4 invariant.
+2. **`setHealth("HEALTHY")`** — the watchdog's reactive
+   `health` signal is forced back to `HEALTHY` regardless
+   of its prior value (could be `SUSPECT`, `CONFIRMING`,
+   `STUCK`, or `RECOVERING`). The dashboard's "recovery
+   in progress" indicator clears immediately.
+3. **`log("wake_reset", {})`** — a structured entry on
+   the `health` debug channel so the wake can be
+   attributed in audit logs.
+
+The function does **not** reset `recoveryAttempts`. The
+budget is preserved across the wake, which is the
+correct behavior (see design symmetry below).
+
+#### Two call sites in `App.tsx`
+
+```
+$ grep -n 'watchdog\.notifyWake' src/App.tsx
+208:    watchdog.notifyWake()   # handleWake (sleep recovery)
+661:    watchdog.notifyWake()   # restartServer (post-restart, verdict=working)
+```
+
+**Call site 1 — `handleWake` (App.tsx:199-221).** The
+sleep detector's `onWake` callback fires after the Mac
+wakes from suspension. The handler reconnects SSE (the
+stream almost always died during sleep), calls
+`watchdog.notifyWake()` to reset the baseline, and then
+either resumes an elapsed cooldown or reconciles the
+session in case the SSE dropped a `session.idle` event
+while asleep. The watchdog reset is the second step of
+this recovery — the first step (SSE reconnect) restores
+the heartbeat stream so the next heartbeat can land.
+
+**Call site 2 — `restartServer` (App.tsx:649-663).** The
+watchdog's own `restartServer` action (or `handleWake`,
+which also goes through `server.restart()` via the same
+codepath) restarts the OpenCode server, reconnects SSE,
+reconciles the session, and — if the verdict is
+`"working"` — calls `watchdog.notifyWake()`. The
+guarded `if (verdict === "working")` is critical:
+calling `notifyWake()` on a session that is actually
+`"idle"` or `"missing"` would hide a real desync (the
+watchdog should be in `synthesizeIdle` territory, not
+sleeping through the silence).
+
+#### The Phase 6.4 invariant — end-to-end, with the timing
+
+Consider the worst case: the OpenCode server hangs
+mid-iteration. The watchdog detects the hang and the
+escalation ladder fires `restartServer()`.
+
+```
+T0       model last heartbeat (real progress)
+T0+T1    silence window opens (T1 = suspectMs, default 90s)
+T0+T1+15 first tick after silence: pingServer fails,
+         recover("server_hung", T1+15, "ping_failed"),
+         restartServer() action invoked
+T0+T1+15 server.restart() resolves
+T0+T1+15 sse.reconnect() fires
+T0+T1+15 reconcile() returns "working" (session survived
+         the server restart — the OpenCode process was
+         hung but the model had not actually crashed)
+T0+T1+15 watchdog.notifyWake() → lastHeartbeatAt = T0+T1+15
+T0+T1+30 next tick (default tickMs = 15s)
+```
+
+At T0+T1+30, the watchdog computes:
+
+```ts
+const dt = clock.monotonicNow() - lastHeartbeatAt
+         = (T0+T1+30) - (T0+T1+15)
+         = 15s
+```
+
+15s < T1 (90s) → the watchdog short-circuits to
+`HEALTHY` at `useWatchdog.ts:225-228` without consulting
+the probes. **No recovery action is triggered.** The
+session has a fresh T1 window to prove it's alive with
+real heartbeats.
+
+**Counter-factual — what happens without the reset.**
+
+If `notifyWake` did not reset `lastHeartbeatAt`, the
+calculation at T0+T1+30 would be:
+
+```ts
+const dt = (T0+T1+30) - T0 = T1+30 = 120s
+```
+
+120s is still under T2 (600s, the default confirm
+threshold), so the verdict would be `"working"` + `dt <
+T2` → `SUSPECT` (not STUCK). But `recoveryAttempts` is
+already 1, and the next tick at T0+T1+45 would compute
+`dt = T1+45 = 135s`, still SUSPECT. The session would
+not re-trigger a recovery in the SUSPECT regime. So the
+*immediate* re-trigger is a non-issue if the verdict
+stays `"working"`.
+
+But the moment the session's verdict flips to
+`"unknown"` (the typical post-restart transitory state,
+covered by the test at `useWatchdog.test.ts:206-212`),
+the `dt >= T1` reading on the stale baseline causes an
+immediate second `recover("server_hung", ...)` with
+`recoveryAttempts = 2`. That second recovery calls
+`restartServer()` again (the `recoveryAttempts >= 2`
+ladder branch at line 204) — the server is restarted
+*twice* for one underlying hang. After one more
+`unknown` verdict, the circuit breaker trips at
+`recoveryAttempts > maxRecoveryAttempts` and the loop
+errors out, even though the model was actually working
+the whole time.
+
+This is the precise failure mode that the comment at
+`App.tsx:654-659` warns about:
+
+> // If the session survived the restart and is still working, grant it a fresh
+> // heartbeat window. Otherwise the watchdog would re-measure silence from the
+> // now-stale pre-restart timestamp and trip STUCK again on the very next tick,
+> // collapsing the recovery ladder into a near-instant circuit-breaker fail.
+
+The comment is accurate: the implementation delivers the
+promised behavior, and the new test
+`server restart + notifyWake prevents immediate
+re-trigger on the next tick (Phase 6.4 invariant)` pins
+it as a regression guard.
+
+#### Design symmetry — `notifyWake` mirrors `notifyIterationStart`
+
+`useWatchdog.ts:140-149` (`notifyIterationStart`):
+
+```ts
+function notifyIterationStart(): void {
+  // Fresh silence window for the new session, but DELIBERATELY do not reset
+  // recoveryAttempts: an abort+retry advances the loop into a new iteration
+  // (which calls this), so resetting here would hand a chronically wedging
+  // task an unlimited abort/retry budget — it would never escalate to a
+  // restart or trip the circuit breaker. The budget is cleared only by genuine
+  // progress (recordHeartbeat / notifyIdle) or by the breaker firing.
+  lastHeartbeatAt = clock.monotonicNow()
+  setHealth("HEALTHY")
+}
+```
+
+`notifyWake` and `notifyIterationStart` follow the same
+recipe:
+
+| Step                  | `notifyWake` | `notifyIterationStart` |
+| --------------------- | ------------ | ---------------------- |
+| Reset baseline        | yes          | yes                    |
+| Set HEALTHY           | yes          | yes                    |
+| Reset `recoveryAttempts` | **no**    | **no**                 |
+| Emit log              | `wake_reset` | (silent)               |
+
+The shared invariant — *never reset the recovery budget
+on a context-switch* — is the load-bearing design
+decision. Both functions are the result of a
+context-switch where the watchdog cannot tell whether
+the new context deserves a fresh budget: a server
+restart could have killed a wedged session or could
+have just briefly disconnected; a new iteration could
+be a genuinely different task or could be the
+re-execution of the same wedge. In both cases the
+*safe* default is "preserve the budget, require a real
+heartbeat to reset it".
+
+`recordHeartbeat` (line 128-138) and `notifyIdle` (line
+151-154) are the only two paths that reset
+`recoveryAttempts`. Both correspond to "the model
+actually did something" (heartbeat) or "the session
+actually ended" (idle). `notifyWake` and
+`notifyIterationStart` are *neither* — they are
+context-switches, and they preserve the budget
+accordingly. The test
+`notifyWake does NOT reset recoveryAttempts (preserves
+the circuit-breaker budget)` pins this for `notifyWake`;
+the test at `useWatchdog.test.ts:262-281` pins it for
+`notifyIterationStart`.
+
+#### Concurrency note — the in-flight `tick()` exception
+
+The comment at `useWatchdog.ts:159-163` documents a
+deliberate non-fix: if `tick()` is mid-flight when
+`notifyWake` is called, that in-flight tick completes
+with the pre-wake `lastHeartbeatAt`. The *next* tick
+sees the reset. This is safe because:
+
+- The `ticking` guard (line 212) prevents overlap, so
+  the in-flight tick is the only one that could be
+  stale.
+- The in-flight tick's decision is bounded by
+  `recover()`, which always dispatches a recovery
+  action; that action itself will, on completion, run
+  `server.restart()` → `sse.reconnect()` →
+  `reconcileAndAdvance()` → `notifyWake()` (the
+  App-level flow at App.tsx:649-663). The recovery
+  action's own side effects dominate the watchdog's
+  baseline, so the in-flight tick's potentially-stale
+  verdict is moot: the recovery is already happening.
+- The next tick's `dt` is computed against the
+  post-wake baseline, so it is fresh.
+
+#### Verifier checklist for Task 6.4
+
+- [x] `notifyWake` body at `useWatchdog.ts:156-167`
+  sets `lastHeartbeatAt = clock.monotonicNow()` and
+  `setHealth("HEALTHY")` — verified by direct file
+  read.
+- [x] `notifyWake` does NOT touch `recoveryAttempts`
+  — verified by direct file read and by the new test
+  `notifyWake does NOT reset recoveryAttempts`.
+- [x] Two call sites in `App.tsx`: line 208 (`handleWake`)
+  and line 661 (`restartServer` action body, guarded by
+  `verdict === "working"`) — verified by `grep`.
+- [x] The Phase 6.4 invariant (server restart → fresh
+  grace → next tick is HEALTHY without re-trigger) is
+  pinned by the new test `server restart + notifyWake
+  prevents immediate re-trigger on the next tick (Phase
+  6.4 invariant)`.
+- [x] The pre-existing test at
+  `useWatchdog.test.ts:196-204` ("notifyWake grants a
+  fresh grace window") pins the long-sleep case.
+- [x] The design symmetry with `notifyIterationStart`
+  is documented in the source comments at lines
+  141-146 and 159-160 and is exercised by both
+  `notifyIterationStart` and `notifyWake` tests.
+- [x] The `restartServer` action body at
+  `App.tsx:649-663` has the correct `if (verdict ===
+  "working")` guard around the `notifyWake()` call —
+  verified by direct file read.
+
+#### INFO — the `notifyWake` log entry is observable but not asserted in tests
+
+`notifyWake` emits a `wake_reset` log on the `health`
+debug channel (`useWatchdog.ts:166`). The test harness
+in `useWatchdog.test.ts` uses `log: () => {}` (line 63)
+which discards all log entries, so the log emission is
+not asserted. This is consistent with the rest of the
+test suite: the watchdog log channel is exercised by
+the integration tests in `App.tsx` and by the debug
+logger's own unit tests, not by the watchdog unit
+tests. No action required.
+
+#### Test-suite delta for Task 6.4
+
+Added 3 new tests to `useWatchdog.test.ts` to pin the
+`notifyWake` contract:
+
+1. **`notifyWake resets the heartbeat baseline (next
+   tick is HEALTHY without re-triggering)`** — drives
+   the watchdog into `RECOVERING` via a real wedge,
+   calls `notifyWake()`, then asserts the next tick is
+   `HEALTHY` without consulting probes (`pingServer`
+   and `reconcile` call counts unchanged) and without
+   advancing any recovery action counters. Also asserts
+   a subsequent 30s natural advance still leaves the
+   watchdog `HEALTHY` (well under T1=90s).
+2. **`notifyWake does NOT reset recoveryAttempts
+   (preserves the circuit-breaker budget)`** — drives
+   four consecutive `server_hung` wedges with
+   `notifyWake()` between each. Asserts that the
+   circuit breaker correctly trips on the fourth
+   wedge (recoveryAttempts > maxRecoveryAttempts=3 →
+   `fail()` called with `reason: "server_hung"`),
+   proving the budget was preserved across all three
+   intermediate wakes. If `notifyWake` had reset the
+   budget, the breaker would never trip on a
+   chronically bad server.
+3. **`server restart + notifyWake prevents immediate
+   re-trigger on the next tick (Phase 6.4 invariant)`**
+   — the precise flow from App.tsx:649-663: server
+   hangs, watchdog fires `restartServer` action, App
+   simulates the post-restart body by flipping
+   `ping=true` and calling `notifyWake()`, then a
+   15s-later tick must short-circuit to `HEALTHY`
+   without consulting probes or re-triggering. This
+   test is the regression guard for the comment at
+   App.tsx:654-659.
+
+`bun test` -> **635 pass, 0 fail, 1575 expect() calls**
+across 21 files. No regressions.

@@ -525,4 +525,167 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.probeCalls.pingServer).toBe(1)
     expect(s.probeCalls.reconcile).toBe(1)
   })
+
+  // --- Phase 6.4: notifyWake audit coverage ---
+
+  it("notifyWake resets the heartbeat baseline (next tick is HEALTHY without re-triggering)", async () => {
+    // Setup: a long quiet gap followed by a real recovery action has just
+    // happened. We simulate the post-recovery state where the watchdog is
+    // sitting in RECOVERING with a stale `lastHeartbeatAt` from before the
+    // hang. The App-level code that ran `restartServer()` (App.tsx:649-663)
+    // calls `notifyWake()` to grant a fresh grace window. The next tick
+    // must observe the new baseline, not the stale one.
+    const s = setup({ reconcile: "working" })
+
+    // Drive past T2 (confirm/wedged) with a working-but-silent session.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    // Wedge #1 → abort (attempt 1). Health is RECOVERING.
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(0)
+
+    // The App-level restartServer / post-wake path calls notifyWake().
+    // The new baseline must be `monotonicNow()` (the moment of the wake),
+    // NOT the pre-hang timestamp.
+    s.wd.notifyWake()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Next watchdog tick. No advance of the clock between notifyWake and
+    // the tick → dt is effectively 0, which is < suspectMs (T1=90s).
+    // The watchdog must short-circuit to HEALTHY without consulting the
+    // probes or triggering any recovery action. The pre-restart silence
+    // (T2+1s) must be discarded.
+    const pingBefore = s.probeCalls.pingServer
+    const reconcileBefore = s.probeCalls.reconcile
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+    expect(s.probeCalls.pingServer).toBe(pingBefore) // probes NOT consulted
+    expect(s.probeCalls.reconcile).toBe(reconcileBefore)
+    expect(s.calls.abortAndRetry).toBe(1) // unchanged
+    expect(s.calls.restartServer).toBe(0) // unchanged
+
+    // Now simulate a small natural advance (e.g. 30s of real work after the
+    // wake). Still well under T1=90s, so the watchdog must remain HEALTHY.
+    s.clk.advance(30_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+    expect(s.probeCalls.pingServer).toBe(pingBefore) // still no probes
+  })
+
+  it("notifyWake does NOT reset recoveryAttempts (preserves the circuit-breaker budget)", async () => {
+    // PLAN.md 6.4 + App.tsx:660-662 make this guarantee explicit: the
+    // wake-reset exists to grant a fresh T1 window to the model, NOT to
+    // hand a chronically bad session an unlimited restart budget. The
+    // recovery counter is cleared only by genuine progress (recordHeartbeat
+    // / notifyIdle) or by the breaker firing — never by notifyWake.
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 3 })
+
+    // Wedge #1: server_hung path → restartServer on attempt 1.
+    s.setPing(false)
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(1)
+    expect(s.calls.abortAndRetry).toBe(0)
+    expect(s.wd.health()).toBe("RECOVERING")
+
+    // App-level restartServer body: server.restart() resolves, SSE
+    // reconnects, reconcile="working" → notifyWake(). The health drops
+    // to HEALTHY but recoveryAttempts is still 1 (not reset).
+    s.setPing(true)
+    s.wd.notifyWake()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Wedge #2 (server hangs again, chronically). If notifyWake HAD
+    // reset recoveryAttempts, this would be attempt 1 with the same
+    // server_hung → restart outcome. The test pins that the budget was
+    // preserved: recoveryAttempts is now 2 (still under maxRecoveryAttempts=3).
+    s.setPing(false)
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(2)
+    expect(s.calls.fail.length).toBe(0) // breaker not yet tripped
+
+    // Wedge #3 → recoveryAttempts becomes 3 (== max). No fail yet.
+    s.wd.notifyWake() // server "recovered" again
+    s.setPing(false)
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(3)
+    expect(s.calls.fail.length).toBe(0)
+
+    // Wedge #4 → recoveryAttempts becomes 4 (> max=3) → fail() trips.
+    s.wd.notifyWake()
+    s.setPing(false)
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(3) // no new restart
+    expect(s.calls.fail.length).toBe(1)
+    expect(s.calls.fail[0].reason).toBe("server_hung")
+  })
+
+  it("server restart + notifyWake prevents immediate re-trigger on the next tick (Phase 6.4 invariant)", async () => {
+    // This is the precise flow that PLAN.md 6.4 calls out and that
+    // App.tsx:649-663 implements end-to-end:
+    //
+    //   1. Watchdog tick sees silence past T1.
+    //   2. pingServer probe fails → recover("server_hung", ...).
+    //   3. recover() calls restartServer() (escalation ladder: server_hung
+    //      always restarts).
+    //   4. The restartServer action body (App-level, not in the watchdog)
+    //      restarts the server, reconnects SSE, and reconciles the
+    //      session. If the verdict is "working" it calls
+    //      watchdog.notifyWake() to grant a fresh grace window.
+    //   5. The NEXT watchdog tick must NOT re-trigger recovery, even
+    //      though the pre-restart silence window would otherwise be
+    //      re-measured from a stale lastHeartbeatAt.
+    //
+    // We simulate (4) by calling notifyWake() immediately after the tick
+    // that triggered the restart, and then (5) by running another tick
+    // with a small natural advance.
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 5 })
+
+    // Server is hung, session still "working" (would be the case if the
+    // OpenCode process froze but the session was still being polled).
+    s.setPing(false)
+    s.setReconcile("working")
+
+    // Step 1-3: watchdog tick triggers recover("server_hung") → restart.
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(1)
+    expect(s.wd.health()).toBe("RECOVERING")
+
+    // Step 4 (App-level action body, simulated here): server comes back
+    // up, SSE reconnects, session reconciles to "working", notifyWake()
+    // is called. Server is healthy again for the next tick.
+    s.setPing(true)
+    s.setReconcile("working")
+    s.wd.notifyWake()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Step 5: next watchdog tick (15s later, default tickMs). Without
+    // notifyWake, dt would be T1+16s, which is > T1 (so we'd enter
+    // CONFIRMING, run probes, and — if reconcile stays "working" and
+    // dt<T2 — land in SUSPECT). With notifyWake's baseline reset, dt
+    // is just 15s, well under T1, and the watchdog must short-circuit
+    // to HEALTHY without consulting the probes.
+    const pingBefore = s.probeCalls.pingServer
+    const reconcileBefore = s.probeCalls.reconcile
+    s.clk.advance(15_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+    expect(s.probeCalls.pingServer).toBe(pingBefore) // no probe round-trip
+    expect(s.probeCalls.reconcile).toBe(reconcileBefore)
+
+    // The crucial Phase 6.4 assertion: the recovery counter did NOT
+    // advance, and the restartServer call count did NOT advance. If
+    // notifyWake had been a no-op (e.g. failed to reset the baseline),
+    // the watchdog would have re-entered CONFIRMING and re-triggered
+    // the escalation ladder on every tick, collapsing the recovery
+    // budget into a near-instant circuit-breaker trip.
+    expect(s.calls.restartServer).toBe(1) // unchanged
+    expect(s.calls.abortAndRetry).toBe(0) // unchanged
+    expect(s.calls.fail.length).toBe(0) // breaker not yet tripped
+  })
 })
