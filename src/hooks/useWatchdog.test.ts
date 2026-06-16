@@ -408,4 +408,61 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.calls.abortAndRetry).toBe(2) // second abort (attempt 1 of new cycle)
     expect(s.calls.restartServer).toBe(0) // no restart yet
   })
+
+  // --- Phase 6.1: knob-inventory audit coverage ---
+
+  it("threshold knobs (suspectMs, confirmMs) are read live from config() every tick", async () => {
+    // Create the watchdog with an externally mutable config so we can flip
+    // thresholds between ticks. The default setup() factory freezes config
+    // at construction, so we hand-build here.
+    let suspectMs = 1000
+    let confirmMs = 2000
+    const clk = makeClock()
+    const sseCalls = { reconnect: 0, abort: 0, restart: 0 }
+    const wd = createWatchdog({
+      config: () => ({ suspectMs, confirmMs, tickMs: 100, maxRecoveryAttempts: 3 }),
+      clock: clk.clock,
+      log: () => {},
+      probes: {
+        isActive: () => true,
+        pingServer: async () => true,
+        reconcile: async () => "working",
+      },
+      actions: {
+        reconnectSSE: () => sseCalls.reconnect++,
+        synthesizeIdle: () => {},
+        abortAndRetry: () => {
+          sseCalls.abort++
+        },
+        restartServer: () => {
+          sseCalls.restart++
+        },
+        fail: () => {},
+      },
+    })
+
+    // T1 = 1s. Advance 1.5s — past suspectMs but under confirmMs → SUSPECT.
+    clk.advance(1_500)
+    await wd.tick()
+    expect(wd.health()).toBe("SUSPECT")
+    expect(sseCalls.abort).toBe(0)
+
+    // Raise suspectMs to 10s and re-tick at the same clock time. The watchdog
+    // should now see dt < suspectMs and go back to HEALTHY without a recovery
+    // action — proves the threshold is read live.
+    suspectMs = 10_000
+    await wd.tick()
+    expect(wd.health()).toBe("HEALTHY")
+    expect(sseCalls.abort).toBe(0)
+
+    // Lower confirmMs below the current dt and tick: should now declare
+    // STUCK and recover (abortAndRetry on attempt 1). This pins confirmMs as
+    // live-read. We must also lower suspectMs so the dt passes the
+    // suspect threshold (the watchdog checks suspectMs BEFORE confirmMs).
+    suspectMs = 1_000
+    confirmMs = 1_000
+    await wd.tick()
+    expect(wd.health()).toBe("RECOVERING")
+    expect(sseCalls.abort).toBe(1)
+  })
 })

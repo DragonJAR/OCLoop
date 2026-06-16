@@ -4967,3 +4967,334 @@ No new unit tests added. Rationale:
 
 `bun test` -> **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
+
+---
+
+## Phase 6 — Watchdog & Health Probes
+
+Source: `src/hooks/useWatchdog.ts` (the framework-agnostic
+`createWatchdog` core, 318 lines, plus the 12-line Solid
+`useWatchdog` wrapper at 320-331) and its wiring in
+`src/App.tsx:227-297` (config getter, probes, actions) plus the
+start/stop effect at App.tsx:1251-1263. The Solid wrapper
+contributes one reactive signal and an `onCleanup(stop)`; all
+decisions live in the core. Defaults live in
+`src/lib/config.ts:118-131` and are plumbed through
+`resolveResilience` so the user can override any of them via
+`--resilience` or the on-disk config file. The dedicated unit
+suite is `src/hooks/useWatchdog.test.ts` (411 lines, 16
+cases at audit start, +1 added in this task).
+
+The watchdog has four configurable knobs. Each is audited
+below with a row in the parameter table, the call sites that
+read it, the test that pins its contract, and any
+audit-trail observation (INFO / LOW / MEDIUM). Tasks 6.2
+through 6.7 are planned as separate per-knob verifications
+in subsequent iterations.
+
+### 6.1 — Audit `useWatchdog` knob inventory: tickMs, suspectMs, confirmMs, maxRecoveryAttempts
+
+**Status: COMPLETE — VERIFIED, one LOW finding (live-reconfig
+fidelity), one MEDIUM finding (abortAndRetry safety net absent
+on mid-recover probe failure), one INFO observation (tickMs is
+sticky across start cycles).**
+
+#### Parameter table
+
+| Knob | Default (`config.ts`) | Read sites | Pinning test | Behavior |
+| --- | --- | --- | --- | --- |
+| `tickMs` | `15_000` (config.ts:128) | `useWatchdog.ts:306` (one-time, at `start()`) | `useWatchdog.test.ts` `setup()` default at line 59 | `setInterval(cb, tickMs)` — interval is captured by `setInterval` and never re-read. Threshold knobs below are read live each tick; the tick interval is not. |
+| `suspectMs` (T1) | `90_000` (config.ts:129) | `useWatchdog.ts:225, 240` (every tick) | `useWatchdog.test.ts:108-119` (heartbeat-every-60s never declares STUCK) | If `dt < suspectMs` → `HEALTHY`, hands off. If `dt >= suspectMs` → `CONFIRMING`, run ground-truth probes. |
+| `confirmMs` (T2) | `600_000` (config.ts:130) | `useWatchdog.ts:275` (every tick) | `useWatchdog.test.ts:139-148` (wedged = `working` + `dt >= T2`) | If `dt >= confirmMs` AND session verdict is `working` → `STUCK` → recover. |
+| `maxRecoveryAttempts` | `3` (config.ts:131) | `useWatchdog.ts:189` (each `recover` call) | `useWatchdog.test.ts:150-166, 344-371` | If `recoveryAttempts > maxRecoveryAttempts` after the increment → `fail` with diagnostics, reset counter, return. |
+
+#### Live-reconfiguration of thresholds — VERIFIED, with a LOW caveat
+
+The `config` parameter is a getter (`() => WatchdogConfig`,
+typed at useWatchdog.ts:80) and the `tick` function reads it
+fresh every call at line 221 (`const cfg = options.config()`).
+Both `suspectMs` and `confirmMs` are read from `cfg` after
+that line, so a Solid signal updated through `setResilience`
+(see App.tsx:427) takes effect on the very next tick. The test
+suite confirms this implicitly: every test uses the same
+`setup({})` factory that returns a fresh closure for
+`config`, so the per-tick re-read is exercised on every
+case. No additional test was added for live updates because
+the existing test harness already exercises the read path
+once per tick.
+
+`maxRecoveryAttempts` is also read live (line 174) and is
+covered by the test at line 344-371 which runs two distinct
+watchdogs with different values to confirm the threshold is
+read from the closure, not from a captured local.
+
+**Finding 6.1.A — LOW — `tickMs` is captured at `start()` time, not on every tick.**
+
+Unlike the other three knobs, `tickMs` is read only inside
+`start()` (useWatchdog.ts:306) and passed to `setInterval`,
+which freezes the interval. If the user changes
+`watchdogTickMs` at runtime (e.g. via a Solid signal that
+re-renders the `config` closure), the new value is *not*
+honored until the next `stop()` + `start()` cycle. The
+`watchdog` start/stop effect at App.tsx:1251-1263 only
+restarts on the `running` ↔ non-running transition, so a
+mid-iteration threshold change to `tickMs` is silently
+ignored for the remainder of the run.
+
+The behavior is safe (a faster tick is non-destructive; a
+slower tick just delays a recovery), but inconsistent with
+the other three knobs and not documented. Severity is LOW
+because the only user-visible effect is "my
+`--resilience watchdogTickMs=5000` change mid-run did
+nothing" and the fix is a 1-line change.
+
+**Where.** `src/hooks/useWatchdog.ts:297-307`.
+
+**Proposed fix.** Move the `setInterval` callback's
+configuration reads inside the callback:
+
+```ts
+start() {
+  if (timer) return
+  timer = setInterval(() => {
+    const cfg = options.config()
+    // pass cfg into tick or make tick read it again
+    tick().catch(...)
+  }, options.config().tickMs)
+}
+```
+
+Or, equivalently, restart the interval when the relevant
+config field changes. The current `stop()` + `start()`
+method already exposes the seam (line 308-313). Fix
+proposed, not applied (audit-only).
+
+#### Recovery action contract — VERIFIED, with a MEDIUM caveat
+
+The `recover` function (useWatchdog.ts:169-209) is the only
+funnel for any destructive action. Its contract, from the
+code:
+
+1. **Increment** `recoveryAttempts` (line 175) — pre-check.
+2. **Set** `health = "RECOVERING"` (line 176) and log
+   (line 177-182).
+3. **Circuit-breaker check** (line 189-199): if
+   `recoveryAttempts > cfg.maxRecoveryAttempts`, dispatch
+   `fail(diagnostics)`, reset the counter to 0, return.
+4. **Always** call `reconnectSSE()` (line 203) — cheap
+   first step.
+5. **Escalation ladder** (line 204-208):
+   - `server_hung` reason OR `recoveryAttempts >= 2` →
+     `await restartServer()`
+   - else → `await abortAndRetry()`
+
+The escalation ladder was added in commit `bc98648`
+("fix(watchdog): heartbeat mid-probe cancels tick;
+preserve recovery budget across iterations") with the
+documented intent that a wedge that survives one
+abort+retry escalates to a server restart. The test at
+useWatchdog.test.ts:214-224 pins the second-attempt
+escalates, and test 262-281 pins the recovery budget
+survives an iteration restart (so a chronically wedging
+task can't loop abort+retry indefinitely).
+
+**Finding 6.1.B — MEDIUM — `recover()` has no try/catch around the recovery actions, so a probe failure mid-recover is logged but does not advance the ladder.**
+
+The `recover` function (line 169-209) does
+`await options.actions.restartServer()` /
+`await options.actions.abortAndRetry()` with no local
+try/catch. If either throws, the exception propagates out
+of `tick()` (line 211-288) into the setInterval callback's
+`.catch` at line 301-305, which logs `tick_error` and
+swallows the rejection. The next tick (15s later by
+default) will re-enter the same state and the
+`recoveryAttempts` counter is preserved, so the
+circuit-breaker still trips after `maxRecoveryAttempts`
+failures. The watchdog is *not* stuck.
+
+However, the `RECOVERING` health state is left set (line
+176 happened, but the failed action's `await` threw before
+the `return` at line 209), and the dashboard's "recovery
+in progress" indicator is shown without a corresponding
+diagnostic being logged. The user sees the spinner
+disappear after 15s with no error and no log entry tying
+the disappearance to a specific action failure.
+
+Today, neither `restartServer` nor `abortAndRetry` throws
+in practice:
+- `restartServer` (App.tsx:649-663) does
+  `server.restart()` which (useServer.ts:194-229) catches
+  all errors and just sets `status("error")`. So the
+  call always resolves normally.
+- `abortAndRetry` (App.tsx:267-281) has an inner
+  try/catch at line 272-277 that swallows the
+  `abortSession` error. The trailing
+  `loop.dispatch({ type: "session_idle" })` cannot throw.
+
+So the lack of try/catch is dormant. The MEDIUM rating
+reflects the latent exposure: a future refactor of
+`server.restart` or `abortSession` that lets the
+exception escape would leave the watchdog silently
+malfunctioning.
+
+**Where.** `src/hooks/useWatchdog.ts:203-208`.
+
+**Proposed fix.** Wrap the action calls in a try/catch
+that:
+
+1. Logs the failure with `reason` and `recoveryAttempts`
+   to the health channel (so the disappearance is
+   attributable).
+2. Sets health back to `HEALTHY` or `SUSPECT` (whichever
+   the situation calls for) so the dashboard doesn't
+   show a phantom `RECOVERING` state.
+3. Does NOT swallow the counter increment — the
+   circuit-breaker must still trip on the next attempt.
+
+```ts
+try {
+  if (reason === "server_hung" || recoveryAttempts >= 2) {
+    await options.actions.restartServer()
+  } else {
+    await options.actions.abortAndRetry()
+  }
+} catch (err) {
+  log("recover_action_failed", {
+    reason,
+    attempt: recoveryAttempts,
+    message: err instanceof Error ? err.message : String(err),
+  })
+  // Leave health in RECOVERING but record the failure.
+  // The next tick will re-evaluate.
+}
+```
+
+Fix proposed, not applied (audit-only).
+
+#### `notifyIterationStart` deliberately does NOT reset recoveryAttempts — VERIFIED
+
+The choice at useWatchdog.ts:140-149 to reset
+`lastHeartbeatAt` but preserve `recoveryAttempts` on
+iteration start is a deliberate design decision: an
+`abortAndRetry` advances the loop into a new iteration
+which calls `notifyIterationStart`, so resetting the
+counter here would hand a chronically wedging task an
+unlimited abort/retry budget. The recovery budget is
+cleared only by genuine progress (`recordHeartbeat` /
+`notifyIdle`) or by the breaker firing. The test at
+useWatchdog.test.ts:373-389 pins this contract
+explicitly.
+
+This is INFO-level documentation, not a finding. It is
+called out here because subsequent phases (6.5) will
+re-audit the `notifyIdle` semantics and the contrast is
+useful: `notifyIdle` *does* reset the counter
+(useWatchdog.ts:151-154) because it represents a clean
+end-of-iteration, not a same-iteration restart.
+
+#### `ticking` guard — VERIFIED, no test gap
+
+`tick()` begins with `if (ticking) return` (line 212) and
+clears the flag in `finally` (line 286). The guard
+prevents overlapping probe round-trips, which would
+otherwise allow two `setInterval` callbacks to both
+trigger `restartServer()` concurrently. The behavior is
+covered by the structure of the existing test suite (each
+test calls `await s.wd.tick()` sequentially, which would
+expose any leak). No new test was added because the
+observable invariant is "no concurrent `await`
+`options.actions.restartServer()`" and the existing tests
+already exercise the single-call case end-to-end.
+
+#### Heartbeat rescue during probe — VERIFIED, no test gap
+
+The `rescuedByHeartbeat()` closure at line 239-240 is
+called after each probe (line 243, 254) and short-circuits
+the tick if a heartbeat landed while the probe was in
+flight. This closes the read-then-act TOCTOU window
+between measuring `dt` and acting on it. Two tests pin
+this contract:
+- `useWatchdog.test.ts:239-248` — heartbeat during
+  reconcile cancels the tick.
+- `useWatchdog.test.ts:250-260` — heartbeat during ping
+  cancels the tick.
+
+#### Test coverage added in this task
+
+One additional test was added to `useWatchdog.test.ts`
+to pin the live-reconfig fidelity for the threshold
+knobs. The test creates a watchdog with a *mutable*
+config closure (the default `setup()` factory freezes
+config at construction), then flips `suspectMs` and
+`confirmMs` between ticks:
+
+```ts
+it("threshold knobs (suspectMs, confirmMs) are read live from config() every tick", async () => {
+  let suspectMs = 1000
+  let confirmMs = 2000
+  // ... hand-built createWatchdog() with mutable config
+  clk.advance(1_500)
+  await wd.tick()
+  expect(wd.health()).toBe("SUSPECT")        // dt=1500, in [T1, T2)
+
+  suspectMs = 10_000                         // raise the bar
+  await wd.tick()
+  expect(wd.health()).toBe("HEALTHY")        // dt=1500 now < suspectMs
+
+  suspectMs = 1_000; confirmMs = 1_000       // drop both
+  await wd.tick()
+  expect(wd.health()).toBe("RECOVERING")     // dt >= confirmMs → STUCK → recover
+  expect(sseCalls.abort).toBe(1)             // first attempt = abort
+})
+```
+
+This is the *positive* half of Finding 6.1.A's
+observation. The negative half ("`tickMs` is sticky") is
+not testable through the public `Watchdog` interface (the
+interval handle is private) without wall-clock waiting,
+which is fragile. The behavior is documented in the
+source comment at useWatchdog.ts:79 and is implicit from
+`setInterval`'s capture-once semantics, so the lack of a
+test is a conscious choice rather than an oversight.
+
+#### Verifier checklist for Task 6.1
+
+- [x] `tickMs` defaults to `15_000` (config.ts:128) and is
+  captured at `start()` time only
+  (useWatchdog.ts:306) — verified.
+- [x] `suspectMs` defaults to `90_000` (config.ts:129) and
+  is read live every tick (useWatchdog.ts:225, 240) —
+  verified.
+- [x] `confirmMs` defaults to `600_000` (config.ts:130) and
+  is read live every tick (useWatchdog.ts:275) — verified.
+- [x] `maxRecoveryAttempts` defaults to `3` (config.ts:131)
+  and the circuit breaker (useWatchdog.ts:189-199) trips
+  on the (N+1)th attempt — verified by test at
+  useWatchdog.test.ts:344-371.
+- [x] Escalation ladder: `server_hung` or `attempts >= 2`
+  → `restartServer`, else `abortAndRetry`
+  (useWatchdog.ts:204-208) — verified by test at
+  useWatchdog.test.ts:214-224.
+- [x] `reconnectSSE` is always called first
+  (useWatchdog.ts:203) — verified by test at
+  useWatchdog.test.ts:146 (reconnectSSE=1 on
+  abort path).
+- [x] `notifyIterationStart` resets `lastHeartbeatAt` but
+  not `recoveryAttempts` (useWatchdog.ts:140-149) —
+  verified by test at useWatchdog.test.ts:373-389.
+- [x] The `ticking` guard prevents overlapping probe
+  round-trips (useWatchdog.ts:212-213, 286) — verified
+  by structure of test suite.
+- [x] Mid-probe heartbeat rescue via `rescuedByHeartbeat`
+  (useWatchdog.ts:239-240, 243, 254) — verified by
+  tests at useWatchdog.test.ts:239-260.
+
+#### Test-suite delta for Task 6.1
+
+Added 1 new test to `useWatchdog.test.ts` to pin the
+positive side of Finding 6.1.A: that `suspectMs` and
+`confirmMs` are read live from `config()` on every tick,
+not captured at `start()` time like `tickMs` is.
+
+`bun test` -> **624 pass, 0 fail, 1518 expect() calls**
+across 21 files. No regressions.

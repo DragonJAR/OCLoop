@@ -73,7 +73,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 6 — Watchdog & Health Probes
 
-- [ ] Audit `useWatchdog` hook for: tick interval, suspect/confirm thresholds, recovery actions, max recovery attempts
+- [x] Audit `useWatchdog` hook for: tick interval, suspect/confirm thresholds, recovery actions, max recovery attempts
 - [ ] Verify: watchdog `isActive` probe returns true only for `running`/`pausing` states with a non-empty sessionId — confirm this matches `getActiveSessionId`
 - [ ] Verify: watchdog stops and starts correctly based on `loop.isRunning()` — paused and cooldown states should NOT have the watchdog running
 - [ ] Verify: `notifyWake` resets the heartbeat baseline — confirm this prevents immediate re-triggering after a server restart
