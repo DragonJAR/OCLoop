@@ -153,6 +153,25 @@ export function parsePlan(content: string): PlanProgress {
 }
 
 /**
+ * Structural completion: the loop has nothing left to do. True when the plan has at
+ * least one task and NO automatable tasks remain (pending = automatable = 0; MANUAL
+ * and BLOCKED don't count, same as the progress denominator). This is owned by the
+ * tooling — it does NOT depend on the model writing a <plan-complete> tag.
+ */
+export function isStructurallyComplete(p: PlanProgress): boolean {
+  return p.total > 0 && p.automatable === 0
+}
+
+/** Deterministic completion summary from the plan counts (no model needed). */
+export function buildCompletionSummary(p: PlanProgress): string {
+  const extra: string[] = []
+  if (p.manual > 0) extra.push(`${p.manual} manual`)
+  if (p.blocked > 0) extra.push(`${p.blocked} blocked`)
+  const tail = extra.length ? ` (${extra.join(", ")})` : ""
+  return `All tasks complete: ${p.completed}/${p.total - p.manual - p.blocked}${tail}.`
+}
+
+/**
  * Extracts content between <plan-complete> tags.
  * 
  * @param content - The content of the PLAN.md file
@@ -179,15 +198,31 @@ export function parsePlanComplete(content: string): string | null {
     .replace(/```[\s\S]*$/, "")
   const matches = [
     ...withoutFences.matchAll(
-      /^ {0,3}<plan-complete>(?:([^\n]*?)<\/plan-complete>|([\s\S]*?)^ {0,3}<\/plan-complete>)/gm,
+      // Opening anchored to line start (0-3 spaces) so mid-line / 4+-indented / fenced
+      // examples never match. The closing tag may sit ANYWHERE after it: on the same
+      // line, at the start of its own line, OR glued to the end of the last content
+      // line (`...done.</plan-complete>`) — the form models actually emit, which the
+      // old two-branch regex rejected, leaving the loop spinning at 100%.
+      /^ {0,3}<plan-complete>([\s\S]*?)<\/plan-complete>/gm,
     ),
   ]
 
   if (matches.length === 0) return null
-  
+
   // Return the last match found
   const last = matches[matches.length - 1]
-  return (last[1] ?? last[2] ?? "").trim()
+  return (last[1] ?? "").trim()
+}
+
+/**
+ * Append a `<plan-complete>` tag with `summary` to the end of `content`, but only if
+ * one isn't already present (idempotent — reuses parsePlanComplete to detect). Lets
+ * the TOOLING write the completion marker deterministically instead of the model.
+ */
+export function withPlanCompleteTag(content: string, summary: string): string {
+  if (parsePlanComplete(content) !== null) return content
+  const base = content.endsWith("\n") ? content : content + "\n"
+  return `${base}\n<plan-complete>${summary}</plan-complete>\n`
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete, parsePlanFile } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./plan-parser"
 
 describe("parseTaskLine", () => {
   it("should parse completed tasks", () => {
@@ -1497,6 +1497,75 @@ End
   it("ignores a single-line unclosed tag (no newline, no close)", () => {
     const content = `<plan-complete>summary without close`
     expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  // Regression: the opener is on its own line but the closer is GLUED to the end of
+  // the last content line (`...remain.</plan-complete>`) — the format models actually
+  // emit. The old two-branch regex required the closer on the same line as the opener
+  // OR at the start of its own line, so this returned null and the loop never stopped.
+  it("matches a multi-line tag whose closing is glued to the end of the last line", () => {
+    const content = [
+      "Tasks...",
+      "<plan-complete>All 18 phases complete.",
+      "",
+      "Summary:",
+      "- did X",
+      "No manual tasks remain.</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBe(
+      "All 18 phases complete.\n\nSummary:\n- did X\nNo manual tasks remain.",
+    )
+  })
+})
+
+describe("isStructurallyComplete (tooling-owned completion, no model tag)", () => {
+  it("is true when every task is [x]", () => {
+    const p = parsePlan("- [x] a\n- [x] b\n- [x] c")
+    expect(isStructurallyComplete(p)).toBe(true)
+  })
+  it("is true when remaining tasks are [x] or [BLOCKED] (blocked excluded)", () => {
+    const p = parsePlan("- [x] a\n- [BLOCKED: needs key] b")
+    expect(isStructurallyComplete(p)).toBe(true)
+  })
+  it("is true when all tasks are [MANUAL] (loop has nothing to do)", () => {
+    const p = parsePlan("- [MANUAL] a\n- [MANUAL] b")
+    expect(isStructurallyComplete(p)).toBe(true)
+  })
+  it("is false while a pending automatable task remains", () => {
+    const p = parsePlan("- [x] a\n- [ ] b still pending")
+    expect(isStructurallyComplete(p)).toBe(false)
+  })
+  it("is false for an empty plan (no tasks at all)", () => {
+    const p = parsePlan("# Title\njust prose, no tasks")
+    expect(isStructurallyComplete(p)).toBe(false)
+  })
+})
+
+describe("buildCompletionSummary", () => {
+  it("summarizes a plain all-done plan", () => {
+    const p = parsePlan("- [x] a\n- [x] b\n- [x] c")
+    expect(buildCompletionSummary(p)).toBe("All tasks complete: 3/3.")
+  })
+  it("notes manual and blocked counts", () => {
+    const p = parsePlan("- [x] a\n- [MANUAL] b\n- [BLOCKED: x] c")
+    // denominator = total(3) - manual(1) - blocked(1) = 1; completed = 1
+    expect(buildCompletionSummary(p)).toBe("All tasks complete: 1/1 (1 manual, 1 blocked).")
+  })
+})
+
+describe("withPlanCompleteTag (idempotent)", () => {
+  it("appends the tag when none is present", () => {
+    const out = withPlanCompleteTag("- [x] a\n", "done")
+    expect(out).toBe("- [x] a\n\n<plan-complete>done</plan-complete>\n")
+    expect(parsePlanComplete(out)).toBe("done")
+  })
+  it("adds a trailing newline before appending when missing", () => {
+    const out = withPlanCompleteTag("- [x] a", "done")
+    expect(out).toBe("- [x] a\n\n<plan-complete>done</plan-complete>\n")
+  })
+  it("is a no-op when a tag already exists", () => {
+    const content = "- [x] a\n<plan-complete>already</plan-complete>\n"
+    expect(withPlanCompleteTag(content, "new")).toBe(content)
   })
 })
 
