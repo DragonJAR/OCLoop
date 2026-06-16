@@ -239,7 +239,7 @@ export function Dashboard(props: DashboardProps) {
         paddingRight: 1,
       }}
     >
-      {/* Row 1 — state + progress lead; static model/agent last. Items spread to
+      {/* Row 1 — live run state (badge · progress · iter · health). Items spread to
           fill the width (responsive: more room ⇒ more spacing, no trailing gap). */}
       <box style={{ ...FILL_ROW }}>
         <StatusBadge state={props.state} />
@@ -270,18 +270,17 @@ export function Dashboard(props: DashboardProps) {
             <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
           </text>
         </Show>
+      </box>
 
-        {/* Model / Agent (static config) — last; dropped on narrow terminals */}
+      {/* Row 2 — details: static config (model/agent) + current-task timing. marginTop
+          gives a blank line of breathing; model/agent dropped on narrow terminals. */}
+      <box style={{ ...FILL_ROW, marginTop: 1 }}>
         <Show when={props.model && !layout().compact}>
           <LabelValue label={t("lblModel")} value={props.model!} />
         </Show>
         <Show when={props.agent && !layout().compact}>
           <LabelValue label={t("lblAgent")} value={props.agent!} />
         </Show>
-      </box>
-
-      {/* Row 2 — current-task timing. marginTop gives a blank line of breathing. */}
-      <box style={{ ...FILL_ROW, marginTop: 1 }}>
         <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime()).trim()} />
         {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
         <Show when={props.stats.averageTime() !== null}>
