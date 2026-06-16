@@ -16,6 +16,7 @@ dist/
 !README.*.md
 !CHANGELOG.md
 !CHANGELOG.*.md
+!MEJORAS.md
 !examples/
 !examples/**/
 !examples/*.md
