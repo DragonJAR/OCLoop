@@ -18411,3 +18411,343 @@ The `startIteration` re-entry guard is correct:
   `running("")` mid-flight).
 - No CRITICAL, HIGH, MEDIUM, or LOW findings. One
   INFO-level test-coverage note (above).
+
+---
+
+### 15.2 — `session_idle` dispatch race: SSE `onSessionIdle` vs. `reconcileAndAdvance`
+
+PLAN.md 15.2: "Verify: No race between `session_idle` SSE
+event and `reconcileAndAdvance` — both can trigger the same
+dispatch."
+
+**Status: COMPLETE — ONE MEDIUM finding (stale-dispatch),
+ONE LOW finding (duplicate activity log).**
+
+#### The four dispatch sites
+
+`session_idle` can be dispatched from four distinct code
+paths. PLAN.md 15.2 asks about (1) and (2); PLAN.md 15.3
+covers (1) and (3). This section is scoped to (1) vs (2) —
+the SSE handler racing `reconcileAndAdvance`. (3) is audited
+separately in 15.3.
+
+| # | Site | File:line | Trigger |
+| --- | --- | --- | --- |
+| 1 | SSE `onSessionIdle` | `src/App.tsx:504` | Server emits `session.idle` SSE event |
+| 2 | `reconcileAndAdvance` | `src/App.tsx:640` | Reconcile API returns `idle` or `missing` |
+| 3 | Watchdog `synthesizeIdle` | `src/App.tsx:265` | Watchdog reconcile probe returns `idle`/`missing` |
+| 4 | Watchdog `abortAndRetry` | `src/App.tsx:280` | Watchdog recovers a wedged session |
+
+#### The reducer's idempotency guard — VERIFIED
+
+`src/hooks/useLoopState.ts:130-159`:
+
+```ts
+case "session_idle": {
+  if (state.type === "running") {
+    // Already between iterations: return the SAME state so a redundant idle
+    // (e.g. watchdog reconcile + wake both synthesizing idle) doesn't emit a
+    // new object and re-fire the iteration driver into a second session.
+    if (state.sessionId === "") return state
+    // Stay in running with empty sessionId, ready for next iteration
+    return {
+      type: "running",
+      iteration: state.iteration,
+      sessionId: "",
+    }
+  }
+  ...
+}
+```
+
+The guard at line 136 — `if (state.sessionId === "") return
+state` — returns the **same** state object (same reference), so
+Solid skips the signal-update notification and the
+iteration-driver effect at `App.tsx:1217-1222` does not
+re-fire. The guard is pinned by
+`src/hooks/useLoopState.test.ts:615-624` ("session_idle on
+running with sessionId === '' returns the SAME state object
+(idempotency guard)"). This is the **secondary** defense.
+
+#### The two primary defenses — VERIFIED
+
+**SSE `onSessionIdle` — sessionId filter.**
+`src/App.tsx:491-507`:
+
+```ts
+onSessionIdle: (eventSessionId) => {
+  const currentSession = sessionId()       // createMemo over loop.state()
+  const state = loop.state()
+  const debugSessionId = state.type === "debug" ? state.sessionId : undefined
+
+  if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
+    rateLimitAttempts = 0
+    watchdog.notifyIdle()
+    loop.dispatch({ type: "session_idle" })
+    activityLog.addEvent("session_idle", t("actSessionIdle"))
+  }
+}
+```
+
+`currentSession` is a `createMemo` (`App.tsx:402-414`) that
+returns `undefined` for any state other than
+`running`/`pausing`/`debug` with a non-empty `sessionId`. So
+if the SSE event for "ses-X" arrives AFTER state has moved
+on (e.g. to `running(N, "")` or to `running(N+1, "ses-Y")`),
+`currentSession` will not equal `eventSessionId` and the
+dispatch is skipped.
+
+**`reconcileAndAdvance` — `getActiveSessionId` early-return.**
+`src/App.tsx:625-643`:
+
+```ts
+async function reconcileAndAdvance(): Promise<ReconcileResult> {
+  const url = server.url()
+  const sid = getActiveSessionId(loop.state())
+  if (!url || !sid) return "unknown"        // <-- early-return guard
+
+  const client = createClient(url)
+  const result = await reconcileSession(client, sid)
+  log.health("reconcile", result, { sessionId: sid })
+
+  if (result === "idle" || result === "missing") {
+    activityLog.addEvent(
+      "session_idle",
+      t("actReconciled", { result }),
+    )
+    rateLimitAttempts = 0
+    loop.dispatch({ type: "session_idle" })
+  }
+  return result
+}
+```
+
+The early-return at line 628 (`if (!url || !sid) return
+"unknown"`) reads state **at the start** of the function. If
+state is already `running(N, "")` when the function is
+entered, `sid = ""` and the function returns without
+dispatching.
+
+#### The race window — ANALYSIS
+
+Neither guard checks state **between** the read and the
+dispatch. Consider this interleaving (the "stale-dispatch
+race"):
+
+```
+T0  state = running(N, "ses-X")
+T1  handleWake fires (or watchdog reconcile starts); calls
+    reconcileAndAdvance. Reads sid = "ses-X". Begins
+    awaiting reconcileSession(client, "ses-X").
+T2  Meanwhile, SSE delivers session.idle for "ses-X".
+    onSessionIdle runs: currentSession = "ses-X", filter
+    passes, dispatches session_idle.
+    state = running(N, "")
+T3  Solid schedules the iteration-driver effect (microtask).
+T4  Effect runs: startIteration() with guard.
+    createSession resolves quickly (server-local).
+    dispatches iteration_started.
+    state = running(N+1, "ses-Y")
+T5  sendPromptAsync begins for "ses-Y" (network call).
+T6  reconcileAndAdvance's network call completes.
+    result = "idle" (server's verdict for the OLD ses-X,
+    which was idle when the request was issued).
+T7  reconcileAndAdvance resumes, sees result="idle",
+    dispatches session_idle.
+T8  Reducer: state = running(N+1, "ses-Y") with sessionId
+    != "". The idempotency guard at useLoopState.ts:136
+    does NOT match (sessionId is "ses-Y", not ""). Reducer
+    transitions to running(N+1, "").
+T9  State is now running(N+1, "") → iteration driver fires
+    AGAIN. A new session is created (ses-Z). The ses-Y
+    session is orphaned mid-prompt.
+```
+
+This is a **stale-dispatch race**. The reconcile result was
+valid for "ses-X" (the session active when reconcile
+started), but state has moved on to "ses-Y". The reducer
+has no way to know the dispatch is about the OLD session,
+so it applies the transition to the NEW state.
+
+The race can fire from any of the three call sites of
+`reconcileAndAdvance`:
+
+- `handleWake` (`App.tsx:219`) — most likely trigger
+  (sleep disconnects SSE, reconnects, replays session.idle,
+  iteration driver creates new session, reconcile returns).
+- `restartServer` (`App.tsx:654`) — server restart is slow,
+  SSE replays after reconnect, iteration driver creates new
+  session, reconcile returns.
+- `doResume` (`App.tsx:1187`) — same pattern after crash
+  recovery.
+
+In all three, the network round-trip to the server (the
+`await reconcileSession(...)`) is the window during which
+state can move on.
+
+#### Severity: MEDIUM — Finding 15.2.A — Stale-dispatch in `reconcileAndAdvance`
+
+**Problem.** `reconcileAndAdvance` dispatches `session_idle`
+based on a `sid` it captured at function start. If state
+has moved to a new iteration between the capture and the
+dispatch, the dispatch incorrectly clears the new session.
+
+**Why MEDIUM, not HIGH.** The window is bounded by the
+relative timing of three async operations:
+
+1. `reconcileSession(client, "ses-X")` — network round-trip.
+2. `createSession(client)` — server-local, usually fast.
+3. The SSE `session.idle` event — server-emitted, network.
+
+In the common case the SSE event arrives BEFORE the
+reconcile response, so the reducer's idempotency guard at
+`useLoopState.ts:136` catches the case where state is
+`running(N, "")`. The race only fires when:
+
+1. The reconcile call is in flight while the original
+   session completes.
+2. The SSE `session.idle` event arrives while reconcile is
+   still in flight.
+3. The new session is created and reaches
+   `running(N+1, "ses-Y")` BEFORE the reconcile response
+   lands.
+4. The reconcile response then lands, the dispatch is
+   applied to the NEW state.
+
+Condition 3 requires `createSession + dispatch` to be
+faster than the network round-trip, which is plausible but
+not the common case. (SSE events typically arrive in the
+same TCP connection as the API, so the relative timing
+depends on server-side processing order — for an idle
+session, the server may emit the SSE event in the same
+response frame as the API call would observe "idle".)
+
+**Impact when triggered.** A new session is orphaned
+mid-prompt. The new iteration's prompt-send call (or its
+in-flight model work) is discarded. The watchdog will see
+no heartbeat from "ses-Z" and escalate to abort+retry or
+restart, eventually surfacing as a recoverable error to the
+user. The work is lost but the loop recovers.
+
+**Where.** `src/App.tsx:625-643` (the dispatch at line 640
+is unconditional on current state).
+
+**Proposed fix.** Re-check `getActiveSessionId(loop.state())`
+against the captured `sid` immediately before dispatching,
+and skip the dispatch if state has moved on. The check is a
+single string comparison and is race-free with respect to
+itself (single-threaded JavaScript):
+
+```ts
+if (result === "idle" || result === "missing") {
+  // Guard against a stale result: the reconcile verdict
+  // was for the session active when the function started.
+  // If state has since moved on (e.g., the SSE session.idle
+  // event arrived first and the iteration driver already
+  // started a new iteration), skip the dispatch — it would
+  // incorrectly clear the new session.
+  const currentSid = getActiveSessionId(loop.state())
+  if (currentSid !== sid) {
+    log.health("reconcile", "stale_result_discarded", {
+      reconcileSid: sid,
+      currentSid,
+      verdict: result,
+    })
+    return result
+  }
+  activityLog.addEvent(
+    "session_idle",
+    t("actReconciled", { result }),
+  )
+  rateLimitAttempts = 0
+  loop.dispatch({ type: "session_idle" })
+}
+```
+
+**Status.** Fix proposed, not applied (audit-only per
+PLAN.md acceptance criteria).
+
+#### Severity: LOW — Finding 15.2.B — Duplicate activity-log entry
+
+**Problem.** When both `onSessionIdle` (SSE) and
+`reconcileAndAdvance` fire `session_idle` for the same
+transition, the **activity log shows two entries** even
+when the second dispatch is a reducer-level no-op:
+
+- SSE: `activityLog.addEvent("session_idle", t("actSessionIdle"))`
+  (`App.tsx:505`)
+- Reconcile: `activityLog.addEvent("session_idle", t("actReconciled", { result }))`
+  (`App.tsx:635-638`)
+
+The order of dispatch determines which message appears
+first; both will be present in the log.
+
+**Why LOW.** Cosmetic only. Both entries describe the same
+outcome (an active session ended), and the user can read
+them as cross-references rather than contradictions. The
+on-disk state is correct (the second dispatch is a no-op
+when state is `running(N, "")`).
+
+**Where.** `src/App.tsx:505, 635-638`.
+
+**Proposed fix.** If Finding 15.2.A's stale-dispatch guard
+is applied, move the activity log entry INSIDE the same
+`if` block so it only fires when the dispatch actually
+happens. As a result, the SSE path's log is the single
+source of truth, and the reconcile path's log only appears
+when the reconcile is the one advancing the loop (not
+racing SSE).
+
+**Status.** Fix proposed, not applied.
+
+#### Test coverage gap — INFO
+
+There is no direct test for the SSE-vs-reconcile race. The
+`useLoopState.test.ts` suite covers the reducer (including
+the `sessionId === ""` idempotency guard at line 615-624),
+and `useWatchdog.test.ts` exercises the watchdog's
+`synthesizeIdle` path. But the App-level integration of
+"SSE delivers session.idle while `reconcileAndAdvance` is
+in flight" is not covered. The proposed fix is small and
+self-evident, and the race window is narrow, so this is an
+**INFO**-level finding. A targeted test would simulate the
+race by:
+
+1. Start `reconcileAndAdvance()` (don't await).
+2. Dispatch `session_idle` synchronously to advance state
+   to `running(N, "")`.
+3. Dispatch `iteration_started` to advance state to
+   `running(N+1, "ses-Y")`.
+4. Await `reconcileAndAdvance()` to see if it dispatches.
+
+If the proposed fix is applied, the second dispatch (step
+4) is skipped and the test asserts that state remains
+`running(N+1, "ses-Y")`.
+
+#### Verification result
+
+The `session_idle` dispatch race between SSE and
+`reconcileAndAdvance` has TWO primary defenses (the SSE
+sessionId filter and reconcile's `getActiveSessionId`
+early-return) and ONE secondary defense (the reducer's
+`sessionId === ""` idempotency guard). All three work
+correctly for the most common interleaving (SSE arrives
+first, state advances to `running(N, "")`, then reconcile
+early-returns with "unknown" because the local `sid` was
+captured at the start).
+
+However, a narrow race window remains: if the new
+iteration has already started (`running(N+1, "ses-Y")`)
+when the reconcile response lands, the dispatch clears the
+new session. The proposed fix (a four-line
+`currentSid !== sid` re-check before dispatch) closes the
+window. Until the fix is applied, the race is real but the
+blast radius is bounded by the watchdog's recovery ladder
+(an orphaned session is detected and the loop recovers).
+
+- No CRITICAL findings.
+- ONE MEDIUM finding (15.2.A — stale-dispatch race in
+  `reconcileAndAdvance`).
+- ONE LOW finding (15.2.B — duplicate activity-log entry).
+- ONE INFO finding (test coverage gap for the App-level
+  race).
