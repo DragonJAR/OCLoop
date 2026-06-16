@@ -2,7 +2,7 @@ import { createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import { Dialog } from "../ui/Dialog";
 import { useTheme, selectedForeground } from "../context/ThemeContext";
-import { formatDuration } from "../hooks/useLoopStats";
+import { formatDuration } from "../lib/format";
 import { t } from "../lib/i18n";
 
 export interface DialogCompletionProps {

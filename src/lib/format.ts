@@ -3,6 +3,27 @@ export function formatTokenCount(n: number): string {
   return n.toLocaleString();
 }
 
+/**
+ * Format a duration in milliseconds to a human-readable string.
+ * Padded to 7 chars for TUI column alignment.
+ */
+export function formatDuration(ms: number): string {
+  if (ms < 0) return "0s".padStart(7, " ");
+
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`.padStart(7, " ");
+  }
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`.padStart(7, " ");
+  }
+  return `${seconds}s`.padStart(7, " ");
+}
+
 // Two truncators on purpose: `truncate` is width-exact (1-col "…", no whitespace
 // touch) for TUI column fitting; `truncateText` normalizes whitespace and uses
 // "..." for log/preview text. Merging them would change one call site's output.

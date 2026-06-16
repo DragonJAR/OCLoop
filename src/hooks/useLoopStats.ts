@@ -1,4 +1,8 @@
 import { createSignal, createMemo, onCleanup } from "solid-js";
+import { formatDuration } from "../lib/format";
+
+// Re-export for consumers that imported from here.
+export { formatDuration } from "../lib/format"
 
 /**
  * Internal state for tracking iteration timing
@@ -25,28 +29,6 @@ export interface UseLoopStatsReturn {
   averageTime: () => number | null; // Average iteration time in ms, null if no history
   totalActiveTime: () => number; // Sum of all active time including current iteration
   estimatedTotal: (remaining: number) => number | null; // Estimated time for remaining iterations
-}
-
-/**
- * Format a duration in milliseconds to a human-readable string
- * @param ms Duration in milliseconds
- * @returns Formatted string like "1m 23s", "45s", "2h 15m"
- */
-export function formatDuration(ms: number): string {
-  if (ms < 0) return "0s".padStart(7, " ");
-
-  const totalSeconds = Math.floor(ms / 1000);
-  const hours = Math.floor(totalSeconds / 3600);
-  const minutes = Math.floor((totalSeconds % 3600) / 60);
-  const seconds = totalSeconds % 60;
-
-  if (hours > 0) {
-    return `${hours}h ${minutes}m`.padStart(7, " ");
-  }
-  if (minutes > 0) {
-    return `${minutes}m ${seconds}s`.padStart(7, " ");
-  }
-  return `${seconds}s`.padStart(7, " ");
 }
 
 /**
