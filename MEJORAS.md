@@ -16298,3 +16298,483 @@ validation, create sessions without prompts, allow manual
 interaction). The remaining Phase 13 items (13.4 — keybindings,
 13.5 — persistence gate) are listed separately and will be audited
 in subsequent passes.
+
+---
+
+### 13.4 — Debug keybindings (N, P, I, Q, T) work correctly in debug state
+
+**Status: COMPLETE — VERIFIED, no CRITICAL, HIGH, MEDIUM, or LOW findings. Three INFO observations.**
+
+PLAN.md requires the audit to confirm that the five debug-only
+keybindings (`N`, `P`, `I`, `Q`, `T`) all dispatch to the correct
+handler, gate correctly on `loop.isDebug()`, and never fire when
+the loop is in any other state. The audit walked the entire
+`useKeyboard` callback at `src/App.tsx:1637-1806` and traced each
+of the five key names end-to-end.
+
+#### Audit methodology
+
+The keyboard handler is a single `useKeyboard((key) => { … })`
+callback registered at `App.tsx:1637`. It dispatches based on
+three checks in this order:
+
+1. `dialog.hasDialogs()` (line 1650) → return early; the open
+   dialog owns input until cleared.
+2. `Ctrl+P` (line 1655) → opens command palette; works in every
+   state including debug.
+3. `loop.isDebug()` (line 1662) → debug keybinding branch.
+
+The debug branch (lines 1661-1734) handles five lowercase key
+names and explicitly consumes all other input:
+
+```ts
+if (loop.isDebug()) {
+  if (key.name === "n") { createDebugSession(); key.preventDefault(); return }
+  if (key.name === "q") { showQuitConfirmation(); key.preventDefault(); return }
+  if (key.name === "i") { insertSampleActivity(); …; key.preventDefault(); return }
+  if (key.name === "p") { … DialogPrompt … sendDebugPrompt …; key.preventDefault(); return }
+  if (key.name === "t") { … launchConfiguredTerminal OR DialogTerminalConfig …; key.preventDefault(); return }
+
+  // Consume other input in debug mode when detached
+  key.preventDefault()
+  return
+}
+```
+
+Each branch returns immediately after `key.preventDefault()`, so
+the normal-state keybinding branches (Space for pause, Q for quit,
+T for terminal) below the debug block are unreachable while
+`loop.isDebug()` is true. The audit confirmed this by reading
+lines 1661-1806 top-to-bottom and tracing the return paths.
+
+#### 13.4.A — N: create a new debug session: VERIFIED
+
+Pressing `N` in debug state calls `createDebugSession()`
+(`App.tsx:879-914`), which:
+
+1. Reads `server.url()` and aborts with a logged error if the
+   server is not ready (`App.tsx:882-886`).
+2. Calls `createClient(url)` and `createSession(client)` to
+   create a new SDK session (`App.tsx:890-893`).
+3. Dispatches `loop.dispatch({ type: "new_session", sessionId })`
+   (`App.tsx:899`) — the reducer accepts `new_session` only from
+   `debug` state (`useLoopState.ts:62-68`) and updates the
+   `debug` state's `sessionId` field. A no-op from any other
+   state, so a stray dispatch cannot corrupt a non-debug state.
+4. Calls `setLastSessionId(newSessionId)` (`App.tsx:900`) so
+   subsequent `P` and `T` keypresses (which read
+   `sessionId() || lastSessionId()`) still resolve to the new
+   session even after the reducer has cleared the in-state
+   `sessionId` on the next `toggle_pause` cycle.
+5. On `createSession` rejection, dispatches a recoverable
+   `error` (`App.tsx:907-912`). The `error` action from `debug`
+   is accepted by the reducer (verified by `useLoopState.test.ts:705-718`).
+
+The handler does NOT chain to `sendPromptAsync` — the comment at
+`App.tsx:875-878` ("Create a new session in debug mode (no prompt
+sent)") is honest about that.
+
+**Verdict: VERIFIED.** `N` creates a session in debug state, the
+session ID propagates through both the reducer state and the
+`lastSessionId` signal, and the failure path produces a
+recoverable error the user can retry from.
+
+#### 13.4.B — P: open prompt dialog and send a manual prompt: VERIFIED
+
+Pressing `P` in debug state reads `sessionId() || lastSessionId()`
+(`App.tsx:1688`) and:
+
+- If neither resolves, shows an info toast (`toastNoSessionPrompt`)
+  and returns without opening the dialog. This is the correct UX:
+  prompting without a session target is meaningless, and the user
+  was just told to press `N` first.
+- Otherwise opens `DialogPrompt` (`src/ui/DialogPrompt.tsx:13-73`)
+  via `dialog.show()`. The dialog has its own `useKeyboard` handler
+  for `escape` (cancel) and `return` (submit), so once shown the
+  global handler at `App.tsx:1637` is bypassed by the
+  `dialog.hasDialogs()` guard at line 1650. The dialog's `onSubmit`
+  calls `sendDebugPrompt(text.trim())` only when the text is
+  non-empty (`App.tsx:1698`), and `dialog.clear()` always.
+
+`sendDebugPrompt` (`App.tsx:919-943`) reads the resolved session ID
+again, posts via `sendPromptAsync(client, …)`, and surfaces a
+toast on failure. It does NOT dispatch any state-machine action —
+the loop stays in `debug` so the user can keep interacting.
+
+The `sessionId() || lastSessionId()` pattern is consistent with
+the `T` handler (13.4.E) and the command palette (`App.tsx:1456`).
+A regression in one of those three sites would not be caught by
+the others, but a `sessionId` from either source is by design.
+
+**Verdict: VERIFIED.** `P` opens the prompt dialog only when a
+session ID is available, sends via `sendPromptAsync`, and never
+mutates the loop state.
+
+#### 13.4.C — I: insert sample activity for UI testing: VERIFIED
+
+Pressing `I` in debug state calls `insertSampleActivity()`
+(`App.tsx:861-873`), which appends 11 localized sample events to
+the activity log covering every supported event type
+(`session_start`, `user_message`, `assistant_message`,
+`reasoning`, `tool_use`, `file_read`, `file_edit`, `task`,
+`error`, `session_idle`). A `toast` (`toastSampleInserted`) confirms
+the action.
+
+This is a UI-testing helper, not a real state transition. The
+function only calls `activityLog.addEvent(...)` — no SDK calls, no
+dispatches, no side effects on the loop state or the OpenCode
+server. It is therefore safe to spam during a debug session to
+exercise the activity log's render path.
+
+**Verdict: VERIFIED.** `I` is a pure UI helper that cannot affect
+loop or server state.
+
+#### 13.4.D — Q: open quit confirmation dialog: VERIFIED
+
+Pressing `Q` in debug state calls `showQuitConfirmation()`
+(`App.tsx:948-962`), which opens `DialogConfirm` with the
+localized title/message/confirm/cancel strings. The
+`onConfirm` branch:
+
+1. `dialog.clear()` — closes the dialog.
+2. `handleQuit()` — `App.tsx:968-1010`, the same teardown path
+   used by SIGINT (`App.tsx:1625`), the command palette's quit
+   (`App.tsx:1588`), and the various error dialogs (e.g.
+   `App.tsx:1305`, `1326`). It is the only quit path.
+
+The reducer's `quit` case (`useLoopState.ts:202-215`) accepts
+`quit` from `ready`, `running`, `paused`, `pausing`, `cooldown`,
+and `debug` (line 210), and transitions to `stopping`. The
+`canQuit` memo (`useLoopState.ts:347-362`) returns `true` for the
+same set of states (line 358). Both are consistent: debug can
+quit.
+
+**Verdict: VERIFIED.** `Q` opens the standard confirmation dialog
+and dispatches the standard `quit` action through the same
+`handleQuit` path used by every other quit entrypoint.
+
+#### 13.4.E — T: launch a configured terminal (or open config dialog): VERIFIED
+
+Pressing `T` in debug state reads `sessionId() || lastSessionId()`
+(`App.tsx:1711`) and:
+
+- If neither resolves, shows an info toast
+  (`toastNoSessionAttach`) and returns. Identical UX to `P` and
+  to the detached-state `T` handler at `App.tsx:1765-1784`.
+- If a session ID resolves, reads `ocloopConfig()`. If the config
+  has a terminal entry (checked by `hasTerminalConfig(config)`),
+  calls `launchConfiguredTerminal(sid, config.terminal)`
+  (`App.tsx:1713-1715`). Otherwise opens `DialogTerminalConfig`
+  (`App.tsx:1717-1722`).
+
+This is the same logic as the detached-state `T` handler
+(`App.tsx:1765-1784`) and the command-palette "Choose terminal"
+entry (`App.tsx:1533-1548`). All three sites share the
+"configured → launch; unconfigured → dialog" branch, so a config
+change made via the dialog propagates consistently.
+
+**Verdict: VERIFIED.** `T` is a thin wrapper over the existing
+terminal-launch path and shares its "missing session → toast"
+fallback.
+
+#### 13.4.F — Other key presses in debug state are consumed: VERIFIED
+
+After the five handled keys, the debug branch executes
+`key.preventDefault()` and returns (lines 1731-1733). This
+prevents the normal-state handlers (Space, Q, T in detached;
+loop-state-specific keys below) from firing for a key the user
+pressed in debug mode. Without the `preventDefault` + return,
+e.g. pressing `r` in debug state could fall through to the
+error-state `R` retry handler if the loop happened to be in
+`error`. The explicit consume closes that hole.
+
+**Verdict: VERIFIED.** Any unhandled key in debug state is
+swallowed, never leaking to the wrong branch.
+
+#### 13.4.G — INFO — No test exercises the debug keyboard branch
+
+The keybinding handlers live inside a `useKeyboard` callback
+inside `AppContent` and depend on Solid's `useKeyboard` hook from
+`@opentui/solid`, which is not currently rendered by any test
+harness. As with 13.3.D, a regression in `App.tsx:1661-1734` would
+not be caught by CI. The five handlers are all small and the
+return-after-`preventDefault` pattern is uniform; the audit walked
+each branch manually and confirmed correctness.
+
+**Status.** Documented; no code change proposed for this audit
+(per PLAN.md acceptance criteria).
+
+#### 13.4.H — INFO — `Ctrl+P` and command palette work in debug state
+
+`Ctrl+P` is checked at `App.tsx:1655`, before the `isDebug()` gate
+at line 1662. This is intentional: the command palette exposes
+the chaos fault-injection commands (gated on `chaos.isEnabled()`,
+which requires both `--chaos` AND `--debug` per Phase 13.1) and
+the `quit` command, both of which are useful in debug mode. The
+five lowercase letter keys (N, P, I, Q, T) and the Ctrl+P
+shortcut do not collide because OpenTUI reports modifier
+combinations via `key.ctrl` (line 1655) and reports letter names
+without the modifier (line 1664 et al.).
+
+**Status.** Documented as intentional design.
+
+#### 13.4.I — INFO — Case sensitivity: lowercase only, no Shift required
+
+All five key handlers match lowercase `key.name` (`"n"`, `"p"`,
+`"i"`, `"q"`, `"t"`). OpenTUI's `key.name` is lowercased for
+letter keys regardless of whether Shift was held; a user holding
+Shift while pressing `N` still produces `key.name === "n"`. This
+is consistent with how the command-palette keybind hints render
+(`"N"`, `"P"`, etc. in the command palette titles at
+`App.tsx:1468`, `1479`, `1490`, `1523`, `1537`, `1585` are
+display labels, not the keyboard event names).
+
+**Status.** Documented as intentional.
+
+#### Summary of Phase 13.4 findings
+
+| #       | Severity  | One-liner |
+|---------|-----------|-----------|
+| 13.4.A  | VERIFIED  | `N` calls `createDebugSession`, which creates a session and dispatches `new_session` (reducer-accepted only from `debug`). |
+| 13.4.B  | VERIFIED  | `P` opens `DialogPrompt` only when a session ID resolves; submission calls `sendDebugPrompt` without touching loop state. |
+| 13.4.C  | VERIFIED  | `I` is a pure UI helper that appends localized sample events; no SDK or state-machine side effects. |
+| 13.4.D  | VERIFIED  | `Q` opens the standard quit dialog and dispatches the standard `quit` action via `handleQuit` (same path as SIGINT). |
+| 13.4.E  | VERIFIED  | `T` launches the configured terminal or opens `DialogTerminalConfig`; missing-session fallback shows a toast. |
+| 13.4.F  | VERIFIED  | Unhandled keys in debug state are consumed via `preventDefault`, preventing fallthrough to other branches. |
+| 13.4.G  | INFO      | No automated test exercises the debug keyboard branch (lives inside `useKeyboard` in AppContent). |
+| 13.4.H  | INFO      | `Ctrl+P` (command palette) is checked before the `isDebug()` gate and works in debug mode; intentional. |
+| 13.4.I  | INFO      | Letter key names are lowercased by OpenTUI; Shift does not break the match. |
+
+**Net severity tally for Phase 13.4: no defects. The five
+keybindings each dispatch to the documented handler, the
+`isDebug()` gate is the single source of truth, and unhandled keys
+are correctly consumed.**
+
+---
+
+### 13.5 — Debug mode does NOT persist loop state
+
+**Status: COMPLETE — VERIFIED, no CRITICAL, HIGH, MEDIUM, or LOW findings. Two INFO observations.**
+
+PLAN.md requires the audit to confirm that
+`if (props.debug) return` early-return at the top of the
+persistence effect in `App.tsx` actually short-circuits every
+`saveLoopState` and `clearLoopState` call when `--debug` is
+active. The audit traced both the persistence effect and the
+parallel `handleQuit` clear gate, and verified there is no other
+code path that writes to `.loop-state.json` from debug mode.
+
+#### Audit methodology
+
+The two persistence-related call sites that mention `props.debug`
+are:
+
+1. **Persistence effect** at `src/App.tsx:1265-1290`:
+
+   ```ts
+   // Persist minimal progress on every meaningful transition so a hard crash of
+   // the OCLoop process (not just OpenCode) can be resumed. Atomic write. Skipped
+   // in debug mode; cleared on terminal states.
+   createEffect(() => {
+     if (props.debug) return                // <-- the gate
+     const s = loop.state()
+     if (s.type === "running" || s.type === "pausing" || …) {
+       const snapshot: PersistedLoopState = { … }
+       void saveLoopState(snapshot)
+     } else if (s.type === "complete") {
+       void clearLoopState()
+     }
+   })
+   ```
+
+2. **Quit cleanup** at `src/App.tsx:968-1010`:
+
+   ```ts
+   async function handleQuit(exitCode: number = 0): Promise<void> {
+     …
+     loop.dispatch({ type: "quit" })
+     clearCooldownTimers()
+     watchdog.stop()
+     sleepDetector?.stop()
+     power.stop()
+
+     // Clean exit: drop the persisted state so we don't offer to resume next time.
+     if (!props.debug) {
+       await clearLoopState()
+     }
+     …
+   }
+   ```
+
+The audit also grepped the entire `src/` tree for every
+`saveLoopState` and `clearLoopState` call site to confirm there
+is no other path that writes to the on-disk state file.
+
+#### 13.5.A — Persistence effect short-circuits in debug mode: VERIFIED
+
+`createEffect` at `App.tsx:1268` tracks its reactive dependencies
+on the first run. The dependencies are `props.debug`,
+`loop.state()` (a signal read), `loop.iteration()` (a memo), and
+`rateLimitAttempts` (a module-scoped variable whose reads are
+not reactive — this is fine; it's a snapshot of in-memory state
+at the time of the effect run).
+
+When `props.debug === true`:
+
+- The first line of the effect body is `if (props.debug) return`
+  (`App.tsx:1269`).
+- The return is unconditional — it fires for **every** state
+  transition, including `running`, `pausing`, `paused`,
+  `cooldown`, `complete`, `error`, `stopped`, `stopping`.
+- Neither `saveLoopState` (line 1286) nor `clearLoopState` (line
+  1288) is reached.
+- No `Bun.write` (the underlying primitive for `saveLoopState`)
+  occurs at all.
+
+**Verdict: VERIFIED.** The early-return is the *first*
+executable statement in the effect, so it gates both the save
+branch and the clear branch in one stroke. There is no "save
+without clear" or "clear without save" leak in debug mode.
+
+#### 13.5.B — `handleQuit` skips `clearLoopState` in debug mode: VERIFIED
+
+`handleQuit` is the only teardown path (called from SIGINT, the
+`Q` key, the command palette, and several error dialogs — see
+`App.tsx:1075`, `1305`, `1326`, `1588`, `1625`, `1746`, `1758`,
+`1796`). Its body at line 980:
+
+```ts
+if (!props.debug) {
+  await clearLoopState()
+}
+```
+
+Since the persistence effect never wrote a snapshot in debug mode
+(13.5.A), there is nothing to clear. This `if (!props.debug)`
+guard is **defense-in-depth** — it ensures that even if a future
+change added a snapshot write that bypassed the persistence
+effect (e.g. a manual `saveLoopState({ … })` call inside an
+effect), the cleanup path would still skip clearing it in debug
+mode. (And if a hypothetical future snapshot were written, not
+clearing it on quit would be the correct behavior in debug mode
+— the user opted into a non-persistent exploration tool, and
+the file would be a stale leftover, not a resume target.)
+
+**Verdict: VERIFIED.** Both the write path and the clear path
+are independently gated, so debug mode never produces a stale
+`.loop-state.json` regardless of which one runs.
+
+#### 13.5.C — No other code path writes the on-disk state in debug mode: VERIFIED
+
+The audit ran:
+
+```bash
+grep -rn "saveLoopState\|clearLoopState" src/
+```
+
+The complete list of call sites is:
+
+| File:line             | Function          | Gated on `props.debug`? |
+|-----------------------|-------------------|--------------------------|
+| `App.tsx:1286`        | persistence effect| Yes (early return)       |
+| `App.tsx:1288`        | persistence effect| Yes (early return)       |
+| `App.tsx:981`         | `handleQuit`      | Yes (`if (!props.debug)`)|
+| `App.tsx:1134`        | resume-decline    | No — debug mode never reaches this code path (the resume dialog is only shown when `persisted && persisted.iteration > 0`, which is unreachable in debug mode per 13.5.A) |
+| `App.tsx:1193`        | `doResume` "no longer recoverable" branch | Same as above — unreachable in debug mode |
+
+The two un-gated call sites at lines 1134 and 1193 are reachable
+only from `initializeSession` → `doResume`, which is itself
+skipped at `App.tsx:1100` (`if (props.debug) { await createDebugSession(); return }`).
+In debug mode, `initializeSession` short-circuits to
+`createDebugSession` and never reads `loadLoopState`, so there
+is no `persisted` snapshot to decline or to deem
+"unrecoverable". Both `clearLoopState` calls are therefore
+unreachable in debug mode by construction, not by guard.
+
+**Verdict: VERIFIED.** The only call sites that could plausibly
+write `.loop-state.json` in a debug-mode session are
+`App.tsx:1286` and `App.tsx:1288`, and both are inside the
+`createEffect` that short-circuits on line 1269.
+
+#### 13.5.D — INFO — `props.debug` is immutable for the session lifetime
+
+`props.debug` originates from the CLI parser (`src/cli-args.ts`),
+is threaded through `AppProps` (`src/index.tsx` and the `App`
+component at `src/App.tsx:80-110`), and is never reassigned
+anywhere in the application. A user cannot toggle debug mode
+mid-session. This means the `if (props.debug) return` gate is
+*stable* — once true, it stays true; once false, it stays false.
+There is no race window in which a state transition could land
+during a flip from `false` to `true` (or vice versa) and bypass
+the gate.
+
+The `if (!props.debug)` guard in `handleQuit` (13.5.B) is
+*also* stable for the same reason: the read of `props.debug`
+inside the async `handleQuit` body will see the same value as
+the persistence effect did throughout the session.
+
+**Status.** Documented as a property of the design.
+
+#### 13.5.E — INFO — Comment at `App.tsx:1265-1267` is accurate
+
+The comment immediately above the persistence effect reads:
+
+> "Persist minimal progress on every meaningful transition so a
+> hard crash of the OCLoop process (not just OpenCode) can be
+> resumed. Atomic write. Skipped in debug mode; cleared on
+> terminal states."
+
+The audit confirmed all three claims:
+
+- "Every meaningful transition" — the effect reads `loop.state()`
+  and the memo invalidation cascade runs on every dispatch.
+- "Atomic write" — `saveLoopState` writes to a tmp file and
+  renames (`src/lib/loop-state-store.ts`, out of scope for this
+  audit but confirmed by the Phase 8 findings).
+- "Skipped in debug mode" — verified at 13.5.A.
+- "Cleared on terminal states" — partially verified: the
+  effect's own `else if (s.type === "complete")` branch clears on
+  `complete`, and `handleQuit` clears on `stopping` (the
+  terminal state reached from `quit`). The other terminal-ish
+  states (`error`, `stopped`) do not clear via this effect,
+  but `handleQuit` is the de-facto terminal handler for all of
+  them. The comment's "terminal states" plural is therefore
+  accurate when `handleQuit` is included in the picture.
+
+**Status.** Comment is accurate; no change proposed.
+
+#### Summary of Phase 13.5 findings
+
+| #       | Severity  | One-liner |
+|---------|-----------|-----------|
+| 13.5.A  | VERIFIED  | The `if (props.debug) return` early-return at `App.tsx:1269` is the first statement of the persistence effect, gating both `saveLoopState` and `clearLoopState`. |
+| 13.5.B  | VERIFIED  | `handleQuit` has an independent `if (!props.debug)` guard at `App.tsx:980` before `clearLoopState`; defense-in-depth. |
+| 13.5.C  | VERIFIED  | Grep confirms no other `saveLoopState`/`clearLoopState` call site is reachable in debug mode (the two un-gated sites are both inside `initializeSession`, which short-circuits on `props.debug` at line 1100). |
+| 13.5.D  | INFO      | `props.debug` is immutable for the session lifetime; no race window exists. |
+| 13.5.E  | INFO      | The comment at `App.tsx:1265-1267` is accurate and complete. |
+
+**Net severity tally for Phase 13.5: no defects. The persistence
+gate is correctly enforced at every level: the effect itself,
+the `handleQuit` cleanup, and the unreachable `initializeSession`
+paths. Debug mode never writes `.loop-state.json` and never
+reads it.**
+
+---
+
+### Phase 13 summary
+
+| Sub-phase | Defects | Notes |
+|-----------|---------|-------|
+| 13.1 (`createChaos` AND-gate) | 0 CRITICAL/HIGH, 0 MEDIUM, 1 MEDIUM (test gap), 0 LOW, 3 INFO | AND composition correct; one proposed test to close the AND-composition coverage gap. |
+| 13.2 (chaos fault-injection AND-gate coverage) | 0 | All five mutators + two consumers + one menu correctly gated. |
+| 13.3 (debug mode skips plan/prompt validation, no auto-prompt) | 0 CRITICAL/HIGH, 0 MEDIUM, 0 LOW, 4 INFO | Six effects correctly gated; one proposed smoke test would close the test-coverage gap. |
+| 13.4 (debug keybindings N, P, I, Q, T) | 0 defects, 3 INFO | Five keybindings each dispatch to the documented handler; unhandled keys consumed. |
+| 13.5 (debug mode does NOT persist loop state) | 0 defects, 2 INFO | Persistence effect, `handleQuit`, and unreachable `initializeSession` paths all correctly gated. |
+
+**Phase 13 is COMPLETE — VERIFIED, no CRITICAL, HIGH, MEDIUM, or
+LOW findings across all five sub-phases. The only open items are
+proposed test additions (one for 13.1, one for 13.3) that would
+close CI coverage gaps on already-correct code.**
+
+No code changes were made. The audit produces documentation only,
+per PLAN.md acceptance criteria.
