@@ -148,7 +148,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 ## Phase 14 — Error Classification & Recovery
 
 - [x] Audit `classifySessionError` (in `useSSE`) for all error types: rate limit (429), transient (5xx, timeout, network), auth (401/403), fatal (other)
-- [ ] Verify: Rate limit errors during pausing state are handled — `enterCooldown` is called, not just for running state
+- [x] Verify: Rate limit errors during pausing state are handled — `enterCooldown` is called, not just for running state
 - [ ] Verify: Auth errors (401/403) are NOT recoverable — they surface as permanent errors requiring user intervention
 - [ ] Verify: Server startup errors transition to error state with `recoverable: true` — user can retry
 - [ ] Verify: SSE connection errors that exceed the reconnection threshold trigger a server restart

@@ -17288,3 +17288,252 @@ provider but would matter for a future provider change.**
 
 No code changes were made. The audit produces documentation only,
 per PLAN.md acceptance criteria.
+
+---
+
+## Phase 14.2 — Rate-limit errors during pausing state
+
+**Status: COMPLETE — VERIFIED with gaps.**
+
+The question: when a provider rate-limit SSE error fires while
+the loop is in the `pausing` state (the user pressed `P`, the
+session is in-flight awaiting its own `session.idle`), does
+`enterCooldown` get called from the SSE handler — and does the
+reducer accept the `rate_limited` action from `pausing`? This
+is an independent re-verification of the same path previously
+audited in Phase 5.5 (MEJORAS.md:4359-4598); the same answer
+holds (`enterCooldown` is called, reducer accepts it), and the
+existing test coverage is unchanged.
+
+### Findings
+
+#### Rate-limit detection path (useSSE)
+
+- `src/hooks/useSSE.ts:369-386` — the `session.error` event
+  handler in `processEvent`. It calls `classifySessionError(rawError)`
+  (line 374), which returns a `SessionError` with
+  `kind: "rate_limit"` for any payload matching the regex at
+  `useSSE.ts:106-107` (HTTP `429`, "rate limit", "overloaded",
+  "quota", `RateLimitError` / `OverloadedError` names). The
+  handler then forwards via `handlers.onSessionError?.(eventSessionId, sessionError)`
+  on line 384.
+- `src/hooks/useSSE.ts:183-207` — `classifySessionError` is a
+  pure function, exported, fully unit-tested (22 cases in
+  `useSSE.test.ts:1-198`).
+- The hook is state-agnostic: there is **no** state guard in
+  `useSSE.ts` itself. The `st === "running" || st === "pausing"`
+  decision lives entirely in the `onSessionError` callback in
+  App.tsx (line 476). This is the correct separation — the hook
+  should not know about loop states.
+
+#### `enterCooldown` call site (App.tsx)
+
+- `src/App.tsx:454-489` — the `onSessionError` callback wired
+  in the `useSSE` call. The rate-limit branch (lines 470-478):
+
+  ```ts
+  } else if (error.kind === "rate_limit") {
+    // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
+    // Cover `pausing` too (the reducer accepts it) so a rate limit while
+    // pausing can't wedge the loop waiting for a session.idle that the
+    // errored session will never emit.
+    activityLog.addEvent("error", t("actRateLimit", { message: error.message }), { level: "warn" })
+    if (st === "running" || st === "pausing") {
+      enterCooldown(error.message, error.retryAfter)
+    }
+  }
+  ```
+
+  The `st === "pausing"` branch is explicitly included (NOT
+  excluded). When the loop is in `pausing`, the rate-limit
+  branch **does** call `enterCooldown`, which is the correct
+  behavior — the rate-limited session is abandoned, the backoff
+  runs, and the iteration driver picks up a fresh session after
+  `resume_cooldown`. Without this branch, the loop would wedge
+  in `pausing` waiting for a `session.idle` the now-rate-limited
+  session will never emit (the wedge scenario documented at
+  MEJORAS.md:4371-4382).
+- `src/App.tsx:671-745` — the `enterCooldown` function itself
+  (counter increment, backoff, exhaustion path). Already
+  audited in Phase 5.1 (MEJORAS.md:3554-3832) and Phase 5.3
+  (MEJORAS.md:3835-4149); the `kind` parameter is accepted
+  (line 674) but the calling site at line 477 omits it (defaults
+  to `"rate_limit"`), which is correct for the SSE path.
+
+#### Reducer case accepting `rate_limited` from `pausing`
+
+- `src/hooks/useLoopState.ts:161-173` — the `rate_limited`
+  case in `loopReducer`:
+
+  ```ts
+  case "rate_limited": {
+    // Enter cooldown from running (or pausing) — a healthy wait, not an error.
+    if (state.type === "running" || state.type === "pausing") {
+      return {
+        type: "cooldown",
+        iteration: state.iteration,
+        reason: action.reason,
+        resumeAt: action.resumeAt,
+        attempt: action.attempt,
+      }
+    }
+    return state
+  }
+  ```
+
+  The guard is `state.type === "running" || state.type === "pausing"`,
+  so the reducer **does** accept `rate_limited` from `pausing`
+  and transitions to `cooldown`, preserving `state.iteration`
+  (line 166) and dropping the `sessionId` (the `cooldown` state
+  has no `sessionId` field — intentional; the next iteration
+  starts with a fresh session).
+
+#### App.tsx wiring — no state guard excluding `pausing`
+
+- `src/App.tsx:454-489` — the `onSessionError` callback is
+  wired in the `useSSE` call. The only state guards present
+  are the per-branch `if (st === …)` checks at lines 467, 476,
+  481. **None of them exclude `pausing`**:
+  - `isAborted` (line 465): only acts on `running`; `pausing`
+    is a no-op for abort (intentional, since the in-flight
+    session is the one the user wanted to pause).
+  - `error.kind === "rate_limit"` (line 470): guards on
+    `st === "running" || st === "pausing"` — **includes** `pausing`.
+  - else (line 479): guards on `st === "running" || st === "pausing" || st === "debug"`
+    — **includes** `pausing`.
+- The stale-session guard at `App.tsx:460-463` uses
+  `getActiveSessionId(state)`, which returns `state.sessionId`
+  for both `running` and `pausing` (useLoopState.ts:35-36), so
+  a live rate-limit error during `pausing` passes the guard
+  and reaches the rate-limit branch.
+
+#### Test coverage
+
+- **`src/hooks/useLoopState.test.ts:501-514`** — "transitions
+  from pausing to cooldown" (positive case, but the test
+  asserts only the resulting `type === "cooldown"`, not the
+  full state shape).
+- **`src/hooks/useLoopState.test.ts:959-969`** — "rate_limited:
+  from pausing → cooldown (preserves iteration, drops
+  sessionId)" (positive case with full state shape assertion:
+  `iteration`, `reason`, `resumeAt`, `attempt`).
+- **`src/hooks/useLoopState.test.ts:953-958`** — `rate_limited`
+  is a no-op from `paused`, `ready`, `starting`, `cooldown`,
+  `stopping`, `stopped`, `complete`, `error`, `debug` (the
+  full no-op matrix; `pausing` is deliberately excluded from
+  this list because it transitions to `cooldown`).
+- **`src/hooks/useLoopState.test.ts:663-672`** — "rate_limited
+  from paused state is ignored (returns same state)" (Phase 2
+  edge case; pins the negative case for `paused` to make the
+  asymmetry with `pausing` explicit).
+- **`src/hooks/useSSE.test.ts`** — covers `classifySessionError`
+  classification (rate limit / aborted / auth / transient /
+  fatal) exhaustively. It does **not** exercise the App.tsx
+  `onSessionError` callback or the `st ===` guards. This is
+  the same gap documented in Phase 5.5 (MEJORAS.md:4534-4541
+  and :4575-4596): the SSE handler's branch is a 3-line
+  conditional whose observable contract is "dispatch
+  `rate_limited` for running/pausing, log for other states";
+  the dispatch half is pinned by the reducer tests, the
+  log-only half is a side effect on `activityLog.addEvent`
+  not exercised in the unit test surface, and a mock-SSE
+  integration test would require mocking `@opentui/solid`
+  and the SDK client (see docs/testing.md).
+
+### Verification result
+
+**VERIFIED with gaps.**
+
+The behavior is correct end-to-end:
+
+1. `useSSE.ts:374` — rate-limit detection classifies HTTP 429
+   payloads (and equivalent error names / messages) as
+   `kind: "rate_limit"`.
+2. `App.tsx:476` — the `onSessionError` rate-limit branch
+   explicitly includes `pausing` in its `st ===` guard, so
+   `enterCooldown` is called when the loop is in `pausing`.
+3. `useLoopState.ts:163` — the reducer accepts `rate_limited`
+   from `pausing` and transitions to `cooldown`, preserving
+   the iteration counter and dropping the sessionId.
+4. `App.tsx:723` — `enterCooldown` then dispatches
+   `rate_limited` to the reducer, completing the path.
+5. `App.tsx:460-463` — the stale-session guard does not reject
+   a live rate-limit error during `pausing`, because
+   `getActiveSessionId` returns the live `sessionId` for
+   `pausing`.
+
+The reducer half of the contract is fully pinned by tests
+(`useLoopState.test.ts:501-514`, `:953-958`, `:959-969`,
+`:663-672`). The SSE handler's local `st ===` guard is not
+separately pinned (it is a 3-line conditional; the only
+observable is the dispatch, which the reducer tests cover).
+This is the **same gap** documented in Phase 5.5
+(MEJORAS.md:4575-4596) with the rationale that a mock-SSE
+integration test would require a Solid render harness with a
+stub server, a stub watchdog, and the `jsxImportSource`
+workaround, with cost far exceeding value.
+
+### Proposed documentation update
+
+No code change proposed. The gap is **observability** only,
+not behavior, and the rationale for not adding a test was
+already captured in the Phase 5.5 audit. The only
+documentation delta is this section itself, which provides an
+independent re-verification and cross-references the Phase 5.5
+audit so a future reader does not need to chase the link.
+
+#### Finding 14.2.A — INFO — Reducer test at `useLoopState.test.ts:501-514` asserts only the result type
+
+**Problem.** The "transitions from pausing to cooldown" test
+(lines 501-514) only asserts `expect(result.type).toBe("cooldown")`
+— it does not check that `result.iteration`, `result.reason`,
+`result.resumeAt`, `result.attempt` are forwarded correctly
+from the action payload. The Phase 3.1 matrix audit (lines
+959-969) covers the full state shape but only for the
+`iteration === 5` case; a regression where, for example,
+`action.reason` was dropped on the `pausing → cooldown`
+transition would still pass the line-501 test.
+
+**Where.** `src/hooks/useLoopState.test.ts:501-514`.
+
+**Severity.** LOW — the behavior is correct and is fully
+covered by the line-959 test. The line-501 test is redundant
+in coverage but not actively wrong.
+
+**Proposed fix.** Expand the line-501 test to mirror the
+line-959 assertions on `iteration`, `reason`, `resumeAt`,
+`attempt`. Option (a) — deleting the test — is also
+acceptable but loses the simpler "happy path" input shape
+that the line-959 test does not exercise.
+
+```ts
+it("transitions from pausing to cooldown (full state shape)", () => {
+  const state: LoopState = {
+    type: "pausing",
+    iteration: 1,
+    sessionId: "s",
+  }
+  const result = loopReducer(state, {
+    type: "rate_limited",
+    reason: "overloaded",
+    resumeAt: 999,
+    attempt: 1,
+  })
+  expect(result.type).toBe("cooldown")
+  if (result.type === "cooldown") {
+    expect(result.iteration).toBe(1)
+    expect(result.reason).toBe("overloaded")
+    expect(result.resumeAt).toBe(999)
+    expect(result.attempt).toBe(1)
+  }
+})
+```
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria). The same test was already noted in
+Phase 3 (MEJORAS.md:2841) as a "2 new success-case tests"
+addition; this is the same test, restated with full state-shape
+assertions to make the gap explicit.
+
+No code changes were made. The audit produces documentation only,
+per PLAN.md acceptance criteria.
