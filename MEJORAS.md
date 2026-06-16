@@ -18235,3 +18235,179 @@ integration bug (14.4.A, server-startup retry is a no-op; the
 
 No code changes were made. The audit produces documentation only,
 per PLAN.md acceptance criteria.
+
+---
+
+## Phase 15 — Edge Cases & Race Conditions
+
+### 15.1 — `startIteration` guard vs. effect re-trigger
+
+PLAN.md 15.1: "Verify: No race between `startIteration` guard
+and effect re-trigger — `startingIteration` is set before async
+work and cleared in `finally`."
+
+**Status: COMPLETE — VERIFIED. No race condition exists.**
+
+The iteration driver is a single `createEffect` that fires
+whenever the loop enters `running` with an empty `sessionId`,
+and `startIteration` is the only call site that creates new
+sessions. The function has a synchronous re-entry guard that
+prevents a second invocation from racing the first during the
+window where `createSession` is in flight.
+
+#### Guard placement — VERIFIED
+
+`src/App.tsx:171-172` — the guard is a module-scoped
+`let startingIteration = false` inside the `App` component, so
+it lives for the lifetime of one TUI run.
+
+`src/App.tsx:776-856` — the full `startIteration` function:
+
+```ts
+async function startIteration(): Promise<void> {
+  // In-flight guard: the iteration driver re-runs whenever state becomes
+  // running(""), and createSession is async. Without this, a second trigger
+  // arriving mid-flight would create a second session and orphan the first
+  // (it keeps running on the server, burning tokens, never aborted).
+  if (startingIteration) return          // line 781
+  const url = server.url()
+  if (!url) {
+    console.error("Cannot start iteration: server not ready")
+    return                               // line 785
+  }
+  startingIteration = true               // line 787 — sync, before try
+
+  try {                                  // line 789
+    // ... all async work ...
+  } catch (err) {
+    handleIterationError(err)
+  } finally {
+    startingIteration = false            // line 854
+  }
+}
+```
+
+The guard is set at line 787 — **two lines before** the `try`
+block opens at line 789. The synchronous window between
+`startingIteration = true` and the first `await` is a single
+`try` keyword with no statements in between, so there is no
+opportunity for a synchronous throw (or any other escape) to
+skip the try/catch/finally triple. The `finally` clause is
+guaranteed by the JavaScript spec to run after any of: a normal
+return, an early `return` inside `try` (line 800 — the
+`checkPlanComplete` early-out), an exception caught by
+`catch`, or an exception that escapes the function entirely.
+
+#### The iteration-driver effect — single trigger source — VERIFIED
+
+`src/App.tsx:1217-1222`:
+
+```ts
+createEffect(() => {
+  const state = loop.state()
+  if (state.type === "running" && state.sessionId === "") {
+    startIteration()
+  }
+})
+```
+
+This is the **only** call site of `startIteration` in the
+codebase (`grep -rn startIteration\(\) src/` returns one match
+in `App.tsx:1220`; the other matches are
+`stats.startIteration()` / `useLoopStats` / a comment).
+`createEffect` schedules re-runs on the **microtask**
+boundary, not synchronously, so a `dispatch()` call inside
+`startIteration` does not re-enter the effect on the same tick.
+
+The condition `state.sessionId === ""` is the **primary**
+defense: after `iteration_started` (line 822) sets the
+sessionId, the effect re-fires (next microtask) but its
+`if` body is false, so `startIteration` is not called again
+for the same iteration. The guard is the **secondary**
+defense: it covers the case where the effect re-fires while
+the function is still inside the try block but *before*
+`iteration_started` has been dispatched (e.g. the
+`checkPlanComplete` early-out, or any await that yields
+without changing state).
+
+#### Re-entrancy walk-through — VERIFIED
+
+| Scenario | Effect re-fire? | Guard catches it? | Outcome |
+| --- | --- | --- | --- |
+| `state` becomes `running(0,"")` from `ready` (first iteration) | yes, once | n/a (first call) | creates session 1 |
+| `checkPlanComplete` early-out at line 800 (plan complete) | yes (state→`complete`) | n/a (return before guard) | dispatches `plan_complete`, finally clears guard |
+| `createSession` resolves, line 822 dispatches `iteration_started` | yes (next microtask) | n/a (state.sessionId now non-empty) | effect re-fires but does NOT call `startIteration` |
+| `sendPromptAsync` throws rate-limit | yes (state→`cooldown` via `enterCooldown`) | n/a (state is `cooldown`, not `running("")`) | effect re-fires but condition is false; finally clears guard |
+| `sendPromptAsync` throws auth/fatal | yes (state→`error`) | n/a (state is `error`, not `running("")`) | effect re-fires but condition is false; finally clears guard |
+| `state.session_idle` arrives while startIteration is mid-`createSession` (stale watchdog synthesize) | yes (state stays `running("", "")` — same object, no re-fire actually scheduled by Solid) | n/a | reducer returns the same state object, Solid skips the re-fire; even if it re-fired, the guard would catch it |
+| A user `toggle_pause` arrives while startIteration is mid-`createSession` | yes (state→`pausing`) | n/a (state is `pausing`, not `running("")`) | effect re-fires but condition is false; finally clears guard |
+| `await sendPromptAsync` is in flight, `state.session_idle` from a prior session arrives (impossible, but defensively checked) | yes (state→`running(0,"")` again) | **YES** — guard is `true`, second call returns immediately | first call completes normally, finally clears guard, next effect re-fire starts the new iteration |
+
+The last row is the only scenario where the guard is **load-
+bearing**. Without it, two `createSession` calls would run in
+parallel, the first one's session would be orphaned (it
+keeps running on the server, burning tokens), and the
+iteration driver would point at the second one. The comment
+block at `App.tsx:777-780` calls this out explicitly.
+
+#### Why a Solid `createEffect` re-fire can't preempt the guard
+
+`createEffect` reads its tracked signals synchronously the
+first time, then registers a subscriber. When a tracked
+signal changes, the subscriber is invoked via
+`queueMicrotask` (or Solid's equivalent scheduler).
+Multiple changes within the same synchronous block are
+**batched** into a single re-fire on the next microtask
+boundary. This means:
+
+- Inside `startIteration`, calling
+  `loop.dispatch({ type: "iteration_started", ... })` at
+  line 822 synchronously updates the state signal and
+  schedules **one** effect re-fire for the next microtask.
+- `await sendPromptAsync(...)` at line 841 yields control
+  to the microtask queue. The effect re-fire runs: state
+  is `running(N, "ses-X")`, the `if` body is false, no
+  second `startIteration` call.
+- The `await` resumes, `refreshPlan` runs, `try` exits,
+  `finally` clears the guard.
+
+There is no scheduling path in Solid where an effect re-fires
+**synchronously** while a tracked effect is mid-execution.
+The guard is therefore not protecting against a Solid-level
+reentrancy — it's protecting against a logical reentrancy
+(state changes to `running("")` *again* before the first
+`startIteration` finishes), which is the scenario documented
+at lines 777-780.
+
+#### Test coverage gap — INFO
+
+There is no direct test for the guard. The
+`useLoopState.test.ts` suite covers the reducer (which
+transitions the state), but the guard itself is an
+imperative boolean in `App.tsx` that's not exported. A
+regression that removed the guard, or moved `finally` to
+`catch`, would not be caught by the existing tests. The
+guard is small and self-evident (four lines) and protected
+by code review, so this is an **INFO**-level finding —
+worth a comment in the test file if the team ever
+extracts `startIteration` into a testable helper, but
+not blocking.
+
+### Verification result
+
+The `startIteration` re-entry guard is correct:
+- It is set synchronously before any `await` (line 787).
+- The window between the set and the `try` block is two
+  lines with no operations that could throw.
+- It is cleared in `finally` (line 854), which is
+  guaranteed by the JS spec to run on every exit path
+  (normal, early return, caught exception, escaped
+  exception).
+- The only call site is the iteration-driver effect
+  (`App.tsx:1220`).
+- Solid's microtask-based effect scheduling prevents
+  synchronous re-entry; the guard covers the remaining
+  logical-reentrancy case (state cycles back to
+  `running("")` mid-flight).
+- No CRITICAL, HIGH, MEDIUM, or LOW findings. One
+  INFO-level test-coverage note (above).
