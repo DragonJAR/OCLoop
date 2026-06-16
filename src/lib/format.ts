@@ -3,6 +3,17 @@ export function formatTokenCount(n: number): string {
   return n.toLocaleString();
 }
 
+// Two truncators on purpose: `truncate` is width-exact (1-col "…", no whitespace
+// touch) for TUI column fitting; `truncateText` normalizes whitespace and uses
+// "..." for log/preview text. Merging them would change one call site's output.
+export function truncate(str: string, len: number): string {
+  if (len <= 0) return "";
+  if (str.length <= len) return str;
+  // Guard len === 1 too: slice(0, 0) keeps the ellipsis only, never a negative
+  // (from-end) index that would paradoxically return a longer string.
+  return str.slice(0, Math.max(0, len - 1)) + "…";
+}
+
 export function truncateText(text: string, maxLen: number): string {
   const normalized = text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLen) return normalized;

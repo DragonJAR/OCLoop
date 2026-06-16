@@ -1,8 +1,29 @@
 
 import { describe, expect, test } from "bun:test";
-import { formatTokenCount, truncateText, formatDiffSummary, getToolPreview, stripMarkdown } from "./format";
+import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown } from "./format";
 
 describe("format utilities", () => {
+  describe("truncate (width-exact, …)", () => {
+    test("returns original string if length is less than or equal to limit", () => {
+      expect(truncate("hello", 10)).toBe("hello");
+      expect(truncate("hello", 5)).toBe("hello");
+    });
+
+    test("truncates string and adds ellipsis if length exceeds limit", () => {
+      expect(truncate("hello world", 8)).toBe("hello w…");
+      expect(truncate("hello world", 5)).toBe("hell…");
+    });
+
+    test("never overflows for len <= 0 (negative slice index bug)", () => {
+      // A naive slice(0, len-1) with len<=0 is a from-end index that returns a
+      // near-full string — longer than the requested width. Must be "".
+      expect(truncate("hello world", 0)).toBe("");
+      expect(truncate("hello world", -3)).toBe("");
+      // len === 1 keeps only the ellipsis, never a negative index.
+      expect(truncate("hello world", 1)).toBe("…");
+    });
+  });
+
   test("formatTokenCount formats numbers with separators", () => {
     // Note: toLocaleString behavior depends on locale, but standard envs usually default to something that uses commas or spaces
     // We check that it at least changes the string for large numbers or keeps it for small

@@ -5,7 +5,7 @@ import fuzzysort from "fuzzysort"
 import { ScrollBoxRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
 import { useTheme, selectedForeground } from "../context/ThemeContext"
-import { truncate } from "../lib/locale"
+import { truncate } from "../lib/format"
 import { t } from "../lib/i18n"
 
 export interface DialogSelectOption {

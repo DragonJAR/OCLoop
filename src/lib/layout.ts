@@ -5,7 +5,7 @@
  * full) is derived from the real terminal size through here — nothing hardcoded.
  */
 
-import { truncate } from "./locale"
+import { truncate } from "./format"
 
 export type Breakpoint = "narrow" | "medium" | "wide"
 
