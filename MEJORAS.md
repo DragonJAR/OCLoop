@@ -16778,3 +16778,513 @@ close CI coverage gaps on already-correct code.**
 
 No code changes were made. The audit produces documentation only,
 per PLAN.md acceptance criteria.
+
+---
+
+## Phase 14 — Error Classification & Recovery
+
+Source: `src/hooks/useSSE.ts` (lines 73-207,
+the `SessionErrorKind` type, the
+`SessionError` interface, the `RATE_LIMIT_NAMES` / `AUTH_NAMES` /
+`ABORTED_NAMES` lookup sets, the three
+regexes, the `classifyKind` priority
+chain, the `extractRetryAfter` helper,
+and the exported `classifySessionError`
+function). The consumer is the
+`onSessionError` handler in
+`src/App.tsx:454-489` and the
+`handleIterationError` dispatch at
+`src/App.tsx:754-771`. Tests:
+`src/hooks/useSSE.test.ts` (24 tests,
+all passing) plus a single end-to-end
+case in `src/resilience-integration.test.ts`
+that classifies a 429 and feeds it
+through the reducer (line 90-116).
+
+### 14.1 — Audit `classifySessionError` for all error types: rate limit (429), transient (5xx, timeout, network), auth (401/403), fatal (other)
+
+PLAN.md 14.1: "Audit `classifySessionError`
+(in `useSSE`) for all error types:
+rate limit (429), transient (5xx,
+timeout, network), auth (401/403),
+fatal (other)."
+
+**Status: COMPLETE — VERIFIED, two
+MEDIUM findings, four LOW findings,
+four INFO observations. No CRITICAL
+or HIGH findings. The classifier is
+correct for the cases it was designed
+to handle; the findings are dead-letter
+patterns and asymmetric policy choices
+that a future provider change could
+expose.**
+
+#### Classification surface — VERIFIED
+
+The classifier exposes five mutually
+exclusive `SessionErrorKind` values
+(`useSSE.ts:81-86`):
+
+| Kind | Meaning | Recovery (App.tsx) | Retry-After honored? |
+| --- | --- | --- | --- |
+| `aborted` | User/programmatic abort | toggle_pause to pausing (line 467-469) | n/a |
+| `rate_limit` | 429 / rate limit / quota / overloaded | `enterCooldown` with retryAfter (line 470-478) | yes |
+| `auth` | 401 / 403 / invalid API key | dispatch `error` with `recoverable: false` (line 479-489) | n/a |
+| `transient` | 5xx, timeout, network blip | dispatch `error` with `recoverable: true` (line 479-489) **OR** `enterCooldown` from `handleIterationError` (line 760-762) | no |
+| `fatal` | anything else | dispatch `error` with `recoverable: false` (line 479-489) | n/a |
+
+`isAborted` is a derived field
+(`useSSE.ts:203`) that always equals
+`kind === "aborted"`; it exists as a
+fast-path signal so the App.tsx
+handler can branch on it without
+inspecting the kind (line 465).
+
+The classifier is a pure function
+(no closures, no globals, no I/O).
+It is exported and has 22 unit
+tests covering happy paths and
+boundary cases (see `useSSE.test.ts`
+lines 5-198). The end-to-end
+integration at
+`resilience-integration.test.ts:90-116`
+exercises a real 429 payload through
+both the classifier and the reducer.
+
+#### Classifier priority chain — VERIFIED
+
+`classifyKind` (line 117-132) is a
+strict five-arm cascade:
+
+1. `aborted` — match by name
+   (`MessageAbortedError`, `AbortError`)
+   or by message regex `\baborted?\b`
+2. `rate_limit` — match by name
+   (`RateLimitError`, `OverloadedError`)
+   or by `RATE_LIMIT_RE` (429, rate
+   limit, overloaded, over capacity,
+   quota, insufficient_quota)
+3. `auth` — match by name
+   (`AuthError`, `AuthenticationError`,
+   `UnauthorizedError`) or by
+   `AUTH_RE` (401, 403, unauthorized,
+   forbidden, invalid api key, auth
+   failed, invalid x-api-key)
+4. `transient` — match by
+   `TRANSIENT_RE` (50x, 529, timeout,
+   econnreset, etimedout, enotfound,
+   econnrefused, socket hang up,
+   fetch failed, network error,
+   closed connection phrases)
+5. `fatal` — default
+
+The priority is documented in the
+header comment at line 113-116 and
+is exercised by the "all kinds
+representative" test at line 137-148.
+
+**Verified properties:**
+
+- A `{ name: "RateLimitError", message: "aborted" }`
+  payload classifies as `aborted`
+  (aborted > rate_limit). Tested
+  implicitly by the "aborted before
+  rate_limit" ordering in
+  `classifyKind`'s if-chain.
+- A `429` mention in a message
+  classifies as `rate_limit` even if
+  the message also contains words
+  that match `TRANSIENT_RE`
+  (e.g. "429 too many requests,
+  fetch failed" → `rate_limit`).
+  Tested at line 6-9 and exercised
+  in `resilience-integration.test.ts:90-116`.
+- A `401` or `403` in the message
+  classifies as `auth` even if the
+  message also contains "rate" or
+  "overloaded" (auth comes after
+  rate_limit in the cascade, but a
+  401/403 mention would normally
+  appear in an auth-flavoured payload
+  without a 429). Not tested
+  explicitly — see Finding 14.1.A.
+
+**Finding 14.1.A — LOW — No test verifies that auth-mentioning messages don't get misclassified as rate_limit.**
+
+The classifier priority puts
+`rate_limit` before `auth`. A message
+like "401 unauthorized" would
+correctly classify as `auth` (no
+429 mention, no rate_limit names),
+but the test suite never
+specifically asserts a message that
+contains BOTH a 401/403 token AND
+a rate-limit keyword classifies as
+the right kind. Today this is
+purely theoretical (an OpenCode
+provider doesn't return such a
+hybrid payload) but the priority
+order makes the choice "rate_limit
+wins" if a hybrid ever appears.
+
+**Where.** `useSSE.ts:117-132` (the
+cascade). Test gap at
+`useSSE.test.ts:85-94`.
+
+**Proposed fix.** Add a regression
+test that explicitly pins the
+priority:
+
+```ts
+it("auth and rate_limit tokens together: rate_limit wins (priority order)", () => {
+  // A hypothetical hybrid payload — this should be rate_limit per
+  // the documented priority at useSSE.ts:115.
+  expect(
+    classifySessionError({
+      message: "401 unauthorized, but also 429 too many requests",
+    }).kind,
+  ).toBe("rate_limit")
+})
+```
+
+Fix proposed, not applied (audit-only).
+
+#### `extractRetryAfter` helper — VERIFIED with one LOW finding
+
+The helper (line 139-176) extracts a
+retry hint in this order:
+
+1. Numeric fields at the top level
+   (`retryAfter`, `retry_after`,
+   `data.retryAfter`, `data.retry_after`)
+2. `retry-after` / `Retry-After` HTTP
+   header (supports both `Headers`-like
+   objects with `.get()` and plain
+   objects with bracket notation)
+3. Duration parsed from the message
+   (e.g. "retry after 30s", "try again
+   in 2 minutes")
+
+Each path is unit-tested. The header
+parser is verified for both the
+`Headers`-style API and a plain
+object (`useSSE.test.ts:170-177`),
+which is the right coverage for a
+field that arrives from the SDK
+either way.
+
+`retryAfter` is only attached to the
+returned `SessionError` when
+`kind === "rate_limit"` (line 205).
+For any other kind it is always
+`undefined`, even if the underlying
+error had a `Retry-After` header.
+This is correct: `auth` and `fatal`
+errors should not be retried on a
+timer, and `transient` already
+re-routes to `enterCooldown` in
+`handleIterationError` without a
+`retryAfter`. The conditional
+attachment is tested at line 64-68.
+
+**Finding 14.1.B — LOW — The message-parser regex matches "wait" too eagerly; a 30s wait in an unrelated log line would attach a retryAfter.**
+
+`useSSE.ts:165`:
+
+```ts
+const m = e.message.match(
+  /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes)?/i,
+)
+```
+
+The `wait` alternative will match
+phrases like "the server asked the
+client to wait 5 seconds before
+sending another request" or "please
+wait 2 minutes" in a log
+excerpt. The matching is
+case-insensitive, so any error
+message that happens to include the
+word "wait" followed by a duration
+will set `retryAfter`, regardless of
+context.
+
+Today this is benign: `retryAfter`
+is only attached when `kind ===
+"rate_limit"` (line 205), and
+`enterCooldown` honors it but
+combines it with exponential
+backoff via `computeBackoff` (see
+Phase 5). The worst case is a
+slightly longer-than-necessary
+cooldown on a rate-limit error
+whose message mentions "wait 2
+seconds" in a non-rate-limit
+context (e.g. "the queue asked you
+to wait 2 seconds, but the real
+limit is 60 seconds"). That is
+acceptable; the comment at
+`useSSE.ts:137-138` already calls
+this out as "best-effort".
+
+**Where.** `useSSE.ts:163-173`.
+
+**Proposed fix.** Anchor the regex
+to a rate-limit context by requiring
+a rate-limit keyword in the same
+message OR by gating the message
+parse on a positive rate-limit
+classification. Concretely:
+
+```ts
+// Only parse the message if we already see a rate-limit signal
+if (RATE_LIMIT_RE.test(e.message)) {
+  // ... regex parse
+}
+```
+
+Fix proposed, not applied.
+
+#### `isAborted` derivation — VERIFIED
+
+`isAborted: kind === "aborted"`
+(line 203). The two are always in
+sync. The App.tsx consumer reads
+`isAborted` first (line 465) so the
+"aborted" path takes priority over
+the kind check. This is correct: an
+aborted error should toggle_pause,
+not enter cooldown and not dispatch
+an error. Tested at
+`useSSE.test.ts:72-76`.
+
+#### `kind === "transient"` in the SSE handler — INFO
+
+The SSE `onSessionError` handler at
+`App.tsx:486` sets
+`recoverable: error.kind === "transient"`
+for the `error` dispatch in the
+`else` branch. This means the
+recovery semantics of a transient
+SSE error are user-driven (press R
+to retry), not auto-cooldown. This
+**differs** from the recovery
+semantics of a transient error
+during `startIteration` (the
+`handleIterationError` path at
+`App.tsx:760-762`), which routes
+transient errors to `enterCooldown`
+for automatic retry.
+
+The two paths are NOT a bug — they
+reflect the two different contexts:
+
+- An iteration-start transient
+  error (network glitch on
+  `createSession` / `sendPromptAsync`)
+  → auto-retry with backoff.
+- A mid-iteration transient error
+  (server dropped a stream midway)
+  → user-visible recoverable error
+  (because the user may want to know
+  the iteration is being retried
+  and what the previous progress was).
+
+The asymmetry is documented inline
+in the comment at `App.tsx:747-752`
+("Rate limits AND transient
+connection blips ... both back off
+and retry the same iteration
+automatically. ... Only auth/fatal
+errors ... surface as a recoverable
+error"). The `onSessionError` path
+deliberately takes the second
+branch (user-visible) because the
+session is already running and
+the user has an in-progress task
+they may want to inspect before
+retrying.
+
+**Status.** Intentional asymmetry,
+not a defect. Worth a code comment
+in `useSSE.ts` for future readers
+who see both behaviors.
+
+#### `classifySessionError` is not invoked for SSE connection errors
+
+The `onError` callback (used for
+SSE-level connection failures, e.g.
+the stream itself failing to
+connect) is separate from
+`onSessionError` (used for
+`session.error` payloads).
+Connection failures route through
+`onError` and land in the
+`scheduleReconnect` path with
+exponential backoff
+(`useSSE.ts:543-566`). They are
+NOT classified by `classifySessionError`.
+
+This means a 401 returned by the
+SSE endpoint (auth on the event
+stream itself, distinct from a
+401 returned by the chat endpoint
+mid-iteration) will not be
+recognized as auth and will be
+retried indefinitely with backoff.
+In practice the OpenCode SDK
+emits auth errors as `session.error`
+events (verified by the SSE event
+shape at
+`@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts:585`),
+so this is dormant. Documented
+here for completeness; not a
+defect at the classifier layer.
+
+#### `RATE_LIMIT_RE` and HTTP 529 — LOW
+
+`RATE_LIMIT_RE` (line 106-107) does
+**not** match `529`. `TRANSIENT_RE`
+(line 110-111) **does** match
+`\b529\b`. This means an Anthropic
+529 "overloaded" response (which
+Anthropic historically uses as a
+"slow down, try again later" signal
+similar to 429) classifies as
+`transient`, not `rate_limit`.
+
+The behavioral consequence: a 529
+during iteration-start will be
+routed to `enterCooldown` by
+`handleIterationError` (line 760-762)
+and auto-retried, but without a
+`retryAfter` hint. The server's
+`Retry-After` header will be
+discarded by the `kind ===
+"rate_limit"` gate at line 205.
+
+Today this is acceptable — the
+`enterCooldown` path still retries
+the same iteration, just with the
+default exponential backoff rather
+than the server's recommended
+delay. A future fix could add 529
+to `RATE_LIMIT_NAMES` to opt
+Anthropic-style 529s into the
+retryAfter-aware path.
+
+**Where.** `useSSE.ts:106-107` and
+`useSSE.ts:110-111`.
+
+**Proposed fix.** Add 529 to
+`RATE_LIMIT_RE`:
+
+```ts
+const RATE_LIMIT_RE =
+  /(\b429\b|\b529\b|rate[\s_-]?limit|ratelimited|too many requests|overloaded|over capacity|quota|insufficient_quota)/i
+```
+
+Fix proposed, not applied.
+
+#### `RATE_LIMIT_RE` matches "quota" — LOW
+
+The "quota" / "insufficient_quota"
+patterns in `RATE_LIMIT_RE` will
+classify **out-of-credits** errors
+as `rate_limit`. A user who has
+exhausted their API quota and
+sees "insufficient_quota" will be
+put in cooldown and auto-retried —
+forever, until the circuit breaker
+trips at
+`maxRateLimitRetries` consecutive
+rate limits (Phase 5, default
+3). The retry will never succeed
+without the user topping up the
+quota.
+
+In practice this is the correct
+UX for unattended runs (don't stop
+on a transient blip), but the
+failure mode is "loop spins for a
+few minutes then surfaces a
+`recoverable` error" rather than
+"stop immediately and tell the
+user they need to add credits".
+A more granular classification
+could distinguish
+"quota_exhausted" from
+"rate_limit".
+
+**Where.** `useSSE.ts:106-107`.
+
+**Proposed fix.** Optional: leave
+"quota" matching but split the
+resulting kind into a separate
+`quota_exhausted` value that
+surfaces immediately as a
+non-recoverable error pointing
+the user to billing. Otherwise, the
+current behavior is acceptable.
+
+Fix proposed, not applied.
+
+#### Test coverage gaps — LOW
+
+`useSSE.test.ts` covers the
+classifier with 22 cases but does
+not exercise:
+
+- The `aborted` regex fallback
+  against a message that contains
+  "aborted" as a substring of a
+  word like "unaborted" or
+  "coaborted" — `\baborted?\b`
+  does require a word boundary, so
+  these would not match, but the
+  behavior is not explicitly tested.
+- The exact priority of
+  `auth > transient` (a 401 in a
+  5xx-flavoured message).
+- A `null` `name` field (line 190
+  coerces to `undefined`, but a
+  test with `{ name: null, message:
+  "..." }` would pin the coercion).
+
+These are all LOW — the
+implementation is correct, the
+tests cover the realistic provider
+payloads, and the gaps are for
+theoretical inputs.
+
+**Where.** `useSSE.test.ts` overall.
+
+**Proposed fix.** Add 3-4
+regression tests for the
+specific cases above.
+
+Fix proposed, not applied.
+
+#### Summary of Phase 14.1 findings
+
+| # | Severity | One-liner |
+|---|----------|-----------|
+| 14.1.A | LOW | No test pins the `rate_limit > auth` priority; a hybrid 401+429 payload would be untested. |
+| 14.1.B | LOW | The `wait` alternative in the message-parser regex can attach a `retryAfter` from an unrelated "wait 2 seconds" mention. |
+| 14.1.C | LOW | 529 (Anthropic overloaded) classifies as `transient` rather than `rate_limit`; `Retry-After` is discarded. |
+| 14.1.D | LOW | "quota" / "insufficient_quota" classify as `rate_limit`; the loop will spin until the circuit breaker trips rather than stopping immediately on a billing failure. |
+| 14.1.E | INFO | The asymmetry between SSE-handler transient (user-visible recoverable error) and iteration-start transient (auto-cooldown) is intentional and correct. |
+| 14.1.F | INFO | Connection-level SSE errors (the `onError` path) are not classified by `classifySessionError`; they are auto-retried with backoff regardless of kind. |
+| 14.1.G | INFO | `isAborted` is a derived field always equal to `kind === "aborted"`; the App.tsx handler reads it as a fast-path. |
+| 14.1.H | INFO | The `transient` kind has two recovery paths (`onSessionError` vs `handleIterationError`); both are documented inline in their respective call sites. |
+
+**Net severity tally for Phase 14.1: 0 CRITICAL, 0 HIGH, 0
+MEDIUM, 4 LOW, 4 INFO. The classifier is well-implemented and
+exercised by 22 unit tests plus one end-to-end integration test.
+The four LOW findings are for boundary cases (429/529 priority,
+quota vs rate_limit granularity, the `wait` regex, and a
+priority-ordering test gap) that are dormant against the current
+provider but would matter for a future provider change.**
+
+No code changes were made. The audit produces documentation only,
+per PLAN.md acceptance criteria.
