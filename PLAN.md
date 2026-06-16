@@ -911,10 +911,84 @@ en el conteo (era 680 antes del guard). Commit `eeaf2fb`.
 
 ### Mejora 28 — Finding 8.1.A — LOW — Orphan `.tmp` file on `rename` failure
 
-- [ ] Evaluar la mejora 28 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 28 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 28 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 28 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 28 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 28 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 28 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 28 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:9871-9917`: el bloque
+`writeFile → rename` de `saveLoopState`
+(`loop-state-store.ts:49-57`) deja el `.tmp`
+huérfano si `rename` falla tras un `writeFile`
+exitoso. El `.loop*` ya está gitignored (línea
+11-12 del header del módulo), así que el síntoma
+no es ruido en `git status`; es ruido en el
+directorio de trabajo (visible a
+`git status --ignored`, IDEs, linters que
+escanean `.tmp*`, y el siguiente run de
+`saveLoopState` que sobreescribe el tmp). La
+opción del fix propuesta en `MEJORAS.md:9895-9911`
+(inner `try/catch` con `unlink` best-effort del
+tmp, re-throw del error original al outer catch
+que ya loggea) es estrictamente la mínima útil:
+
+1. **Sigue el contrato "never throws"** del
+   docstring (línea 47-48). El `throw renameErr`
+   interno se captura en el `catch` externo
+   (línea 54) que loggea con `log.warn` y
+   retorna silenciosamente — el comportamiento
+   observable desde el call site (`App.tsx:1286`,
+   `void saveLoopState(snapshot)`) es idéntico.
+2. **Es best-effort, no aborta el cleanup.**
+   El `unlink` interno tiene su propio `try/catch`
+   vacío: en un escenario disk-full real, el
+   unlink también podría fallar, pero el contrato
+   "best-effort" ya estaba documentado (línea 47)
+   y el siguiente `saveLoopState` sobrescribe
+   el tmp de todas formas.
+3. **Es local al path de fallo, sin tocar el
+   camino feliz.** El `try` interno solo
+   envuelve el `rename` (la línea 53 original);
+   el `writeFile` previo (línea 52) sigue
+   ejecutándose fuera del inner catch, así
+   que un fallo de `writeFile` no gatilla
+   el `unlink` (no hay nada que limpiar si
+   el tmp ni siquiera se creó).
+
+Implementación: 16 líneas añadidas (1 try +
+1 throw + 1 unlink try + 1 unlink catch + 7
+líneas de comentario que nombran los 3 modos
+de fallo, el source `MEJORAS.md Finding 8.1.A`,
+y la invariante "best-effort cleanup del tmp
+huérfano"). Cero cambios a la firma de
+`saveLoopState`, cero cambios a `loadLoopState`
+/ `clearLoopState`, cero cambios al reducer
+del App, cero impacto en la TUI, cero impacto
+en el lifecycle de iteración. Sin nuevos
+tests — el audit (`MEJORAS.md:9913-9917` y
+`MEJORAS.md:9871-9917` global) ya justificó
+que el harness de Bun test usa un tempdir
+fresco owned por el test process, así que
+reproducir el fallo requiere juegos de
+permisos (`chmod 555` sobre el parent dir)
+que son cross-platform-frágiles (Windows
+ACLs no mapean a POSIX `chmod`, y root-owned
+tempdirs saltan el check de permiso) y que
+la opción de mockear `node:fs/promises` con
+`mock.module` rompería el patrón integration
+del codebase (ver `docs/testing.md`). El
+contrato "happy path: no leftover tmp" sigue
+pineado por el test existente
+`loop-state-store.test.ts:47-53`
+("overwrites previous state atomically (no
+leftover temp file)"), y la lógica del cleanup
+espectral es estructural (un `unlink` en un
+`catch`), no computacional — code review cubre
+el gap de cobertura. `bun test` verde: 680
+pass / 0 fail, 1680 expect() calls, 23 files,
+318 ms — sin cambio en el conteo. Commit
+`76de350`.
 
 ### Mejora 29 — Finding 8.2.A — MEDIUM — `loadLoopState` only validates `version` and `iteration`; other fields slip through
 
