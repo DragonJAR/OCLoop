@@ -19,7 +19,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 2 — Plan File Parsing & Progress Tracking
 
-- [ ] Audit `parseTaskLine` for every task marker variant: `- [x]`, `- [X]`, `- [x ]` (trailing space), `- [ ]`, `- [ ] [MANUAL]`, `- [MANUAL]`, `- [BLOCKED:reason]`, `- [ BLOCKED ]`, `- [blocked]` (case)
+- [x] Audit `parseTaskLine` for every task marker variant: `- [x]`, `- [X]`, `- [x ]` (trailing space), `- [ ]`, `- [ ] [MANUAL]`, `- [MANUAL]`, `- [BLOCKED:reason]`, `- [ BLOCKED ]`, `- [blocked]` (case)
 - [ ] Verify `- [MANUAL]` without description is classified correctly (manual vs not-a-task)
 - [ ] Verify `- [BLOCKED:]` with empty reason vs `- [BLOCKED]` without colon
 - [ ] Verify `- [BLOCKED: some reason ]` with spaces in reason

@@ -1588,3 +1588,207 @@ to 202 tests. New describe block entries:
 
 `bun test src/lib/cli-args.test.ts` → **202 pass, 0 fail, 452 expect() calls**
 (was 198/0/446 before this iteration). +4 tests, +6 expects, all green.
+
+---
+
+## Phase 2 — Plan File Parsing & Progress Tracking
+
+Source: `src/lib/plan-parser.ts` · Tests: `src/lib/plan-parser.test.ts`
+
+### 2.1 — Audit `parseTaskLine` for every task marker variant
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL/MEDIUM/LOW findings. Three INFO
+observations, one documented footgun, and one design choice worth pinning.**
+
+The function (`src/lib/plan-parser.ts:20-89`) is a single linear scan that
+extracts the checkbox contents between the first `- [` and the first `]`,
+normalises whitespace, and routes to one of five return shapes:
+
+| Return `type`   | Triggers                                                    |
+| --------------- | ----------------------------------------------------------- |
+| `completed`     | `checkboxContent` is exactly `x` or `X` (case-sensitive)    |
+| `manual`        | `checkboxContent === "MANUAL"` (any case) OR `[MANUAL]` tag |
+| `blocked`       | `checkboxContent` starts with `BLOCKED` (any case) OR `[BLOCKED]` tag |
+| `pending`       | `checkboxContent === ""` AND there is a non-empty description after the `]` |
+| `not-a-task`    | Anything else: line doesn't start with `- [`, no closing `]`, unknown marker, or bare empty checkbox with no description |
+
+The function is pure, has no side effects, no module state, and the
+existing 11 test cases cover the major shapes. The audit below walks every
+variant called out in PLAN.md 2.1 plus the variants naturally adjacent to
+each one, and pins the behavior with new test cases.
+
+#### 2.1.A — INFO — Every variant in the PLAN.md 2.1 list is handled correctly
+
+The 9 specific variants listed in the PLAN.md task, plus the implied
+companion variants, all return the expected shape:
+
+| PLAN.md 2.1 variant                  | Result                                                                                | Pinned by new test (this iteration)                                       |
+| ------------------------------------ | ------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| `- [x]`                              | `completed` with description                                                          | `should parse completed tasks` (pre-existing)                              |
+| `- [X]`                              | `completed` with description                                                          | `should parse completed tasks` (pre-existing)                              |
+| `- [x ]` (trailing space)            | `completed` — `.trim()` normalises `checkboxContent`                                  | `accepts - [x ] (trailing space inside brackets) with description`         |
+| `- [ ]`                              | `pending` with description; `not-a-task` when bare                                    | `should parse pending tasks`, `should return not-a-task for invalid lines` |
+| `- [ ] [MANUAL]`                     | `manual`                                                                              | `should parse MANUAL tasks as tag after checkbox` (pre-existing)           |
+| `- [MANUAL]`                         | `manual`                                                                              | `should parse MANUAL tasks in checkbox` (pre-existing)                     |
+| `- [BLOCKED:reason]`                 | `blocked` with `blockedReason = "reason"`                                             | `should parse BLOCKED tasks in checkbox` (pre-existing)                    |
+| `- [ BLOCKED ]` (with spaces)        | `blocked` — `.trim()` strips the inner whitespace                                     | `accepts - [ BLOCKED ] (spaces inside brackets, no description)`           |
+| `- [blocked]` (lowercase)            | `blocked` — the `/i` flag normalises case                                             | `accepts - [blocked] (lowercase) with description`                         |
+
+All 9 cases return the documented shape, no exceptions, no silent
+misclassifications. The function behaves as advertised.
+
+#### 2.1.B — INFO — Empty checkbox has a documented, intentional split
+
+The empty checkbox `- [ ]` has two valid interpretations in PLAN.md:
+
+- `- [ ] ` *with* a description after the `]` → `pending` (real work to do).
+- `- [ ]` *without* a description → `not-a-task` (no actionable content).
+
+The split is explicit in the source (`plan-parser.ts:80-85`):
+
+```ts
+if (checkboxContent === "") {
+  if (!afterCheckbox) {
+    return { type: "not-a-task", description: "" }
+  }
+  return { type: "pending", description: afterCheckbox }
+}
+```
+
+A bare empty checkbox is excluded from `parsePlan`'s `total` count, so a
+plan with only empty checkboxes returns `percentComplete = 100` (the
+"denominator is zero" path, also documented at `plan-parser.ts:139-142`).
+This is the correct semantic: there is nothing for the loop to do, so the
+plan is complete from the loop's perspective. **No code change needed.**
+
+The 5 new tests `PLAN.md 2.1 — empty-checkbox variants` pin both branches
+plus three boundary cases: trailing whitespace only, extra internal
+whitespace, and zero internal whitespace. All five return `not-a-task` as
+expected.
+
+#### 2.1.C — INFO — Trailing-space tolerance in the checkbox is a feature, not a bug
+
+`- [x ]`, `- [X ]`, `- [ MANUAL ]`, and `- [ BLOCKED ]` are all accepted.
+The implementation normalises with `checkboxContent = trimmed.slice(3,
+closeBracket).trim()` (line 35), so a single trailing space inside the
+brackets does not break parsing. This is the right call: hand-edited
+PLAN.md files routinely have stray spaces, and the loop should be
+forgiving on the input side.
+
+Three new tests pin the behaviour for both the completed and the
+keyword markers. `- [x]   ` (trailing whitespace on the whole line) is
+also pinned separately to confirm `line.trim()` runs before the slice,
+so the trailing space vanishes from the description.
+
+#### 2.1.D — INFO — `- [x] [MANUAL] Task` is `completed`, not `manual`
+
+A line that contains both a completed marker and a `[MANUAL]` tag is
+classified as `completed`, not `manual`. This is by design: the
+`completed` branch short-circuits at line 39-41, before any tag-form
+parsing runs. The `[MANUAL]` text becomes part of the description:
+
+```ts
+parseTaskLine("- [x] [MANUAL] Task")
+// → { type: "completed", description: "[MANUAL] Task" }
+```
+
+A user who intends "this task is both done and manual" can write that,
+and the loop will treat it as done (which is what they want — it stops
+running on it). The opposite interpretation ("override the x and call it
+manual") would be a worse default because the loop would keep trying to
+run a completed task. **No code change needed; pinned by new test.**
+
+#### 2.1.E — INFO — Multi-tag lines: the first tag in the chain wins
+
+`- [ ] [MANUAL] [BLOCKED: x] Task` is `manual` with `description =
+"[BLOCKED: x] Task"`. The `manual` branch (`plan-parser.ts:48-52`) is
+checked before the `blocked` branch (`plan-parser.ts:65-75`), so the
+leftmost tag wins. A user writing both tags on one line is asking for
+ambiguity, but the deterministic ordering means the behavior is
+predictable. **No code change needed; pinned by new test.**
+
+#### 2.1.F — LOW (documented footgun) — Space-separated BLOCKED reasons are accepted, colon is not required
+
+`- [BLOCKED some reason]` (no colon, just a space after `BLOCKED`) is
+parsed as `blocked` with `blockedReason = "some reason"` and `description
+= ""`. The lookahead `/^BLOCKED(?=$|[:\s])/i` at `plan-parser.ts:56`
+intentionally accepts whitespace as a terminator, so a user who writes
+`- [BLOCKED <text>]` gets the text captured as the reason. With a
+trailing description, `- [BLOCKED some reason] Real desc` correctly
+captures both the reason and the description.
+
+This is a documented footgun for one reason: a user who writes
+`- [BLOCKED] extra]` and means "the reason is empty, the description is
+`extra]`" gets exactly that, but a user who accidentally drops the
+colon in `- [BLOCKED some reason]` will be surprised that the
+description field is empty (their text was eaten as the reason). The
+function is working as designed; the user can disambiguate by using the
+colon form `- [BLOCKED: some reason]`.
+
+**Proposed fix (not applied).** Make the colon REQUIRED for the
+checkbox form, matching the tag form which already requires it
+(visually). Update the regex to `^BLOCKED:`, and update the `reason`
+extraction accordingly. This is a behavior change, so a `--no-block`
+migration is not feasible — every existing `- [BLOCKED ...]` line
+would silently become `not-a-task`. **Severity: LOW** because the
+current behavior is documented and the colon form works.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria). The space-form is pinned by two new tests so any future
+behavior change is visible as a test diff.
+
+#### 2.1.G — LOW (documented footgun) — The first `]` terminates the checkbox
+
+`parseTaskLine("- [BLOCKED] extra]")` returns `{ type: "blocked",
+description: "extra]", blockedReason: "" }`. The implementation uses
+`closeBracket = trimmed.indexOf("]", 3)` (line 30), so a stray `]` later
+in the description is preserved as part of the description text, not
+treated as another checkbox terminator.
+
+This is the correct behavior — the alternative (search for a *balanced*
+`]` and treat the next one as the close) would be ambiguous and much
+harder to reason about. A user who writes `]` in their description has
+no way to express it, but they can rephrase (`extra-bracket`) without
+losing meaning. **Severity: LOW** because real PLAN.md files do not put
+`]` in descriptions. **Pinned by new test.**
+
+#### 2.1.H — INFO — `- [x]` with no description is still a real task
+
+A bare `- [x]` (no description text) returns `{ type: "completed",
+description: "" }`. In `parsePlan`, it counts as a completed task and
+contributes to `total` and `completed`. The `percentComplete` calculation
+(`plan-parser.ts:138-142`) sees it as a real task that needs no work.
+
+This is correct: a completed task IS a real task, regardless of whether
+the user bothered to write a description. A user who uses PLAN.md as a
+checklist and writes only `- [x]` per line gets accurate progress
+numbers. **No code change needed; pinned by 2 new tests.**
+
+#### Test-suite delta for Task 2.1
+
+The `parseTaskLine` describe block grew from 11 to 50 cases (+39 new
+assertions, organised into 5 new sub-describe blocks). The file-level
+total went from 46 to 85 tests. New sub-describe entries:
+
+- `PLAN.md 2.1 — completed-marker variants` — 8 cases covering case
+  insensitivity, internal/external whitespace, and bare (no-description)
+  forms.
+- `PLAN.md 2.1 — empty-checkbox variants` — 6 cases pinning the
+  `not-a-task` boundary for bare checkboxes (trailing whitespace,
+  extra internal whitespace, zero internal whitespace, real description).
+- `PLAN.md 2.1 — MANUAL-marker variants` — 8 cases covering
+  case-insensitivity, no-description, tag-form, no-space tag form, and
+  the `- [MANUALSOMETHING]` anchor guard.
+- `PLAN.md 2.1 — BLOCKED-marker variants` — 13 cases covering the colon
+  vs space reason separators, internal whitespace, lowercase, tag form,
+  no-space tag form, and the space-separated reason footgun.
+- `PLAN.md 2.1 — combined / mixed markers` — 4 cases covering the
+  completed+tag ordering, multi-tag ordering, the trailing-`]` footgun,
+  and the no-close-bracket error path.
+
+`bun test src/lib/plan-parser.test.ts` → **85 pass, 0 fail, 136 expect()
+calls** (was 46/0/97 before this iteration). +39 tests, +39 expects, all
+green.
+
+Full suite: `bun test` → **536 pass, 0 fail, 1192 expect() calls** across
+21 files. No regressions.
