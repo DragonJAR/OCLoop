@@ -1493,10 +1493,54 @@ guard). Commit `1e1b874`.
 
 ### Mejora 38 — Finding 11.3.B — LOW — Empty `sessionId` produces a malformed `opencode attach` string (trailing space)
 
-- [ ] Evaluar la mejora 38 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 38 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 38 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 38 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 38 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 38 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 38 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 38 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:13720-13728`: `getAttachCommand`
+(`terminal-launcher.ts:117`) no defendía su precondición
+para `sessionId` — un `sessionId = ""` produce
+`` `opencode attach ${url} --session ${sessionId}` `` =
+`"opencode attach <url> --session "` (trailing space). A
+diferencia del caso `url` (Finding 11.3.A, Mejora 37), el
+filtro `cmdParts.filter((p) => p.length > 0)` de `buildArgs`
+NO descarta el token `--session` vacío — la flag pasa
+intacta y `Bun.spawn` la entrega a opencode, que falla con
+`"opencode: error: argument --session requires a value"`. Las
+5 call sites de `App.tsx` (líneas 1356-1357, 1425-1426,
+1436-1437, 1462-1464, 1526-1527) pre-validan con guards
+equivalentes a las del caso `url`, así que el throw es
+estrictamente defensivo — atrapa cualquier futuro call site,
+hand-edited config, o test path que pase `""` directamente.
+La opción del fix propuesta en `MEJORAS.md:13726` ("add a
+guard inside the function that throws on empty inputs") es
+estrictamente la mínima útil y es la única opción correcta
+(vs. devolver `""`, que el call site no puede distinguir de
+un happy path sin re-validar; vs. un check en cada call
+site, que duplica la dependencia del trust boundary del
+caller — exactamente el antipatrón que el guard de Mejora
+37 evitó). Implementación mínima: 3 líneas de guard + 1
+`if` adicional, 12 líneas de comentario que renombran el
+existente (Defensive guard (url) + Defensive guard
+(sessionId)) y extienden la sección "App-level guards" para
+nombrar que `falsy url / falsy sessionId` están ambos
+protegidos. Cero cambios a la firma de `getAttachCommand`
+(`(string, string) => string` intacta), cero cambios a las
+5 call sites en `App.tsx` (sus guards pre-existentes
+siguen protegiendo el path actual), cero cambios a
+`buildArgs` o `launchTerminal` (el `try/catch` exterior
+ya convierte el `throw` en
+`{ success: false, error: "getAttachCommand: sessionId is required" }`
+sin intervención), cero impacto en el camino feliz
+(un `sessionId` truthy sigue fluyendo al `return`
+exactamente como antes). Cero impacto en tests
+(`terminal-launcher.test.ts` no existe, Mejora 92 lo
+cubrirá cuando llegue su turno, mismo argumento que Mejoras
+33-37). `bun test` verde: 694 pass / 0 fail, 1714
+expect() calls, 23 files, 310 ms — sin cambio en el conteo
+(era 694 antes del guard). Commit `e3cb02c`.
 
 ### Mejora 39 — Finding 11.4.A — MEDIUM — macOS `pbcopy` is not detected; copy silently fails on stock macOS
 
