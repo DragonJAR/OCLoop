@@ -13,6 +13,14 @@ export type Breakpoint = "narrow" | "medium" | "wide"
 export const FALLBACK_COLS = 80
 export const FALLBACK_ROWS = 24
 
+/**
+ * Shared "fill the row" flex style: spreads children across the full width with no
+ * trailing gap, so the top and bottom panels stay spatially harmonious and adapt
+ * responsively. Single source for the rule (DRY) — spread it and add `marginTop`
+ * for the blank line of vertical breathing between rows.
+ */
+export const FILL_ROW = { flexDirection: "row", justifyContent: "space-between" } as const
+
 export interface Layout {
   cols: number
   rows: number

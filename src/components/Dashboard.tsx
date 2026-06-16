@@ -4,7 +4,7 @@ import type { LoopState, PlanProgress } from "../types"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { stripMarkdown, truncate, formatDuration } from "../lib/format"
-import { getLayout } from "../lib/layout"
+import { getLayout, FILL_ROW } from "../lib/layout"
 import { glyph } from "../lib/glyphs"
 import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
@@ -241,7 +241,7 @@ export function Dashboard(props: DashboardProps) {
     >
       {/* Row 1 — state + progress lead; static model/agent last. Items spread to
           fill the width (responsive: more room ⇒ more spacing, no trailing gap). */}
-      <box style={{ flexDirection: "row", justifyContent: "space-between" }}>
+      <box style={{ ...FILL_ROW }}>
         <StatusBadge state={props.state} />
 
         {/* Plan progress (key journey signal) — hidden in debug mode. Label + bar
@@ -281,7 +281,7 @@ export function Dashboard(props: DashboardProps) {
       </box>
 
       {/* Row 2 — current-task timing. marginTop gives a blank line of breathing. */}
-      <box style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 1 }}>
+      <box style={{ ...FILL_ROW, marginTop: 1 }}>
         <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime()).trim()} />
         {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
         <Show when={props.stats.averageTime() !== null}>
@@ -306,7 +306,7 @@ export function Dashboard(props: DashboardProps) {
       </Show>
 
       {/* Row 4 — keybind hints, spread across the width like a footer bar. */}
-      <box style={{ flexDirection: "row", justifyContent: "space-between", marginTop: 1 }}>
+      <box style={{ ...FILL_ROW, marginTop: 1 }}>
         {keybindHints().map((hint) => (
           <text>
             <Show when={hint.key}>

@@ -10,7 +10,7 @@ import {
   tokensPerMin,
   wrapText,
 } from "../lib/format"
-import { getLayout, fitSegments } from "../lib/layout"
+import { getLayout, fitSegments, FILL_ROW } from "../lib/layout"
 import { t } from "../lib/i18n"
 import { LabelValue } from "./LabelValue"
 
@@ -125,14 +125,14 @@ export function BottomPanel(props: BottomPanelProps) {
         </Show>
 
         {/* Global run metrics — none of these appear in the top bar. */}
-        <box style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 1 }}>
+        {/* Same "fill the row" rule as the dashboard (space-between), responsive. */}
+        <box style={{ ...FILL_ROW, flexWrap: "wrap", marginTop: 1 }}>
           <LabelValue label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} marginRight={2} />
           {/* Global tokens: total always; full in/out/rsn breakdown only when wide. */}
           <LabelValue
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
-            marginRight={2}
-          />
+                     />
           {/* Per-task tokens (current iteration). */}
           <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} marginRight={2} />
           <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} marginRight={2} />
