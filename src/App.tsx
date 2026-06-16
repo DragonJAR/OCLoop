@@ -1990,6 +1990,7 @@ function AppContent(props: AppProps) {
         stats={stats}
         tokens={sessionStats.tokens()}
         taskTokens={sessionStats.taskTokens()}
+        diff={sessionStats.diff()}
       />
 
       {/* Overlays */}

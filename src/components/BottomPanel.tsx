@@ -2,8 +2,9 @@ import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/ThemeContext"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
-import type { SessionTokens } from "../hooks/useSessionStats"
+import type { SessionDiff, SessionTokens } from "../hooks/useSessionStats"
 import {
+  formatDiffSummary,
   formatDuration,
   formatTokenCount,
   stripMarkdown,
@@ -38,6 +39,8 @@ export interface BottomPanelProps {
   tokens: SessionTokens
   /** Per-task (current iteration) token counters. */
   taskTokens: SessionTokens
+  /** Session-level file diff (additions/deletions/files) — source: MEJORAS.md Finding 12.5.E. */
+  diff: SessionDiff
 }
 
 export function BottomPanel(props: BottomPanelProps) {
@@ -80,6 +83,7 @@ export function BottomPanel(props: BottomPanelProps) {
         `${t("lblTaskPrefix")}${task() ?? t("lblWaiting")}`,
         `${t("lblTotal")} ${formatDuration(props.stats.globalElapsedTime()).trim()}`,
         `${t("logTokens").replace(/:\s*$/, "")} ${formatTokenCount(totalTokens())}`,
+        `${t("logDiff")}${formatDiffSummary(props.diff.additions, props.diff.deletions, props.diff.files)}`,
       ],
       layout().inner,
     )
@@ -147,6 +151,11 @@ export function BottomPanel(props: BottomPanelProps) {
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
                      />
+          {/* Session file diff (additions/deletions/files) — wires up the previously-orphan i18n key. */}
+          <LabelValue
+            label={t("logDiff")}
+            value={formatDiffSummary(props.diff.additions, props.diff.deletions, props.diff.files)}
+          />
           {/* Per-task tokens (current iteration). */}
           <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} />
           <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} />
