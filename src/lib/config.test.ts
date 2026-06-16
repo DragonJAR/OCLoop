@@ -397,6 +397,54 @@ describe("resolveResilience — null skip (Finding 12.3.A)", () => {
   })
 })
 
+describe("resolveResilience — unknown-key skip (Finding 12.3.C)", () => {
+  it("drops unknown keys from the file layer (the audit's central case)", () => {
+    // A hand-edited `ocloop.json` with
+    // `{"resilience": {"createTimeoutMs": 5000, "totallyMadeUpKey": 42}}`
+    // would spread the unknown key over the defaults. With the fix, the
+    // unknown key is filtered at the `pickDefined` layer (defense-in-depth
+    // on top of `validateConfigShape`'s all-or-nothing deep validation).
+    // The known value still wins, and the unknown key never appears in the
+    // result — so a future `for (const k of Object.keys(resilience))`
+    // consumer never sees it.
+    const result = resolveResilience({
+      createTimeoutMs: 5_000,
+      totallyMadeUpKey: 42,
+    } as unknown as Partial<typeof DEFAULT_RESILIENCE>)
+    expect(result.createTimeoutMs).toBe(5_000)
+    expect("totallyMadeUpKey" in result).toBe(false)
+  })
+
+  it("drops unknown keys from the CLI override layer too", () => {
+    // The CLI path is gated by `applyResilienceOverride` and never produces
+    // an unknown key in practice, but `pickDefined` defends itself in case
+    // a future call site, a hand-rolled test path, or a future refactor
+    // passes one.
+    const result = resolveResilience(undefined, {
+      createTimeoutMs: 5_000,
+      totallyMadeUpKey: 42,
+    } as unknown as Partial<typeof DEFAULT_RESILIENCE>)
+    expect(result.createTimeoutMs).toBe(5_000)
+    expect("totallyMadeUpKey" in result).toBe(false)
+  })
+
+  it("keeps known keys mixed in alongside unknown keys in the same layer", () => {
+    // Multiple known overrides + multiple unknown keys: known ones win,
+    // unknown ones vanish. Same shape as the central case but with more
+    // fields, to confirm the filter composes with itself in one pass.
+    const result = resolveResilience({
+      createTimeoutMs: 5_000,
+      promptTimeoutMs: 99_000,
+      totallyMadeUpKey: 42,
+      anotherUnknown: "ignored",
+    } as unknown as Partial<typeof DEFAULT_RESILIENCE>)
+    expect(result.createTimeoutMs).toBe(5_000)
+    expect(result.promptTimeoutMs).toBe(99_000)
+    expect("totallyMadeUpKey" in result).toBe(false)
+    expect("anotherUnknown" in result).toBe(false)
+  })
+})
+
 describe("resolveResilience — non-object layers (Finding 12.3.A)", () => {
   it("treats an array in the file layer as no override (array rejection)", () => {
     // `Object.entries([100, 200, 300])` returns `[["0", 100], …]`; without

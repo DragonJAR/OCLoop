@@ -164,9 +164,14 @@ export interface OcloopConfig {
  * `setTimeout`/`setInterval` and burn through retries in milliseconds. An
  * array passed as either layer is rejected for the same reason
  * (`Object.entries` would yield numeric keys and corrupt the first three
- * default slots).
+ * default slots). Keys that are not in `DEFAULT_RESILIENCE` are dropped too
+ * — a stray `{"resilience": {"createTimeoutMs": 5000, "totallyMadeUpKey":
+ * 42}}` does not leak the unknown key into the merged result, which would
+ * otherwise sit there as a latent footgun for any future `for (const k of
+ * Object.keys(resilience))` consumer (logging, validation, SDK forwarding).
  *
- * Source: MEJORAS.md Finding 12.3.A.
+ * Source: MEJORAS.md Finding 12.3.A (null/array skip) + 12.3.C (unknown-key
+ * skip).
  */
 export function resolveResilience(
   fileConfig?: Partial<ResilienceConfig>,
@@ -175,7 +180,9 @@ export function resolveResilience(
   const pickDefined = <T extends object>(obj?: T): Partial<T> => {
     if (!obj || Array.isArray(obj)) return {}
     return Object.fromEntries(
-      Object.entries(obj).filter(([, v]) => v !== undefined && v !== null),
+      Object.entries(obj).filter(
+        ([k, v]) => k in DEFAULT_RESILIENCE && v !== undefined && v !== null,
+      ),
     ) as Partial<T>
   }
   return {
