@@ -19,7 +19,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, isPlanComplete, getPlanCompleteSummary } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
 import { getToolPreview } from "./lib/format"
 import { shutdownManager } from "./lib/shutdown"
@@ -604,10 +604,28 @@ function AppContent(props: AppProps) {
   async function checkPlanComplete(): Promise<boolean> {
     // Skip check in debug mode
     if (props.debug) return false
-    
+
     try {
       const planPath = props.planFile || DEFAULTS.PLAN_FILE
-      return await isPlanComplete(planPath)
+      const file = Bun.file(planPath)
+      if (!(await file.exists())) return false
+      const content = await file.text()
+
+      // Already marked complete (tag present, any reasonable format)?
+      if (parsePlanComplete(content) !== null) return true
+
+      // Structural completion: NO automatable task remains (every actionable task is
+      // already [x]/[BLOCKED]). The tooling owns this — it does not depend on the
+      // model writing the tag. Completion needs ALL tasks done, so a single
+      // prematurely-marked task can't end the run. When complete, write the
+      // <plan-complete> summary ourselves (deterministic) so the completion dialog
+      // and restart-resilience work, then report complete.
+      const progress = parsePlan(content)
+      if (isStructurallyComplete(progress)) {
+        await Bun.write(planPath, withPlanCompleteTag(content, buildCompletionSummary(progress)))
+        return true
+      }
+      return false
     } catch {
       return false
     }
