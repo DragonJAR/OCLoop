@@ -2694,10 +2694,91 @@ extendido). Commit pendiente.
 
 ### Mejora 58 — Finding 15.7.B — MEDIUM — App-level `restartServer()` has no re-entry guard
 
-- [ ] Evaluar la mejora 58 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 58 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 58 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 58 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 58 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 58 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 58 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 58 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20115-20208`): los 3 call sites independientes
+de `restartServer()` — watchdog recovery path
+(`useWatchdog.ts:205` → `options.actions.restartServer()`),
+SSE-exhaustion effect (`App.tsx:1421` → `void restartServer()`),
+y el command palette entry (`App.tsx:1711` → `void
+restartServer()`) — pueden disparar concurrentemente. Sin guard,
+dos callers producen: (1) un `actGuardRestart` activity event
+duplicado visible al usuario, (2) un `reconcileAndAdvance()`
+duplicado (wasted API round-trip), y (3) dos `sse.reconnect()`
+calls. Los hooks subyacentes son individualmente idempotentes
+o guard-protected (Mejora 27 `useServer.restart`'s
+`status() === "starting"` guard, `useSSE`'s `myController`
+pattern), así que el duplicate es wasteful pero NO
+correctness-breaking. La propuesta del audit
+(`MEJORAS.md:20155-20161`, "add a re-entry guard") es
+estrictamente la mínima útil y reusa el patrón ya establecido
+en el codebase por Mejora 55 (Finding 15.4.A) y Mejora 15
+(Finding 4.2.B): closure-bound `let` con comment block que
+nombra el source y la invariante. Implementación mínima:
+
+- `src/App.tsx:204-221` — declaración de
+  `let restartServerInProgress = false` con comment block de
+  17 líneas que nombra el source `MEJORAS.md Finding 15.7.B`,
+  los 3 call sites homeólogos (watchdog / SSE / command
+  palette), los 3 síntomas user-facing (duplicate activity
+  event, double `reconcileAndAdvance`, double SSE reconnect),
+  y la diferencia mecánica clave vs. `isShuttingDown`:
+  `restartServer` no termina en `process.exit`, así que el
+  flag se resetea en un `finally` para permitir sequential
+  restarts futuros. Sigue el mismo patrón closure-bound `let`
+  de `startingIteration` (línea 190) e `isShuttingDown`
+  (línea 203).
+- `src/App.tsx:732-755` — el body de `restartServer()` se
+  envuelve en un guard + try/finally: `if
+  (restartServerInProgress) return; restartServerInProgress =
+  true` al top, `restartServerInProgress = false` en
+  `finally`. El order del set es deliberadamente síncrono
+  ANTES del primer `await` (`server.restart()`), así que un
+  segundo caller que llegue durante el await ve el flag en
+  `true` y retorna sin side-effects (no entra al `try`, así
+  que tampoco emite el `actGuardRestart` activity event ni
+  el `log.health("server", "recovery_restart", …)`). El
+  reset en `finally` cubre los 3 paths de salida: happy
+  path (no-op para el flag, pero el next sequential restart
+  puede entrar), error path (un `server.restart()` que tira
+  deja el flag en `false` para que el próximo intento
+  funcione), y el return temprano del guard (no entra al
+  try, no toca el flag — observable-equivalente a "nunca
+  llegó"). Cero cambios al flow del `restartServer()` body,
+  cero cambios a `server.restart()` (su guard de
+  Mejora 27 sigue siendo el primer gate), cero cambios a
+  `sse.reconnect()` (idempotente via `myController`), cero
+  cambios a `reconcileAndAdvance()` (Mejora 17 ya pinea
+  que `session_idle` desde `running(0, "")` es no-op),
+  cero cambios al reducer, cero cambios al watchdog
+  (`useWatchdog.ts:205` sigue llamando
+  `options.actions.restartServer()` igual), cero cambios al
+  SSE-exhaustion effect (`App.tsx:1421` sigue disparando
+  `void restartServer()` igual), cero cambios al command
+  palette entry (`App.tsx:1711` igual).
+
+Cero impacto en el camino feliz (operación no-racily, el
+flag está `false` cuando entra, el `if` y el `finally` son
+observables-equivalentes a código que no existe). Cero
+impacto en tests: el audit (`MEJORAS.md:20171-20189`) ya
+documentó que no hay test del App-level `restartServer()`
+(Mejora 89/96 territory) y que el `useWatchdog.test.ts`
+mockea el `server` object via `actions.restartServer`
+(`useWatchdog.test.ts:88`), así que el guard a nivel de
+App nunca es ejercitado por el test suite actual — un test
+del guard sería `App.test.tsx` territory (Mejora 95/96
+scope, no este finding). La garantía del guard es
+estructural (un `if` con un `return`, same pattern as
+`startingIteration` line 851-853 y `isShuttingDown`
+line 1086-1088), no computacional, y code review cubre
+el gap. `bun test` verde: 750 pass / 1 skip / 0 fail,
+1784 expect() calls, 25 files, 349 ms — sin cambio en el
+conteo (era 750 / 1 / 0 antes del guard). `bun run build`
+verde. Commit `aee3963`.
 
 ### Mejora 59 — Finding 15.8.A — MEDIUM — `initializeSession` can read default `resilience` before `onMount` resolves on-disk config
 
