@@ -21354,3 +21354,525 @@ These four tests pin down the resolution rule and document the failure modes. Th
 - **No CRITICAL, HIGH, or MEDIUM findings.**
 
 The duplication is **shallow and uniform** — every site uses the same 1-line expression with no variation, and the semantics are well-defined ("live session, or last session, or none"). The audit value is mostly **documenting the policy** (so future contributors know why the `||` exists and what it is meant to cover), **pointing at the centralization opportunity** (16.4.A), and **mapping the 3 subtle failure modes** (stale-server attach, cross-iteration confusion, server-restart after session creation) so any future change to the policy is forced to engage with them. The fix is a 4-line memo plus 4 unit tests; the cleanup is optional and depends on whether the team wants to keep the `||` as a visible inline expression or centralize it.
+
+### 16.5 — Unnecessary re-renders caused by signal reads in effects that don't depend on those signals
+
+Source: `src/App.tsx:1293-1309` (completion effect), `src/ui/DialogSelect.tsx:230-275` (per-row expressions), `src/components/ActivityLog.tsx:62` (no-op memo), `src/components/BottomPanel.tsx:51-79` (plain functions re-evaluating on tick), `src/context/ToastContext.tsx:90-98` (function called twice per render), `src/App.tsx:1268-1290` (redundant `loop.iteration()` call).
+
+Tests: `src/hooks/useLoopStats.test.ts` covers the stats memos in isolation (verifies `tick()` subscription and the chain `history + elapsedTime() = totalActiveTime()`). **No test exercises the completion effect's interaction with the tick signal** — the bug from 16.5.A is invisible to the test suite.
+
+PLAN.md 16.5: "Identify and document any unnecessary re-renders caused by signal reads in effects that don't depend on those signals."
+
+#### What "unnecessary re-render" means in Solid — VERIFIED
+
+Solid's reactivity is fine-grained: a `createEffect` subscribes to every signal it reads **synchronously inside the effect body**. When any subscribed signal changes, the effect re-runs from the top. A re-run is "unnecessary" when the effect's behavior is identical to the previous run — i.e., no observable side effect or output changes, but the body executes again (or the body has a side effect that runs again, like `dialog.show(...)`).
+
+Three flavors of unnecessary re-renders are present in this codebase:
+
+1. **Hidden signal subscription via a function call.** An effect calls `stats.totalActiveTime()` (a memo that internally subscribes to `tick()`). The effect doesn't know about the `tick` subscription; it appears to only depend on the explicit `loop.state()` read. But the memo's subscriptions are inherited by the calling effect.
+
+2. **Multiple reads of the same signal in inline expressions.** A JSX expression like `isSelected() ? theme().primary : undefined` subscribes the surrounding expression to `selectedIndex()` AND `theme()`. When either changes, the expression re-evaluates — even if the other didn't change. With 3 inline expressions per row, a `selectedIndex` change re-evaluates all 3, each reading `theme()` again.
+
+3. **Memo that returns a prop unchanged.** `createMemo(() => props.events)` adds subscription overhead (a tracking cell) without changing the value. The memo's identity is the same as the prop's; the JSX behaves identically with or without the wrapper.
+
+#### Finding 16.5.A — HIGH — Completion effect re-runs every second, pushing a new dialog onto the stack each time
+
+**Problem.** The completion effect at `src/App.tsx:1293-1309`:
+
+```ts
+createEffect(() => {
+  const state = loop.state()
+  if (state.type === "complete") {
+    // Calculate total time from stats
+    const totalTime = stats.totalActiveTime()
+
+    dialog.show(() => (
+      <DialogCompletion
+        iterations={state.iterations}
+        totalTime={totalTime}
+        summary={state.summary.summary}
+        onDismiss={() => dialog.clear()}
+        onQuit={() => handleQuit()}
+      />
+    ))
+  }
+})
+```
+
+The effect reads two reactive sources:
+
+1. `loop.state()` — subscribes the effect to the loop state signal.
+2. `stats.totalActiveTime()` — a memo at `src/hooks/useLoopStats.ts:204-208` defined as:
+   ```ts
+   const totalActiveTime = createMemo(() => {
+     const history = state().history;
+     const historySum = history.reduce((acc, val) => acc + val, 0);
+     return historySum + elapsedTime();
+   });
+   ```
+   `elapsedTime()` is itself a memo at `src/hooks/useLoopStats.ts:165-186` that **explicitly subscribes to a 1-second tick**:
+   ```ts
+   const elapsedTime = createMemo(() => {
+     // Subscribe to tick for reactive updates
+     tick();
+     ...
+   });
+   ```
+   The `tick` signal is updated by `setInterval(() => setTick((t) => t + 1), 1000)` at `src/hooks/useLoopStats.ts:78`.
+
+**The effect's reactive subscriptions are: `loop.state`, `tick`, and `state` (transitively via `totalActiveTime` → `elapsedTime` → `state`).** When the loop reaches `complete`, the effect fires once (state changed to `complete`). Then, every second, the `tick` signal fires, `elapsedTime` recomputes, `totalActiveTime` recomputes, and **the effect re-fires** — calling `dialog.show(...)` again.
+
+`dialog.show` is defined at `src/context/DialogContext.tsx:79-81`:
+
+```ts
+const show = (component: DialogComponent) => {
+  setStack((prev) => [...prev, component])
+}
+```
+
+It **unconditionally pushes to the stack** — no check for "is the same dialog already on top?" Each `dialog.show(completion)` call appends a new `() => <DialogCompletion ... />` closure to the stack. After 60 seconds, the stack has 60 entries. After 5 minutes, 300 entries.
+
+`DialogStack` at `src/context/DialogContext.tsx:175-193` renders only the **top** dialog:
+
+```tsx
+const top = () => {
+  const s = stack()
+  return s.length > 0 ? s[s.length - 1] : undefined
+}
+
+return (
+  <Show when={top()} keyed>
+    {(DialogComponent) => <DialogComponent />}
+  </Show>
+)
+```
+
+The `<Show keyed>` re-mounts the component every time `top()` returns a new function reference — which happens on **every tick** because each new `dialog.show` call creates a new closure. So the user sees the dialog re-mount every second: the `activeButton` signal inside `DialogCompletion` resets to `"dismiss"`, the focus is lost, the keyboard handler is re-registered.
+
+**User-visible symptoms.**
+
+- The completion dialog **flashes/resets every second**. The "Dismiss" button is always the active one; the user can never reach the "Quit" button by pressing Tab/Right because the next second resets the focus.
+- The `activeButton` state in `DialogCompletion` (`src/components/DialogCompletion.tsx:18`) is lost on every re-mount. The "←/→" keybinds to switch buttons reset every second.
+- The dialog stack grows unboundedly (1 entry per second). If `dialog.clear()` fails to fire (e.g., the user closes the terminal before pressing Enter, or there's a race with the keyboard handler), the stack carries stale entries into the next session.
+
+**Root cause.** The `tick` signal subscription leaks from `useLoopStats` into the completion effect. The author intended the effect to fire **once** when state transitions to `complete`. The `stats.totalActiveTime()` call inside the effect body is used to render the final total time — a value that should be captured **once** at completion time, not refreshed every second.
+
+**Where.** `src/App.tsx:1293-1309`.
+
+**Proposed fix.** Wrap the `stats.totalActiveTime()` call in `untrack` so the effect does not subscribe to `tick`:
+
+```ts
+import { untrack } from "solid-js"
+
+createEffect(() => {
+  const state = loop.state()
+  if (state.type === "complete") {
+    const totalTime = untrack(() => stats.totalActiveTime())
+
+    dialog.show(() => (
+      <DialogCompletion
+        iterations={state.iterations}
+        totalTime={totalTime}
+        summary={state.summary.summary}
+        onDismiss={() => dialog.clear()}
+        onQuit={() => handleQuit()}
+      />
+    ))
+  }
+})
+```
+
+Alternative: guard the `dialog.show` with a `shown` flag so it only fires once per completion:
+
+```ts
+let completionShown = false
+createEffect(() => {
+  const state = loop.state()
+  if (state.type === "complete" && !completionShown) {
+    completionShown = true
+    dialog.show(() => (
+      <DialogCompletion
+        iterations={state.iterations}
+        totalTime: untrack(() => stats.totalActiveTime())
+        ...
+      />
+    ))
+  }
+})
+```
+
+The `untrack` approach is cleaner because it expresses the intent ("the totalTime is a snapshot, not a live subscription") rather than relying on a flag. The `shown` flag is a fallback for readers unfamiliar with `untrack`.
+
+**Verification.** A unit test that mounts the completion effect with a stub `dialog.show` and a stub `stats.totalActiveTime` (which reads `tick()`) can assert that `dialog.show` is called exactly once:
+
+```ts
+// src/App.completion-effect.test.ts (new) — or appended to useLoopStats.test.ts
+import { describe, expect, it, mock } from "bun:test"
+import { createRoot, createSignal } from "solid-js"
+import { useLoopStats } from "../hooks/useLoopStats"
+
+describe("completion effect interaction with tick", () => {
+  it("does not push a new dialog on every tick", () => {
+    let showCalls = 0
+    const fakeDialog = { show: () => { showCalls++ } }
+    const fakeLoop = { state: () => ({ type: "complete", iterations: 5, summary: { summary: "done" } }) }
+    const stats = useLoopStats()
+    // ... mount the effect, advance the tick 10 times, assert showCalls === 1
+  })
+})
+```
+
+The test needs a Solid render harness (e.g. `createRoot`) and a way to advance the tick deterministically. `useLoopStats` exposes `setTick` only as an internal symbol today; making it injectable (via a parameter or a `__setTickForTesting` export) would enable this test.
+
+**Severity: HIGH.** User-visible flashing + state loss on every tick + unbounded stack growth. The bug is silent (no console error, no crash) but the user experience is broken. Every `ocloop` run that reaches `complete` is affected.
+
+**Cross-reference.** The error effect at `src/App.tsx:1312-1330` does **not** have this bug — it reads only `loop.state()`, which doesn't change once the loop is in `error` state. The bug is specific to the completion effect because it calls `stats.totalActiveTime()`, which is the only consumer of the `tick` signal in the App-level effects.
+
+#### Finding 16.5.B — MEDIUM — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each
+
+**Problem.** The `<For>` callback at `src/ui/DialogSelect.tsx:230-275` reads `isSelected()` and `theme()` multiple times across three separate inline JSX expressions per row:
+
+```tsx
+<For each={filteredOptions()}>
+  {(option, i) => {
+    const isSelected = () => i() === selectedIndex()
+
+    return (
+      <box
+        id={option.value}
+        ...
+        style={{
+          ...
+          backgroundColor: isSelected() ? theme().primary : undefined,  // 1
+        }}
+      >
+        <box style={{ width: "100%", justifyContent: "space-between", flexDirection: "row" }}>
+          <text>
+            <span style={{
+              fg: isSelected() ? selectedForeground(theme()) : theme().text  // 2
+            }}>
+              {option.value === props.current ? "● " : "  "}
+              {truncate(option.title, 40)}
+            </span>
+          </text>
+
+          <Show when={option.category}>
+            <text>
+              <span style={{
+                fg: isSelected() ? selectedForeground(theme()) : theme().textMuted  // 3
+              }}>
+                {option.category}
+              </span>
+            </text>
+          </Show>
+        </box>
+      </box>
+    )
+  }}
+</For>
+```
+
+For each of the N options in `filteredOptions()`, the per-row JSX subscribes to `selectedIndex()` **3 times** (via `isSelected()` calls) and `theme()` **3-5 times** (via the conditional expressions). When the user presses ↓ to move the selection, **every row's three expressions re-evaluate** — even though only one row's `isSelected` changed.
+
+In a command palette with 20 options and a `selectedIndex` change:
+- 20 rows × 3 expressions = **60 expression re-evaluations per arrow keypress**.
+- Each re-evaluation re-reads `theme()` and re-computes `selectedForeground(theme())`.
+- `selectedForeground` parses a hex color string (`src/context/ThemeContext.tsx:208-221`) — 3 hex `parseInt` calls + arithmetic per evaluation.
+
+The work is O(N × re-evaluations) per keystroke. For a 20-option palette, that's 60 re-evaluations × ~5 hex parses = 300 `parseInt` calls per arrow keypress. Not catastrophic, but the work scales linearly with N and is repeated unnecessarily.
+
+**Where.** `src/ui/DialogSelect.tsx:243-271` (the per-row `<For>` callback body).
+
+**Proposed fix.** Extract the per-row derived values into `createMemo`s so each is computed once per row per `selectedIndex` or `theme` change:
+
+```tsx
+<For each={filteredOptions()}>
+  {(option, i) => {
+    const isSelected = createMemo(() => i() === selectedIndex())
+    const fg = createMemo(() => isSelected() ? selectedForeground(theme()) : theme().text)
+    const fgMuted = createMemo(() => isSelected() ? selectedForeground(theme()) : theme().textMuted)
+
+    return (
+      <box
+        id={option.value}
+        ...
+        style={{
+          ...
+          backgroundColor: isSelected() ? theme().primary : undefined,
+        }}
+      >
+        <box style={{ width: "100%", justifyContent: "space-between", flexDirection: "row" }}>
+          <text>
+            <span style={{ fg: fg() }}>
+              {option.value === props.current ? "● " : "  "}
+              {truncate(option.title, 40)}
+            </span>
+          </text>
+
+          <Show when={option.category}>
+            <text>
+              <span style={{ fg: fgMuted() }}>
+                {option.category}
+              </span>
+            </text>
+          </Show>
+        </box>
+      </box>
+    )
+  }}
+</For>
+```
+
+Now when `selectedIndex` changes:
+- Only the row where `i() === selectedIndex()` has its `isSelected` memo flip.
+- Only that row's `fg` and `fgMuted` memos re-evaluate.
+- The other N-1 rows don't re-evaluate anything.
+
+The work drops from O(N) to O(1) per selection change. For 20 options, the savings are 20×.
+
+**Alternative.** Inline the `isSelected` reads into a single `createMemo` and destructure:
+
+```tsx
+const styles = createMemo(() => {
+  const sel = isSelected()
+  return {
+    bg: sel ? theme().primary : undefined,
+    fg: sel ? selectedForeground(theme()) : theme().text,
+    fgMuted: sel ? selectedForeground(theme()) : theme().textMuted,
+  }
+})
+```
+
+This computes all three styles from a single `theme()` read per memo, halving the hex-parsing cost. The inline-destructured form is more idiomatic when the styles are all derived from the same source.
+
+**Verification.** A focused micro-benchmark (out of scope for this audit, but easy to add) could measure keystroke latency for a 50-option palette before and after. The savings are linear in N, so the bug is invisible at 5 options and painful at 50.
+
+**Severity: MEDIUM.** Visible performance cliff at high option counts (commands palettes with many entries). Not a correctness bug — the UI still works — but a real responsiveness issue. Most user-facing dialogs (`DialogTerminalConfig`, `DialogInvalidAgent`, the command palette) have <20 entries, so the impact today is small. Future dialogs that scale to 50+ entries (e.g. a model picker with 100 models) will hit this.
+
+#### Finding 16.5.C — LOW — `ActivityLog.displayEvents` is a no-op memo
+
+**Problem.** `src/components/ActivityLog.tsx:62`:
+
+```ts
+const displayEvents = createMemo(() => props.events);
+```
+
+The memo reads `props.events` and returns it unchanged. There is no transformation, no filtering, no caching beyond what the prop already provides. The memo:
+- Subscribes to `props.events` (a tracking cell + subscription overhead).
+- Caches the result (a memo result cell + equality check).
+- Returns the same value as `props.events` would directly.
+
+The JSX at line 95 uses it as `<For each={displayEvents()}>`. Removing the memo and inlining `<For each={props.events}>` produces identical behavior:
+- `props.events` is a reactive prop — accessing it in the JSX expression subscribes the expression to the prop.
+- `For` keys on the array's identity — same reference, same skip behavior.
+- No extra tracking cell needed.
+
+The memo adds ~3 lines of code and a memo-tracking cell for zero benefit.
+
+**Where.** `src/components/ActivityLog.tsx:62`.
+
+**Proposed fix.** Inline the prop:
+
+```tsx
+// before
+const displayEvents = createMemo(() => props.events);
+// ...
+<For each={displayEvents()}>
+
+// after
+<For each={props.events}>
+```
+
+**Severity: LOW.** Not a bug. The memo is a no-op wrapper that adds overhead and clutter. The author may have intended to add filtering later (e.g. "show only events from the last 5 minutes"), but the current code does nothing.
+
+**Counter-argument.** A `createMemo` wrapper can be useful as a **named handle** for the list (e.g. for logging or debugging in the React DevTools). The current code has no such consumer. If a future change adds one, the memo is a natural place to do it. Today's code doesn't justify the indirection.
+
+#### Finding 16.5.D — LOW — `BottomPanel.rate()` and `compactLine()` re-evaluate on every tick (1-second cadence)
+
+**Problem.** `src/components/BottomPanel.tsx:51-79` defines several plain functions (not memos) that read reactive signals:
+
+```ts
+const totalTokens = () =>
+  props.tokens.input + props.tokens.output + props.tokens.reasoning
+const taskTotal = () =>
+  props.taskTokens.input + props.taskTokens.output + props.taskTokens.reasoning
+const rate = () => tokensPerMin(totalTokens(), props.stats.globalElapsedTime())
+```
+
+`rate()` is called from JSX at line 138 (`value={formatTokenCount(Math.round(rate()))}`). The JSX expression subscribes to every signal `rate()` reads — including `props.stats.globalElapsedTime()`. `globalElapsedTime` is a memo that subscribes to the 1-second `tick` signal (`src/hooks/useLoopStats.ts:227-232`).
+
+So the JSX expression that renders the rate re-evaluates **every second** — even when tokens haven't changed. The re-evaluation calls `rate()` → `totalTokens()` → reads `props.tokens.input/output/reasoning`. The token reads return the same values; the work is wasted.
+
+Similarly, `compactLine()` at line 71-79 reads `task()`, `t("lblTaskPrefix")`, `t("lblTotal")`, `t("logTokens")`, `props.stats.globalElapsedTime()`, `totalTokens()`, and `layout()`. When the global elapsed time ticks, the entire compact line is recomputed (3 string segments joined) — even though the task and token values haven't changed.
+
+**Where.** `src/components/BottomPanel.tsx:51-79` (the plain functions), lines 130-138 (the JSX that calls them).
+
+**Proposed fix.** Extract the per-second-recomputed values into a `createMemo` that depends on the **second** and not on the underlying tick signal:
+
+```ts
+const ratePerSec = createMemo(() => {
+  const total = totalTokens()
+  const elapsed = props.stats.globalElapsedTime()
+  return tokensPerMin(total, elapsed)
+})
+```
+
+But this still subscribes to `globalElapsedTime` (which depends on `tick`). The only way to avoid the per-second re-evaluation is to not display the rate in real time — but that defeats the purpose.
+
+A more targeted fix: separate the static-text computation (task, prefix) from the dynamic-text computation (rate, elapsed):
+
+```ts
+// recompute only when task/locale/tokens change
+const compactSegments = createMemo(() => [
+  `${t("lblTaskPrefix")}${task() ?? t("lblWaiting")}`,
+  `${t("logTokens").replace(/:\s*$/, "")} ${formatTokenCount(totalTokens())}`,
+])
+
+// recompute every second (elapsed time updates)
+const totalLabel = createMemo(() =>
+  `${t("lblTotal")} ${formatDuration(props.stats.globalElapsedTime()).trim()}`,
+)
+
+const compactLine = () =>
+  fitSegments([...compactSegments(), totalLabel()], layout().inner)
+```
+
+This way, the `compactSegments` memo doesn't re-evaluate on tick (only on task/locale/token changes), and `totalLabel` re-evaluates per second but is the only one that does.
+
+**Severity: LOW.** Not a bug. The per-second re-evaluation is intentional for the global timer. The cost is small (a few string concatenations + a `fitSegments` call per second per panel). Worth optimizing only if profiling shows it as a hot path.
+
+**Counter-argument.** The bottom panel is below the activity log, which is the most visually volatile region. A per-second re-evaluation of the bottom panel is consistent with the dashboard's per-second re-evaluation (the `elapsedTime` display in Dashboard uses the same tick signal). Optimizing one and not the other is inconsistent.
+
+#### Finding 16.5.E — LOW — `App.tsx` persistence effect reads `loop.state()` and `loop.iteration()` — double subscription
+
+**Problem.** `src/App.tsx:1268-1290`:
+
+```ts
+createEffect(() => {
+  if (props.debug) return
+  const s = loop.state()
+  if (
+    s.type === "running" ||
+    s.type === "pausing" ||
+    s.type === "paused" ||
+    s.type === "cooldown"
+  ) {
+    const sid = getActiveSessionId(s) || null
+    const snapshot: PersistedLoopState = {
+      version: 1,
+      iteration: loop.iteration(),  // <-- reads loop.iteration() (separate memo call)
+      sessionId: sid || null,
+      stateType: s.type,
+      rateLimitAttempts,
+      updatedAt: new Date().toISOString(),
+    }
+    void saveLoopState(snapshot)
+  } else if (s.type === "complete") {
+    void clearLoopState()
+  }
+})
+```
+
+The effect reads `loop.state()` at the top (subscribes to the state signal) and `loop.iteration()` inside the snapshot (subscribes to a memo that itself reads the state signal). The two subscriptions are on the same underlying signal — Solid merges them, so the effect re-runs only once per state change. But the code reads as if `loop.iteration()` is an independent dependency, which is misleading.
+
+For the states the effect persists (`running`/`pausing`/`paused`/`cooldown`), the iteration is a field on `s` (the local const). Reading `s.iteration` would be equivalent and would not need a second `loop.iteration()` call.
+
+**Where.** `src/App.tsx:1281`.
+
+**Proposed fix.** Read `s.iteration` directly:
+
+```ts
+const snapshot: PersistedLoopState = {
+  version: 1,
+  iteration: s.iteration,  // <-- local property access, no extra subscription
+  sessionId: sid || null,
+  ...
+}
+```
+
+This is equivalent for the persisted states (all of which have an `iteration: number` field per the type definition at `src/types.ts:51-71`) and removes the misleading double read.
+
+**Verification.** Type-check the change: the `s` const is narrowed by the `if` block, and `s.iteration` exists for `running`/`pausing`/`paused`/`cooldown` (all have `iteration: number`). For `complete`, the field is `iterations` (plural, total), but `complete` is in the `else if` branch and reads from a different field — no change needed there.
+
+**Severity: LOW.** Not a bug. The double read is harmless (Solid merges the subscription; the second call is a function-call overhead of ~1 µs). The fix is for **clarity** (the code shouldn't suggest `loop.iteration()` is an independent signal when it's derived from the same state).
+
+#### Finding 16.5.F — INFO — `Toast.getBorderColor` called twice per toast render (border + title)
+
+**Problem.** `src/context/ToastContext.tsx:90-98` defines `getBorderColor` as a plain function:
+
+```ts
+const getBorderColor = (variant: ToastVariant) => {
+  switch (variant) {
+    case "info": return theme().info
+    case "success": return theme().success
+    case "warning": return theme().warning
+    case "error": return theme().error
+    default: return theme().border
+  }
+}
+```
+
+It is called twice in the same `<Show>` callback render at lines 114 and 122:
+
+```tsx
+<box
+  ...
+  borderColor={getBorderColor(toast.variant)}  // <-- 1
+  ...
+>
+  {toast.title && (
+    <text>
+      <span style={{ bold: true, fg: getBorderColor(toast.variant) }}>  // <-- 2
+        {toast.title}
+      </span>
+    </text>
+  )}
+  <text>{toast.message}</text>
+</box>
+```
+
+Each call subscribes the calling context to `theme()`. When the theme changes (which is rare — only on first mount via `setTheme` in `ThemeProvider`), the `<Show>` re-evaluates and `getBorderColor` is called twice per render. The function is a pure switch on a local const (`variant`) — it doesn't need to re-evaluate at all once `variant` is known.
+
+**Where.** `src/context/ToastContext.tsx:90-98, 114, 122`.
+
+**Proposed fix.** Extract the color once per toast:
+
+```ts
+// inside the <Show when={currentToast()} keyed> callback
+const borderColor = getBorderColor(toast.variant)
+
+return (
+  <box ... borderColor={borderColor}>
+    {toast.title && (
+      <text>
+        <span style={{ bold: true, fg: borderColor }}>{toast.title}</span>
+      </text>
+    )}
+    ...
+  </box>
+)
+```
+
+In a `<Show keyed>` callback, the `toast` parameter is the resolved value of `currentToast()`. The callback re-runs when the value changes (a new toast). Inside the callback, `borderColor` is a const for the lifetime of that toast — no need to recompute per JSX expression.
+
+**Severity: INFO.** Not a bug. The double call is bounded (1 per toast, ~5-10 toasts per session). The cost is negligible. The fix is for **clarity** (the same value computed twice in the same render) and **idiomatic style** (extract derived values in `<Show keyed>` callbacks).
+
+#### Cross-reference — INFO
+
+- **`useLoopStats` memos that explicitly subscribe to `tick`:** `elapsedTime` (`src/hooks/useLoopStats.ts:165-186`) and `globalElapsedTime` (`src/hooks/useLoopStats.ts:227-232`) both call `tick()` at the top of the memo body to force re-evaluation every second. This is the **intended** pattern — the comments say "Subscribe to tick for reactive updates". The leak to the completion effect (16.5.A) is the **consumer's** bug, not the producer's. The producer correctly subscribes; the consumer incorrectly inherits the subscription.
+- **`loop.isRunning`, `loop.isPaused`, etc.** (`src/hooks/useLoopState.ts:303-377`): each memo reads `state().type` once and returns a boolean. They are all derived from the same `state` signal, so Solid merges the subscriptions. The App.tsx effects that use them (e.g. `createEffect(() => { if (loop.isRunning()) { ... } })` at line 1251) re-run on every state change. This is the **intended** behavior — the effects need to react to state transitions.
+- **`loop.canStart`, `loop.canRetry`, `loop.canQuit`**: same pattern as above. They are used in the command registration effect at line 1453-1621, but inside the `command.register(() => {...})` callback, not at the effect's top level. The callback runs at command-palette-open time, not at registration time, so the dependencies are read in a different reactive context. No leak.
+
+#### Verification result
+
+- **One HIGH finding** (16.5.A — completion effect re-runs every second, pushing a new dialog onto the stack and re-mounting the dialog component; user-visible flashing + unbounded stack growth).
+- **One MEDIUM finding** (16.5.B — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each, causing O(N) re-evaluations per arrow keypress).
+- **Three LOW findings** (16.5.C — `ActivityLog.displayEvents` is a no-op memo; 16.5.D — `BottomPanel.rate()`/`compactLine()` re-evaluate on every tick; 16.5.E — `App.tsx` persistence effect's `loop.iteration()` call is a redundant state subscription).
+- **One INFO-level finding** (16.5.F — `Toast.getBorderColor` called twice per toast render).
+- **No CRITICAL findings.**
+
+The HIGH finding (16.5.A) is the headline: the completion dialog flashing every second is a **user-visible bug** that affects every `ocloop` run that reaches `complete`. The fix is a 1-line change (`untrack` wrapper) but the diagnosis is non-obvious because the `tick` subscription is hidden inside the `useLoopStats` memos. A test that mounts the effect with a fake `stats` object and asserts `dialog.show` is called exactly once would pin this down.
+
+The MEDIUM finding (16.5.B) is a performance cliff that scales linearly with the number of options. The fix is mechanical (extract `createMemo`s per row). Worth doing for future-proofing even if the current command palettes are small.
+
+The LOW and INFO findings are cleanup-grade: not bugs, but patterns that obscure intent or add unnecessary overhead. They are documented for completeness; the fix for any of them is < 10 lines and can be done opportunistically.
