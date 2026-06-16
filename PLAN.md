@@ -2881,10 +2881,49 @@ calls, 25 files, 332 ms — sin cambio en el conteo (era 750 / 1
 
 ### Mejora 60 — Finding 15.8.B — LOW — `setActiveModel` in the server-ready effect can clobber an explicit `--model`
 
-- [ ] Evaluar la mejora 60 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 60 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 60 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 60 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 60 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 60 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 60 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 60 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la que el audit
+(`MEJORAS.md:20407-20473`) diagnostica con su veredicto
+explícito: **"Severity: LOW. No current bug; defensive note
+for future refactors."** El guard `if (!activeModel())` en
+`src/App.tsx:1214` lee el signal **síncronamente** desde
+`props.model` (línea 362: `const [activeModel,
+setActiveModel] = createSignal<string | undefined>(props.model)`),
+así que bajo el shape actual NO existe una ventana async en la
+que `activeModel` transicione de `undefined` a `props.model` —
+el guard es correcto por construcción. La única fix que el
+audit propone (`MEJORAS.md:20464-20470`, un
+`createMemo(() => props.model ?? resolvedModelFromConfig())`)
+es condicional a un refactor futuro que hoy NO existe ("if the
+project introduces an async `activeModel` resolution"),
+exactamente el patrón "build infra for a future need" que el
+modo ponytail y Mejoras 21-27 han rechazado. Implementar el
+`createMemo` ahora agregaría un derived signal cuya única
+función observable es ser idéntico al `activeModel` actual —
+cero cambio de comportamiento, +5 líneas de boilerplate, +1
+signal que mantener en sync con `setActiveModel`. El audit
+mismo confirma que la rama `.catch` (línea 1224-1226) "only
+logs; no `resilience`-aware retry is attempted" es
+**independent of 15.8.A and informational** — la mejora es
+estrictamente una anotación para futuros mantenedores. La
+propuesta de Mejora 17-22 (extender el comment block del
+guard con un source attribution al finding) tampoco aplica
+aquí: el comment block existente ya documenta el
+comportamiento user-visible ("Fetch active model from config
+if not already set via CLI"), y añadir un párrafo
+"this is correct today, fragile to a hypothetical refactor"
+rompe la regla "no documentar wishesful exceptions" que Mejora
+49 (`MEJORAS.md Finding 12.2.D`) acaba de pinear como
+política del codebase.
+
+Implementación mínima: anotación en este plan; cero cambios
+de código. `bun test` verde: 750 pass / 1 skip / 0 fail, 1784
+expect() calls, 25 files — sin cambio en el conteo (era 750
+antes de la anotación).
 
 ### Mejora 61 — Finding 16.1.A — MEDIUM — `handleIterationError` dispatches a recoverable error for `auth` and `fatal` kinds
 
