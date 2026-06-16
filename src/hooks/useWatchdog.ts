@@ -92,7 +92,7 @@ export interface Watchdog {
   health: () => WatchdogHealth
   /** Record any sign of real progress from the active session. */
   recordHeartbeat: () => void
-  /** A new iteration began: reset the heartbeat baseline and counters. */
+  /** A new iteration began: reset the heartbeat baseline (not the recovery budget). */
   notifyIterationStart: () => void
   /** A legitimate session.idle arrived: reset counters. */
   notifyIdle: () => void
@@ -138,8 +138,13 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
   }
 
   function notifyIterationStart(): void {
+    // Fresh silence window for the new session, but DELIBERATELY do not reset
+    // recoveryAttempts: an abort+retry advances the loop into a new iteration
+    // (which calls this), so resetting here would hand a chronically wedging
+    // task an unlimited abort/retry budget — it would never escalate to a
+    // restart or trip the circuit breaker. The budget is cleared only by genuine
+    // progress (recordHeartbeat / notifyIdle) or by the breaker firing.
     lastHeartbeatAt = clock.monotonicNow()
-    recoveryAttempts = 0
     setHealth("HEALTHY")
   }
 
@@ -226,7 +231,19 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
       setHealth("CONFIRMING")
       log("confirming", { lastHeartbeatAgeMs: Math.round(dt) })
 
+      // The probes below are network round-trips. A heartbeat can land while
+      // they're in flight; recordHeartbeat() then resets us to HEALTHY. Honor
+      // that over the `dt` we sampled above — otherwise we could abort/restart a
+      // session that just proved it's alive. Closes the read-then-act (TOCTOU)
+      // gap between measuring `dt` and acting on it.
+      const rescuedByHeartbeat = () =>
+        clock.monotonicNow() - lastHeartbeatAt < cfg.suspectMs
+
       const alive = await options.probes.pingServer()
+      if (rescuedByHeartbeat()) {
+        setHealth("HEALTHY")
+        return
+      }
       if (!alive) {
         // Server not answering → hung. Restart.
         await recover("server_hung", dt, "ping_failed")
@@ -234,6 +251,10 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
       }
 
       const verdict = await options.probes.reconcile()
+      if (rescuedByHeartbeat()) {
+        setHealth("HEALTHY")
+        return
+      }
 
       if (verdict === "idle" || verdict === "missing") {
         // Not stuck — we just missed session.idle. Advance, no abort.

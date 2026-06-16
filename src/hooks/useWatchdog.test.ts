@@ -43,6 +43,9 @@ function setup(initial?: {
   }
   const healthLog: WatchdogHealth[] = []
   const clk = makeClock()
+  // Fired inside the probes so a test can simulate a heartbeat (or anything)
+  // landing while a probe round-trip is in flight.
+  const hooks: { onPing?: () => void; onReconcile?: () => void } = {}
 
   const wd = createWatchdog({
     config: () => ({
@@ -56,8 +59,14 @@ function setup(initial?: {
     onHealthChange: (h) => healthLog.push(h),
     probes: {
       isActive: () => isActive,
-      pingServer: async () => ping,
-      reconcile: async () => reconcile,
+      pingServer: async () => {
+        hooks.onPing?.()
+        return ping
+      },
+      reconcile: async () => {
+        hooks.onReconcile?.()
+        return reconcile
+      },
     },
     actions: {
       reconnectSSE: () => calls.reconnectSSE++,
@@ -77,6 +86,7 @@ function setup(initial?: {
     calls,
     healthLog,
     clk,
+    hooks,
     setActive: (v: boolean) => (isActive = v),
     setPing: (v: boolean) => (ping = v),
     setReconcile: (v: ReconcileResult) => (reconcile = v),
@@ -213,5 +223,49 @@ describe("watchdog — anti-false-positive details", () => {
     s.clk.advance(60_000)
     await s.wd.tick()
     expect(s.wd.health()).toBe("HEALTHY")
+  })
+
+  it("a heartbeat landing mid-reconcile cancels the tick (no abort on a revived session)", async () => {
+    const s = setup({ reconcile: "working" })
+    s.clk.advance(T2 + 1_000) // wedged on the pre-probe reading...
+    // ...but a heartbeat arrives while the reconcile probe is in flight.
+    s.hooks.onReconcile = () => s.wd.recordHeartbeat()
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(0)
+    expect(s.calls.restartServer).toBe(0)
+    expect(s.wd.health()).toBe("HEALTHY")
+  })
+
+  it("a heartbeat landing mid-ping cancels the tick (no restart on a revived session)", async () => {
+    const s = setup({ ping: false, reconcile: "working" })
+    s.clk.advance(T2 + 1_000)
+    // The SSE stream is clearly alive (it just delivered a heartbeat), so a
+    // same-instant ping failure must not trigger a restart.
+    s.hooks.onPing = () => s.wd.recordHeartbeat()
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(0)
+    expect(s.calls.abortAndRetry).toBe(0)
+    expect(s.wd.health()).toBe("HEALTHY")
+  })
+
+  it("recovery budget survives an abort+retry iteration restart (re-wedge escalates)", async () => {
+    const s = setup({ reconcile: "working" })
+
+    // Wedge #1 → abort + retry (recovery attempt 1).
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(0)
+
+    // In production abortAndRetry advances the loop → startIteration →
+    // notifyIterationStart. The recovery budget must NOT reset here, or a
+    // chronically wedging task would abort→retry forever, never escalating.
+    s.wd.notifyIterationStart()
+
+    // The retried session wedges again → escalate to a restart, not re-abort.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(1)
   })
 })
