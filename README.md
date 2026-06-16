@@ -110,7 +110,7 @@ A complete, reliable run from zero:
 4. **Start the loop** — run `ocloop` and press **`S`** (or `ocloop -r` to start immediately).
 5. **Watch it work** — the dashboard shows the current state, task, timing, and guardian health; the activity log streams what OpenCode does. Use **`Space`** to pause, **`Ctrl+P`** for the command palette, **`T`** to open OpenCode in a real terminal.
 6. **Leave it running** — rate limits, sleep, and server hiccups are handled automatically. If the whole process dies, relaunch with **`ocloop --resume`** to continue.
-7. **Done** — the loop ends when the model marks the plan complete (`<plan-complete>` tag), all automatable tasks are finished, you quit with `Q`, or an unrecoverable error occurs.
+7. **Done** — the loop ends when all automatable tasks are finished (OCLoop detects completion structurally and appends a `<plan-complete>` summary to the plan itself — the model isn't relied on to write it), you quit with `Q`, or an unrecoverable error occurs.
 
 ## Generating a plan (`--create-plan`)
 

@@ -72,4 +72,4 @@ Keep this section tight: it is re-read at the start of every iteration.
 ## How OCLoop reads this file
 - Markers: `- [x]` complete, `- [ ]` pending (executed), `- [MANUAL]` human-only (skipped), `- [BLOCKED: reason]` blocked (skipped).
 - It runs one pending task per fresh OpenCode session, then marks it `[x]` and continues.
-- The run ends when the model appends a `<plan-complete> ... </plan-complete>` summary to the end of this file. There is no `.loop-complete` file.
+- The run ends automatically when no automatable tasks remain (every task `[x]` or `[BLOCKED]`, ignoring `[MANUAL]`); OCLoop detects this and appends a `<plan-complete> ... </plan-complete>` summary to the end of this file itself — the model does not need to write it. There is no `.loop-complete` file.

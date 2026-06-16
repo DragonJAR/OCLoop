@@ -110,7 +110,7 @@ Una ejecución completa y fiable desde cero:
 4. **Inicia el bucle** — ejecuta `ocloop` y pulsa **`S`** (o `ocloop -r` para empezar de inmediato).
 5. **Míralo trabajar** — el dashboard muestra el estado, la tarea, los tiempos y la salud del guardián; el registro de actividad transmite lo que hace OpenCode. Usa **`Espacio`** para pausar, **`Ctrl+P`** para la paleta de comandos y **`T`** para abrir OpenCode en una terminal real.
 6. **Déjalo corriendo** — los rate limits, la suspensión y los tropiezos del servidor se manejan automáticamente. Si el proceso completo muere, relánzalo con **`ocloop --resume`** para continuar.
-7. **Listo** — el bucle termina cuando el modelo marca el plan como completo (etiqueta `<plan-complete>`), se terminan todas las tareas automatizables, sales con `Q`, o ocurre un error irrecuperable.
+7. **Listo** — el bucle termina cuando se terminan todas las tareas automatizables (OCLoop lo detecta de forma estructural y añade él mismo una etiqueta `<plan-complete>` con el resumen — no depende de que el modelo la escriba), sales con `Q`, o ocurre un error irrecuperable.
 
 ## Generar un plan (`--create-plan`)
 

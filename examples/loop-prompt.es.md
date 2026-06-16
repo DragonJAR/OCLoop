@@ -1,4 +1,4 @@
-Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea. La única excepción es la verificación de Finalización, donde sales de toda la ejecución.
+Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea, y termina la ejecución por sí mismo una vez que todas las tareas estén hechas.
 
 Antes de empezar:
 1. Ejecuta `git status`. Una iteración anterior pudo haber sido interrumpida.
@@ -25,14 +25,12 @@ Ejecuta:
 4. Haz commit con un mensaje descriptivo, siguiendo las reglas de commit de AGENTS.md (un cambio lógico; nunca `git add .`; respeta `.gitignore`). NUNCA hagas push.
 
 Después de completar:
-1. En {{PLAN_FILE}}, marca los elementos completados como `[x]`.
+1. En {{PLAN_FILE}}, marca una tarea como `[x]` SOLO cuando esté definitivamente completa — sus cambios verificados (las comprobaciones/tests pasan) y commiteados. Nunca marques `[x]` de forma preventiva ni si tienes dudas; déjala en `[ ]`, o usa `[BLOCKED: <reason>]` si no puede avanzar.
 2. Si descubriste conocimiento EXTERNO (comportamiento de una API, peculiaridades de una librería, detalles de un repo externo), escribe el detalle en `docs/<topic>.md` (crea `docs/` si no existe) y añade una referencia `@docs/...` de una línea bajo `## Research` en AGENTS.md (con el mismo formato que ya tiene). Mantén AGENTS.md ligero - se carga en cada sesión; el detalle vive en `docs/`.
 3. Si aprendiste algo sobre ESTE PROYECTO por prueba y error (comandos de build/test, gotchas), regístralo de forma concisa bajo `## Project Operations` en AGENTS.md.
 4. Si no pudiste completar una tarea (permisos, servicio externo, necesita intervención humana), añade `[BLOCKED: <reason>]` a su línea en {{PLAN_FILE}} y no la reintentes en esta iteración.
 
 Verificación de Finalización:
-- Si cada tarea no-[MANUAL] en {{PLAN_FILE}} está en `[x]` o `[BLOCKED]`, añade al final de {{PLAN_FILE}}:
-  `<plan-complete>SUMMARY_OF_WORK_DONE_AND_REMAINING_MANUAL_TASKS</plan-complete>`
-  y luego sal de la sesión.
+- Cuando cada tarea no-[MANUAL] en {{PLAN_FILE}} esté en `[x]` o `[BLOCKED]`, simplemente termina tu turno — OCLoop detecta la finalización automáticamente (NO necesitas escribir ningún marcador de finalización).
 - En caso contrario, termina tu turno ahora - OCLoop inicia la siguiente tarea en una sesión nueva.
 - NO omitas tareas automatizables: si una tarea parece difícil pero factible, inténtala.
