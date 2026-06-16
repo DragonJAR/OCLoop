@@ -6,13 +6,13 @@ Objective: Analyze every execution path (parameterized, edge-case, error) in the
 
 ## Phase 1 — Plan parser edge cases & robustness
 
-- [ ] Fix `parseTaskLine` to reject `- [ ]` with only whitespace inside brackets as a task when the description is empty (currently returns `{ type: "pending", description: "" }` for `- [ ]` with trailing spaces)
-- [ ] Fix `parsePlan` percent calculation: when all tasks are MANUAL, `denominator` becomes 0 and returns 100 — verify this is the intended semantic (it is, but add a comment explaining it; the test already asserts 100)
-- [ ] Add test for `parseTaskLine` with `- [BLOCKED: multi word reason here] Task` to verify `blockedReason` captures the full multi-word reason
-- [ ] Add test for `parseTaskLine` with `- [BLOCKED]` (no trailing description) — verify it returns `description: ""`
-- [ ] Add test for `parsePlanComplete` with nested `<plan-complete>` tags (one real, one inside a blockquote)
-- [ ] Add test for `getCurrentTaskFromContent` when all tasks are MANUAL or BLOCKED (should return null)
-- [ ] Verify `isPlanComplete` handles a file that doesn't exist gracefully (returns `false`, which it does — confirm test)
+- [x] Fix `parseTaskLine` to reject `- [ ]` with only whitespace inside brackets as a task when the description is empty (currently returns `{ type: "pending", description: "" }` for `- [ ]` with trailing spaces)
+- [x] Fix `parsePlan` percent calculation: when all tasks are MANUAL, `denominator` becomes 0 and returns 100 — verify this is the intended semantic (it is, but add a comment explaining it; the test already asserts 100)
+- [x] Add test for `parseTaskLine` with `- [BLOCKED: multi word reason here] Task` to verify `blockedReason` captures the full multi-word reason
+- [x] Add test for `parseTaskLine` with `- [BLOCKED]` (no trailing description) — verify it returns `description: ""`
+- [x] Add test for `parsePlanComplete` with nested `<plan-complete>` tags (one real, one inside a blockquote)
+- [x] Add test for `getCurrentTaskFromContent` when all tasks are MANUAL or BLOCKED (should return null)
+- [x] Verify `isPlanComplete` handles a file that doesn't exist gracefully (returns `false`, which it does — confirm test)
 
 ## Phase 2 — State machine gaps & transitions
 
