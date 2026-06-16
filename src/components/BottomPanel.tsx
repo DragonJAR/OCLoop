@@ -9,6 +9,7 @@ import {
   stripMarkdown,
   tokensPerMin,
   wrapText,
+  clampLines,
 } from "../lib/format"
 import { getLayout, fitSegments, FILL_ROW } from "../lib/layout"
 import { t } from "../lib/i18n"
@@ -67,6 +68,11 @@ export function BottomPanel(props: BottomPanelProps) {
     wrapText(task() ?? "", Math.max(8, textWidth() - t("lblTaskPrefix").length)),
   )
 
+  // Cap the wrapped task to the responsive budget so a long task can't starve the
+  // activity log — the freed gap goes to the log via its existing flexGrow. DRY:
+  // the cap lives only in getLayout().maxTaskLines.
+  const clampedTask = createMemo(() => clampLines(taskLines(), layout().maxTaskLines))
+
   // Single fitted line for short (few-row) terminals — fitSegments never overflows.
   const compactLine = () =>
     fitSegments(
@@ -111,7 +117,7 @@ export function BottomPanel(props: BottomPanelProps) {
           }
         >
           <box style={{ flexDirection: "column" }}>
-            <For each={taskLines()}>
+            <For each={clampedTask().shown}>
               {(line, i) => (
                 <text>
                   <Show when={i() === 0}>
@@ -121,6 +127,14 @@ export function BottomPanel(props: BottomPanelProps) {
                 </text>
               )}
             </For>
+            {/* Overflow indicator — keeps the bottom box within maxTaskLines so the log keeps the rest. */}
+            <Show when={clampedTask().hidden > 0}>
+              <text>
+                <span style={{ fg: theme().textMuted, italic: true }}>
+                  {t("lblTaskMore", { n: clampedTask().hidden })}
+                </span>
+              </text>
+            </Show>
           </box>
         </Show>
 
