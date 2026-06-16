@@ -702,7 +702,12 @@ function AppContent(props: AppProps) {
 
     if (rateLimitAttempts > r.maxRateLimitRetries) {
       const tried = rateLimitAttempts - 1
-      log.health("ratelimit", "exhausted", { attempts: tried, reason, kind })
+      log.health("ratelimit", "exhausted", {
+        attempts: tried,
+        reason,
+        kind,
+        retryAfterSeconds: retryAfterSeconds ?? null,
+      })
       activityLog.addEvent(
         "error",
         t(kind === "transient" ? "actRetryExhausted" : "actRateExhausted", { attempts: tried }),
