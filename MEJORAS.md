@@ -20976,3 +20976,198 @@ The full cache-audit (eviction policy correctness, size tuning, thread-safety) i
 - **No CRITICAL, HIGH, or MEDIUM findings.**
 
 The duplication is **shallow and well-bounded** — `createClient` is already the right abstraction; the call sites only repeat the URL-extraction + null-check scaffolding. The audit value here is mostly **documenting the pattern** (so future contributors know why the 3-line prelude is repeated) and pointing at the optional `tryGetClient` helper as a readability win, not a correctness fix.
+
+### 16.3 — Duplicated `planFile` path resolution (`props.planFile || DEFAULTS.PLAN_FILE`)
+
+Source: `src/App.tsx` (6 call sites), `src/index.tsx` (2 call sites + 1 derived comparison). Definition: `src/lib/constants.ts:4-7` (`DEFAULTS.PLAN_FILE = "PLAN.md"`), `src/lib/cli-args.ts:163-165, 204-206` (default initialization + `--plan` parsing via `requireValue`), `src/types.ts:79-89` (`CLIArgs.planFile: string`, non-optional).
+
+Tests: `src/lib/cli-args.test.ts` covers `parseArgs` path resolution (`--plan x.md`, `--plan /etc/PLAN.md`, `--plan -`, `--plan "   "`, etc., lines 73, 523, 529, 535, 541, 596, 612, 624, 629, 791, 1120, 1179, 1335, 1395, 1405). **No test exercises the App/index.tsx resolution sites directly** — the `||` fallback at every consumer is not pinned down.
+
+PLAN.md 16.3: "Identify and document duplicated plan file path resolution (`props.planFile || DEFAULTS.PLAN_FILE` appears multiple times)."
+
+#### Inventory — VERIFIED, 8 sites (6 in App.tsx, 2 in index.tsx) + 1 derived comparison
+
+| # | File:line | Form | Resolved-name variable | Used for |
+| --- | --- | --- | --- | --- |
+| 1 | `App.tsx:521` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | `const planFile = ...` | `onFileEdited` callback: compares `path.resolve(file)` against the plan path to decide whether to call `refreshPlan()`. |
+| 2 | `App.tsx:576` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | inline arg | `refreshPlan()`: passed to `parsePlanFile(...)` to recompute progress. |
+| 3 | `App.tsx:592` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | inline arg | `refreshCurrentTask()`: passed to `getCurrentTask(...)` as SSE-todo fallback. |
+| 4 | `App.tsx:609` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | `const planPath = ...` | `checkPlanComplete()`: passed to `isPlanComplete(...)` to short-circuit before launching an iteration. |
+| 5 | `App.tsx:792` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | `const planPath = ...` | `startIteration()`: passed to `getPlanCompleteSummary(...)` after a `plan_complete` dispatch. |
+| 6 | `App.tsx:838` | `props.planFile \|\| DEFAULTS.PLAN_FILE` | inline arg | `startIteration()`: replaces the `{{PLAN_FILE}}` placeholder in `.loop-prompt.md`. |
+| 7 | `index.tsx:137` | `args.planFile \|\| DEFAULTS.PLAN_FILE` | `const planPath = ...` | `runCreatePlan()`: passed to `Bun.write(planPath, plan)` to save the generated plan, and to the `cpRunHint` i18n string. |
+| 8 | `index.tsx:338` | `args.planFile \|\| DEFAULTS.PLAN_FILE` | `const planPath = ...` | `main()`: passed to `Bun.file(planPath).exists()` for the startup log entry. |
+| 9 | `index.tsx:232` | `planPath === DEFAULTS.PLAN_FILE` | (re-uses #7) | `runCreatePlan()`: decides whether to append ` --plan <path>` to the `cpRunHint` message; uses the **resolved** value from #7, not a re-resolution. |
+
+All 8 OR-sites follow the same 1-line shape: `props.planFile || DEFAULTS.PLAN_FILE` (or the equivalent `args.planFile || DEFAULTS.PLAN_FILE`). Site #1 is the only one that assigns to a variable named `planFile` (line 521) — every other site either inlines the expression or assigns to `planPath`.
+
+The pattern is **uniform** at every site. The only variation is the variable name (`planFile` vs `planPath` vs inline) and the consumer of the resolved path.
+
+#### Is the fallback actually reachable? — VERIFIED analysis
+
+Three facts govern whether `props.planFile || DEFAULTS.PLAN_FILE` ever returns the right-hand side in production:
+
+1. **Type** — `CLIArgs.planFile: string` (`src/types.ts:83`), non-optional. `AppProps extends CLIArgs` (`src/App.tsx:88`), so `props.planFile` is typed `string`, never `undefined`.
+2. **Default** — `parseArgs` initializes `planFile: DEFAULTS.PLAN_FILE` (`src/lib/cli-args.ts:165`). If the user never passes `--plan`, the field is `"PLAN.md"`.
+3. **`requireValue` guard** — `requireValue` rejects `undefined` and the empty string `""` (`src/lib/cli-args.ts:138`). If the user passes `--plan ""`, `parseArgs` exits with code 1 before `props.planFile` is ever constructed. If the user passes `--plan` with no following arg, same outcome.
+
+So the `||` only fires when **`props.planFile === ""`**, which cannot happen via `parseArgs`. The fallback **is dead code in every production path**.
+
+#### Edge case where the fallback does NOT help — `requireValue` accepts whitespace
+
+`requireValue` only rejects `undefined` and `""`. The string `"   "` (whitespace-only) is truthy and passes the guard. The test `src/lib/cli-args.test.ts:609-613` documents this explicitly as **Finding 1.1.A (MEDIUM, cross-reference)**:
+
+```ts
+it("accepts a whitespace-only value for --plan (Finding 1.1.A — silent acceptance)", () => {
+  const { args, exitCode } = runParse(["--plan", "   "])
+  expect(exitCode).toBeNull()
+  expect(args?.planFile).toBe("   ")
+})
+```
+
+So a user can pass `--plan "   "` and `props.planFile` becomes `"   "` (3 spaces). The `||` fallback does **not** catch this — `"   "` is truthy. Every site listed in the inventory will try to read a file whose name is 3 spaces, and:
+
+- `path.resolve("   ")` returns the CWD (Bun treats whitespace-only as "current directory" in some file APIs; in others, `Bun.file("   ").exists()` returns `false`).
+- `Bun.write("   ", content)` writes to the CWD with the literal name `"   "` — a real file, hidden in `ls`.
+- `promptContent.replaceAll("{{PLAN_FILE}}", "   ")` replaces the placeholder with 3 spaces, so the LLM prompt instructs the model to "Read    fully" — visibly broken output.
+
+The `||` was presumably added to defend against `""`, but it does not defend against the realistic edge case (`"   "`). This is **Finding 1.1.A's downstream consequence** — the same bug surfaces at 8 call sites because none of them re-validate the resolved path.
+
+#### Finding 16.3.A — LOW — `props.planFile || DEFAULTS.PLAN_FILE` repeated at 8 sites
+
+**Problem.** The 1-line expression `props.planFile || DEFAULTS.PLAN_FILE` (or the `args.planFile` variant) appears 8 times across `App.tsx` (6) and `index.tsx` (2). Each site independently re-derives the same value. The duplication is **mechanical** (one line × 8 sites) and **uniform** (every site uses the same expression with no variation). A future change to the resolution rule (e.g. "if `planFile` starts with `~`, expand to `$HOME`") would require editing 8 sites instead of 1.
+
+**Where.** `src/App.tsx:521, 576, 592, 609, 792, 838` and `src/index.tsx:137, 338`.
+
+**Proposed fix.** Add a small pure helper to `src/lib/plan-file.ts` (new file, matches the `lib/api.ts` / `lib/chaos.ts` pattern):
+
+```ts
+// src/lib/plan-file.ts
+import { DEFAULTS } from "./constants"
+
+/**
+ * Resolve the plan file path. The CLI parser guarantees a non-empty
+ * string in `planFile`, so this is effectively a typed accessor that
+ * also defends against a future refactor that makes the field optional.
+ * Trims whitespace-only values down to the default — see Finding 1.1.A.
+ */
+export function resolvePlanFile(planFile: string | undefined): string {
+  if (!planFile || !planFile.trim()) {
+    return DEFAULTS.PLAN_FILE
+  }
+  return planFile
+}
+```
+
+Call sites collapse from 1 line to 1 line (no savings in line count) but the resolution rule lives in **one place**:
+
+```ts
+// before
+const planPath = props.planFile || DEFAULTS.PLAN_FILE
+
+// after
+const planPath = resolvePlanFile(props.planFile)
+```
+
+Why bother, then, if the line count is unchanged?
+
+1. **Centralized policy.** A future change to the resolution rule (whitespace trim, `~` expansion, relative-to-CWD normalization) becomes a 1-file change instead of an 8-file change.
+2. **Type widening.** The helper accepts `string | undefined`, so a future refactor that makes `CLIArgs.planFile` optional (e.g. for the `--create-plan` flow that may not need a pre-existing plan) does not require updating every call site.
+3. **Testability.** `resolvePlanFile` is pure and unit-testable: `resolvePlanFile("")` → `"PLAN.md"`, `resolvePlanFile("   ")` → `"PLAN.md"`, `resolvePlanFile("x.md")` → `"x.md"`, `resolvePlanFile(undefined)` → `"PLAN.md"`. The current 8 inline expressions cannot be unit-tested in isolation.
+
+**Severity: LOW.** Not a bug. The duplication is shallow (1 line × 8 sites = 8 lines) and every site is correct in production. The refactor is for **policy centralization** and **forward-compatibility**, not for line count or correctness.
+
+**Counter-argument.** A 1-line expression is so simple that inlining it is arguably clearer than indirection. The 8 sites are not duplicated logic — they are duplicated **data access**, and the data is a string field. Mitigation: if the helper is adopted, give it a one-line docstring that explains the whitespace-trim behavior (Finding 1.1.A) so the policy is visible at the helper definition, not at every call site.
+
+#### Finding 16.3.B — LOW — `AppProps extends CLIArgs` makes the `||` type-unjustified
+
+**Problem.** `AppProps extends CLIArgs` (`src/App.tsx:88`), and `CLIArgs.planFile: string` (`src/types.ts:83`). At the type level, `props.planFile` is **always a `string`**, never `undefined`. The `|| DEFAULTS.PLAN_FILE` fallback is therefore type-unjustified — the type system has already proven the field is non-optional and (per `parseArgs`) non-empty.
+
+The `||` is **defensive code in a typed language**: it exists to handle a case the type system has ruled out. In TypeScript with strict mode, this is a code smell — it suggests the author was uncertain about the type and added a runtime guard "just in case". The 8 sites all carry the same uncertainty.
+
+**Where.** All 8 sites in the inventory.
+
+**Proposed fix.** Two options:
+
+1. **Adopt 16.3.A** (the `resolvePlanFile` helper). The helper accepts `string | undefined` for forward-compat; the call sites can keep the `||`-shape for now, or simplify to `resolvePlanFile(props.planFile)` and let the helper do the work.
+
+2. **Drop the `||`** at all 8 sites and rely on the type. The expression becomes `props.planFile` (or `args.planFile`), and the runtime guard is removed. This is the most aggressive option: it requires auditing that **no test or programmatic caller** ever constructs an `AppProps` / `CLIArgs` with `planFile: ""` or `planFile: undefined`. A search of the test suite shows:
+
+   - `src/lib/cli-args.test.ts:50, 950, 1179` — all use `planFile: DEFAULTS.PLAN_FILE` or `planFile: "tasks.md"` (both non-empty).
+   - `src/App.tsx` does not construct an `AppProps` literal; it receives props from `index.tsx` which receives them from `parseArgs`.
+   - `src/index.tsx:325-335` passes `args` (from `parseArgs`) directly to `App({ ...args })`. No manual construction.
+
+   So `planFile: ""` is **not constructed anywhere in the codebase**. The `||` is dead code at every site. Option 2 is safe to apply **if** the resolution rule stays at "if non-empty, use it; if empty, fall back to default" — i.e. if 16.3.A's whitespace-trim behavior is **not** adopted.
+
+**Severity: LOW.** Type-system nit. The `||` is harmless and the bug it would prevent (a `CLIArgs` with empty `planFile`) cannot be constructed. The cleanup is for **clarity** (the type already says the field is non-optional — the `||` argues with the type) and for **code review** (a future change to `CLIArgs.planFile` becomes a "8 sites still assume the type" landmine).
+
+#### Finding 16.3.C — INFO — Whitespace-only `planFile` is not caught by the `||` (Finding 1.1.A downstream)
+
+**Problem.** As described above, `parseArgs` accepts `--plan "   "` and sets `planFile = "   "`. The `|| DEFAULTS.PLAN_FILE` fallback does not catch this — `"   "` is truthy. The result is that 8 call sites will operate on a path of 3 spaces, with the user-visible effects:
+
+- `parsePlanFile("   ")` — likely returns the empty-plan structure (no progress) or throws; the TUI shows "0 of 0 tasks" until the first SSE `todo_updated` event.
+- `Bun.file("   ").exists()` — likely returns `false`; the startup log says "Plan file check: exists=false".
+- `promptContent.replaceAll("{{PLAN_FILE}}", "   ")` — the LLM prompt says "Read    fully" with 3 spaces where the path should be; the model may fail to find the plan or interpret the instruction incorrectly.
+- `Bun.write("   ", plan)` — writes a real file named `   ` (3 spaces) in the CWD; invisible in `ls` without `-A`.
+
+This is **not a new finding** — `requireValue`'s whitespace acceptance is **Finding 1.1.A (MEDIUM)**, documented in `MEJORAS.md` (cross-reference). 16.3.C is the **inventory** of where that bug's downstream effects land, so the fix (if/when 1.1.A is patched) is centralized.
+
+**Where.** All 8 sites in the inventory are affected equally.
+
+**Proposed fix.** If 16.3.A is adopted, the `resolvePlanFile` helper is the natural place to add the whitespace-trim defense:
+
+```ts
+export function resolvePlanFile(planFile: string | undefined): string {
+  if (!planFile || !planFile.trim()) {
+    return DEFAULTS.PLAN_FILE
+  }
+  return planFile
+}
+```
+
+This makes 16.3.C a **side-effect fix** of 16.3.A — the helper centralizes both the existing `||` behavior **and** the whitespace defense in one place. Patching `requireValue` directly (the root-cause fix for 1.1.A) is preferred, but if that fix is deferred, the helper at least contains the blast radius to 1 file.
+
+**Severity: INFO.** Not a new bug; cross-reference to Finding 1.1.A. The audit value is **mapping the surface area** of the existing bug.
+
+#### Test coverage gap — INFO
+
+No test exercises the App/index.tsx resolution sites directly. The 8 sites are all "trust the input" — they assume `props.planFile` is well-formed because `parseArgs` produced it. If 16.3.A is adopted, the helper becomes unit-testable:
+
+```ts
+// src/lib/plan-file.test.ts
+import { describe, expect, it } from "bun:test"
+import { resolvePlanFile } from "./plan-file"
+import { DEFAULTS } from "./constants"
+
+describe("resolvePlanFile", () => {
+  it("returns the input when it is a non-empty non-whitespace string", () => {
+    expect(resolvePlanFile("PLAN.md")).toBe("PLAN.md")
+    expect(resolvePlanFile("plans/weekly.md")).toBe("plans/weekly.md")
+    expect(resolvePlanFile("-")).toBe("-")  // lone-dash is a valid filename
+  })
+
+  it("falls back to DEFAULTS.PLAN_FILE for empty string", () => {
+    expect(resolvePlanFile("")).toBe(DEFAULTS.PLAN_FILE)
+  })
+
+  it("falls back to DEFAULTS.PLAN_FILE for undefined", () => {
+    expect(resolvePlanFile(undefined)).toBe(DEFAULTS.PLAN_FILE)
+  })
+
+  it("falls back to DEFAULTS.PLAN_FILE for whitespace-only (Finding 1.1.A downstream)", () => {
+    expect(resolvePlanFile("   ")).toBe(DEFAULTS.PLAN_FILE)
+    expect(resolvePlanFile("\t\n")).toBe(DEFAULTS.PLAN_FILE)
+  })
+})
+```
+
+These four tests pin down the resolution rule and document the whitespace-trim behavior at the helper definition. The 8 call sites become trusted consumers of a tested primitive.
+
+#### Verification result
+
+- **Two LOW findings** (16.3.A — extract a `resolvePlanFile` helper to centralize the 8-site resolution rule; 16.3.B — the `||` is type-unjustified because `CLIArgs.planFile: string` is non-optional).
+- **One INFO-level cross-reference** (16.3.C — whitespace-only `planFile` is not caught by `||`; cross-references Finding 1.1.A and maps the downstream surface area).
+- **One INFO-level test-coverage note** (the 8 sites are untested in isolation; the proposed helper is unit-testable in 4 cases).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+
+The duplication is **shallow and uniform** — every site uses the same 1-line expression with no variation. The audit value is mostly **documenting why the `||` exists** (defensive, but unreachable via `parseArgs`), **pointing at the centralization opportunity** (16.3.A), and **mapping the surface area of the existing whitespace bug** (16.3.C → Finding 1.1.A). The fix is a 5-line helper plus 4 unit tests; the cleanup is optional and depends on whether the team wants to keep the `||` as a visible type-system argument or drop it in favor of the type assertion.

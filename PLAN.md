@@ -169,7 +169,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Identify and document duplicated error handling patterns in `handleIterationError` and SSE `onSessionError`
 - [x] Identify and document duplicated client creation pattern (`createClient(url)` called in many places)
-- [ ] Identify and document duplicated plan file path resolution (`props.planFile || DEFAULTS.PLAN_FILE` appears multiple times)
+- [x] Identify and document duplicated plan file path resolution (`props.planFile || DEFAULTS.PLAN_FILE` appears multiple times)
 - [ ] Identify and document duplicated session ID resolution (`sessionId() || lastSessionId()`)
 - [ ] Identify and document any unnecessary re-renders caused by signal reads in effects that don't depend on those signals
 - [ ] Audit `createClient` cache: verify the eviction policy (oldest half) is correct and the cache doesn't grow unbounded in long sessions with many server restarts
