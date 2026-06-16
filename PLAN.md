@@ -89,7 +89,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: SSE `onSessionIdle` ignores idle events from stale sessions — confirm this matches the behavior in `onSessionError`
 - [x] Verify: SSE reconnection threshold (6 attempts) triggers a server restart — is this configurable?
 - [x] Verify: `sse.reconnect()` is called on wake, on watchdog recovery, and on server restart — no double-reconnection issues?
-- [ ] Verify: heartbeat is recorded on every SSE event type (todo_updated, file_edited, step_finish, tool_use, message_text, reasoning) — confirm no events are missed
+- [x] Verify: heartbeat is recorded on every SSE event type (todo_updated, file_edited, step_finish, tool_use, message_text, reasoning) — confirm no events are missed
 
 ## Phase 8 — Crash Recovery & Persistence
 

@@ -9624,3 +9624,166 @@ Phase 18 (test coverage) item.
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+### 7.6 — Verify heartbeat is recorded on every SSE event type (todo_updated, file_edited, step_finish, tool_use, message_text, reasoning)
+
+PLAN.md 7.6: "Verify: heartbeat is
+recorded on every SSE event type
+(todo_updated, file_edited, step_finish,
+tool_use, message_text, reasoning) —
+confirm no events are missed."
+
+**Status: COMPLETE — VERIFIED. All six
+enumerated events trigger a heartbeat.
+The three SSE events that do not
+(session.created, session.idle,
+session.error) omit the heartbeat
+deliberately and are correct. No new
+findings beyond the existing 7.1.F
+(LOW — `onAnyEvent` declared but not
+registered).**
+
+#### Heartbeat coverage — VERIFIED
+
+The `heartbeat` helper is a one-line
+closure defined at `App.tsx:300`:
+
+```ts
+/** Feed the watchdog a heartbeat from any real session-progress SSE event. */
+const heartbeat = () => watchdog.recordHeartbeat()
+```
+
+which delegates to
+`useWatchdog.recordHeartbeat()`
+(`useWatchdog.ts:128-138`) — sets
+`lastHeartbeatAt = clock.monotonicNow()`,
+resets `recoveryAttempts` to 0, and
+transitions health to `HEALTHY` if it
+wasn't already.
+
+A full grep for `heartbeat(` in `src/`
+returns exactly six call sites, all in
+the `useSSE({...})` handler block at
+`App.tsx:444-565`, one per enumerated
+event:
+
+| # | Event | Handler in `useSSE.ts` | Callsite in `App.tsx` | Heartbeat? | What it proves |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `todo.updated` | `onTodoUpdated` (line 388-396) | 509 | **Yes** | Model is updating its task plan; live work in progress. |
+| 2 | `file.edited` | `onFileEdited` (line 398-401) | 518 | **Yes** | Model wrote to disk; live work in progress. Also re-parses `PLAN.md` if that file is the one edited (line 521-529). |
+| 3 | `step-finish` (from `message.part.updated`) | `onStepFinish` (line 443-448) | 532 | **Yes** | A model turn completed; the next turn is about to start, so the silence window must reset before the next long pause. |
+| 4 | `tool-use` / `tool` (from `message.part.updated`) | `onToolUse` (line 425-431) | 544 | **Yes** | Model invoked a tool; the (potentially slow) tool call is the strongest live-progress signal. Dedupe-gated on `seenPartIds` so the same tool isn't counted twice. |
+| 5 | `text` (from `message.part.updated`) | `onMessageText` (line 432-437) | 556 | **Yes** | Model is streaming text. Dedupe-gated on `seenPartIds`. |
+| 6 | `reasoning` (from `message.part.updated`) | `onReasoning` (line 438-442) | 561 | **Yes** | Model is reasoning. Dedupe-gated on `seenPartIds`. |
+
+All six are wired. The
+`useSSE.test.ts` test file (21 cases)
+exercises `classifySessionError` only;
+the wiring itself is verified by direct
+file read.
+
+#### Events that omit heartbeat — VERIFIED correct
+
+Three SSE events in the switch at
+`useSSE.ts:339-466` are NOT wired to
+heartbeat in App.tsx. Each is correct:
+
+| Event | Hook callsite | App.tsx handler | Why no heartbeat |
+| --- | --- | --- | --- |
+| `session.created` | `useSSE.ts:340-357` | `onSessionCreated` at `App.tsx:449-453` | The FIRST event of a fresh iteration, fired before any model progress. The iteration driver separately calls `watchdog.notifyIterationStart()` at `App.tsx:824` (right after `iteration_started` dispatch at line 822), which sets `lastHeartbeatAt = clock.monotonicNow()` and transitions to `HEALTHY`. A heartbeat in the SSE handler would be redundant and is intentionally omitted. |
+| `session.idle` | `useSSE.ts:359-367` | `onSessionIdle` at `App.tsx:491-507` | Idle means the session finished. The handler calls `watchdog.notifyIdle()` at `App.tsx:503`, which is the correct reset (it zeroes `recoveryAttempts` and sets `HEALTHY`). A `recordHeartbeat` would do the same thing for the `lastHeartbeatAt` field but miss the explicit semantic of "iteration is over." `notifyIdle` is the right tool here. |
+| `session.error` | `useSSE.ts:369-386` | `onSessionError` at `App.tsx:454-489` | An error path. Branches to either `enterCooldown` (line 477) or an `error` state dispatch (line 482-488). Neither of those needs a heartbeat reset: the cooldown timer is its own clock; the error state transitions the loop out of `running`/`pausing`, which the watchdog treats as "not active" (see `useWatchdog.ts:215-219`). |
+
+#### Events with no App.tsx handler at all — VERIFIED non-impacting
+
+Two handler slots in the `SSEEventHandlers`
+interface have no `App.tsx`
+registration:
+
+| Handler | Hook fires for | App.tsx subscribes? | Heartbeat impact? |
+| --- | --- | --- | --- |
+| `onAnyEvent` | EVERY event (line 331-333) | **No** (Finding 7.1.F) | None. The handler is the post-filter "spy" slot used for dev tooling; not subscribing means no heartbeat is recorded via this path. The heartbeat is recorded by the per-type handlers that DO subscribe. |
+| `onSessionDiff` | `session.diff` (line 452-465) | **No** | None in practice. A `session.diff` event represents the aggregate of file edits in the session. The underlying edits each arrive as a `file.edited` event, which DOES trigger heartbeat at `App.tsx:518`. The `session.diff` event itself is redundant for progress-tracking; the hook exposes it for future consumers (e.g., a diff-summary UI), not the watchdog. |
+
+#### Cross-check with the heartbeat table already in 7.1
+
+Phase 7.1 (line 7254-7285) already
+documented the same handler-level
+heartbeat coverage table. This Phase 7.6
+audit is the focused PLAN.md task
+verifying the six specific event types
+the plan enumerates. The two tables
+agree on every entry. No new
+observations beyond the existing 7.1.F
+(LOW) finding that `onAnyEvent` is
+declared but not registered.
+
+#### Verifier checklist for Task 7.6
+
+- [x] `onTodoUpdated` at `App.tsx:509`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `onFileEdited` at `App.tsx:518`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `onStepFinish` at `App.tsx:532`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `onToolUse` at `App.tsx:544`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `onMessageText` at `App.tsx:556`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `onReasoning` at `App.tsx:561`
+  calls `heartbeat()` — verified by
+  direct file read.
+- [x] `heartbeat()` is the
+  one-line closure at `App.tsx:300`
+  delegating to
+  `watchdog.recordHeartbeat()` — verified.
+- [x] `recordHeartbeat()`
+  (`useWatchdog.ts:128-138`) updates
+  `lastHeartbeatAt = clock.monotonicNow()`,
+  zeros `recoveryAttempts`, and
+  transitions to `HEALTHY` if not
+  already — verified.
+- [x] The 3 events that omit heartbeat
+  (session.created, session.idle,
+  session.error) are each handled by a
+  different watchdog primitive
+  (`notifyIterationStart`, `notifyIdle`,
+  or no-op-by-leaving-running-state) —
+  the omission is correct, not a bug.
+- [x] `onSessionDiff` (no App.tsx
+  subscription) is redundant with
+  `file.edited` for progress purposes
+  — verified.
+- [x] `onAnyEvent` (Finding 7.1.F) is
+  the only LOW finding in this audit;
+  no new findings.
+
+#### Test-suite delta for Task 7.6
+
+No new tests added. The handler wiring
+is not unit-tested in isolation: the
+SSE hook itself depends on the Solid
+lifecycle and the `@opencode-ai/sdk`
+SSE client (see `docs/testing.md` —
+mocking `@opentui/solid` collides with
+the JSX runtime), and the App.tsx
+handler block is not extracted into a
+testable seam.
+
+A future test would refactor the six
+handler functions into a pure map
+(`{ eventType: (event) => () }`) and
+assert that each entry in the map
+calls the heartbeat. The refactor is
+straightforward but out of scope for
+this audit; the wiring is verified by
+direct file read.
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.
