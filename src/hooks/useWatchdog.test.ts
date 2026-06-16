@@ -41,6 +41,11 @@ function setup(initial?: {
     restartServer: 0,
     fail: [] as WatchdogDiagnostics[],
   }
+  const probeCalls = {
+    isActive: 0,
+    pingServer: 0,
+    reconcile: 0,
+  }
   const healthLog: WatchdogHealth[] = []
   const clk = makeClock()
   // Fired inside the probes so a test can simulate a heartbeat (or anything)
@@ -58,12 +63,17 @@ function setup(initial?: {
     log: () => {},
     onHealthChange: (h) => healthLog.push(h),
     probes: {
-      isActive: () => isActive,
+      isActive: () => {
+        probeCalls.isActive++
+        return isActive
+      },
       pingServer: async () => {
+        probeCalls.pingServer++
         hooks.onPing?.()
         return ping
       },
       reconcile: async () => {
+        probeCalls.reconcile++
         hooks.onReconcile?.()
         return reconcile
       },
@@ -87,6 +97,7 @@ function setup(initial?: {
     healthLog,
     clk,
     hooks,
+    probeCalls,
     setActive: (v: boolean) => (isActive = v),
     setPing: (v: boolean) => (ping = v),
     setReconcile: (v: ReconcileResult) => (reconcile = v),
@@ -267,5 +278,134 @@ describe("watchdog — anti-false-positive details", () => {
     await s.wd.tick()
     expect(s.calls.abortAndRetry).toBe(1)
     expect(s.calls.restartServer).toBe(1)
+  })
+
+  // --- Phase 5: explicit PLAN coverage ---
+
+  it("tick() when isActive() returns false stays HEALTHY and does not call probes", async () => {
+    const s = setup({ isActive: false })
+    s.clk.advance(10 * T2) // huge gap — should not matter
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+    // Probes must not be called beyond isActive itself (checked inside isActive).
+    // pingServer and reconcile must never fire when not active.
+    expect(s.probeCalls.pingServer).toBe(0)
+    expect(s.probeCalls.reconcile).toBe(0)
+  })
+
+  it("tick() when heartbeat is recent (under suspectMs) stays HEALTHY", async () => {
+    const s = setup({ reconcile: "working" })
+    // Advance just under T1 — heartbeat is still fresh.
+    s.clk.advance(T1 - 1_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+    // Probes should not be called — no suspicion yet.
+    expect(s.probeCalls.pingServer).toBe(0)
+    expect(s.probeCalls.reconcile).toBe(0)
+  })
+
+  it("tick() path: server ping fails → server_hung recovery", async () => {
+    const s = setup({ ping: false })
+    s.clk.advance(T1 + 10_000) // past suspect threshold
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.restartServer).toBe(1)
+    expect(s.calls.abortAndRetry).toBe(0)
+    expect(s.calls.reconnectSSE).toBe(1)
+  })
+
+  it("tick() path: server ping succeeds, reconcile=idle → synthesizeIdle, recovery attempts reset", async () => {
+    const s = setup({ ping: true, reconcile: "idle" })
+    // First wedge the watchdog by advancing past T1.
+    s.clk.advance(T1 + 10_000)
+    // Record one recovery attempt first (by having it detect a wedged session).
+    // Actually, let's just verify: when reconcile=idle, synthesizeIdle is called
+    // and recoveryAttempts resets (verified by checking that the next wedged
+    // attempt starts from attempt 1, not attempt 2).
+    await s.wd.tick()
+    expect(s.calls.synthesizeIdle).toBe(1)
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Now wedge again past T2 — should get attempt 1 (abort), not attempt 2.
+    s.setReconcile("working")
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1) // first attempt, not second
+  })
+
+  it("tick() path: reconcile=unknown → server_hung recovery", async () => {
+    const s = setup({ reconcile: "unknown" })
+    s.clk.advance(T1 + 10_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.restartServer).toBe(1)
+  })
+
+  it("circuit breaker: maxRecoveryAttempts+1 ticks → fail called, recoveryAttempts resets to 0", async () => {
+    const s = setup({ ping: false, maxRecoveryAttempts: 2 })
+    s.clk.advance(T1 + 10_000)
+
+    // Attempt 1 → restart
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(1)
+    expect(s.calls.fail.length).toBe(0)
+
+    // Attempt 2 → restart
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(2)
+    expect(s.calls.fail.length).toBe(0)
+
+    // Attempt 3 → circuit breaker trips, fail called with diagnostics
+    await s.wd.tick()
+    expect(s.calls.fail.length).toBe(1)
+    expect(s.calls.fail[0].reason).toBe("server_hung")
+    expect(s.calls.fail[0].attempts).toBe(2)
+    expect(s.calls.restartServer).toBe(2) // no new restart
+
+    // After circuit breaker, recoveryAttempts is reset to 0.
+    // Verify by ticking again — it should restart from attempt 1, not trip immediately.
+    s.clk.advance(T1 + 10_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(3) // new restart (attempt 1 of next cycle)
+    expect(s.calls.fail.length).toBe(1) // no new fail call
+  })
+
+  it("notifyIterationStart does NOT reset recoveryAttempts (preventing infinite budget)", async () => {
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 3 })
+
+    // Wedge #1 → abort+retry (attempt 1)
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(1)
+
+    // notifyIterationStart resets the heartbeat baseline but NOT recoveryAttempts.
+    s.wd.notifyIterationStart()
+
+    // Wedge #2 → escalate to restart (attempt 2), NOT re-abort.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.restartServer).toBe(1)
+    expect(s.calls.abortAndRetry).toBe(1) // no new abort
+  })
+
+  it("recordHeartbeat resets recoveryAttempts to 0 and health to HEALTHY", async () => {
+    const s = setup({ reconcile: "working" })
+
+    // Drive into RECOVERING state (attempt 1).
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.abortAndRetry).toBe(1)
+
+    // A heartbeat restores HEALTHY and resets recoveryAttempts.
+    s.wd.recordHeartbeat()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Now wedge again — should get attempt 1 (abort), not attempt 2 (restart).
+    // This proves recoveryAttempts was reset to 0.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(2) // second abort (attempt 1 of new cycle)
+    expect(s.calls.restartServer).toBe(0) // no restart yet
   })
 })

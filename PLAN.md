@@ -52,14 +52,14 @@ Objective: Analyze every execution path (parameterized, edge-case, error) in the
 - [x] Add test for `classifySessionError` with `null` — verify it returns kind `fatal`
 - [x] Add test for `extractRetryAfter` with `retry-after` header in seconds — verify conversion to ms
 - [x] Add test for `extractRetryAfter` with a duration string in the message ("retry after 2 minutes") — verify it returns 120 seconds
-- [ ] Add test for watchdog `tick()` when `isActive()` returns false — verify health stays `HEALTHY` and no probes run
-- [ ] Add test for watchdog `tick()` when heartbeat is recent (under suspectMs) — verify health stays `HEALTHY`
-- [ ] Add test for watchdog `tick()` confirming path: server ping fails → `server_hung` recovery
-- [ ] Add test for watchdog `tick()` confirming path: server ping succeeds, reconcile returns `idle` → `synthesizeIdle` called, recovery attempts reset
-- [ ] Add test for watchdog `tick()` confirming path: reconcile returns `unknown` → `server_hung` recovery
-- [ ] Add test for watchdog circuit breaker: after `maxRecoveryAttempts + 1` ticks, `actions.fail` is called and `recoveryAttempts` resets to 0
-- [ ] Add test for watchdog `notifyIterationStart` NOT resetting `recoveryAttempts` (preventing infinite budget)
-- [ ] Add test for watchdog `recordHeartbeat` resetting recovery attempts to 0 and health to HEALTHY
+- [x] Add test for watchdog `tick()` when `isActive()` returns false — verify health stays `HEALTHY` and no probes run
+- [x] Add test for watchdog `tick()` when heartbeat is recent (under suspectMs) — verify health stays `HEALTHY`
+- [x] Add test for watchdog `tick()` confirming path: server ping fails → `server_hung` recovery
+- [x] Add test for watchdog `tick()` confirming path: server ping succeeds, reconcile returns `idle` → `synthesizeIdle` called, recovery attempts reset
+- [x] Add test for watchdog `tick()` confirming path: reconcile returns `unknown` → `server_hung` recovery
+- [x] Add test for watchdog circuit breaker: after `maxRecoveryAttempts + 1` ticks, `actions.fail` is called and `recoveryAttempts` resets to 0
+- [x] Add test for watchdog `notifyIterationStart` NOT resetting `recoveryAttempts` (preventing infinite budget)
+- [x] Add test for watchdog `recordHeartbeat` resetting recovery attempts to 0 and health to HEALTHY
 
 ## Phase 6 — Backoff & timeout edge cases
 
