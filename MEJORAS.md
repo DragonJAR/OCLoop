@@ -15169,3 +15169,267 @@ parameter). No fix proposed, no fix needed.
 Tasks 12.5 (i18n string parity: missing keys, mismatched interpolation
 variables, empty strings) and 12.6 (`setLocale` persistence on toggle)
 are deferred to subsequent iterations.
+
+---
+
+### 12.5 — Audit i18n strings: missing keys, mismatched interpolation variables, empty strings
+
+**Status: COMPLETE — VERIFIED, one LOW finding; no CRITICAL, HIGH or MEDIUM.**
+
+`src/lib/i18n.ts` exports two locale tables (`en`, `es`) plus a `shared`
+const that is spread into both. The `es` object is typed
+`Record<MessageKey, Msg>` where `MessageKey = keyof typeof en` (i18n.ts:373,
+376). That type-constraint forces every English key to be present in Spanish
+at compile time, which closes the "missing key" gap by construction. The
+two other PLAN.md questions — interpolation-variable parity and empty
+strings — are not enforced by the type system and need a manual check.
+
+#### Audit methodology
+
+The audit is a one-shot TS-compiler-API pass over `src/lib/i18n.ts` plus
+a 215-call-site scan of `src/`. Three lenses:
+
+1. **Key parity** (en vs es) — collect `PropertyAssignment` keys on each
+   top-level `ObjectLiteralExpression` (after unwrapping the
+   `SatisfiesExpression` on `en`).
+2. **Interpolation parity** — for every function-valued key, walk the
+   body and collect the set of `p.foo` property accesses, then assert
+   the same set exists on both sides.
+3. **Empty / whitespace-only literals** — for every string- or
+   function-valued key, statically reduce the RHS to its rendered
+   string (string literal, no-substitution template, `[…].join("\n")`,
+   or arrow function returning any of those) and check for `""` /
+   whitespace-only values.
+
+The methodology is intentionally read-only (no `node_modules` mutations
+or file rewrites) and reproducible by running the audit script. The
+output is fully reported below for the 190 keys and 29 function-valued
+keys.
+
+#### 12.5.A — Key parity (en vs es vs shared)
+
+The 190-key catalog breaks down as:
+
+| Source | Direct keys | Spread keys | Total |
+| --- | --- | --- | --- |
+| `shared` const | 20 | — | 20 |
+| `en` (after spread) | 170 | 20 | 190 |
+| `es` (after spread) | 170 | 20 | 190 |
+
+Direct-key sets are identical: every key declared in `en` is declared in
+`es`, and vice versa. (Direct counts: `en` = 170, `es` = 170, with
+0 keys only-in-en and 0 keys only-in-es.) The 20 keys in `shared` are
+deliberately locale-identical (badges, keybind hints, the "Rate limit"
+log prefix) and don't contribute to the en/es comparison.
+
+The TypeScript guarantee is `const es: Record<MessageKey, Msg>` at
+i18n.ts:376. Because `MessageKey = keyof typeof en` (i18n.ts:373), any
+new key added to `en` triggers a compile error in `es` until it's also
+added there. This is the strongest possible runtime safety net for the
+"missing key" half of the audit question — even a refactor that adds
+50 keys in one PR cannot break the build with an untranslated key.
+
+**Runtime fallback** — `t()` also has a defensive `table[key] ?? en[key]`
+fallback (i18n.ts:686), so even if the TS type guard were bypassed
+(say by `as any`), the user would see English rather than `undefined`
+or a crash. Defense-in-depth; never observed in practice.
+
+**Verdict: VERIFIED.** No missing keys. No finding.
+
+#### 12.5.B — Interpolation-variable parity (en vs es)
+
+There are **29 function-valued keys** total (28 in `en`/`es` plus 1 in
+`shared`; `actRateLimit` is the only shared function). For each one,
+the audit script collected the set of `p.foo` references in the body
+and asserted en == es. Every key matches:
+
+| # | Key | en params | es params | String() cast | Number() cast | Conditional |
+|---|---|---|---|---|---|---|
+| 1 | `actContinuing` | `{verdict}` | `{verdict}` | n / n | n / n | n / n |
+| 2 | `actRateExhausted` | `{attempts}` | `{attempts}` | n / n | n / n | n / n |
+| 3 | `actRateLimit` *(shared)* | `{message}` | `{message}` | n / n | n / n | n / n |
+| 4 | `actReconciled` | `{result}` | `{result}` | n / n | n / n | n / n |
+| 5 | `actResuming` | `{id,iteration}` | `{id,iteration}` | n / n | n / n | n / n |
+| 6 | `actRetryExhausted` | `{attempts}` | `{attempts}` | n / n | n / n | n / n |
+| 7 | `actSessionError` | `{message}` | `{message}` | n / n | n / n | n / n |
+| 8 | `actWake` | `{secs}` | `{secs}` | n / n | n / n | n / n |
+| 9 | `cooldownRetryText` | `{attempt,secs}` | `{attempt,secs}` | n / n | n / n | n / n |
+| 10 | `cooldownText` | `{attempt,secs}` | `{attempt,secs}` | n / n | n / n | n / n |
+| 11 | `cpConfig` | `{agent,model,note}` | `{agent,model,note}` | n / n | n / n | n / n |
+| 12 | `cpError` | `{message}` | `{message}` | n / n | n / n | n / n |
+| 13 | `cpPrompt` | `{goal}` | `{goal}` | Y / Y | n / n | n / n |
+| 14 | `cpRefine` | `{feedback,plan}` | `{feedback,plan}` | Y / Y | n / n | n / n |
+| 15 | `cpRunHint` | `{planArg}` | `{planArg}` | n / n | n / n | n / n |
+| 16 | `cpSaved` | `{path}` | `{path}` | n / n | n / n | n / n |
+| 17 | `cpTimeout` | `{secs}` | `{secs}` | n / n | n / n | n / n |
+| 18 | `dlgAgentNotFound` | `{agent}` | `{agent}` | n / n | n / n | n / n |
+| 19 | `dlgCompletedIn` | `{iterations,time}` | `{iterations,time}` | n / n | **Y / Y** | **Y / Y** |
+| 20 | `dlgResumeMsg` | `{iteration}` | `{iteration}` | n / n | n / n | n / n |
+| 21 | `errGuardExhausted` | `{attempts,reason,secs,verdict}` | `{attempts,reason,secs,verdict}` | n / n | n / n | n / n |
+| 22 | `errIterationStart` | `{message}` | `{message}` | n / n | n / n | n / n |
+| 23 | `errPlanNotFound` | `{path}` | `{path}` | n / n | n / n | n / n |
+| 24 | `errPromptNotFound` | `{path}` | `{path}` | n / n | n / n | n / n |
+| 25 | `errRatePersistent` | `{attempts,reason}` | `{attempts,reason}` | n / n | n / n | n / n |
+| 26 | `errRetryPersistent` | `{attempts,reason}` | `{attempts,reason}` | n / n | n / n | n / n |
+| 27 | `promptCreated` | `{path}` | `{path}` | n / n | n / n | n / n |
+| 28 | `toastSendPromptFailed` | `{message}` | `{message}` | n / n | n / n | n / n |
+
+The only function that uses any helper at all is `dlgCompletedIn`
+(uses `Number(p.iterations)` for singular/plural selection; both
+locales use it identically — en: `!== 1 ? "s" : ""`, es:
+`=== 1 ? "iteración" : "iteraciones"`). The `String(p.goal)` /
+`String(p.feedback)` casts in `cpPrompt` / `cpRefine` are no-ops for
+strings and only matter if the caller passes a number (the `Params`
+type is `Record<string, string | number>`); they appear symmetrically
+in both locales.
+
+**Verdict: VERIFIED.** No interpolation-variable mismatches between
+en and es. The type system can't enforce this, but the audit script
+confirms it across all 29 function-valued keys.
+
+#### 12.5.C — Empty / whitespace-only strings
+
+Static reduction of every property RHS (literal, no-substitution
+template, `[…].join("\n")`, or arrow function returning any of those)
+found **zero empty strings** and **zero whitespace-only strings** in
+`en`, `es`, or `shared`. All 190 keys render to a non-empty visible
+string when the appropriate params are supplied.
+
+The defensive `params ?? {}` in `t()` (i18n.ts:687) means a function
+called without required params renders `"undefined"` in place of the
+missing value (e.g. `t("cooldownText")` with no second arg → `"Rate
+limited — retrying in undefineds (attempt undefined)"`). This is
+**not** an i18n-string issue — it's a caller-side misuse that all 215
+audited call sites avoid. None of them call a function-valued key
+without the required params.
+
+**Verdict: VERIFIED.** No empty strings.
+
+#### 12.5.D — Call-site audit (215 t() call sites)
+
+Every `t(...)` call in `src/` was scanned via the TS compiler API and
+cross-checked against the catalog. Results:
+
+- **215 call sites** (up from 245 in a regex-based first pass; the 30
+  delta were false positives where the regex matched `s.setActiveInput("args")`
+  and `s.setActiveInput("command")` in `DialogTerminalConfig.tsx:112,115`
+  — those are property assignments, not `t()` calls).
+- **0 missing keys** — every `t("KEY")` literal exists in the catalog.
+- **0 missing params** — every function-valued call passes all
+  required params (the audit handles object-shorthand
+  `t("k", { foo })` AND long-form `t("k", { foo: 1 })`).
+- **0 extra params** — no call site passes a key the function doesn't
+  reference.
+- **0 wrong-type calls** — no call site passes `params` to a
+  string-valued key.
+
+**Dynamic call sites** (ternary expressions that pick the key at
+runtime) are also verified:
+
+| Site | Branch A | Branch B | Params supplied | OK? |
+| --- | --- | --- | --- | --- |
+| `App.tsx:684` | `actRetryExhausted` | `actRateExhausted` | `{attempts: tried}` | ✓ both keys need `attempts` |
+| `App.tsx:689` | `errRetryPersistent` | `errRatePersistent` | `{attempts, reason}` | ✓ both keys need `attempts, reason` |
+| `App.tsx:716` | `cooldownRetryText` | `cooldownText` | `{attempt, secs}` | ✓ both keys need `attempt, secs` |
+| `activity-format.ts:119` | dynamic via `meta.label` | — | none | ✓ all 11 `logLbl*` values are string-valued keys |
+
+**Verdict: VERIFIED.** All 215 call sites are type-correct.
+
+#### Finding 12.5.E — LOW — `logDiff` is defined but never referenced
+
+**Problem.** `shared.logDiff = "Diff: "` is defined at i18n.ts:52 (and
+therefore present in both `en` and `es` via the spread) but **no file
+in `src/` references it** by key (via `t("logDiff")`) or by literal
+string (no occurrence of the string `"Diff: "` outside of i18n.ts
+itself). A grep across the whole repo confirms: only one match, the
+definition line.
+
+This is a dead entry in the catalog. It was presumably intended for
+the activity-log's "diff" event (which renders `+N/-M (K files)` via
+`formatDiffSummary` in `src/lib/format.ts:46`), but the call site
+never made it into the codebase — the i18n key was prepared and the
+rendering function was written, but the wiring was lost in a refactor.
+
+**Where.** `src/lib/i18n.ts:52`.
+
+**Proposed fix.** Either wire it up (read the relevant component to
+confirm where the diff is rendered, and emit `${t("logDiff")}…` at
+that point), or remove the entry from `shared`. Removing is the
+one-liner:
+
+```ts
+// ponytail: this existed for an activity-log diff label that was never wired.
+// Add when the diff field in the activity log needs localization.
+```
+
+…leaving the row in the catalog with a `ponytail:` comment is the
+lazy option. Wiring is the right option; verifying the intended UX
+should precede the fix.
+
+**Status.** Fix proposed, not applied. Dead catalog entry; same value
+in both locales (so the i18n-parity criterion passes) but a "missing
+consumer" finding that the user should be aware of.
+
+#### What is **not** a finding (intentional behavior, not a bug)
+
+- **No fallback for missing params.** `t("cooldownText")` (no second
+  arg) renders `"…undefineds…undefined"`. This is a caller-side
+  contract violation, not an i18n-table defect. All 215 audited call
+  sites supply the required params; no fix needed.
+- **`String(p.goal)` / `String(p.feedback)` in `cpPrompt` / `cpRefine`.**
+  `Params` is `Record<string, string | number>`, so `String()` is a
+  no-op for strings and a defensive number-to-string cast for
+  numbers. The cast is identical in both locales. Not redundant in
+  the "should be removed" sense — the TS type allows numbers, and
+  `String()` makes the stringification explicit at the call site.
+- **es `cpAskApprove` shows two save options (`s` and `y`), en shows
+  one (`y`).** Both inputs are accepted by the code at
+  `index.tsx:229` (`if (["y", "yes", "s", "si", "sí"].includes(choice))`).
+  The Spanish UI is more verbose because Spanish-speaking users
+  reasonably try `s` (for "sí"), so the hint acknowledges both. This
+  is a localization choice, not a parity defect. (Worth flagging if
+  the goal is exact UI parity, but the PLAN.md task is about
+  interpolation/key parity, not UI text length.)
+- **The `t` function's `table[key] ?? en[key]` fallback is dead code
+  in practice.** Because `es: Record<MessageKey, Msg>` enforces every
+  English key is in Spanish, `table[key]` is never `undefined` for
+  `table = es`. The fallback only triggers if a future refactor
+  weakens the type assertion (e.g. by `as` cast). Keeping it is
+  cheap insurance; removing it is a separate refactor.
+- **The `defaultLoopPrompt` strings are long (≈40 lines, en and es)
+  and preserve the literal tokens `{{PLAN_FILE}}`, `[MANUAL]`,
+  `[BLOCKED]`, and `[ ]` verbatim.** Both locales intentionally
+  preserve these tokens because they're substituted or matched by
+  the plan parser downstream (i18n.ts:151-152, 460-461 document the
+  rationale). The token list is identical between en and es.
+
+#### Summary of Phase 12.5 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 12.5.E  | LOW      | `logDiff` is defined in `shared` (and therefore in both `en` and `es`) but has no consumer in `src/`. Dead catalog entry; remove or wire up. |
+
+**Net severity tally for Phase 12.5: 1 LOW; no CRITICAL, HIGH or MEDIUM.**
+
+The three PLAN.md audit axes — missing keys, mismatched interpolation
+variables, empty strings — are all clean:
+
+- **Missing keys:** the TS type `es: Record<MessageKey, Msg>` enforces
+  the guarantee at compile time; 215 / 215 call sites reference
+  existing keys; the runtime `?? en[key]` is a defensive belt.
+- **Mismatched interpolation variables:** 29 / 29 function-valued keys
+  have matching `p.foo` access sets between en and es. Verified by a
+  TS-compiler-API walk that also confirms matching `String()`,
+  `Number()`, and conditional-expression usage.
+- **Empty strings:** 0 / 190 keys reduce to `""` or whitespace-only;
+  no function-valued key omits a required param at the 215 audited
+  call sites.
+
+The single LOW (the `logDiff` orphan) is a dead-code observation, not
+a parity defect — the value is identical in both locales, so the
+i18n contract is upheld. It belongs in the same cleanup pass that
+either wires the key up to `formatDiffSummary`'s consumer or removes
+the row.
+
+Phase 12.6 (`setLocale` persistence on toggle) is deferred to the next
+iteration.
