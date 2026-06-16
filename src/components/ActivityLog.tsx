@@ -104,8 +104,10 @@ export function ActivityLog(props: ActivityLogProps) {
           },
         }}
         flexGrow={1}
+        // NO flexDirection here: the scrollbox root is `row` ([ content | scrollbar ]).
+        // Overriding it to "column" stacked the scrollbar BELOW the logs (the split-screen
+        // bug). Log lines still stack vertically — the inner content node is a column.
         style={{
-          flexDirection: "column",
           paddingLeft: 2,
           paddingBottom: 2,
           overflow: "hidden",
