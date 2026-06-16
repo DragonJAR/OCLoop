@@ -1,5 +1,6 @@
-import { For, createMemo, Show } from "solid-js";
+import { For, createMemo, Show, createEffect } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
+import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme } from "../context/ThemeContext";
 import type { ActivityEvent } from "../hooks/useActivityLog";
 import { formatActivityLine, formatTime, type ColorKey } from "../lib/activity-format";
@@ -61,6 +62,19 @@ export function ActivityLog(props: ActivityLogProps) {
 
   const displayEvents = createMemo(() => props.events);
 
+  // Scrollbar auto-hide: OpenTUI shows the vertical bar only when the log
+  // overflows (built-in recalculateVisibility). We must NOT force `visible` —
+  // that pins the bar on and reserves an empty right column. The user's toggle
+  // still hard-hides it: resetVisibilityControl() re-enables auto, visible=false
+  // forces it off. (verticalScrollBar is public; see @opentui/core ScrollBox.)
+  let sb: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    const bar = sb?.verticalScrollBar;
+    if (!bar) return;
+    if (props.showScrollbar ?? true) bar.resetVisibilityControl();
+    else bar.visible = false;
+  });
+
   return (
     <box
       style={{
@@ -72,21 +86,22 @@ export function ActivityLog(props: ActivityLogProps) {
     >
       {/* Event list - scrollable, most recent at bottom */}
       <scrollbox
+        ref={(r) => (sb = r)}
         stickyScroll={true}
         stickyStart="bottom"
         // Bottom-anchor: content node fills the viewport and pushes rows to the
         // bottom, so few logs hug the panel below (empty space above, terminal-style).
         // Many logs scroll + sticky-to-bottom as before (scroll logic is separate).
         contentOptions={{ flexGrow: 1, justifyContent: "flex-end" }}
+        // No `visible` here: OpenTUI auto-hides the bar unless the log overflows,
+        // so it never reserves an empty column. Force-hide (toggle) is done via the
+        // ref effect above. No viewportOptions.paddingRight — that reserved a column
+        // even when the bar was hidden; the bar's own column separates when shown.
         verticalScrollbarOptions={{
-          visible: props.showScrollbar ?? true,
           trackOptions: {
             foregroundColor: theme().border,
             backgroundColor: theme().backgroundElement,
           },
-        }}
-        viewportOptions={{
-          paddingRight: props.showScrollbar ? 1 : 0,
         }}
         flexGrow={1}
         style={{
