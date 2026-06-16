@@ -23430,3 +23430,195 @@ preserved across refactors.
 - **No CRITICAL or HIGH findings.**
 - **No code changes applied** (audit-only per PLAN.md acceptance
   criteria).
+
+### 17.5 — `Bun.write()` permission-error handling in `validatePrerequisites`
+
+**Status: COMPLETE — VERIFIED. 1 LOW finding.**
+
+PLAN.md 17.5: "Verify: `Bun.write()` in `validatePrerequisites` handles
+permission errors."
+
+The previous Phase 17.4 audited `Bun.file().exists()` and
+`Bun.file().text()` (read-side). This entry audits the write side —
+specifically the `Bun.write()` call inside `validatePrerequisites` that
+auto-creates the default loop-prompt file. The goal: confirm that a
+permission-denied, read-only-filesystem, or similar write failure is
+surfaced as a clear user-visible error and not as a raw stack trace.
+
+#### The single relevant call site
+
+`validatePrerequisites` is the only place `Bun.write()` is invoked
+during the pre-TUI startup path. The relevant block at
+`src/index.tsx:46-56`:
+
+```ts
+const promptFile = Bun.file(args.promptFile)
+const promptExists = await promptFile.exists()
+if (!promptExists) {
+  if (args.promptFile === DEFAULTS.PROMPT_FILE) {
+    await Bun.write(args.promptFile, t("defaultLoopPrompt"))
+    console.log(t("promptCreated", { path: args.promptFile }))
+  } else {
+    console.error(t("errPromptNotFound", { path: args.promptFile }))
+    process.exit(1)
+  }
+}
+```
+
+When the user is on the default path (`.loop-prompt.md`) and the file
+is missing, OCLoop auto-creates it with a localized starter template.
+When the user supplied a custom `--prompt <path>` that's missing, the
+helper hard-errors with a localized message and exits 1.
+
+#### What can go wrong with the auto-create path
+
+A `Bun.write()` failure on the default path can be triggered by:
+
+1. **Permission denied (EACCES).** The CWD is owned by another user
+   (common when running OCLoop from a path inside another user's home
+   directory, or from a system path like `/opt`, `/usr/local`, etc.) and
+   the current process lacks write permission.
+2. **Read-only filesystem (EROFS).** The CWD is on a read-only mount
+   (a snap/flatpak sandbox, a mounted ISO, a CI workspace, a
+   `chmod -w` test fixture).
+3. **Parent directory missing (ENOENT).** A user-created
+   `OCLOOP_PROMPT_FILE` (or an aggressive `rm -rf` of a subdirectory)
+   leaves the parent gone. `Bun.write` throws ENOENT.
+4. **Disk full (ENOSPC).** A few bytes would not normally fail, but a
+   hard quota (cgroups, macOS sandbox, container limit) can.
+5. **Path is a directory (EISDIR).** A user (or test fixture) has
+   replaced the expected file with a directory of the same name.
+6. **Path is a symlink to a non-existent target (ENOENT through
+   symlink).**
+
+In all six cases, `Bun.write` rejects with a Node-style error
+(`SystemError` in Bun, with `code`, `errno`, `path`, and `syscall`
+fields). The current code does NOT catch this rejection. It propagates
+out of `validatePrerequisites`, out of `main()`, and is caught by:
+
+```ts
+main().catch((error) => {
+  console.error("Fatal error:", error)
+  process.exit(1)
+})
+```
+
+at `src/index.tsx:358-361`.
+
+#### Comparison with the two control cases
+
+The behavior above contrasts with the two adjacent control cases in
+the same function:
+
+- **PLAN.md missing (`src/index.tsx:37-40`)** — Hard error:
+  `console.error(t("errPlanNotFound", { path: args.planFile }))` then
+  `process.exit(1)`. Localized, single-line, no stack trace.
+- **`--prompt` non-default path missing (`src/index.tsx:53-55`)** —
+  Same pattern: localized error + `process.exit(1)`.
+- **`.loop-prompt.md` auto-create (`src/index.tsx:49-52`)** — NO
+  try/catch around `Bun.write`. A rejection propagates to
+  `main().catch()` and produces a raw stack trace.
+
+The asymmetry is the only defect. The auto-create path is the one
+place in `validatePrerequisites` where a write can fail, and it is
+the one place that doesn't handle that failure cleanly.
+
+#### Finding 17.5.A — LOW — `Bun.write()` auto-create in `validatePrerequisites` propagates errors to `main().catch()`
+
+**Problem.** As described above. The user sees:
+
+```
+Fatal error: SystemError: EACCES: permission denied, open '/some/path/.loop-prompt.md'
+```
+
+…instead of a localized:
+
+```
+Cannot create prompt file '/some/path/.loop-prompt.md': permission denied
+```
+
+This is the same error-UX class as Finding 17.4.B (the two `exists()`
+calls in the same function), but on the write side. Both are LOW
+because:
+
+- The user runs OCLoop in their own CWD, where the auto-create
+  almost always succeeds.
+- The error is technically clear (Bun's SystemError format is
+  readable), just not localized.
+- The terminal is NOT corrupted at this point (TUI hasn't started),
+  so the user can fix the issue (chmod, chown, change CWD) and retry.
+
+**Where.** `src/index.tsx:50` — the `await Bun.write(args.promptFile,
+t("defaultLoopPrompt"))` call inside `validatePrerequisites`.
+
+**Proposed fix.** Wrap the `Bun.write` in a try/catch that prints a
+localized error and exits with code 1, mirroring the pattern used for
+the `errPlanNotFound` / `errPromptNotFound` cases three lines away:
+
+```ts
+try {
+  await Bun.write(args.promptFile, t("defaultLoopPrompt"))
+  console.log(t("promptCreated", { path: args.promptFile }))
+} catch (err) {
+  const reason = err instanceof Error ? err.message : String(err)
+  console.error(
+    t("errCannotCreatePrompt", { path: args.promptFile, reason }),
+  )
+  process.exit(1)
+}
+```
+
+A new i18n key `errCannotCreatePrompt` would be added to both `en.ts`
+and `es.ts` (the existing `errPlanNotFound` and `errPromptNotFound`
+keys are the template). This brings the auto-create path in line with
+the rest of the function and gives the user a single-line actionable
+error message.
+
+**Cross-reference.** This finding is the write-side counterpart to
+Finding 17.4.B (the read-side counterpart on the same `exists()`
+calls). Both should be fixed together if/when the audit transitions
+from documentation to code change — they're a single 15-line edit.
+
+**Severity: LOW.** Defect class is the same as 17.4.B; impact and
+likelihood are also comparable. The user almost never runs into this
+on a working project, but when they do, the diagnostic is poorer than
+necessary.
+
+#### `Bun.write()` at `src/index.tsx:230` (runCreatePlan) — VERIFIED HANDLED
+
+For completeness, the other production `Bun.write()` site is at
+`src/index.tsx:230` inside `runCreatePlan`:
+
+```ts
+if (["y", "yes", "s", "si", "sí"].includes(choice)) {
+  await Bun.write(planPath, plan.endsWith("\n") ? plan : plan + "\n")
+  console.log(t("cpSaved", { path: planPath }))
+  ...
+}
+```
+
+This site IS inside the function-level `try { ... } catch (err) { ... }`
+at `src/index.tsx:249-253`, which logs the error via
+`t("cpError", { message: ... })` and sets `process.exitCode = 1` —
+and the `finally` block at `:254-260` always closes the server. So
+permission errors here produce a localized user-visible error and
+clean teardown. **Verified correct.**
+
+This is a useful control case: the same defect class (unguarded
+`Bun.write()`) is present in `runCreatePlan`'s surrounding code
+(everything between `try {` at line 163 and `} catch` at line 249 IS
+guarded), so we know the project's existing pattern for handling
+this. The `validatePrerequisites` site is the lone outlier.
+
+#### Verification result
+
+- **2 production `Bun.write()` sites** in `src/index.tsx` (lines 50
+  and 230).
+- **1 site is properly handled** (line 230, inside `runCreatePlan`'s
+  function-level try/catch).
+- **1 site is NOT properly handled** (line 50, the auto-create in
+  `validatePrerequisites`). Finding 17.5.A.
+- **No CRITICAL or HIGH findings.** The defect is LOW — same severity
+  as 17.4.B (read-side counterpart).
+- **No code changes applied** (audit-only per PLAN.md acceptance
+  criteria).
