@@ -1986,10 +1986,65 @@ calls (era 1756), 25 files, 328 ms — +1 test, +2 expects. Commit
 
 ### Mejora 48 — Finding 12.2.C — LOW — Stale `.tmp` files not cleaned up after `writeFileSync` ok but `renameSync` failed
 
-- [ ] Evaluar la mejora 48 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 48 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 48 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 48 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 48 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 48 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 48 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 48 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14576-14602`): el bloque `writeFile → rename` de
+`saveConfig` (`config.ts:336-359`) deja el tmp huérfano si
+`rename` falla tras un `writeFile` exitoso. El audit (`MEJORAS.md:14721`)
+marca esta finding como "ya parte del wrapper de 12.2.A" — y de
+hecho Mejora 46 (commit `671581c`) ya implementó la fix
+estructural: el `catch` de `saveConfig` (líneas 347-359) ya
+incluye el best-effort `unlinkSync(tmpPath)` con su propio
+inner `try/catch` y la guarda `existsSync(tmpPath)` para el
+caso "el write falló antes de crear el tmp", exactamente
+como pide el audit. El docstring de `saveConfig` (líneas
+320-321) lo nombra explícitamente: *"Side effect: also closes
+Finding 12.2.C (stale `.tmp` cleanup) via the best-effort
+`unlinkSync` in the catch path."*. Y el test "cleans up the
+orphan .tmp file on a failed save (Finding 12.2.C)"
+(`config.test.ts:307-325`) ya pinea el comportamiento —
+pero la implementación actual del test tiene un bug
+introducido por Mejora 47: Mejora 47 randomizó el suffix del
+tmp (de `.tmp` fijo a `.<randomhex>.tmp`), pero el test
+sigue asserting `expect(existsSync(path + ".tmp")).toBe(false)`,
+que ahora es **tautología** — el path fijo `path + ".tmp"`
+nunca existió (es el tmp random el que se crea/borra), así
+que el assert pasa por la razón equivocada y no detecta
+ninguna regresión en el `unlinkSync` real. La fix propuesta
+es estrictamente la mínima útil: cambiar la aserción a un
+dir-scan glob `readdirSync(configDir).filter((e) =>
+e.endsWith(".tmp"))`, el mismo patrón que Mejora 47
+estableció en el test "overwrites an existing config
+atomically (no leftover .tmp)" (`config.test.ts:245-257`,
+líneas 252-253) y que Mejora 47 volvió a usar en "uses a
+randomized tmp suffix per save (Finding 12.2.B)" (líneas
+259-271). El comentario del test se extiende para
+documentar la regresión del assert pre-fix y el source
+del nuevo patrón.
+
+Implementación: 1 edit puntual en
+`src/lib/config.test.ts:307-328` (cambio de 1 línea de
+assertion + 6 líneas de comentario que nombran el source
+`MEJORAS.md Finding 12.2.C`, la regresión introducida por
+Mejora 47, y el cross-reference al patrón de Mejora 47).
+Cero cambios al production code de `config.ts` — el
+`unlinkSync` en el catch y la guarda `existsSync` ya están
+en su sitio desde Mejora 46. Cero impacto en el camino
+feliz (la nueva assertion es funcionalmente equivalente
+para los happy paths: no hay `.tmp` en el dir ni antes ni
+después del fix). Cero impacto en los otros 32 tests del
+file. `readdirSync` ya estaba importado en la línea 2
+(sin cambios de imports). Sin nuevos archivos, sin
+nuevos tipos, sin nuevas funciones. Sin nuevos tests — el
+test existente (con la assertion corregida) ahora sí pinea
+la post-condición real ("ningún `*.tmp` en el config dir
+tras un save fallido"). `bun test` verde: 730 pass / 1
+skip / 0 fail, 1758 expect() calls, 25 files, 328 ms —
+sin cambio en el conteo (era 730 antes del fix).
 
 ### Mejora 49 — Finding 12.2.D — LOW — `existsSync(configDir)` is redundant; `mkdirSync({ recursive: true })` is idempotent
 

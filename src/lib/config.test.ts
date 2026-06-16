@@ -309,8 +309,12 @@ describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
       (typeof process.getuid === "function" && process.getuid() === 0),
   )("cleans up the orphan .tmp file on a failed save (Finding 12.2.C)", () => {
     // Side effect: the `catch` block in `saveConfig` best-effort `unlinkSync`s
-    // the tmp so a failed `writeFileSync`/`renameSync` doesn't leak `ocloop.json.tmp`
-    // into the user's `~/.config/ocloop/`.
+    // the tmp so a failed `writeFileSync`/`renameSync` doesn't leak
+    // `ocloop.json.<randomhex>.tmp` into the user's `~/.config/ocloop/`.
+    // The previous `existsSync(path + ".tmp")` probe became a tautology after
+    // Finding 12.2.B randomized the suffix; scan the dir for any `*.tmp`
+    // leftover instead, matching the convention from the 12.2.B round-trip
+    // test above.
     const configDir = join(dir, "ocloop")
     mkdirSync(configDir, { recursive: true })
     chmodSync(configDir, 0o555)
@@ -321,6 +325,7 @@ describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
     }
     const path = getConfigPath()
     expect(existsSync(path)).toBe(false) // no main file created
-    expect(existsSync(path + ".tmp")).toBe(false) // no tmp left behind
+    const tmps = readdirSync(configDir).filter((e) => e.endsWith(".tmp"))
+    expect(tmps).toEqual([]) // no tmp left behind
   })
 })
