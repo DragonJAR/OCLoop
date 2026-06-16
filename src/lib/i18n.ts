@@ -148,7 +148,7 @@ const en = {
   // are NOT translated: they are substituted/matched downstream, language-agnostic.
   defaultLoopPrompt:
     [
-      "You run EXACTLY ONE iteration of this loop, then stop. Do ONE task (or one coupled batch within a single phase), then end your turn. Do NOT continue to the next task in this session - OCLoop re-invokes you in a fresh session for the next task. The only exception is the Completion check, where you exit the whole run.",
+      "You run EXACTLY ONE iteration of this loop, then stop. Do ONE task (or one coupled batch within a single phase), then end your turn. Do NOT continue to the next task in this session - OCLoop re-invokes you in a fresh session for the next task, and ends the run itself once every task is done.",
       "",
       "Before starting:",
       "1. Run `git status`. A previous iteration may have been interrupted.",
@@ -175,15 +175,13 @@ const en = {
       "4. Commit with a descriptive message, following the commit rules in AGENTS.md (one logical change; never `git add .`; respect `.gitignore`). NEVER push.",
       "",
       "After completion:",
-      "1. In {{PLAN_FILE}}, mark completed items `[x]`.",
+      "1. In {{PLAN_FILE}}, mark a task `[x]` ONLY when it is definitely complete — its changes verified (checks/tests pass) and committed. Never mark `[x]` preemptively or when unsure; leave it `[ ]`, or use `[BLOCKED: <reason>]` if it cannot proceed.",
       "2. If you discovered EXTERNAL knowledge (API behavior, library quirks, external repo details), write the detail to `docs/<topic>.md` (create `docs/` if missing) and add a one-line `@docs/...` reference under AGENTS.md `## Research` (matching the format already there). Keep AGENTS.md lean - it loads every session; detail stays in `docs/`.",
       "3. If you learned something about THIS PROJECT by trial and error (build/test commands, gotchas), record it concisely under AGENTS.md `## Project Operations`.",
       "4. If you could not complete a task (permissions, external service, needs human input), add `[BLOCKED: <reason>]` to its line in {{PLAN_FILE}} and do not retry it this iteration.",
       "",
       "Completion check:",
-      "- If every non-[MANUAL] task in {{PLAN_FILE}} is `[x]` or `[BLOCKED]`, append to the end of {{PLAN_FILE}}:",
-      "  `<plan-complete>SUMMARY_OF_WORK_DONE_AND_REMAINING_MANUAL_TASKS</plan-complete>`",
-      "  then exit the session.",
+      "- When every non-[MANUAL] task in {{PLAN_FILE}} is `[x]` or `[BLOCKED]`, just end your turn — OCLoop detects completion automatically (you do NOT need to write any completion marker).",
       "- Otherwise, end your turn now - OCLoop starts the next task in a fresh session.",
       "- Do NOT skip automatable tasks: if a task looks hard but doable, attempt it.",
     ].join("\n") + "\n",
@@ -463,7 +461,7 @@ const es: Record<MessageKey, Msg> = {
   // etiquetas) NO se traducen: se sustituyen/buscan aguas abajo, agnósticos al idioma.
   defaultLoopPrompt:
     [
-      "Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea. La única excepción es la verificación de Finalización, donde sales de toda la ejecución.",
+      "Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea, y termina la ejecución por sí mismo una vez que todas las tareas estén hechas.",
       "",
       "Antes de empezar:",
       "1. Ejecuta `git status`. Una iteración anterior pudo haber sido interrumpida.",
@@ -490,15 +488,13 @@ const es: Record<MessageKey, Msg> = {
       "4. Haz commit con un mensaje descriptivo, siguiendo las reglas de commit de AGENTS.md (un cambio lógico; nunca `git add .`; respeta `.gitignore`). NUNCA hagas push.",
       "",
       "Después de completar:",
-      "1. En {{PLAN_FILE}}, marca los elementos completados como `[x]`.",
+      "1. En {{PLAN_FILE}}, marca una tarea como `[x]` SOLO cuando esté definitivamente completa — sus cambios verificados (las comprobaciones/tests pasan) y commiteados. Nunca marques `[x]` de forma preventiva ni si tienes dudas; déjala en `[ ]`, o usa `[BLOCKED: <reason>]` si no puede avanzar.",
       "2. Si descubriste conocimiento EXTERNO (comportamiento de una API, peculiaridades de una librería, detalles de un repo externo), escribe el detalle en `docs/<topic>.md` (crea `docs/` si no existe) y añade una referencia `@docs/...` de una línea bajo `## Research` en AGENTS.md (con el mismo formato que ya tiene). Mantén AGENTS.md ligero - se carga en cada sesión; el detalle vive en `docs/`.",
       "3. Si aprendiste algo sobre ESTE PROYECTO por prueba y error (comandos de build/test, gotchas), regístralo de forma concisa bajo `## Project Operations` en AGENTS.md.",
       "4. Si no pudiste completar una tarea (permisos, servicio externo, necesita intervención humana), añade `[BLOCKED: <reason>]` a su línea en {{PLAN_FILE}} y no la reintentes en esta iteración.",
       "",
       "Verificación de Finalización:",
-      "- Si cada tarea no-[MANUAL] en {{PLAN_FILE}} está en `[x]` o `[BLOCKED]`, añade al final de {{PLAN_FILE}}:",
-      "  `<plan-complete>SUMMARY_OF_WORK_DONE_AND_REMAINING_MANUAL_TASKS</plan-complete>`",
-      "  y luego sal de la sesión.",
+      "- Cuando cada tarea no-[MANUAL] en {{PLAN_FILE}} esté en `[x]` o `[BLOCKED]`, simplemente termina tu turno — OCLoop detecta la finalización automáticamente (NO necesitas escribir ningún marcador de finalización).",
       "- En caso contrario, termina tu turno ahora - OCLoop inicia la siguiente tarea en una sesión nueva.",
       "- NO omitas tareas automatizables: si una tarea parece difícil pero factible, inténtala.",
     ].join("\n") + "\n",
