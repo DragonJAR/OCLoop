@@ -2094,10 +2094,80 @@ cambio en el conteo, era 730 antes del fix). Commit `d9a4628`.
 
 ### Mejora 50 — Finding 12.2.E — LOW — `saveConfig` returns `void` but all four callers `await` it
 
-- [ ] Evaluar la mejora 50 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 50 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 50 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 50 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 50 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 50 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 50 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 50 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14636-14663`): la firma
+`saveConfig(config: OcloopConfig): void` (`config.ts:230`) usa
+`node:fs` síncrono (`writeFileSync`, `renameSync`, `unlinkSync`),
+así que los 4 call sites de `App.tsx` (líneas 1515, 1537, 1711,
+1725 — `onConfigSelect`, `onConfigCustom`, `toggle_scrollbar`,
+`toggle_language`) que usan `await saveConfig(newConfig)` están
+haciendo un `await` sobre un valor no-Promise. El motor resuelve
+eso en el próximo microtask, así que la semántica observable es
+correcta hoy — pero un mantenedor futuro que refactorice a
+`fs/promises` obtendrá un cambio semántico silencioso en los
+call sites (el `setOcloopConfig` que vive justo después ya no
+será síncrono con el save).
+
+La opción "cheaper" del audit
+(`MEJORAS.md:14658-14659` — "drop the `await` from the call sites
+(4 edits) and document in the function header that it is
+synchronous") es estrictamente la correcta vs. la opción "cheap"
+(wrap en `async` + convertir I/O a `fs/promises`) por dos razones
+concretas:
+
+1. **Rompe un test pino existente.** El test
+   `"returns void and does not throw on the happy path"`
+   (`config.test.ts:273-278`, introducido por Mejora 46 /
+   commit `671581c`) pinea explícitamente
+   `expect(result).toBeUndefined()`. Una función `async` retorna
+   `Promise<undefined>`, no `undefined` — el test fallaría
+   inmediatamente. Adaptarlo a `expect(result).toBeInstanceOf(Promise)`
+   perdería el valor del pin ("el return es void") y abriría la
+   puerta a una regresión silenciosa. El test pinea el contrato
+   correcto: la función es síncrona, y el contrato debe
+   permanecer así.
+2. **Ponytail al máximo.** La opción "cheap" toca 1 función
+   + 4 call sites + 1 test = 6 sitios para un cambio que solo
+   arregla 1 site (el `await` que sobra). La opción "cheaper"
+   toca 4 call sites (drop `await`) + 1 docstring
+   (documentar el contrato síncrono) + 1 test comment (pinear
+   el contrato) = 6 edits puntuales en 3 archivos, sin cambiar
+   ninguna firma ni ningún I/O path. Cero impacto en runtime,
+   cero impacto en tests, cero impacto en el reducer, cero
+   impacto en la TUI.
+
+Implementación mínima: 4 ediciones en `src/App.tsx`
+(líneas 1515, 1537, 1711, 1725) que eliminan el `await` y
+añaden un comment de 2 líneas referenciando el finding + 1
+edición en `src/lib/config.ts:309-314` (nuevo párrafo al
+inicio del docstring que documenta el contrato síncrono y
+nombra el hazard "future refactor a fs/promises romperá los
+call sites"), + 1 línea añadida al trailer del docstring
+existente ("Finding 12.2.E (the function returns void, not
+Promise<void>…)") + 1 edit en `src/lib/config.test.ts:274-281`
+(extender el comment del test que pinea el contrato void).
+
+Cero cambios a la firma de `saveConfig` (`(OcloopConfig) => void`
+intacta), cero cambios a `loadConfig`, cero cambios a
+`validateConfigShape` / `resolveResilience` / `getConfigDir` /
+`getConfigPath` / `hasTerminalConfig`, cero impacto en los 4
+call sites semánticamente (la única diferencia observable es
+la ausencia del microtask delay: `setOcloopConfig` y
+`dialog.clear` corren en el mismo tick que `saveConfig` en
+vez de en el siguiente; el TUI no nota la diferencia porque
+ambos corren dentro del mismo `onSelect` callback). Cero
+cambio en el orden de operaciones en los 4 call sites
+(`saveConfig` siempre va antes de `setOcloopConfig`/`dialog.clear`,
+y el nuevo comment documenta el hazard para que un mantenedor
+no reactive el `await` pensando que es "más seguro").
+
+Cero impacto en tests (730 pass / 1 skip / 0 fail — sin
+cambio en el conteo, era 730 antes del fix). Commit `9b5b4d8`.
 
 ### Mejora 51 — Finding 12.3.A — MEDIUM — `pickDefined` skips `undefined` but NOT `null`
 
