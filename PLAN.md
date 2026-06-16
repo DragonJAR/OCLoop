@@ -708,10 +708,44 @@ cambio en el conteo).
 
 ### Mejora 23 — Finding 5.6.A — MEDIUM — Dashboard `cooldownText` always shows "Rate limited" even for transient cooldowns
 
-- [ ] Evaluar la mejora 23 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 23 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 23 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 23 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 23 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 23 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 23 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 23 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Finding 5.6.A tiene la misma causa raíz que Finding 5.1.A
+(la action `rate_limited` y el state `cooldown` no cargaban `kind`,
+y el Dashboard siempre elegía el copy de "Rate limited"). La fix del
+audit (`MEJORAS.md:4711-4729`) lista 6 pasos — los 5 de plomería
+(state shape, action shape, dispatch site, reducer forward, Dashboard
+read) más 1 de tests — y Mejora 16 (commit `9a8cb78`) los implementó
+todos:
+
+1. `src/types.ts:35` — `cooldown` state lleva `kind: "rate_limit" | "transient"` (requerido).
+2. `src/types.ts:79` — `rate_limited` action lleva `kind` opcional
+   (`?? "rate_limit"` en el reducer cubre el path `chaos_429`,
+   `App.tsx:1675`, que omite el campo).
+3. `src/App.tsx:762` — dispatch pasa `kind` desde `enterCooldown`.
+4. `src/hooks/useLoopState.ts:174` — reducer propaga
+   `action.kind ?? "rate_limit"` al state.
+5. `src/components/Dashboard.tsx:97-103` — memo `cooldownText` elige
+   `cooldownRetryText` si `state.kind === "transient"`, si no
+   `cooldownText` (exactamente la fórmula propuesta en
+   `MEJORAS.md:4726`).
+6. Tests: las 9 construcciones directas de `cooldown` en
+   `useLoopState.test.ts` se actualizaron con `kind: "rate_limit"`,
+   y 2 tests nuevos en líneas 516-548 pinean la propagación de
+   `kind: "transient"` y el default `"rate_limit"` cuando se omite.
+
+El commit `9a8cb78` se titula "Finding 5.1.A" porque ese fue el
+trigger del cambio (la falta del campo en el state machine), pero
+el user-facing gap que el audit nombra como Finding 5.6.A — el
+Dashboard mostrando "Rate limited" en un transient cooldown — es
+exactamente la pieza que ese commit cierra. Implementación mínima:
+anotación en este plan; cero cambios de código. `bun test` verde:
+680 pass / 0 fail, 1680 expect() calls, 323 ms — sin cambio en el
+conteo (era 680 antes de la anotación). Commit `docs(plan)`:
+pendiente.
 
 ### Mejora 24 — Finding 6.2.A — LOW — Duplicated predicate in `App.tsx` invites drift
 
