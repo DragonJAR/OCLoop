@@ -3977,3 +3977,188 @@ No new unit tests added. Rationale:
 across 21 files. No regressions.
 
 ---
+
+### 5.3 — `cooldownTicker` cleanup on cooldown resume
+
+**Status: COMPLETE — VERIFIED, one LOW finding.**
+
+The question: when the loop transitions out of `cooldown` (via
+`resume_cooldown` dispatch), are `cooldownTimer` and
+`cooldownTicker` cleaned up **before, during, or after** the
+dispatch? And what if the dispatch happens **before** the
+`cooldownTimer` setTimeout fires? Both timers are closure-bound
+`let`s (App.tsx:167-168) with `null` meaning "no live timer".
+
+#### All `resume_cooldown` dispatch sites (2)
+
+| Site | Line | What fires it | Cleared before dispatch? |
+| --- | --- | --- | --- |
+| `cooldownTimer` setTimeout callback | 742 | The resume timer itself, after `delayMs` ms elapse | **Yes (partial)** — `cooldownTimer = null` on line 740 (self-clear), but `cooldownTicker` is **not** cleared on this path |
+| `handleWake` | 215 | Sleep detector fires after `monotonicNow() >= st.resumeAt` | **Yes (full)** — `clearCooldownTimers()` at line 214 clears both `cooldownTimer` and `cooldownTicker` |
+
+The reducer at `useLoopState.ts:175-186` accepts the dispatch
+only from `cooldown` state; from any other state it is a
+no-op. The setTimeout callback re-checks the state on line 741
+(`if (loop.state().type === "cooldown")`) as a defense in
+depth — the reducer is the source of truth.
+
+#### Scenario A — normal `cooldownTimer` fires after `delayMs` (App.tsx:739-744)
+
+```
+t=0     : enterCooldown schedules cooldownTimer (delayMs) and cooldownTicker (250ms)
+t=250   : ticker tick — setCooldownRemainingMs(resumeAt - monotonicNow())
+t=500   : ticker tick — same
+  ...
+t=delayMs: cooldownTimer fires
+        : line 740  -> cooldownTimer = null   (self-clear)
+        : line 741  -> check loop.state().type === "cooldown" (yes)
+        : line 742  -> dispatch resume_cooldown
+        : reducer   -> state transitions cooldown -> running("")
+        : line 743  : setTimeout callback returns
+        : <- cooldownTicker is STILL RUNNING, with stale cooldownRemainingMs
+  ...
+t=delayMs+250: ticker tick (if remaining > 0) — sets a stale positive value
+  ...
+t=2*delayMs: ticker self-stops when resumeAt - monotonicNow() <= 0 (line 731-734)
+```
+
+**The two timers diverge for the entire `delayMs` window after
+the dispatch**: `cooldownTimer` is null (self-cleared),
+`cooldownTicker` is still live and still calling
+`setCooldownRemainingMs(remaining)` every 250ms.
+
+The Dashboard.tsx:96 short-circuit (`if (state.type !==
+"cooldown") return null`) hides the stale signal from the
+user. The signal itself stays positive and decrements for
+roughly `delayMs` ms (~30s with the default `backoffBaseMs=1000`
+and `backoffMaxMs=60000`), but the Dashboard's `cooldownText`
+memo returns `null` because the state is now `running`.
+
+#### Scenario B — `handleWake` fires while `cooldownTimer` is still pending (App.tsx:199-221)
+
+```
+t=0     : enterCooldown schedules cooldownTimer (delayMs) and cooldownTicker (250ms)
+t=gapMs : machine wakes from sleep, gapMs >> delayMs
+        : line 211  -> st.type === "cooldown", yes
+        : line 213  -> monotonicNow() >= st.resumeAt, yes
+        : line 214  -> clearCooldownTimers()   <- BOTH timers cleared
+        : line 215  -> dispatch resume_cooldown
+        : reducer   -> state transitions cooldown -> running("")
+        : <- cooldownTicker is GONE, cooldownTicker reference is null
+        : if the original cooldownTimer ever fires later:
+        :   line 740  -> cooldownTimer = null (idempotent)
+        :   line 741  -> check loop.state().type === "cooldown" -> false -> skip dispatch
+```
+
+**This is the "resume_cooldown dispatch happens before the
+setTimeout fires" case** mentioned in PLAN.md. The order is
+correct: `clearCooldownTimers()` is called on line 214
+**before** the dispatch on line 215. The dangling setTimeout
+that fires later is correctly absorbed by the `if
+(loop.state().type === "cooldown")` guard on line 741.
+
+#### Scenario C — `resume_cooldown` from a non-`cooldown` state (defense in depth)
+
+- The setTimeout callback (line 739-744) self-guards with `if
+  (loop.state().type === "cooldown")` before dispatching. If
+  the state has changed (e.g. user paused, hit an error,
+  completed the plan), the dispatch is skipped, the
+  `cooldownTimer` is already null (line 740), and the
+  `cooldownTicker` continues running until its time-based
+  self-stop. This is a leak only in the sense that the ticker
+  keeps ticking for `delayMs` ms after the user has moved on
+  — but it self-clears and the stale signal is invisible.
+- The reducer (useLoopState.ts:175-186) no-ops on
+  non-`cooldown` states, so even if a stray dispatch sneaks
+  through, the state is unchanged.
+
+#### Finding 5.3.A — LOW — `cooldownTicker` is not explicitly cleared on the regular resume path
+
+**Problem.** On the regular path (Scenario A), the
+`cooldownTimer` self-clears at App.tsx:740 but the
+`cooldownTicker` is left running until the time-based
+self-stop at line 731-734 fires. This is a latent symmetry
+gap: the two timers are siblings (one per `cooldownTicker`
+interval) but only one is cleaned up on the resume event.
+
+**Observable impact.** None today. The
+`cooldownRemainingMs` signal continues to update for
+`delayMs` ms after the dispatch, but the Dashboard
+short-circuits on `state.type !== "cooldown"`
+(Dashboard.tsx:96), so the user does not see the stale
+countdown. The ticker self-clears on the time-based
+condition. The reference (`cooldownTicker` closure variable)
+is overwritten on the next `enterCooldown` call
+(`cooldownTicker = setInterval(...)` on line 728) — the old
+interval is already stopped, so no leak.
+
+**Where.** `src/App.tsx:739-744` (resume setTimeout callback)
+— the `clearCooldownTimers()` call is missing from the
+success branch of the dispatch.
+
+**Proposed fix.** Add a single line to the setTimeout
+callback:
+
+```ts
+cooldownTimer = setTimeout(() => {
+  cooldownTimer = null
+  clearCooldownTimers()              // <-- new: ticker self-cleanup
+  if (loop.state().type === "cooldown") {
+    loop.dispatch({ type: "resume_cooldown" })
+  }
+}, delayMs)
+```
+
+This mirrors the `clearCooldownTimers` pattern used at
+`handleWake` (line 214), the exhaustion path (line 696), and
+`handleQuit` (line 974). The change is defensive: it makes
+the invariant "all cooldown state is cleared before the
+dispatch leaves `cooldown`" hold for *every* dispatch path,
+not just the externally-driven one.
+
+**Status.** Fix proposed, not applied. Latent; no observed
+misbehavior. Severity is LOW because the Dashboard hides the
+stale signal and the ticker self-resolves.
+
+#### Verifier checklist for Task 5.3
+
+- [x] `cooldownTimer` self-clears before the dispatch on the regular path (App.tsx:740, `cooldownTimer = null`) — verified.
+- [x] `cooldownTicker` is **not** explicitly cleared on the regular path (Finding 5.3.A) — verified by inspection; the next `enterCooldown` overwrites the reference and the interval is already stopped.
+- [x] `handleWake` calls `clearCooldownTimers()` *before* dispatching `resume_cooldown` (App.tsx:214-215) — verified, this is the "dispatch before setTimeout fires" case and is correct.
+- [x] The setTimeout callback self-guards with `if (loop.state().type === "cooldown")` (App.tsx:741) — verified, so a dangling timer after `handleWake`'s clear is absorbed.
+- [x] The reducer accepts `resume_cooldown` only from `cooldown` (useLoopState.ts:175-186) — confirmed by the test at `useLoopState.test.ts:535-546`.
+- [x] The Dashboard short-circuits on `state.type !== "cooldown"` (Dashboard.tsx:96) — confirmed; the stale `cooldownRemainingMs` signal is invisible during `running`.
+- [x] `cooldownTicker` self-stops on `remaining <= 0` (App.tsx:731-734) — confirmed; the stale signal eventually goes to 0 even if the dispatch happened early.
+
+#### Test-suite delta for Task 5.3
+
+No new unit tests added. Rationale:
+
+- The `resume_cooldown` reducer contract is already pinned by
+  `useLoopState.test.ts:535-546` ("resume_cooldown returns to
+  running with an empty session, same iteration") and
+  `:674-682` ("resume_cooldown from non-cooldown state
+  (running) is ignored") and the matrix test at
+  `:971-1000` ("resume_cooldown: from starting, ready,
+  running, pausing, paused, stopping, stopped, complete,
+  error, debug -> no-op").
+- The "setTimeout fires after `clearCooldownTimers`" scenario
+  is a closure-state interaction in App.tsx, not exercisable
+  in a unit test without a heavy mock harness. The
+  `resilience-integration.test.ts` covers the reducer
+  contract end-to-end with a stub `enterCooldown`, but does
+  not exercise closure-bound `let`s. Adding a dedicated
+  `App.test.tsx` for this scenario would re-state what the
+  reducer test + the line-by-line audit already constrain.
+- The proposed fix (Finding 5.3.A) — one-line
+  `clearCooldownTimers()` addition to the setTimeout
+  callback — is the right shape, but a test that verifies
+  "ticker reference is null after dispatch" is not
+  meaningful: the reference is closure-private and
+  short-lived (overwritten on the next `enterCooldown`),
+  and the observable contract is "Dashboard shows no
+  countdown in non-cooldown states", which is already
+  pinned by the Dashboard's own memo logic.
+
+`bun test` -> **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
