@@ -15431,5 +15431,301 @@ i18n contract is upheld. It belongs in the same cleanup pass that
 either wires the key up to `formatDiffSummary`'s consumer or removes
 the row.
 
-Phase 12.6 (`setLocale` persistence on toggle) is deferred to the next
-iteration.
+Phase 12.6 (`setLocale` persistence on toggle) follows below.
+
+---
+
+### 12.6 — Verify: `setLocale` persists to config file on toggle
+
+**Status: COMPLETE — VERIFIED, one INFO observation; no CRITICAL, HIGH, MEDIUM, or LOW finding.**
+
+The PLAN.md question is whether toggling the language via the command
+palette persists to disk and is reloaded on next startup. The audit
+traced three call sites and the atomic write path; behavior is correct
+on every observed path. The one observation worth recording is a
+**design contract** (persistence is the caller's responsibility, not
+`setLocale`'s), not a defect.
+
+#### Audit methodology
+
+Three call sites were traced:
+
+| # | File:line | Context | What it does |
+|---|-----------|---------|--------------|
+| 1 | `src/lib/i18n.ts:674-676` | `setLocale` definition | Updates the reactive `localeSignal` only. No I/O. |
+| 2 | `src/App.tsx:1570-1578` | Command-palette language toggle | Calls `setLocale`, spreads into `ocloopConfig`, calls `await saveConfig`. |
+| 3 | `src/index.tsx:315-316` | Startup resolution | Calls `loadConfig().language`, then `setLocale` with the resolved value. |
+
+#### 12.6.A — Toggle flow: VERIFIED, persists correctly
+
+`App.tsx:1570-1578` is the only user-facing toggle path (command palette
+`toggle_language` action, also surfaced via the "Language → Español" /
+"Idioma → English" entry). The body, abbreviated:
+
+```ts
+onSelect: async () => {
+  const next: Locale = getLocale() === "en" ? "es" : "en"
+  setLocale(next)                                   // i18n.ts:674
+  const newConfig = { ...ocloopConfig(), language: next }
+  setOcloopConfig(newConfig)                        // App.tsx (signal)
+  await saveConfig(newConfig)                       // config.ts:230
+  toast.show({ variant: "success", message: t("toastLanguageChanged") })
+  dialog.clear()
+}
+```
+
+`saveConfig` (config.ts:230-245) is the canonical atomic write:
+`writeFileSync` to `configPath + ".tmp"`, then `renameSync` to
+`configPath` (atomic on the same filesystem, so a reader never sees a
+half-written config). It also `mkdirSync({ recursive: true })` first, so
+the config directory is created on demand. Phase 12.2 verified the
+atomic-write contract; this task verifies that the language field
+traverses that path correctly.
+
+The four `saveConfig` call sites in `App.tsx` (1389, 1411, 1561, 1575)
+all follow the same shape (`...ocloopConfig()` spread + field override +
+`setOcloopConfig` + `await saveConfig`). The language toggle (1575) is
+the only one that also calls `setLocale`, because `localeSignal` is a
+separate signal from `ocloopConfig` (the latter carries the persisted
+form, the former carries the live UI binding). Both updates are
+sequenced before `await saveConfig` returns, so a crash between the two
+signals would not produce a "config says X, UI says Y" inconsistency:
+the only way the saved file lags the signal is if the `saveConfig`
+await itself fails (covered below).
+
+**Verdict: VERIFIED.** The toggle path persists the new language to
+disk via the same atomic-write helper every other config mutation uses.
+
+#### 12.6.B — Reload flow: VERIFIED, restores on startup
+
+`index.tsx:315-316` (the only call site that runs before the TUI mounts)
+is:
+
+```ts
+const cfgLang = loadConfig().language
+setLocale(isLocale(args.lang) ? args.lang : isLocale(cfgLang) ? cfgLang : "en")
+```
+
+Three-way precedence matches the documented contract (Phase 12.4
+verified `isLocale` is strict, so a hand-edited `"FR"` or `"en-US"`
+falls through to the next tier):
+
+1. **CLI `--lang`** wins if valid (`isLocale(args.lang) === true`).
+2. **Config `language`** wins if valid and no CLI override.
+3. **`"en"`** is the terminal default.
+
+The `setLocale` call is what bridges the persisted JSON value to the
+reactive signal that the TUI components read. Without it, the TUI would
+render in the default `"en"` until something else flipped the signal
+(nothing else does), and the persisted value would be silently ignored
+on every launch.
+
+A second `loadConfig` happens inside `App.tsx:421-423` (the `onMount`
+block) and re-seeds `ocloopConfig` from disk:
+
+```ts
+onMount(async () => {
+  const config = await loadConfig()
+  setOcloopConfig(config)
+  ...
+})
+```
+
+This is a *full* config reload — not just the language field — so any
+value persisted by `saveConfig` (terminal, scrollbar, language, etc.)
+is restored on the next launch. The language toggle path is therefore
+end-to-end correct: persist → reload → re-render.
+
+**Verdict: VERIFIED.** Reload correctly restores the persisted language
+on startup, in the right precedence order (CLI > config > default).
+
+#### 12.6.C — Failure-mode audit
+
+The audit enumerated the failure modes a `setLocale`-persists design
+should handle and confirmed each one:
+
+1. **`saveConfig` throws** (disk full, read-only mount, EACCES on
+   `mkdirSync`): the `await` at `App.tsx:1575` propagates to the
+   command-palette `onSelect`, which is async. The TUI has no top-level
+   error boundary around palette actions, so a thrown error would
+   surface as an unhandled-promise-rejection (caught by the
+   `unhandledRejection` handler in `index.tsx`). The persisted file
+   would remain on the **previous** language; the live signal would be
+   on the **new** language (because `setLocale` ran before the throw).
+   That is a transient inconsistency — the user sees Spanish/English
+   in this session, but the next launch reverts. This is the same
+   behavior as every other config mutation in `App.tsx` (scrollbar,
+   terminal select, terminal custom), so it is **a platform property
+   of the persistence layer, not a language-specific defect**. Phase
+   12.2.B (the "swallow errors" concern raised on `saveLoopState`)
+   applies symmetrically here. **No additional finding.**
+
+2. **`loadConfig` returns no `language` field** (fresh install, hand
+   edit removed the key): `cfgLang` is `undefined`. `isLocale(undefined)`
+   returns `false`, so the resolution falls through to `"en"`. Correct.
+
+3. **Persisted value is an invalid locale** (hand edit `"language":
+   "fr"`): `isLocale("fr")` returns `false`, resolution falls through
+   to `"en"`. The persisted `"fr"` is left on disk; the user sees
+   English in the TUI. This is a **silent fallback**, not a validation
+   warning. Phase 12.1.A proposes a `validateConfigShape` that would
+   log a warning and drop the bad field; the same fix would catch this.
+   **No language-specific finding**; the gap is the same one already
+   flagged for the rest of the config.
+
+4. **CLI `--lang` and persisted language disagree**: CLI wins (per the
+   precedence above). The persisted value is **not overwritten** by
+   this resolution — `saveConfig` is never called from `index.tsx`'s
+   startup path. So the persisted file retains the user's last saved
+   preference; a future launch without `--lang` would honor it. This
+   matches the documented contract ("CLI > config > default") and
+   is the right behavior (don't mutate the user's config file from
+   an implicit CLI override they may not have intended to persist).
+   **Verdict: intentional, no finding.**
+
+5. **Concurrent toggle** (user fires `toggle_language` twice in rapid
+   succession before the first `await saveConfig` resolves): the
+   second invocation reads `ocloopConfig()` which by that point
+   contains the *first* toggle's `language: next1` (because
+   `setOcloopConfig` runs synchronously before the await). The second
+   toggle computes `next2 = getLocale() === "en" ? "es" : "en"` from
+   the live signal, which was already updated to `next1` by the
+   first toggle, so `next2` is `next1 === "en" ? "es" : "en"`. The
+   second `setOcloopConfig` then spreads `ocloopConfig()` (which has
+   `language: next1`) and overrides to `language: next2`, then writes
+   to disk. The two `await saveConfig` calls **race** on the same
+   `configPath` — both write to `.tmp` and rename. On macOS/Linux
+   the rename is atomic per call, so the file ends with **whichever
+   `saveConfig` finishes last**, and that last finisher is the one
+   whose `setOcloopConfig` ran second. The net effect is that two
+   rapid toggles end on the original language, not the intended
+   "toggled twice" language. The in-memory signal and the on-disk
+   file remain consistent (the last write wins both), so there is no
+   silent inconsistency — the user just gets the opposite of what
+   they expected. This is a theoretical race; rapid double-toggle of
+   a binary choice is not a realistic interaction pattern (the toast
+   and the dialog-clear take longer than a human can press twice).
+   **Not a finding.**
+
+**Verdict: VERIFIED.** All four failure modes (save throw, missing
+field, invalid value, concurrent toggle) behave correctly or match
+existing platform-wide semantics.
+
+#### Finding 12.6.D — INFO — `setLocale` does not persist; persistence is the caller's contract
+
+**Observation.** `setLocale` (i18n.ts:674) updates the reactive
+`localeSignal` only. It does **not** call `saveConfig` and does **not**
+touch the file system. The single user-facing toggle path
+(`App.tsx:1570-1578`) compensates by calling `setLocale`, then
+spreading into `ocloopConfig`, then `await saveConfig`. The startup
+reload path (`index.tsx:315-316`) compensates by reading the persisted
+value first and feeding it to `setLocale`.
+
+This is a **deliberate decoupling**: `setLocale` is a UI binding, not
+a config mutation. Any future caller that calls `setLocale` directly
+without the surrounding `saveConfig` will update the in-memory
+locale for the current session but **not persist the choice** — the
+next launch reverts. Today, only two callers exist:
+
+| Caller | Persists? | OK? |
+|--------|-----------|-----|
+| `App.tsx:1572` (palette toggle) | Yes — `await saveConfig` at line 1575 | ✓ |
+| `index.tsx:316` (startup) | No — and should not (CLI > config precedence; mutating the file from an implicit CLI override would surprise the user) | ✓ |
+
+If a third caller is ever added (e.g. a `--lang es` flag that the user
+expects to persist as a default), the safe pattern is to call
+`setLocale` + `saveConfig({ ...ocloopConfig(), language: next })` in
+the same place, not to bake persistence into `setLocale`. The reason
+is that `setLocale` does not have access to the in-memory `ocloopConfig`
+signal (it lives in `lib/i18n.ts`, which has no import of the
+`App.tsx` config context) — coupling them would either create a
+circular import or a second source of truth.
+
+**Where.** `src/lib/i18n.ts:674-676` (definition) and
+`src/App.tsx:1570-1578` (the only caller that should persist).
+
+**Proposed action.** None. This is a documentation observation, not a
+fix. The contract — "callers that want persistence must call
+`saveConfig` after `setLocale`" — is implicit in the current code and
+worth a one-line comment in `i18n.ts` for future maintainers, but
+adding the comment is a polish decision, not a correctness fix. The
+audit records the contract so the next maintainer who reaches for
+`setLocale` from a new context knows to also call `saveConfig`.
+
+**Status.** No fix applied. Verified; observation only.
+
+#### What is **not** a finding (intentional behavior, not a bug)
+
+- **`setLocale` accepts `"en"` and `"es"` only** (i18n.ts:675 normalizes
+  via the `=== "es" ? "es" : "en"` ternary, so any non-`"es"` value
+  becomes `"en"`). This is the right call for a two-locale project; a
+  future multi-locale change would have to widen the ternary, and that
+  refactor would also need to widen the `Locale` union type (i18n.ts:17)
+  and the `isLocale` guard (i18n.ts:22). All three are local to `i18n.ts`
+  and an O(1) refactor.
+- **`saveConfig` is `void` (not `Promise<void>`)** even though every
+  caller `await`s it. This works because `writeFileSync` /
+  `renameSync` are synchronous; the `await` is a no-op for resolution
+  timing but a guard against the helpers being swapped to async later
+  (the FS does have async APIs). Not a language-toggle-specific issue;
+  Phase 12.2 already discussed the synchronous-write trade-off.
+- **The `ocloopConfig()` signal and the `localeSignal` are
+  independent.** `ocloopConfig` is read inside the `onSelect` to build
+  the spread; `localeSignal` is read by every component that calls
+  `t()` or `getLocale()`. They are kept in sync by the order of
+  operations in the toggle (signal first, then spread, then save) and
+  by the reload order (load file, then set both). If a future refactor
+  reversed the order (spread first, signal second), a `t()` call
+  reading the signal between the two would render the new language
+  while the persisted file still had the old one — but only for the
+  microtask duration of the `setOcloopConfig` setter. Not a
+  real-world race; not a finding.
+- **The toast message is hard-coded English/Spanish per locale**
+  (`toast.show({ variant: "success", message: t("toastLanguageChanged") })`).
+  Because `setLocale(next)` runs **before** `toast.show`, the toast
+  renders in the new language. This is the right UX (the user just
+  picked the new language, so confirming in the new language reads
+  as confirmation in their choice, not as "the system is telling you
+  what you did"). No finding.
+
+#### Summary of Phase 12.6 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 12.6.D  | INFO     | `setLocale` is a UI binding only; persistence is the caller's contract. Current callers comply; future callers must call `saveConfig` after `setLocale` to persist. |
+
+**Net severity tally for Phase 12.6: 1 INFO; no CRITICAL, HIGH, MEDIUM, or LOW.**
+
+The toggle path (`App.tsx:1570-1578`) calls `setLocale` + `setOcloopConfig` + `await saveConfig` in the right order; the reload path (`index.tsx:315-316`) reads `loadConfig().language` and feeds it to `setLocale` with the documented CLI > config > default precedence; `saveConfig` is the same atomic write every other config mutation uses (Phase 12.2 verified); `loadConfig` correctly handles missing, invalid, and out-of-set `language` values via the `isLocale` guard (Phase 12.4 verified). End-to-end behavior is correct; the lone observation is the design contract that future callers must respect.
+
+---
+
+## Phase 12 — Summary
+
+Across the six Phase 12 sub-tasks (12.1 load+save round-trip, 12.2 atomic save + directory creation, 12.3 resolveResilience merge order, 12.4 `isLocale` strictness, 12.5 i18n string parity, 12.6 `setLocale` persistence on toggle), the configuration and i18n subsystem is **fundamentally correct** with the following tally:
+
+| Phase | CRITICAL | HIGH | MEDIUM | LOW | INFO |
+|-------|----------|------|--------|-----|------|
+| 12.1  | 0        | 0    | 1      | 2   | 3    |
+| 12.2  | 0        | 0    | 1      | 4   | 2    |
+| 12.3  | 0        | 0    | 1      | 2   | 1    |
+| 12.4  | 0        | 0    | 0      | 0   | 0    |
+| 12.5  | 0        | 0    | 0      | 1   | 0    |
+| 12.6  | 0        | 0    | 0      | 0   | 1    |
+| **Total** | **0**| **0**| **3**  | **9** | **7** |
+
+**No CRITICAL or HIGH findings.** The 3 MEDIUMs cluster around the same
+root cause — `loadConfig` does no per-field type validation, so
+hand-edited configs with shape mismatches (e.g. `"resilience":
+{"port": "8080"}` as a string) silently propagate wrong types. A
+single proposed helper, `validateConfigShape` (sketched in 12.1.A),
+would close all three MEDIUMs and most of the LOWs. The 9 LOWs are
+mix of maintenance hazards (tmp filename, dead catalog entry) and
+test-coverage gaps. The 7 INFOs document intentional behavior and
+benign design choices (case-sensitivity, swallow-errors symmetry,
+non-idempotency of `resolveResilience`, etc.).
+
+**Recommended next iteration:** if any fix is applied, start with
+12.1.A (the `validateConfigShape` helper). It is the highest-leverage
+change and folds most of the 12.x findings into a single 30-line
+refactor.
