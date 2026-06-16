@@ -5,7 +5,7 @@
  * ~/.config/ocloop/ocloop.json (or XDG_CONFIG_HOME equivalent).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./debug-logger"
@@ -305,22 +305,49 @@ export function loadConfig(): OcloopConfig {
 /**
  * Save the configuration to disk.
  * Creates the config directory if it doesn't exist.
+ *
+ * Never throws — persistence is best-effort and must not crash the app. The
+ * contract mirrors `saveLoopState` in `loop-state-store.ts`: any I/O failure
+ * (EACCES on a read-only mount, ENOSPC on a full disk, EROFS on a sandbox,
+ * EEXIST race on `mkdirSync`, EXDEV on a cross-device rename) is logged as
+ * a `warn` and the orphan tmp file is best-effort cleaned up. The four
+ * `App.tsx` call sites (command palette: `onConfigSelect`, `onConfigCustom`,
+ * `toggle_scrollbar`, `toggle_language`) wrap `saveConfig` in a `dialog.clear()`
+ * follow-up that would silently no-op on a thrown error — making this
+ * `void`-and-swallows is strictly the minimum useful contract.
+ *
+ * Source: MEJORAS.md Finding 12.2.A. Side effect: also closes Finding 12.2.C
+ * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path.
  */
 export function saveConfig(config: OcloopConfig): void {
   const configDir = getConfigDir()
   const configPath = getConfigPath()
-
-  // Create directory if needed
-  if (!existsSync(configDir)) {
-    mkdirSync(configDir, { recursive: true })
-  }
-
-  // Write atomically: tmp file then rename (rename is atomic on the same
-  // filesystem, so a reader never sees a half-written config).
   const tmpPath = configPath + ".tmp"
-  writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
-  renameSync(tmpPath, configPath)
-  log.info("config", "Saved config", config)
+
+  try {
+    // Create directory if needed
+    if (!existsSync(configDir)) {
+      mkdirSync(configDir, { recursive: true })
+    }
+
+    // Write atomically: tmp file then rename (rename is atomic on the same
+    // filesystem, so a reader never sees a half-written config).
+    writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+    renameSync(tmpPath, configPath)
+    log.info("config", "Saved config", config)
+  } catch (err) {
+    log.warn("config", "Failed to save config", err)
+    // Best-effort cleanup of the orphan tmp file. The unlink can fail (the
+    // tmp may not exist if `writeFileSync` failed before creating it); the
+    // `existsSync` guard short-circuits the common pre-write case, and the
+    // outer swallow catches the race where the file vanishes between the
+    // check and the unlink.
+    try {
+      if (existsSync(tmpPath)) unlinkSync(tmpPath)
+    } catch {
+      // Nothing more we can do; the next saveConfig overwrites the tmp.
+    }
+  }
 }
 
 /**

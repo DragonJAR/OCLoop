@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { loadConfig, getConfigPath } from "./config"
+import { loadConfig, saveConfig, getConfigPath } from "./config"
 
 // `loadConfig` reads from `${XDG_CONFIG_HOME}/ocloop/ocloop.json` (or
 // `~/.config/ocloop/ocloop.json` when the env var is unset). Redirect
@@ -233,5 +233,74 @@ describe("getConfigPath", () => {
     // so getConfigPath should resolve under it.
     const path = getConfigPath()
     expect(path).toBe(join(dir, "ocloop", "ocloop.json"))
+  })
+})
+
+describe("saveConfig — round-trip (Finding 12.2.A)", () => {
+  it("writes the config and loadConfig reads it back", () => {
+    saveConfig({ language: "es" })
+    expect(loadConfig()).toEqual({ language: "es" })
+  })
+
+  it("overwrites an existing config atomically (no leftover .tmp)", () => {
+    saveConfig({ language: "en" })
+    saveConfig({ language: "es", theme: "opencode" })
+    const path = getConfigPath()
+    expect(existsSync(path + ".tmp")).toBe(false)
+    expect(loadConfig()).toEqual({ language: "es", theme: "opencode" })
+  })
+
+  it("returns void and does not throw on the happy path", () => {
+    // Pin the contract from Finding 12.2.E: callers `await` this sync
+    // function, so the return value must be `void` (i.e., `undefined`).
+    const result = saveConfig({})
+    expect(result).toBeUndefined()
+  })
+})
+
+describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
+  // Cross-platform caveats: Windows ACLs do not map to POSIX chmod, and root
+  // bypasses the read-only check entirely. The audit's recommended pattern
+  // for the parallel finding on `clearLoopState` (loop-state-store.test.ts)
+  // is to skip on both axes; we mirror it here. The tempdir is owned by the
+  // test process so chmod is permitted (root runs of the suite on CI are the
+  // realistic root case to skip).
+  it.skipIf(
+    process.platform === "win32" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )("does not throw when the config dir is read-only (EACCES / EPERM)", () => {
+    // Pre-create the config dir (so the `mkdirSync` call inside `saveConfig`
+    // is a no-op) and then chmod it read-only. The inner `writeFileSync` will
+    // fail with EACCES (macOS) or EPERM (Linux); the `try/catch` in
+    // `saveConfig` must swallow it.
+    const configDir = join(dir, "ocloop")
+    mkdirSync(configDir, { recursive: true })
+    chmodSync(configDir, 0o555)
+    try {
+      expect(() => saveConfig({ language: "es" })).not.toThrow()
+    } finally {
+      // Restore so afterEach's rmSync can clean up the tempdir.
+      chmodSync(configDir, 0o755)
+    }
+  })
+
+  it.skipIf(
+    process.platform === "win32" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )("cleans up the orphan .tmp file on a failed save (Finding 12.2.C)", () => {
+    // Side effect: the `catch` block in `saveConfig` best-effort `unlinkSync`s
+    // the tmp so a failed `writeFileSync`/`renameSync` doesn't leak `ocloop.json.tmp`
+    // into the user's `~/.config/ocloop/`.
+    const configDir = join(dir, "ocloop")
+    mkdirSync(configDir, { recursive: true })
+    chmodSync(configDir, 0o555)
+    try {
+      saveConfig({ language: "es" })
+    } finally {
+      chmodSync(configDir, 0o755)
+    }
+    const path = getConfigPath()
+    expect(existsSync(path)).toBe(false) // no main file created
+    expect(existsSync(path + ".tmp")).toBe(false) // no tmp left behind
   })
 })
