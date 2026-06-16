@@ -45,6 +45,11 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
         stderr: "ignore",
         stdin: "ignore",
       })
+      // Unref so the caffeinate process doesn't keep the Bun event loop alive.
+      // proc.kill() is synchronous on Unix (sends a signal and returns), so it
+      // can't hang — but unref ensures the process doesn't block shutdown if
+      // kill fails to terminate it immediately.
+      proc.unref()
       log.health("power", "caffeinate_start", { pid: proc.pid })
     } catch (err) {
       // caffeinate missing or spawn failed — degrade gracefully.
