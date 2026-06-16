@@ -781,10 +781,37 @@ test que pinea "el call site llama al helper" sería tautológico.
 
 ### Mejora 25 — Finding 7.2.A — MEDIUM — Consumer/hook filter share an asymmetric shape
 
-- [ ] Evaluar la mejora 25 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 25 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 25 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 25 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 25 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 25 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 25 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 25 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es documental, no de
+comportamiento — el audit (`MEJORAS.md:7737-7744`) confirma que la
+asimetría es una decisión deliberada pero que "la política no está
+documentada inline", y un futuro mantenedor no puede distinguir si
+`eventSessionId &&` es "deliberado: pasar errores no-atribuidos" o
+"oversight: faltó el check explícito 'has sessionID'". La
+prescripción exacta del audit (`MEJORAS.md:7749-7775`) es la opción
+correcta: añadir un comentario de política en el sitio del hook
+(`useSSE.ts:376-385`, 10 líneas) y un cross-reference en el sitio
+del consumer (`App.tsx:464-470`, 7 líneas) que nombra el source de
+verdad (el hook) y la justificación (el App es el árbitro
+autoritativo que short-circuita por state, no por presencia de
+sessionID). Cero cambios al filtro, cero cambios al reducer, cero
+cambios al consumer logic, cero impacto en el camino feliz. La
+explicación también pinea explícitamente la asimetría con los
+filtros `session.idle` / `todo.updated` (que NO tienen el guard
+`eventSessionId &&`) y remite a `MEJORAS.md Finding 7.2.A` como
+source de verdad — siguiendo el patrón de Mejoras 17-22 (cada fix
+nombra el source `MEJORAS.md Finding N` en el comment block).
+Sin nuevos tests — la veracidad del predicado es observable
+sólo vía render de Solid + fake SSE stream (per `docs/testing.md`,
+integration-territory), y el audit (`MEJORAS.md:7820-7840`) ya
+justificó que el `classifySessionError` test suite (21 casos)
+cubre la rama del classifier pero no la del hook filter. Cero
+cambio en el conteo de tests. `bun test` verde: 680 pass / 0
+fail, 1680 expect() calls, 23 files, 320 ms. Commit `7fd66c6`.
 
 ### Mejora 26 — Finding 7.3.A — LOW — Hook-layer filter for `session.idle` is **opposite** to `session.error`
 
