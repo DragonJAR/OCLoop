@@ -435,10 +435,44 @@ conteo. Commit `f80a823`.
 
 ### Mejora 16 — Finding 5.1.A — MEDIUM — `transient` kind dispatched as `rate_limited` to the reducer
 
-- [ ] Evaluar la mejora 16 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 16 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 16 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 16 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 16 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 16 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 16 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 16 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es el shape de la action `rate_limited`
+y de la state `cooldown`, ambos sin campo `kind`. La opción "proper
+fix" del audit (`MEJORAS.md:3670-3677`) es estrictamente superior al
+"cheap fix" de solo añadir `kind` al `log.health`: la primera cierra
+el bug user-facing (Dashboard siempre dice "Rate limited" para
+cualquier cooldown, lo que en un día de red flaky erosiona la
+confianza en los rate-limits reales) y la segunda solo agrega
+observabilidad. La actividad-log en `App.tsx:740` ya elegía la copy
+correcta vía `kind` local, así que el cambio es net-user-visible
+solo en el Dashboard. Implementación mínima:
+
+- `src/types.ts`: campo `kind: "rate_limit" | "transient"` requerido
+  en la variante `cooldown` del `LoopState`; campo `kind` opcional en
+  la action `rate_limited` (default `"rate_limit"` en el reducer para
+  backward compat con `chaos_429` en `App.tsx:1675`, que omite el
+  campo).
+- `src/hooks/useLoopState.ts:161-180`: el reducer propaga
+  `action.kind ?? "rate_limit"` al construir el nuevo `cooldown`.
+- `src/App.tsx:747`: el dispatch ahora pasa `kind` (ya estaba como
+  parámetro de `enterCooldown`).
+- `src/components/Dashboard.tsx:95-103`: el memo `cooldownText` lee
+  `state.kind` para elegir entre `cooldownText` y `cooldownRetryText`.
+
+Cero impacto en los call sites que no son Dashboard/ActivityLog, cero
+cambio en la exhaustion path (ya tenía `kind` en el log y en el
+activity message), cero cambio en `resume_cooldown` (el campo
+sobra en el output `running`). Cero cambio en la ruta
+`chaos_429` (default cubre el caso). Cubierto por 2 tests nuevos en
+`useLoopState.test.ts:516-548` que pinean: `kind: "transient"` se
+propaga, y `kind` omitido defaultea a `"rate_limit"`. Las 9
+construcciones directas de `cooldown` en los tests existentes se
+actualizaron con `kind: "rate_limit"`. `bun test` verde: 680 pass /
+0 fail (era 678). Commit `9a8cb78`.
 
 ### Mejora 17 — Finding 5.1.B — MEDIUM — `clearCooldownTimers` is called *after* the dispatch, not before
 
