@@ -419,19 +419,20 @@ describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)", () => {
     })
   }
 
-  // Empty string: an empty shell-quoted arg should not be accepted.
+  // Empty string: an empty shell-quoted arg is rejected as a missing value
+  // (handled by requireValue — same as --prompt/--plan/--agent).
   it("rejects --lang with empty string", () => {
     const r = runParse(["--lang", ""])
     expect(r.exitCode).toBe(1)
-    expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    expect(r.errors.join("\n")).toContain("requires a value")
   })
 
-  // Missing value: --lang with no following arg. (Different from the case
-  // where the following arg exists but is invalid.)
+  // Missing value: --lang with no following arg is rejected by requireValue
+  // (Finding 1.4.A fix — the error names the missing value, not the locale).
   it("rejects --lang with no following arg", () => {
     const r = runParse(["--lang"])
     expect(r.exitCode).toBe(1)
-    expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    expect(r.errors.join("\n")).toContain("requires a value")
   })
 
   // Non-locale values: every other string is rejected with the same message.
@@ -454,22 +455,15 @@ describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)", () => {
     })
   }
 
-  // FINDING 1.4.A — LOW — Inconsistent missing-value error message for --lang.
-  // --lang reads its value inline (no requireValue guard), so --lang --debug
-  // produces "Error: --lang requires 'en' or 'es'" — the message is technically
-  // correct (the value is invalid) but the user almost certainly meant to
-  // pass a value, not a locale. The other value flags (--prompt, --plan,
-  // --agent) use requireValue and emit "requires a value" instead, which is
-  // more diagnostic. Same root cause as if a user typed "--lang en --debug"
-  // and meant "--lang es --debug" but swapped positions: the error would
-  // currently blame the locale, not the missing value.
-  it("--lang --debug fails with the locale error (not the 'requires a value' error)", () => {
+  // FINDING 1.4.A — LOW — --lang now uses requireValue so the missing-value
+  // error names the value, not the locale. --lang --debug is rejected with
+  // "Error: --lang requires a value" (consistent with --prompt/--plan/--agent).
+  // --lang fr is still rejected with the locale error (Finding 1.4.A fix).
+  it("--lang --debug fails with the 'requires a value' error (Finding 1.4.A fix)", () => {
     const r = runParse(["--lang", "--debug"])
     expect(r.exitCode).toBe(1)
-    // The actual current behavior — documented here so a future fix that
-    // switches to requireValue is visible as a behavioral change.
-    expect(r.errors.join("\n")).toContain("'en' or 'es'")
-    expect(r.errors.join("\n")).not.toContain("requires a value")
+    expect(r.errors.join("\n")).toContain("requires a value")
+    expect(r.errors.join("\n")).not.toContain("'en' or 'es'")
   })
 })
 

@@ -229,14 +229,15 @@ export function parseArgs(argv: string[]): CLIArgs {
         break
 
       case "--lang":
-      case "--language":
-        const lang = argv[++i]
-        if (!lang || !isLocale(lang)) {
+      case "--language": {
+        const lang = requireValue(argv[++i], "--lang")
+        if (!isLocale(lang)) {
           console.error("Error: --lang requires 'en' or 'es'")
           process.exit(1)
         }
         args.lang = lang
         break
+      }
 
       case "--resume":
         resilience.resume = true
