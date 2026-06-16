@@ -167,6 +167,18 @@ function AppContent(props: AppProps) {
   // Timers for the cooldown wait and the dashboard countdown.
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
+  // Trailing debounce for PLAN.md-triggered refreshPlan() calls. A
+  // multi-edit tool call (e.g. the agent flipping several `- [ ]` to
+  // `- [x]`) fires several `file.edited` SSE events in quick
+  // succession; each would otherwise trigger an independent
+  // `Bun.file().text()` + parse cycle, racing in `setPlanProgress`
+  // and producing transient flicker in the progress bar. 150ms is
+  // short enough to feel real-time and long enough to coalesce a
+  // typical multi-edit burst. Closure-bound `let` (mirroring
+  // `cooldownTimer` / `startingIteration`); reset by component
+  // unmount via the onCleanup below. Source: MEJORAS.md
+  // Finding 15.5.A.
+  let refreshPlanTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonic timestamp of the last iteration kickoff, for minIterationGap.
   let lastIterationStartAt = 0
   // Process-scoped in-flight guard. Guards startIteration against re-entry
@@ -544,15 +556,24 @@ function AppContent(props: AppProps) {
       onFileEdited: (file) => {
         heartbeat()
         activityLog.addEvent("file_edit", file)
-        // Re-parse plan if PLAN.md was edited
+        // Re-parse plan if PLAN.md was edited. The activity log entry
+        // stays real-time (so the user sees the edit happen as it
+        // occurs); only the file read + parse + setPlanProgress is
+        // trailing-debounced to coalesce rapid-fire edits from a
+        // single multi-edit tool call. Source: MEJORAS.md
+        // Finding 15.5.A.
         const planFile = props.planFile || DEFAULTS.PLAN_FILE
         const absolutePlanPath = path.resolve(planFile)
         const absoluteFilePath = path.resolve(file)
-        
+
         if (absoluteFilePath === absolutePlanPath) {
-          refreshPlan()
-          // Also refresh current task as fallback for SSE todo updates
-          refreshCurrentTask()
+          if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
+          refreshPlanTimer = setTimeout(() => {
+            refreshPlanTimer = null
+            refreshPlan()
+            // Also refresh current task as fallback for SSE todo updates
+            refreshCurrentTask()
+          }, 150)
         }
       },
       onStepFinish: (part) => {
@@ -1819,6 +1840,10 @@ function AppContent(props: AppProps) {
       shutdownManager.unregister()
       sleepDetector?.stop()
       power.stop()
+      if (refreshPlanTimer) {
+        clearTimeout(refreshPlanTimer)
+        refreshPlanTimer = null
+      }
     })
   })
 
