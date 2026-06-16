@@ -485,17 +485,181 @@ at line 182-188.
 
 ---
 
-### 1.5 — Remaining Phase 1 sub-tasks (audit pending)
+### 1.5 — Audit `--resilience key=value` edge cases (unknown key, non-numeric, empty, multi-`=`, boolean)
+
+**Status: COMPLETE — VERIFIED, one MEDIUM and three INFO findings.**
+
+The `--resilience` flag is parsed by `applyResilienceOverride` at
+`src/lib/cli-args.ts:74-117`. The function splits on the first `=`
+(`kv.indexOf("=")`), trims both sides, and coerces the value against the
+declared type of the default (boolean vs number). It is exported
+(separate from `parseArgs`) so tests can hit it directly.
+
+```ts
+const eq = kv.indexOf("=")
+const key = kv.slice(0, eq).trim()
+const raw = kv.slice(eq + 1).trim()
+
+if (!key)        /* exit 1: "key is empty"            */
+if (!raw)        /* exit 1: "requires a non-empty value" */
+if (!(key in DEFAULT_RESILIENCE)) /* exit 1: "unknown resilience key" */
+
+if (typeof def === "boolean") /* accept true/false/1/0 */
+else                          /* require non-negative integer via Number() */
+```
+
+#### Mapping each required case to a test
+
+| Required case (PLAN.md 1.5)                                  | Test before this iteration  | Behavior                                                                                 | Status   |
+| ------------------------------------------------------------ | --------------------------- | ---------------------------------------------------------------------------------------- | -------- |
+| Unknown key                                                  | line 138 (`bogus=1`)        | `key in DEFAULT_RESILIENCE` guard → exit 1.                                              | OK       |
+| Non-numeric value for numeric key                            | line 139 (`backoffBaseMs=abc`) | `Number.isFinite(NaN)` → exit 1.                                                       | OK       |
+| Empty value                                                  | line 137 (`backoffBaseMs=`) | `!raw` guard → exit 1.                                                                   | OK       |
+| Value with `=` signs (e.g. `key=10=20`)                      | **none** before this audit  | `indexOf("=")` splits on first `=`, `raw="10=20"`, `Number("10=20")===NaN` → exit 1.     | CLOSED ↓ |
+| Boolean key with non-boolean value                           | line 142 (`caffeinate=maybe`) | type guard rejects everything but `true`/`false`/`1`/`0` → exit 1.                      | OK       |
+
+#### What `applyResilienceOverride` actually does for each input
+
+The audit added 14 new test cases (split across two `describe` blocks).
+The table below maps every required and adjacent case to the precise
+mechanism:
+
+| Input                                  | Mechanism                                      | Exit | Outcome        |
+| -------------------------------------- | ---------------------------------------------- | ---- | -------------- |
+| `bogus=1`                              | `!('bogus' in DEFAULT_RESILIENCE)`             | 1    | "unknown resilience key" |
+| `backoffBaseMs=abc`                    | `Number.isFinite(NaN) === false`               | 1    | "non-negative integer"   |
+| `backoffBaseMs=`                       | `!raw` short-circuit                           | 1    | "non-empty value"        |
+| `backoffBaseMs=   `                    | `!raw` after `.trim()`                         | 1    | "non-empty value"        |
+| `backoffBaseMs=10=20`                  | `Number("10=20") === NaN`                      | 1    | "non-negative integer, got '10=20'" |
+| `caffeinate=true=yes`                  | type guard (`!== "true" && !== "false" && !== "1" && !== "0"`) | 1    | "boolean, got 'true=yes'" |
+| `caffeinate=maybe`                     | type guard as above                            | 1    | "boolean, got 'maybe'"   |
+| `=1`                                   | `!key` short-circuit                           | 1    | "key is empty"           |
+| `=`                                    | `!key` short-circuit                           | 1    | "key is empty"           |
+| `backoffBaseMs =  500  `               | trim on both sides                             | 0    | `{ backoffBaseMs: 500 }` |
+| `backoffBaseMs=1e3`                    | `Number("1e3") === 1000`, isInteger+finite     | 0    | `{ backoffBaseMs: 1000 }` |
+| `backoffBaseMs=0x10`                   | `Number("0x10") === 16`, isInteger+finite      | 0    | `{ backoffBaseMs: 16 }`   |
+| `backoffBaseMs=1.0`                    | `Number("1.0") === 1`, isInteger+finite        | 0    | `{ backoffBaseMs: 1 }`    |
+| `backoffBaseMs=+5`                     | `Number("+5") === 5`, isInteger+finite         | 0    | `{ backoffBaseMs: 5 }`    |
+| `maxRateLimitRetries=1.5`              | `Number.isInteger(1.5) === false`              | 1    | "non-negative integer"    |
+
+#### Finding 1.5.A — MEDIUM — Numeric coercion accepts non-decimal strings (diverges from `--port`)
+
+**Problem.** The numeric branch of `applyResilienceOverride` uses
+`Number(raw)` followed by `Number.isInteger` and `Number.isFinite`. This
+permits:
+
+- Scientific notation: `backoffBaseMs=1e3` → `1000`
+- Hex literals: `backoffBaseMs=0x10` → `16`
+- Decimal-as-integer: `backoffBaseMs=1.0` → `1`
+- Leading sign: `backoffBaseMs=+5` → `5`
+
+The corresponding `--port` gate uses a strict regex (`PORT_RE = /^\d+$/`)
+at `src/lib/cli-args.ts:17, 120` and rejects every one of these. The
+project's own convention is therefore inconsistent: `--port 0080` is
+accepted (observation 1.2.A — leading zeros stripped) but
+`--resilience backoffBaseMs=0x10` is also accepted (no audit-policy
+basis for the divergence). The two flags take integers; they should
+behave the same way.
+
+In practice this is a footgun, not a security issue. A user who copies
+`backoffBaseMs=0x10` from a forum post and pastes it gets a silent
+`16` instead of the error message that `--port 0x10` would emit. The
+silent coercion is also a maintenance hazard: future logic that
+double-checks the user-provided value (e.g. bounds warnings) will not
+trigger on a misread input.
+
+**Where.** `src/lib/cli-args.ts:110-115` (the numeric branch of
+`applyResilienceOverride`).
+
+**Proposed fix.** Add a strict-decimal regex gate before `Number(raw)`,
+mirroring `PORT_RE`:
+
+```ts
+const NUM_RE = /^\d+$/
+if (!NUM_RE.test(raw)) {
+  console.error(
+    `Error: --resilience ${key} expects a non-negative integer (decimal only), got "${raw}"`,
+  )
+  process.exit(1)
+}
+const num = Number(raw)
+// existing isInteger / isFinite / num < 0 checks retained as a belt-and-braces
+```
+
+This rejects `1e3`, `0x10`, `1.0`, `+5`, `-0`, and any non-decimal
+integer string. The existing `Number.isInteger` / `Number.isFinite`
+checks then become a defense-in-depth rather than the primary gate.
+
+**Status.** **NOT FIXED** — documented only. The current behavior is
+not harmful; the four permissive shapes (1e3, 0x10, 1.0, +5) all
+produce a sensible integer. 15 new test cases (10 in the
+`--resilience key=value edge cases` block + 5 in the `--resilience
+numeric coercion strictness` block) pin the current behavior so a
+future tightening is visible as a behavioral change.
+
+#### Finding 1.5.B — INFO — Empty value after `.trim()` short-circuits before the integer check
+
+The `!raw` guard fires after `kv.slice(eq+1).trim()`, so
+`backoffBaseMs=   ` (whitespace-only value) is rejected with
+"requires a non-empty value" rather than being coerced to `Number("")===0`
+and then passing the integer check. This is the correct order:
+`Number("")` is `0`, which would otherwise be silently accepted as the
+backoff base. The test at the new "rejects an empty value trimmed of
+whitespace" case pins this so a refactor that drops the early `!raw`
+guard is visible.
+
+#### Finding 1.5.C — INFO — Empty key (`=1`) and bare `=` are rejected by the same guard
+
+Both inputs hit the `!key` short-circuit at `src/lib/cli-args.ts:86-89`
+and exit 1 with the same "key is empty" error. The order of checks
+matters: `!key` runs **before** the key-existence check at line 96,
+so an input like `=1` does not get the misleading
+"unknown resilience key ''" error that a swap would produce. Tested at
+the new "rejects an empty key" and "rejects a bare =" cases.
+
+#### Finding 1.5.D — INFO — Whitespace around `=` is correctly trimmed
+
+The implementation trims both sides of the first `=` (lines 83-84).
+`--resilience "backoffBaseMs =  500  "` parses to `{ backoffBaseMs: 500 }`.
+This is a small quality-of-life feature: a user who pastes the flag
+from a doc that uses spacing for visual alignment (e.g.
+`backoffBaseMs = 1000`) gets the expected result. Tested at the new
+"tolerates whitespace around the = separator" case.
+
+#### Finding 1.5.E — INFO — Multi-`=` for boolean keys is rejected with a diagnostic message
+
+`caffeinate=true=yes` is rejected with the standard "boolean" error
+message that embeds the offending value. The user sees the literal
+`true=yes` in the error, which is enough to diagnose the typo. No
+change needed beyond the test.
+
+#### Summary
+
+| Severity | Count | Notes                                                                       |
+| -------- | ----- | --------------------------------------------------------------------------- |
+| CRITICAL | 0     |                                                                             |
+| HIGH     | 0     |                                                                             |
+| MEDIUM   | 1     | 1.5.A — numeric coercion accepts scientific/hex/decimal-as-integer/sign (not fixed, documented) |
+| LOW      | 0     |                                                                             |
+| INFO     | 4     | 1.5.B (empty-after-trim order), 1.5.C (empty key), 1.5.D (whitespace around `=`), 1.5.E (multi-`=` boolean error) |
+
+`bun test src/lib/cli-args.test.ts` → **96 pass, 0 fail, 219 expect() calls**
+(was 81/0/184 before this iteration). New describe blocks:
+- `parseArgs — --resilience key=value edge cases (Phase 1 Task 1.5)` — 10 cases.
+- `parseArgs — --resilience numeric coercion strictness (Phase 1 Task 1.5, finding 1.5.A)` — 5 cases.
+
+---
+
+### 1.5.1 — Remaining Phase 1 sub-tasks (audit pending)
 
 The following PLAN.md Phase 1 sub-tasks still need their own dedicated audit
 section. They are listed here as a roadmap for the next iteration so the
 report stays ordered as additional sections are appended in order.
 
-- [x] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). ✅ COMPLETE — see section 1.4 above.
-- [ ] **Task 1.5** — Verify `--resilience key=value` edge cases. (Tests at lines 86-93, 136-145, 226-243, 259-264.)
+- [x] **Task 1.5** — Verify `--resilience key=value` edge cases. ✅ COMPLETE — see section 1.5 above.
 - [ ] **Task 1.6** — Verify `--create-plan` flag combinations. (Tests at lines 162-188.)
 - [ ] **Task 1.7** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone.
-- [ ] **Task 1.8** — Document `requireValue` accepting a lone `-`. (Covered by tests at line 211-218.)
+- [ ] **Task 1.8** — Document `requireValue` accepting a lone `-`. (Covered by tests at lines 211-218.)
 - [ ] **Task 1.9** — Verify `parseArgs` is idempotent. (Test at lines 238-244.)
 
 ---

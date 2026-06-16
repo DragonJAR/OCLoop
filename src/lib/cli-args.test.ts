@@ -396,3 +396,133 @@ describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)", () => {
     expect(r.errors.join("\n")).not.toContain("requires a value")
   })
 })
+
+describe("parseArgs — --resilience key=value edge cases (Phase 1 Task 1.5)", () => {
+  // The 5 required cases from PLAN.md 1.5 plus 4 additional edge cases
+  // (empty key, just-equals, space-around-equals, multi-= for boolean).
+  // The MEDIUM finding (1.5.A — non-decimal numeric values accepted) is
+  // pinned in a dedicated describe block below.
+
+  it("rejects an unknown resilience key", () => {
+    const r = runParse(["--resilience", "bogus=1"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("unknown resilience key")
+    expect(r.errors.join("\n")).toContain("bogus")
+  })
+
+  it("rejects a non-numeric value for a numeric key", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=abc"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("non-negative integer")
+    expect(r.errors.join("\n")).toContain("abc")
+  })
+
+  it("rejects an empty value (key= with no value)", () => {
+    const r = runParse(["--resilience", "backoffBaseMs="])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a non-empty value")
+  })
+
+  it("rejects an empty value trimmed of whitespace (key=   )", () => {
+    // raw = "  " after trim() is "" — must fire the empty-value guard, not
+    // the integer guard (Number("") is 0, which would otherwise pass).
+    const r = runParse(["--resilience", "backoffBaseMs=   "])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a non-empty value")
+  })
+
+  // The PLAN.md 1.5 case "value with = signs": indexOf("=") splits on the
+  // FIRST =, so `key=10=20` parses as key="key", raw="10=20". For a numeric
+  // key, Number("10=20") is NaN and the integer guard fires. The error
+  // message embeds the offending value so a user can see the extra `=`.
+  it("rejects a numeric value containing an extra `=` sign", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=10=20"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("non-negative integer")
+    expect(r.errors.join("\n")).toContain("10=20")
+  })
+
+  it("rejects a boolean value containing an extra `=` sign", () => {
+    const r = runParse(["--resilience", "caffeinate=true=yes"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("boolean")
+    expect(r.errors.join("\n")).toContain("true=yes")
+  })
+
+  it("rejects a non-boolean value for a boolean key", () => {
+    const r = runParse(["--resilience", "caffeinate=maybe"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("boolean")
+    expect(r.errors.join("\n")).toContain("maybe")
+  })
+
+  // FINDING 1.5.C — empty key (=1) and just-equals (=) are both rejected
+  // by the existing `!key` guard. Pin the behavior so a future refactor that
+  // re-orders the checks (e.g. moves !raw before !key) is visible.
+  it("rejects an empty key (`=1`) with the 'key is empty' error", () => {
+    const r = runParse(["--resilience", "=1"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("key is empty")
+  })
+
+  it("rejects a bare `=` with the 'key is empty' error", () => {
+    const r = runParse(["--resilience", "="])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("key is empty")
+  })
+
+  // FINDING 1.5.D — INFO — space around `=` is correctly trimmed by the
+  // implementation (kv.slice(0, eq).trim() and kv.slice(eq+1).trim()).
+  // Pin the behavior so a future refactor that drops the trim is caught.
+  it("tolerates whitespace around the `=` separator", () => {
+    const { args, exitCode } = runParse([
+      "--resilience", "backoffBaseMs =  500  ",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(500)
+  })
+})
+
+describe("parseArgs — --resilience numeric coercion strictness (Phase 1 Task 1.5, finding 1.5.A)", () => {
+  // FINDING 1.5.A — MEDIUM. The numeric branch of applyResilienceOverride
+  // coerces via `Number(raw)`, which is permissive: it accepts scientific
+  // notation (1e3), hex literals (0x10), decimal-as-integer (1.0), and
+  // values with a leading sign (+5). The corresponding --port gate uses a
+  // strict regex (^\d+$) and rejects all of these. This is a divergence
+  // from the project's own convention; the tests below pin the current
+  // (permissive) behavior so a future tightening is visible.
+  //
+  // Pin the permissive behavior with a single acceptance test per shape:
+  it("accepts scientific notation `1e3` and coerces to 1000", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=1e3"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(1000)
+  })
+
+  it("accepts hex literal `0x10` and coerces to 16", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=0x10"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(16)
+  })
+
+  it("accepts decimal-as-integer `1.0` and coerces to 1", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=1.0"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(1)
+  })
+
+  it("accepts a leading `+` and coerces to the magnitude", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=+5"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(5)
+  })
+
+  // The decimal guard at `1.5` (existing test line 141) still fires for
+  // non-integer decimals — pin it here so the asymmetry with `1.0` is
+  // visible in the test file.
+  it("rejects non-integer decimals (`1.5`) consistently with the integer guard", () => {
+    const r = runParse(["--resilience", "maxRateLimitRetries=1.5"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("non-negative integer")
+  })
+})
