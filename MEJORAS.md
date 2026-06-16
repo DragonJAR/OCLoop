@@ -1977,3 +1977,132 @@ expect() calls** (was 93/0/160 before this iteration). +7 tests,
 
 Full suite: `bun test` → **551 pass, 0 fail, 1225 expect() calls**
 across 21 files. No regressions.
+
+---
+
+### 2.6 — Verify lines that start with `- [` but have no closing bracket
+
+**Status: COMPLETE — VERIFIED. Every variant returns `not-a-task` via the
+same single guard. No HIGH/CRITICAL/MEDIUM/LOW findings. One INFO
+observation, and one test added in the suite that double-checks the
+unrelated "empty checkbox, no description" branch to prevent future
+false positives in this audit set.**
+
+The function (`src/lib/plan-parser.ts:20-89`) has exactly one
+unclosed-bracket check, at lines 30-33:
+
+```ts
+const closeBracket = trimmed.indexOf("]", 3)
+if (closeBracket === -1) {
+  return { type: "not-a-task", description: "" }
+}
+```
+
+`String.prototype.indexOf(searchValue, fromIndex)` returns `-1` when the
+needle is not found at or after `fromIndex`. The function searches for
+`]`, starting at index 3 (which skips the `- [` prefix). When no `]`
+exists at all, the search walks the rest of the line and returns `-1`,
+which the guard translates into a `not-a-task` return shape.
+
+This is the correct, minimal behavior: when the line claims to start a
+checkbox (it has `- [`) but never finishes the bracket pair, the parser
+has no way to know what was intended. Silently dropping the line is
+safer than guessing — guessing risks inventing a marker, splitting on a
+space, or treating the line as an empty checkbox, all of which would
+introduce noise into the task counts.
+
+#### 2.6.A — INFO — Every `- [` prefix variant with no `]` returns `not-a-task` via the same guard
+
+The audit walked every plausible "- [` shape with no `]`" the function
+might encounter. All 12 are pinned by the new
+`PLAN.md 2.6 — unclosed-bracket edge cases` sub-describe in
+`plan-parser.test.ts`:
+
+| Input                                            | `type`         | Why it triggers the guard                              |
+| ------------------------------------------------ | -------------- | ------------------------------------------------------ |
+| `- [`                                            | `not-a-task`   | No `]` anywhere → `indexOf` returns -1                 |
+| `- [ ` (single space)                            | `not-a-task`   | After `.trim()` → `- [`; no `]`                        |
+| `- [x`                                           | `not-a-task`   | `x` is visible but `]` is missing                      |
+| `- [X`                                           | `not-a-task`   | Same as above for uppercase                            |
+| `- [MANUAL`                                      | `not-a-task`   | `MANUAL` keyword is visible but `]` is missing         |
+| `- [BLOCKED`                                     | `not-a-task`   | `BLOCKED` keyword visible, no `]`                      |
+| `- [BLOCKED: reason`                             | `not-a-task`   | Colon + reason visible, no `]`                         |
+| `- [ this is a long task description with no close bracket` | `not-a-task` | `indexOf` walks the whole body, no `]` |
+| `    - [ ` (indented)                            | `not-a-task`   | Leading whitespace stripped by `.trim()`; same as un-indented |
+| `    - [x` (indented)                            | `not-a-task`   | Same as above                                          |
+| `- [x   ` (trailing whitespace)                  | `not-a-task`   | Trailing whitespace stripped by `.trim()`; no `]`      |
+| `- [ [nested`                                    | `not-a-task`   | An unbalanced `[` inside the body does not satisfy the `]` check; the parser is looking for a close bracket, not a balanced pair |
+
+All 12 inputs return `{ type: "not-a-task", description: "" }` and the
+behavior is consistent across the table — same guard, same exit shape,
+no exceptions, no silent misclassification.
+
+#### 2.6.B — INFO — The "empty checkbox" path can look like an unclosed-bracket input
+
+A natural test candidate `- [ ] ` (with a trailing space) is **not** an
+unclosed-bracket case: the `]` is present at index 4, so
+`closeBracket = 4`, and the function proceeds to the empty-checkbox
+branch (`plan-parser.ts:80-83`). The line still returns
+`not-a-task`, but for a different reason: the body is empty AND
+`afterCheckbox` is empty.
+
+The 2.6 set includes this case (now renamed in the test file from
+"no close, body is just a space" to "no description after close
+bracket") with a comment that explicitly calls out the code path.
+This prevents a future reader from assuming the unclosed-bracket guard
+is what returned the result, and makes it obvious that the test is
+here to fence off an adjacent shape rather than to exercise the
+guard.
+
+**No code change needed; behavior pinned by 13 cases (12 unclosed +
+1 fence).**
+
+#### 2.6.C — INFO — The implementation is minimal and correct: one check, one exit
+
+The unclosed-bracket path is a single 3-line block. There is no
+fallback, no recovery, no warning. This is the right design for the
+plan-parser's role: PLAN.md is a user-authored file and any malformed
+line is just dropped from the count. The user can fix it on the next
+edit. A "warn about malformed checkbox" log line would be a feature
+addition, not a fix, and is out of scope for an audit.
+
+The audit also confirms the guard does not over-trigger:
+
+- `- [text that contains ] later]` → closeBracket = position of the
+  *first* `]` (correct — see Task 2.1 finding 2.1.G for the footgun
+  analysis). The unclosed-bracket guard only fires when **no** `]`
+  exists, not when `]` appears in the wrong place.
+- `- [  ]` (extra spaces inside the brackets) → closeBracket finds
+  the `]`, body = `"  "`, trimmed to `""`, afterCheckbox = `""`. Hits
+  the empty-checkbox branch, not the unclosed-bracket guard. Tested
+  in 2.1.
+
+**No code change needed; behavior pinned by the existing 2.1 tests
+plus the new 2.6 set.**
+
+#### Test-suite delta for Task 2.6
+
+New `describe` block `PLAN.md 2.6 — unclosed-bracket edge cases` added
+inside `parseTaskLine` with **12 cases / 13 expect() calls**:
+
+1. Bare `- [` (prefix only, no body, no close).
+2. `- [` + a single space (no body, no close).
+3. `- [x` (looks like a completed marker; missing the `]`).
+4. `- [X` (uppercase variant).
+5. `- [MANUAL` (keyword visible; missing the `]`).
+6. `- [BLOCKED` (keyword visible; missing the `]`).
+7. `- [BLOCKED: reason` (colon + reason; missing the `]`).
+8. Long body, no `]`.
+9. Indented bare `- [` and `- [x`.
+10. Trailing whitespace, no `]`.
+11. Nested `[` inside the body, no `]`.
+12. `- [ ] ` fence: same exit shape, but documented as exercising the
+    empty-checkbox branch (so a future failure of this test points
+    the reader at the right code path).
+
+`bun test src/lib/plan-parser.test.ts` → **112 pass, 0 fail, 182
+expect() calls** (was 100/0/169 before this iteration). +12 tests,
++13 expects, all green.
+
+Full suite: `bun test` → **563 pass, 0 fail, 1238 expect() calls**
+across 21 files. No regressions.

@@ -308,6 +308,94 @@ describe("parseTaskLine", () => {
   })
 
   // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.6 — unclosed-bracket edge cases.
+  // The plan-parser checks for the first `]` at index >= 3. If no `]` exists,
+  // the line is treated as not-a-task. This is the correct behavior for any
+  // garbage that looks like the start of a checkbox but never finishes the
+  // bracket pair — the parser cannot know what was intended and silently
+  // dropping the line is safer than guessing.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.6 — unclosed-bracket edge cases", () => {
+    it("returns not-a-task for bare - [ (prefix only, no body, no close)", () => {
+      // The line is just the prefix "- [" with nothing after it. The
+      // indexOf search from position 3 finds no ] before EOF → -1.
+      expect(parseTaskLine("- [")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [ followed by a single space only", () => {
+      // After the .trim() on the line, the body is empty. Still no ] to find.
+      expect(parseTaskLine("- [ ")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [x with no closing bracket", () => {
+      // Looks like a completed marker but missing the ] — guarded against
+      // by the closeBracket === -1 short-circuit. The function never sees
+      // the would-be "x" content because it bails before slicing.
+      expect(parseTaskLine("- [x")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [X (uppercase, no close)", () => {
+      // Same as above for the uppercase variant.
+      expect(parseTaskLine("- [X")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [ ] (no description after close bracket)", () => {
+      // NOTE: this case is NOT the unclosed-bracket path — the `]` is present
+      // at index 4. It exercises the "empty checkbox, no description" branch
+      // (plan-parser.ts:80-83) which also returns not-a-task. Pinned here so
+      // the unclosed-bracket set doesn't grow accidental false positives: if
+      // this test ever starts failing, the unclosed-bracket hypothesis is
+      // wrong; the failure is in the empty-checkbox branch instead.
+      expect(parseTaskLine("- [ ] ")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [MANUAL with no closing bracket", () => {
+      // Same shape: the keyword is visible but the ] is missing. Without
+      // the close bracket, the function bails at the indexOf check before
+      // any keyword matching runs.
+      expect(parseTaskLine("- [MANUAL")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [BLOCKED with no closing bracket", () => {
+      // The BLOCKED branch is also unreachable when ] is missing.
+      expect(parseTaskLine("- [BLOCKED")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [BLOCKED: reason with no closing bracket", () => {
+      // Even the colon + reason variant is unrecognised without ].
+      expect(parseTaskLine("- [BLOCKED: reason")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [ with arbitrary body text but no close bracket", () => {
+      // Long body, no close bracket. The .indexOf search from position 3
+      // walks the whole string and returns -1.
+      expect(parseTaskLine("- [ this is a long task description with no close bracket")).toEqual({
+        type: "not-a-task",
+        description: "",
+      })
+    })
+
+    it("returns not-a-task for indented - [ with no closing bracket", () => {
+      // Leading whitespace is stripped by .trim() so the parsing path is
+      // identical to the no-indent case.
+      expect(parseTaskLine("    - [ ")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("    - [x")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [ with content and trailing whitespace but no close", () => {
+      // .trim() removes trailing whitespace; the ] is still missing.
+      expect(parseTaskLine("- [x   ")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("returns not-a-task for - [ with an OPENING bracket inside but no closing", () => {
+      // An unbalanced [ inside the body does not satisfy the ] check.
+      // The parser is looking for a close bracket, not a balanced pair.
+      expect(parseTaskLine("- [ [nested")).toEqual({ type: "not-a-task", description: "" })
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
   // PLAN.md 2.2 — no-description classification contrast.
   // Pins the asymmetry: a bare `- [ ]` (empty checkbox) is not-a-task, but a
   // bare `- [MANUAL]` / `- [x]` / `- [BLOCKED]` is a real task. The marker
