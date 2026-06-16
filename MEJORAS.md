@@ -24331,3 +24331,237 @@ These tests go beyond "happy path + sad path" and pin something specific the aud
 - **Task 18.2 (no test coverage)** will enumerate `useServer.ts` (the only untested production hook in `src/hooks/`) plus the 9 untested `src/lib/` modules (`clipboard.ts`, `command-exists.ts`, `config.ts`, `constants.ts`, `debug-logger.ts`, `i18n.ts`, `power.ts`, `shutdown.ts`, `terminal-launcher.ts`, `theme-resolver.ts`) and the 4 untested `src/context/` modules (`CommandContext.tsx`, `DialogContext.tsx`, `ThemeContext.tsx`, `ToastContext.tsx`).
 - **Task 18.3 (incomplete coverage)** will detail `useSSE` (the hook, not the classifier), `useServer`, the four context providers, and the three `src/components/Dialog*.tsx` modal components.
 - **Task 18.4 (untestable)** will list integration scenarios that require a real OpenCode server (SSE event ordering, multi-iteration session lifecycle, plan file edits during a session, real rate-limit handling, real SSE drops during sleep).
+
+### 18.2 — Identify flows with NO test coverage
+
+PLAN.md 18.2: "Identify flows with NO test coverage." Cross-references the 18.1 cross-references block above.
+
+Methodology: for every source file in `src/lib/`, `src/hooks/`, and `src/context/`, check whether a sibling `*.test.ts(x)` file exists. The 14 already-tested files are listed in §18.1's inventory table; the remaining files are enumerated below, with what the audit depends on them for and the severity of having no regression net.
+
+#### Inventory: untested production-logic modules
+
+| Module | LoC | Severity | What the audit depends on this for | Why this matters as a gap |
+| --- | ---: | --- | --- | --- |
+| `src/hooks/useServer.ts` | 263 | **CRITICAL** | Server lifecycle, `restart()` idempotency, `ping()` health probe, signal-driven teardown. | The watchdog calls `restart()` from recovery and the wake handler from `useSleepDetector`; both paths can fire concurrently. No test pins the abort+relaunch order, the "preferred port → ephemeral port" fallback (line 207-216), or the close-during-superseded-launch race. A refactor that "fixes" the port-stickiness contract would break watchdog recovery silently. |
+| `src/lib/shutdown.ts` | 98 | **HIGH** | `ShutdownManager` signal handler (SIGINT/SIGTERM/SIGHUP), failsafe timer, `process.exit(0/1)`, the `isShuttingDown` re-entrancy guard. | The failsafe race (`efcc7d2`-era fix in `with-timeout`, the 17.7 audit verified) has the same shape: if a handler throws AND the failsafe fires, `process.exit(1)` runs from both paths. The 17.7 audit verified this by file read only — no test pins it. A future refactor that drops `isShuttingDown` re-check would let Ctrl+C double-fire the teardown. |
+| `src/lib/config.ts` | 272 | **HIGH** | `loadConfig()` (missing file, invalid JSON, null/array JSON, parse throw), `saveConfig()` (tmp+rename atomicity, mkdir recursion), `resolveResilience()` (defaults < file < CLI, undefined-skip), `getConfigDir()` (XDG vs HOME), `hasTerminalConfig()` (known vs custom, empty field validation). | Config loss is silent — `loadConfig` returns `{}` on any failure (line 200-223), and the loop runs with all defaults. No test pins the null/array/primitive guard at line 212-215 (a user who writes `"language": "klingon"` to ocloop.json gets a silent default). No test pins `resolveResilience` undefined-skip (a `--resilience minIterationGapMs=NaN` from the CLI propagates if the guard is dropped). |
+| `src/lib/terminal-launcher.ts` | 181 | **HIGH** | `detectInstalledTerminals` (Promise.all + `which`), `launchTerminal` (known vs custom, `buildArgs` `{cmd}` replacement + empty-token filter at line 104, spawn-detached), `getAttachCommand`. | The "open in terminal" command palette is the user's escape hatch when the TUI hangs. `buildArgs` is the only place that splits the attach command into argv tokens (line 100-114); a `split(/\s+/)` regression that produces a blank argv entry would crash the terminal with `execvp: null` — a regression here is invisible until a user clicks "open in terminal" months later. |
+| `src/lib/clipboard.ts` | 97 | **MEDIUM** | `detectClipboardTool` (Wayland → X11 → wl-copy fallback chain, `WAYLAND_DISPLAY` env read at line 24), `copyToClipboard` (exit-code check, stderr capture, `stdin.write` + `stdin.end` BEFORE `proc.exited` at line 73-78 to avoid truncation). | The `await proc.stdin.end()` BEFORE `await proc.exited` ordering at line 75-78 is the fix for the well-known "child never sees EOF" race. A future refactor that reorders to `exited` first would clip the last bytes of any long paste. No test pins this. |
+| `src/lib/power.ts` | 79 | **MEDIUM** | `createPowerManager` (start/stop idempotency, `enabled()` reactive gate, non-Mac no-op, `caffeinate` spawn failure handling, `proc.unref()` to not keep the event loop alive). | If `start()` is called twice (e.g. the user toggles `--no-caffeinate` mid-run), the second call returns early at line 35 — no test pins that. The `proc.unref()` at line 52 is the difference between a clean exit and a hung process on shutdown. |
+| `src/lib/debug-logger.ts` | 123 | **MEDIUM** | `DebugLogger` (log rotation: `.loop.log` → `.loop.log.old`, `entry()` line format, Error object → `{name, message, stack}` shape, non-serializable data → `[Circular or Non-Serializable Data]`, write-fail → `enabled = false` to suppress further errors). | The 24 health events per minute the watchdog emits are the only forensic trail after an incident. The rotation (line 26-35) is best-effort — a failed rename swallows the error and continues (the comment admits it). The Error-serialization shape (line 99-101) is a hand-rolled string interpolation; a missing `JSON.stringify` on a circular error throws but is caught and downgraded to a sentinel. No test pins the sentinel. |
+| `src/lib/theme-resolver.ts` | 184 | **MEDIUM** | `getResolvedTheme` (theme lookup + fallback), `resolveTheme` (15 required tokens, dark/light variant resolution, def-reference recursion with depth cap at line 91), `toMonochrome` (collapse 15 fg/bg tokens to text/background). | The depth cap at line 91 (8 levels) is the cyclic-def defense. A user-supplied theme with `defs: { a: "b", b: "a" }` would stack-overflow without it. No test pins the cap. The `toMonochrome` collapse at line 164-184 is a 15-token mechanical mapping that the audit's `term-caps.test.ts` exercises on the caps side but never on the resolve side. |
+| `src/lib/i18n.ts` | 695 | **LOW** | `isLocale` (the `'en' | 'es'` type guard at line 22), `t()` (string vs function msg dispatch, parameter interpolation, missing-key fallback), `setLocale` (signal + config persistence). | The `shared` block at line 30-56 is locale-identical strings spread into both `en` and `es` (the compile-time mirror guarantee). The TypeScript compiler enforces key parity; the runtime test would only catch a missing key, never a wrong key. Low priority because the type system already does the work. |
+| `src/lib/project.ts` | 43 | **LOW** | `ensureGitignore` (no file → create, present-with-entry → no-op, present-without-entry → append, missing-trailing-newline → add `\n` before entry). | 43 LoC, no I/O race, every branch is observable via the `.gitignore` content. Low value to test. |
+| `src/lib/command-exists.ts` | 19 | **LOW** | `commandExists` (which-spawn exit code 0, never throws — the `catch` at line 16-18 returns `false`). | 19 LoC, one behavior, used as the gate for `clipboard` and `terminal-launcher`. The never-throws contract is the only test-worthy invariant; a regression that lets an ENOENT bubble up would crash the two callers. |
+| `src/lib/constants.ts` | 1 | **LOW** | DEFAULTS table. | A constant export — testable only via the consumers (`useLoopState`, etc.) which are already covered. |
+
+#### Inventory: untested context providers (`src/context/`)
+
+| Module | LoC | Severity | What the audit depends on this for |
+| --- | ---: | --- | --- |
+| `src/context/DialogContext.tsx` | 193 | **MEDIUM** | `show`/`replace`/`clear`/`pop` (the stack-based modal manager), `hasDialogs`, the **top-only render** contract at line 178-192 (the comment explicitly cites the `useKeyboard` + `preventDefault` sibling-listener problem — rendering every stacked dialog would make Enter/Escape fire on all of them). |
+| `src/context/CommandContext.tsx` | 94 | **LOW** | `register`/`show`/`trigger` (the command-palette plumbing), `suspended` (keybind suppression). The `onCleanup` try/catch at line 28-35 (manual cleanup warning if called outside reactive scope) is a non-obvious defensive path. |
+| `src/context/ThemeContext.tsx` | 222 | **MEDIUM** | `readOpenCodePreferences` (Bun.file exists check, JSON.parse try/catch, default-mode "dark"), `selectedForeground` (luminance threshold 0.5, light→black/dark→white). The brand-first override logic at line 144-147 (user's `theme` setting wins, otherwise `DEFAULT_THEME`; OpenCode's `theme_mode` is still respected) is the source of the only known incident. |
+| `src/context/ToastContext.tsx` | 132 | **LOW** | `show` (auto-hide after `duration ?? 5000`, previous timer cleared on new show at line 42), `error(err)` (Error-coercion wrapper), `onCleanup` timer clear at line 60-62. |
+
+#### Inventory: untested components (`src/components/`)
+
+12 `.tsx` files: `ActivityLog.tsx`, `BottomPanel.tsx`, `Dashboard.tsx`, `DialogCompletion.tsx`, `DialogError.tsx`, `DialogInvalidAgent.tsx`, `DialogTerminalConfig.tsx`, `DialogTerminalError.tsx`, `LabelValue.tsx`, `ProgressIndicator.tsx`, `StatusBadge.tsx`, `index.ts`. All presentational (no business logic, no async work, no I/O). Severity **LOW** for all — Solid's render model is exercised by the hook tests that feed them signals, and the layout dimensions are covered by `layout.test.ts`.
+
+#### Findings
+
+#### Finding 18.2.A — HIGH — `useServer.ts` has no test (carried from 18.1.B with rationale)
+
+**Problem.** `useServer.ts:71-263` covers the full OpenCode server lifecycle: start, ping, restart, stop, and the autoStart/autoCleanup wiring via `onMount`/`onCleanup`. The watchdog calls `restart()` from recovery (line 70-73 of `useWatchdog.ts`), and the wake handler calls `restart()` from `useSleepDetector`. Both can fire on the same wedge. The `restart()` function (line 194-229) has three nested failure paths (preferred-port retry → ephemeral-port retry → error state) with no test pinning any of them.
+
+**Where.** `src/hooks/useServer.ts:194-229` (restart), `src/hooks/useServer.ts:160-187` (ping), `src/hooks/useServer.ts:119-136` (startServer guard).
+
+**Proposed fix.** Add `useServer.test.ts` covering: (1) `startServer` guard when status is not `starting`/`stopped` (early return at line 120-122), (2) `ping` happy path → `setStatus("ready")` and `lastHealthyAt` updated, (3) `ping` failure on a `ready` server → `setStatus("unhealthy")`, (4) `restart` preferred-port success, (5) `restart` preferred-port failure → ephemeral-port success, (6) `restart` both ports fail → `setError` + `setStatus("error")`, (7) `stop` clears state, (8) `closeCurrent` swallows `serverRef.close()` throw (line 148-150). The chaos controller already provides a fake `createOpencodeServer`; this is the same pattern `resilience-integration.test.ts` uses.
+
+**Severity: HIGH.** The audit depended on Phase 7.5's file-read verification of `restart()` idempotency. A test pins the contract for future refactors.
+
+#### Finding 18.2.B — HIGH — `shutdown.ts` has no test (failsafe race is verified by file read only)
+
+**Problem.** The 17.7 audit verified the handler-throw/failsafe-fire race (line 67-84) by reading the file, not by pinning it in a test. The `isShuttingDown` re-entrancy guard at line 51-53 is the only thing that prevents a wedged handler from letting a second SIGINT skip cleanup entirely. A future refactor that moves the `setStatus("stopped")` call into a finally (without re-checking `isShuttingDown`) would let Ctrl+C race the failsafe.
+
+**Where.** `src/lib/shutdown.ts:49-85`.
+
+**Proposed fix.** Add `shutdown.test.ts` that: (1) calls `shutdownManager.shutdown()` and verifies `process.exit` was called with `0` (use `mock.module` or a test double), (2) calls it twice and verifies the second is a no-op (the re-entrancy guard), (3) registers a handler that throws and verifies `process.exit(1)` is called, (4) registers a handler that never resolves (a "wedged" handler) and verifies the failsafe timer fires within `forceExitMs`. The first three are easy; the fourth needs `mock.module("node:process", …)` to stub `process.exit`.
+
+**Severity: HIGH.** Phase 17.7 flagged this as the most likely 3am page scenario.
+
+#### Finding 18.2.C — MEDIUM — `config.ts` has no test
+
+**Problem.** `loadConfig` at line 200-223 returns `{}` on every failure (missing file, parse error, non-object, null, array). The audit depended on the null/array/primitive guard at line 212-215 ("JSON.parse('null') succeeds but yields null; treat as missing config"). `resolveResilience` at line 160-175 is the merge-order contract the audit called out in §12.3. `saveConfig` at line 230-245 is the atomic tmp+rename contract.
+
+**Where.** `src/lib/config.ts:160-175` (resolveResilience), `src/lib/config.ts:200-223` (loadConfig), `src/lib/config.ts:230-245` (saveConfig).
+
+**Proposed fix.** Add `config.test.ts` covering: (1) `loadConfig` on missing file returns `{}` (use `mkdtempSync` + `process.chdir` like `loop-state-store.test.ts`), (2) `loadConfig` on `null`/`[]`/`"string"`/`42` JSON returns `{}`, (3) `loadConfig` on invalid JSON returns `{}`, (4) `loadConfig` on valid partial config returns the partial, (5) `saveConfig` creates the directory if missing, (6) `saveConfig` writes to `.tmp` then renames (no leftover `.tmp` after success), (7) `resolveResilience` with defaults-only returns the defaults, (8) `resolveResilience` with file overrides, (9) `resolveResilience` with CLI overrides, (10) `resolveResilience` with `undefined` values in any layer is skipped (the `pickDefined` filter at line 164-169), (11) `resolveResilience` precedence: defaults < file < CLI, (12) `hasTerminalConfig` with both `known` (name non-empty) and `custom` (command + args) shapes, (13) `hasTerminalConfig` rejects empty name / empty command.
+
+**Severity: MEDIUM.** Config loss is silent; the test pins the contract.
+
+#### Finding 18.2.D — MEDIUM — `terminal-launcher.ts`, `clipboard.ts`, `power.ts` have no test
+
+**Problem.** These three are the "exec into the user's environment" modules. The audit depends on:
+
+- `terminal-launcher.ts:100-114` `buildArgs` `{cmd}` replacement and empty-token filter.
+- `clipboard.ts:73-78` `await stdin.end()` before `await proc.exited` ordering.
+- `power.ts:35` `start()` early-return when `proc` is already set, `power.ts:52` `proc.unref()` to not keep the event loop alive.
+
+**Where.** `src/lib/terminal-launcher.ts:100-114`, `src/lib/clipboard.ts:73-78`, `src/lib/power.ts:34-61`.
+
+**Proposed fix.** Three small test files, each with 5-8 tests. The pattern is: stub `Bun.spawn` to return a fake `exited` promise, stub `which` via `commandExists` mock or env, assert the args order. The `power.ts` test can use the `platform` option (line 25-26) to drive the darwin/non-darwin branch without a real Mac.
+
+**Severity: MEDIUM.** The behavior is straightforward but the orderings (close-before-wait, unref-before-log) are easy to lose in a refactor.
+
+#### Finding 18.2.E — LOW — `theme-resolver.ts`, `i18n.ts`, `project.ts`, `command-exists.ts` have no test
+
+**Problem.** These are low-complexity / low-stakes modules. The most test-worthy bit is `theme-resolver.ts:91-93` (the cyclic-def depth cap) and `theme-resolver.ts:118-132` (the 15-token required list). `i18n.ts` is fully type-checked at compile time (the `en: Record<MessageKey, Msg>` constraint pins key parity).
+
+**Where.** `src/lib/theme-resolver.ts:91-93`, `src/lib/i18n.ts:30-56` (shared block), `src/lib/i18n.ts:22-24` (`isLocale`).
+
+**Proposed fix.** Single `theme-resolver.test.ts` covering the depth cap (cycle at depth 9 → `#808080` fallback) and the 15-token mapping (a custom theme with one token missing still produces a `ThemeColors` with the missing token = `#808080`). Skip `i18n.ts` (compile-time coverage is sufficient). Skip `project.ts` (covered by hand-test on first run).
+
+**Severity: LOW.** Type system + file-read audit is sufficient.
+
+#### Finding 18.2.F — LOW — `context/*.tsx` and `components/*.tsx` have no test
+
+**Problem.** 4 context providers, 12 components. All are presentational or thin wrappers. The most test-worthy bits are: `DialogContext.tsx:178-192` (top-only render contract — the comment cites the sibling-listener problem), `ThemeContext.tsx:208-222` (`selectedForeground` luminance threshold), `ToastContext.tsx:39-48` (auto-hide + previous-timer-clear).
+
+**Where.** `src/context/DialogContext.tsx:175-192`, `src/context/ThemeContext.tsx:208-222`, `src/context/ToastContext.tsx:39-62`.
+
+**Proposed fix.** A single `context.test.tsx` (or per-file if the harness overhead is high) using `bun:test`'s `render` + `cleanup` (or a minimal Solid root). The dialog stack is the highest-value target — the top-only render contract is a real bug-magnet.
+
+**Severity: LOW.** Components are static; the contexts are small enough that the code reads well as documentation.
+
+#### Verification result for Task 18.2
+
+- **Source files inspected: 26** (`src/lib/` × 18, `src/hooks/` × 7, `src/context/` × 4; `src/components/` × 12 enumerated but out of scope for "production logic" gaps).
+- **Already tested: 14** (per §18.1 table).
+- **Testable production-logic modules without a test: 13** (`useServer.ts` + 12 from `src/lib/`).
+- **Presentational modules without a test: 16** (4 contexts + 12 components).
+- **CRITICAL gaps: 1** (`useServer.ts`).
+- **HIGH gaps: 3** (`shutdown.ts`, `config.ts`, `terminal-launcher.ts`).
+- **MEDIUM gaps: 5** (`clipboard.ts`, `power.ts`, `debug-logger.ts`, `theme-resolver.ts`, `DialogContext.tsx` + `ThemeContext.tsx`).
+- **LOW gaps: 5** (`i18n.ts`, `project.ts`, `command-exists.ts`, `constants.ts`, `CommandContext.tsx` + `ToastContext.tsx` + all 12 components).
+- **No code changes applied** (audit-only per PLAN.md acceptance criteria).
+
+### 18.3 — Identify flows with INCOMPLETE test coverage
+
+PLAN.md 18.3: "Identify flows with INCOMPLETE test coverage."
+
+#### Finding 18.3.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook (carried from 18.1.A with full hook-behavior inventory)
+
+**Problem.** `useSSE.test.ts:1-199` tests `classifySessionError` only (24 tests, all kinds + retry-after extraction). The 660-line `useSSE.ts` hook (line 300-660) has the following behaviors with **no test coverage**:
+
+1. **Connection lifecycle** — `connect()` early-returns when `status()` is `connecting` or `connected` (line 473-475); `connect()` rejects empty URL with a log + no state change (line 481-484).
+2. **Status transitions** — `disconnected → connecting → connected → disconnected → connecting …`; `error` is set in the catch path (line 555).
+3. **Reconnection backoff** — `Math.min(1000 * Math.pow(2, attempt), 30000)` (line 581), `setReconnectAttempts(attempt + 1)` (line 582), `shouldReconnect` gate at line 575-577, `setTimeout` self-clear on fire (line 586), `if (shouldReconnect) connect()` re-check (line 587-589).
+4. **Event filtering by sessionId** — `filterSessionId` extraction (line 336), filter applied to `session.created` (line 346-348), `session.idle` (line 362-364), `session.error` (line 378-383), `todo.updated` (line 391-393), `message.part.updated` (line 419-421), `session.diff` (line 457-459). Each branch has the same `if (filterSessionId && eventSessionId !== filterSessionId) return` shape.
+5. **processEvent dispatch wiring for 9 event types** — `session.created` (line 340-356), `session.idle` (line 359-367), `session.error` (line 369-386), `todo.updated` (line 388-396), `file.edited` (line 398-401), `message.updated` (line 403-410), `message.part.updated` (line 412-450), `session.diff` (line 452-465). The `message.part.updated` branch has 4 sub-types (`tool-use` / `tool` / `text` / `reasoning` / `step-finish`) with a `seenPartIds` gate.
+6. **`seenPartIds` dedup** — line 322 (init), line 428 (tool-use gate), line 433 (text gate), line 439 (reasoning gate), line 444 (step-finish gate). First-seen emits, second-seen is silent.
+7. **`messageRoles` map** — line 320 (init), line 407 (set on `message.updated`), line 435 (read on `message.part.updated` text dispatch), line 352-353 (reset on `session.created`).
+8. **The "superseded controller" guard** — line 513 (after `await client.event.subscribe`, before `setStatus("connected")`), line 527 (inside the `for await` loop), line 532 (after stream ends). The audit flagged this as the post-restart reconnect wedge fix in §15.6.
+9. **`reconnect()` state reset** — line 616-639: `setReconnectAttempts(0)`, `shouldReconnect = true`, abort existing, clear timeout, **explicit `setStatus("disconnected")` at line 635** (the comment cites the bug where reconnecting after a server restart silently no-ops if status stays `connected`), then `connect()`.
+10. **`disconnect()` cancellation** — line 596-611: `shouldReconnect = false`, `clearTimeout(reconnectTimeout)`, `abortController.abort()`, `setStatus("disconnected")`. Idempotent: second call is a no-op.
+11. **`onAnyEvent` callback** — line 331-333, called for every event before the switch.
+12. **The non-AbortError connection error path** — line 543-566: `setError`, `setStatus("error")`, `log.error`, `onError?.(connectionError)`, `scheduleReconnect()`. The AbortError short-circuit at line 546-551 stays silent.
+13. **Stream-ended naturally** — line 533-542: `setStatus("disconnected")`, `scheduleReconnect()`. The audit flagged this as a bug class in §15.6 (server closes the stream after idle — must reconnect).
+14. **`session.created` dedup-map reset** — line 352-353: `seenPartIds.clear()` and `messageRoles.clear()` on every new session. The comment at line 350-351 cites the unbounded-growth bug: without this, a long multi-iteration run leaks entries.
+
+**Where.** `src/hooks/useSSE.ts:300-660`.
+
+**Proposed fix.** A new `useSSE.test.ts` (or a `useSSE.hook.test.ts` parallel to the existing classifier suite) that uses a fake `createOpencodeClient` returning a fake `event.subscribe` async generator, drives the hook through 4 phases:
+
+1. `connect` → `status === "connected"` after a successful subscribe.
+2. Stream an `Event` for each of the 9 types → assert the corresponding `onX` callback fired with the right args.
+3. `disconnect` → `status === "disconnected"`, second `connect` is a no-op until `reconnect` is called.
+4. `reconnect` → `status` resets to `disconnected` even if it was `connected`; new `subscribe` is called.
+
+This needs a Solid root for `createSignal`/`onMount`/`onCleanup` to work, or a manual `createRoot(() => …)` wrapper. The `client.event.subscribe` mock returns an object with `stream: AsyncIterable<Event>` that the test controls via a push API.
+
+**Severity: MEDIUM.** The 14 hook behaviors above are the connection's reliability contract. A regression in any of them breaks SSE recovery silently.
+
+#### Finding 18.3.B — MEDIUM — `useServer.test.ts` does not exist (same as 18.2.A, listed for cross-reference)
+
+See 18.2.A for the full inventory. Listed here as "incomplete" because the test gap is the same one, just categorized differently: 18.2.A says "no test", 18.3.B says "the test that exists (in `resilience-integration.test.ts`) covers the recovery *callers* of `useServer`, not the hook itself".
+
+#### Finding 18.3.C — LOW — `DialogContext.tsx` top-only render contract is not pinned
+
+**Problem.** `DialogContext.tsx:175-192` renders ONLY the top dialog (not the whole stack), with a comment at line 178-182 citing the bug that `useKeyboard` listeners on every stacked dialog would make Enter/Escape fire on all of them. The contract is real and important but is held only by a comment.
+
+**Where.** `src/context/DialogContext.tsx:175-192`.
+
+**Proposed fix.** A `DialogContext.test.tsx` with 3-4 tests: (1) `show` pushes, `pop` removes the top, (2) `show` twice + `clear` empties the stack, (3) `replace` empties and pushes one, (4) `hasDialogs` is true/false as expected, (5) the `DialogStack` component renders only the top (mount a stack of 3 → only 1 is in the DOM). The last is a render test and needs a Solid root.
+
+**Severity: LOW.** The contract is simple enough to read; a test is documentation more than enforcement.
+
+#### Verification result for Task 18.3
+
+- **Incomplete coverage hotspots: 2** (`useSSE.ts` hook behaviors, `useServer.ts` full surface).
+- **MEDIUM gaps: 2** (the two above).
+- **LOW gaps: 1** (DialogContext top-only render).
+- **No code changes applied** (audit-only per PLAN.md acceptance criteria).
+
+### 18.4 — Document integration scenarios that cannot be tested without a real OpenCode server
+
+PLAN.md 18.4: "Document which integration scenarios are untestable without a real OpenCode server mock."
+
+The `@opencode-ai/sdk` package wraps the OpenCode server's HTTP+SSE surface. The SDK's `createOpencodeServer` (used in `useServer.ts:103`) actually spawns a real `opencode` binary; `createOpencodeClient` (used in `api.ts` and `useSSE.ts`) speaks HTTP to whatever URL it's given. To test the integration end-to-end without a real OpenCode binary, the SDK itself would need to be replaced with a fake — which the `chaos.test.ts` and `resilience-integration.test.ts` do at the chaos-controller level, but not at the SDK-call level. The scenarios below are the ones that **cannot** be reasonably tested without that SDK-level fake.
+
+#### Untestable scenarios
+
+1. **SSE event ordering** — The OpenCode server emits a precise sequence of `session.created` → `message.updated` (with `role: "user"`) → `message.part.updated` (text from the user prompt) → `message.updated` (with `role: "assistant"`) → `message.part.updated` (text, reasoning, tool-use, step-finish) → `session.idle`. A unit test using a mock client can emit these in the right order, but **the SDK's `event.subscribe` parser** (its handling of `data:` framing, the `event:` field, the `[DONE]` sentinel, reconnect-suggested HTTP 307, the keep-alive comment) cannot be exercised without a real server. The audit's evidence for this is the Phase 7.1 verification of the `useSSE` event filter: it only works if the SDK produces the right `Event` shape. **Coverage today:** file-read audit + chaos-controller unit test that bypasses the SDK entirely.
+
+2. **`createSession` round-trip with a real OpenCode binary** — `api.ts:createSession` (called from `App.tsx` startIteration) calls `client.session.create({ ... })` and expects `{ data, error, response }`. The real server returns an HTTP 201 with a `Location: /session/<id>` header and a body. The transport behavior (HTTP/1.1 vs HTTP/2, connection coalescing, the SDK's automatic retry on idempotent POSTs) cannot be tested without a real server. **Coverage today:** `api.test.ts:assertResponse` pins the error cases; the success path is verified by manual runs.
+
+3. **`sendPromptAsync` round-trip** — `api.ts:sendPromptAsync` (line 70+) calls `client.session.promptAsync(...)` and waits on the returned promise. The real server returns immediately and starts the session in the background; the loop's SSE stream is the source of truth for progress. A test that uses a mock can return a resolved promise, but **the server-side queuing, the model's streaming back, and the eventual `session.idle`** are not exercisable. **Coverage today:** `api.test.ts` pins the parameter shape; the streaming behavior is verified by manual runs.
+
+4. **Real `session.abort` end-to-end** — `api.ts:abortSession` calls `client.session.abort({ sessionID })` with the configured `abortTimeoutMs`. The real server propagates the abort to the model SDK and the streaming stops. **Coverage today:** Phase 4.6 audit verified the abort call path; the actual model cancellation is a black box.
+
+5. **Real `session.status` reconciliation** — `api.ts:reconcileSession` (line 100+) reads the server's view of the session to recover from SSE cuts. The real server distinguishes `working` / `idle` / `busy` states; the chaos test's 4-value enum (`working` / `idle` / `missing` / `unknown`) approximates but cannot replace this. **Coverage today:** `api.test.ts:reconcileSession` pins the verdict table; the live 5-state enum is verified by manual runs.
+
+6. **Real rate-limit handling (HTTP 429 from the model)** — When the model returns 429, the server surfaces it as a `session.error` event with the `Retry-After` header. The `classifySessionError` test pins the classifier (`useSSE.test.ts:39-62`), but the server's retry behavior (whether it auto-queues, what header it sets, how the SSE stream interacts) is not exercisable. **Coverage today:** classifier unit test + chaos one-shot rate-limit injection (`chaos.test.ts`).
+
+7. **Real SSE drops during sleep** — The sleep detector at `sleep-detector.ts` notices a wall-clock gap and the wake handler (`useSSE.reconnect()`) is called. The **actual server-side cleanup during a multi-second gap** (whether the session survives, whether the SSE stream is silently closed, whether reconnecting gets a fresh stream or a 410 Gone) is server-specific. **Coverage today:** sleep detector unit test + the §15.6 audit's verification that the local reconnect logic doesn't double-connect.
+
+8. **Real plan file edits during a session** — OpenCode may write to `PLAN.md` mid-iteration (the audit's "partial read" concern at §15.5). The server's atomic-write semantics (does it lock, does it use tmp+rename, does it fsync) is implementation-specific. **Coverage today:** `refreshPlan` in `App.tsx` is a try/catch wrapper; the underlying file race is not pinned by a test.
+
+9. **Plan generator end-to-end (`--create-plan`)** — `index.tsx:runCreatePlan` starts a real server, creates a session, sends the planning prompt, polls for the reply, and writes PLAN.md. The integration (server start + session create + prompt send + SSE poll + file write + server close in the `finally`) is one full path. **Coverage today:** the index.tsx entry-point has no test; the only "integration" is the manual end-to-end run.
+
+10. **Real OpenCode auth failure (HTTP 401/403)** — `classifySessionError` pins the classifier for `auth` (line 86-93), but the server's actual auth header flow (env-var pickup, the `OPENCODE_API_KEY` precedence, the per-provider auth) is server-specific. **Coverage today:** classifier unit test only.
+
+11. **Real server restart with a real OpenCode binary** — `useServer.restart()` (line 194-229) closes the current server, relaunches, and prefers the same port. The actual `createOpencodeServer` shutdown (the Bun.spawn cleanup, the `opencode` binary's SIGTERM handler, the port release timing) is implementation-specific. **Coverage today:** audit §15.7 verified the API shape; the real restart is verified by manual runs.
+
+12. **Terminal launching in a real terminal emulator** — `terminal-launcher.launchTerminal` (line 120+) spawns `alacritty -e opencode attach …` (or one of 12 known terminals). The real terminal's argv parsing, the `$DISPLAY`/Wayland negotiation, the spawn-detach on macOS vs Linux, all of these are OS-specific. **Coverage today:** the `buildArgs` `{cmd}` replacement is testable with a fake `Bun.spawn`; the real terminal interaction is not.
+
+13. **Clipboard tool on a real Wayland/X11 session** — `clipboard.detectClipboardTool` (line 23-48) checks `WAYLAND_DISPLAY`, then `which wl-copy` / `which xclip` / `which xsel`. The real Wayland compositor's wl-copy implementation, the X11 server's clipboard owner, and the `proc.stdin.end()` race against a real clipboard daemon are not exercisable. **Coverage today:** the `commandExists` gate is testable; the real clipboard is not.
+
+14. **`caffeinate` on a real Mac** — `power.createPowerManager` spawns `caffeinate -dimsu`. The real `caffeinate` binary's behavior (does it keep the display awake, does it block sleep for the right duration, what happens on a clamshell close) is OS-specific. **Coverage today:** the spawn + unref is testable with a fake `Bun.spawn`; the real caffeinate is not.
+
+#### How these scenarios are covered today
+
+The audit relied on:
+
+- **Phase 7 (SSE)** file-read verification of the event flow, plus the chaos-driven integration test (`resilience-integration.test.ts`) for the recovery *callers*, not the SDK call itself.
+- **Phase 4 (Session Lifecycle)** file-read verification of the startIteration path, plus manual end-to-end runs.
+- **Phase 8 (Crash Recovery)** file-read verification of `saveLoopState` / `loadLoopState`, plus the `loop-state-store.test.ts` for the local file I/O.
+- **Phase 5 (Rate Limit)** classifier unit test (`useSSE.test.ts`) + the chaos one-shot injection.
+- **Phase 9 (Sleep Detection)** sleep detector unit test + the `power.ts` / `useSSE.reconnect()` paths verified by file read.
+
+In every case, the **local control flow** is pinned (by file read or by unit test), but the **server's actual response** is verified only by manual runs. The `chaos.test.ts` and `resilience-integration.test.ts` partially bridge this by simulating a fake server at the chaos-controller level, but they do not exercise the SDK's HTTP transport, the SSE framing, the model's streaming, or the OpenCode binary's lifecycle.
+
+#### What a real fix would require
+
+To make these scenarios testable, the project would need an **SDK-level fake** that implements the same `createOpencodeClient` surface but returns canned responses and a controllable SSE stream. This is a non-trivial amount of work (the SDK exposes ~30 methods and 10+ event types). The audit's position is:
+
+- The local control flow is well-pinned; the gap is the server interaction, not our code.
+- A SDK-level fake is best built when there is a concrete bug to chase, not preemptively.
+- The 13 MEDIUM+ test gaps in §18.2 are higher-value to close first, because they pin our code's contract; the 14 untestable scenarios above pin the server's contract, which we don't own.
+
+#### Verification result for Task 18.4
+
+- **14 scenarios enumerated** as untestable without a real OpenCode server.
+- **Grouped by surface**: SSE (1), SDK calls (5), server lifecycle (1), file I/O races (1), CLI end-to-end (1), server behavior (1), terminal/clipboard/power (4).
+- **All 14 are covered by file-read audit + targeted unit tests of the local control flow**; none is pinned by an integration test.
+- **No code changes applied** (audit-only per PLAN.md acceptance criteria).
