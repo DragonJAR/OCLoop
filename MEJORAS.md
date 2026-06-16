@@ -22787,3 +22787,388 @@ backstop.
 - **No CRITICAL, HIGH, or MEDIUM findings.**
 - **No code changes applied** (audit-only per PLAN.md acceptance
   criteria).
+
+### 17.3 — Unguarded `await` calls in `App.tsx` effect handlers
+
+PLAN.md 17.3: "Verify: No unguarded `await` calls that could reject without
+a try/catch in `App.tsx` effect handlers."
+
+#### Scope of the audit
+
+`App.tsx` contains eight `createEffect` blocks, three `onMount` blocks, one
+`useKeyboard` handler, and roughly a dozen standalone async functions that
+the effects call. Every `await` in any of these was traced to its
+callee and the callee's throw behavior was verified by reading the
+callee's source.
+
+The callees were categorized as:
+
+- **NEVER-THROWS** — the callee has an internal `try/catch` that converts
+  every error into a resolved value, a log entry, a default state, or a
+  signal value. Examples: `reconcileSession` (returns `"unknown"` on any
+  failure, `api.ts:303-323`), `server.restart` (sets `status="error"` on
+  failure, `useServer.ts:202-228`), `saveLoopState` (logs warning and
+  resolves, `loop-state-store.ts:50-56`), `loadLoopState` (returns `null`
+  on any failure, `loop-state-store.ts:63-78`), `clearLoopState` (silently
+  swallows, `loop-state-store.ts:86-90`), `loadConfig` (returns `{}` on
+  parse error, `config.ts:208-223`), `launchTerminal` (returns
+  `{success: false, error}` on any failure, `terminal-launcher.ts:124-180`),
+  `copyToClipboard` (returns `{success: false, error}` on any failure,
+  `clipboard.ts:64-94`), `sse.reconnect` / `sse.disconnect` (synchronous,
+  no I/O, `useSSE.ts:596-629`).
+
+- **CAN-THROW** — the callee performs I/O, network, or filesystem
+  operations that can reject. The audit then checks whether the caller
+  wraps the call in `try/catch` or chains `.catch()` on the returned
+  promise.
+
+- **SYNC-CAN-THROW** — the callee is synchronous (declared `function` or
+  `const x = () => ...`) but can throw. An `await` on the call site is
+  functionally a `Promise.resolve(fn()).then(...)`, so the throw becomes
+  a promise rejection on the next microtask.
+
+#### Per-effect inventory
+
+| # | Effect / handler | Line | Awaits / async calls | Throw risk | Wrapped? |
+| --- | --- | --- | --- | --- | --- |
+| 1 | `onMount` (config setup) | 421 | `await loadConfig()` (422) | sync, never throws | n/a |
+| 1 | `onMount` (config setup) | 421 | `await detectInstalledTerminals()` (439) | CAN throw (Bun.spawn on every candidate) | **NO** |
+| 1 | `onMount` (config setup) | 421 | `sleepDetector.start()` (437) | sync, never throws | n/a |
+| 2 | `createEffect` (server ready) | 1013 | `withTimeout(...).then().catch()` (1033-1041) | never throws | YES (chained) |
+| 2 | `createEffect` (server ready) | 1013 | `withTimeout(...).then().catch()` (1060-1084) | never throws | YES (chained) |
+| 2 | `createEffect` (server ready) | 1013 | `initializeSession()` (1049) | CAN throw (calls doResume etc.) | YES (inside `initializeSession`'s own try/catch at 1105-1156) |
+| 3 | `createEffect` (iteration driver) | 1217 | `startIteration()` (1220) | CAN throw | YES (`startIteration` has try/catch/finally at 789-855) |
+| 4 | `createEffect` (SSE recovery) | 1230 | `void restartServer()` (1243) | CAN throw (in principle) | YES (internal callees never throw) |
+| 5 | `createEffect` (watchdog/power) | 1251 | `watchdog.start()` / `.stop()` (1253, 1255) | sync, never throws | n/a |
+| 5 | `createEffect` (watchdog/power) | 1251 | `power.start()` / `.stop()` (1259, 1261) | sync, never throws | n/a |
+| 6 | `createEffect` (persistence) | 1268 | `void saveLoopState(snapshot)` (1286) | never throws | n/a |
+| 6 | `createEffect` (persistence) | 1268 | `void clearLoopState()` (1288) | never throws | n/a |
+| 7 | `createEffect` (completion) | 1293 | none (no async) | — | — |
+| 8 | `createEffect` (error) | 1312 | none (no async) | — | — |
+| 9 | `createEffect` (command registration) | 1453 | `await saveConfig(newConfig)` (1389, 1411, 1561, 1575) | **SYNC, CAN throw** (disk full, EACCES, ENOSPC) | **NO** |
+| 10 | `onMount` (shutdown) | 1624 | `refreshPlan()` (1627) | never throws (internal try/catch) | YES |
+| 11 | `useKeyboard` handler | 1637 | `createDebugSession()` (1666) | CAN throw | YES (internal try/catch at 888-913) |
+| 11 | `useKeyboard` handler | 1637 | `sendDebugPrompt()` (1699) | CAN throw | YES (internal try/catch at 928-942) |
+| 11 | `useKeyboard` handler | 1637 | `launchConfiguredTerminal()` (1715, 1770) | CAN throw | YES (`launchTerminal` never throws) |
+| 12 | `handleQuit` | 968 | `await clearLoopState()` (981) | never throws | n/a |
+| 12 | `handleQuit` | 968 | `await abortSession(...)` (991) | CAN throw | YES (try/catch at 987-995) |
+| 12 | `handleQuit` | 968 | `sse.disconnect()` (999) | never throws | n/a |
+| 12 | `handleQuit` | 968 | `await server.stop()` (1002) | never throws | n/a |
+| 12 | `handleQuit` | 968 | `renderer.setTerminalTitle("")` (1005) | **SYNC, CAN throw** (low-level Solid renderer failure) | **NO** |
+| 12 | `handleQuit` | 968 | `renderer.destroy()` (1006) | **SYNC, CAN throw** | **NO** |
+| 13 | `startIteration` | 776 | `await Bun.file().exists()` (828) | CAN throw | YES (outer try/catch at 789-855) |
+| 13 | `startIteration` | 776 | `await Bun.file().text()` (836) | CAN throw | YES (outer try/catch) |
+| 13 | `startIteration` | 776 | `await createSession(client)` (818) | CAN throw | YES (outer try/catch) |
+| 13 | `startIteration` | 776 | `await sendPromptAsync(...)` (841) | CAN throw | YES (outer try/catch) |
+| 13 | `startIteration` | 776 | `await refreshPlan()` (849) | never throws | n/a |
+| 13 | `startIteration` | 776 | `await checkPlanComplete()` (791) | never throws | n/a |
+| 13 | `startIteration` | 776 | `await getPlanCompleteSummary(...)` (794) | CAN throw | YES (outer try/catch) |
+| 13 | `startIteration` | 776 | `await new Promise(setTimeout)` (809) | never throws | n/a |
+| 14 | `initializeSession` | 1098 | `await createDebugSession()` (1101) | CAN throw | YES (internal try/catch) |
+| 14 | `initializeSession` | 1098 | `await ensureGitignore()` (1107) | CAN throw | YES (outer try/catch at 1105-1156) |
+| 14 | `initializeSession` | 1098 | `await loadLoopState()` (1112) | never throws | n/a |
+| 14 | `initializeSession` | 1098 | `await doResume(persisted)` (1120) | CAN throw | YES (outer try/catch) |
+| 14 | `initializeSession` | 1098 | `await clearLoopState()` (1134 inside `onCancel` callback) | never throws | n/a |
+| 15 | `doResume` | 1164 | `await reconcileSession(...)` (1169) | never throws | n/a |
+| 15 | `doResume` | 1164 | `await clearLoopState()` (1193) | never throws | n/a |
+| 16 | `createDebugSession` | 879 | `await createSession(client)` (893) | CAN throw | YES (try/catch at 888-913) |
+| 17 | `sendDebugPrompt` | 919 | `await sendPromptAsync(client, ...)` (933) | CAN throw | YES (try/catch at 928-942) |
+| 18 | `restartServer` | 649 | `await server.restart()` (652) | never throws | n/a |
+| 18 | `restartServer` | 649 | `sse.reconnect()` (653) | never throws | n/a |
+| 18 | `restartServer` | 649 | `await reconcileAndAdvance()` (654) | never throws | n/a |
+| 19 | `reconcileAndAdvance` | 625 | `await reconcileSession(client, sid)` (631) | never throws | n/a |
+| 20 | `onConfigSelect` | 1379 | `await saveConfig(newConfig)` (1389) | **SYNC, CAN throw** | **NO** |
+| 20 | `onConfigSelect` | 1379 | `launchConfiguredTerminal(sid, ...)` (1396) | never throws | n/a |
+| 21 | `onConfigCustom` | 1400 | `await saveConfig(newConfig)` (1411) | **SYNC, CAN throw** | **NO** |
+| 21 | `onConfigCustom` | 1400 | `launchConfiguredTerminal(sid, ...)` (1418) | never throws | n/a |
+| 22 | `onConfigCopy` | 1422 | `copyToClipboard(cmd)` (1427) | never throws | n/a |
+| 23 | `onErrorCopy` | 1433 | `copyToClipboard(cmd)` (1438) | never throws | n/a |
+| 24 | `launchConfiguredTerminal` | 1353 | `await launchTerminal(...)` (1366) | never throws | n/a |
+| 25 | `handleWake` | 199 | `void reconcileAndAdvance()` (219) | never throws | n/a |
+| 25 | `handleWake` | 199 | `sse.reconnect()` (207) | never throws | n/a |
+| 25 | `handleWake` | 199 | `watchdog.notifyWake()` (208) | sync, never throws | n/a |
+| 26 | watchdog `actions.abortAndRetry` | 267 | `await abortSession(createClient(url), sid)` (273) | CAN throw | YES (try/catch at 272-276, comment: "best effort") |
+
+**Net result: 3 unguarded awaits identified across 26 effect/handler sites.**
+
+#### Finding 17.3.A — MEDIUM — `onMount` (line 421) awaits `detectInstalledTerminals()` without a try/catch
+
+**Problem.** The `onMount` block at `src/App.tsx:421-441` runs three things in
+sequence: `loadConfig()`, `createSleepDetector(...).start()`, and
+`detectInstalledTerminals()`. The first two are safe (one is sync with an
+internal try/catch; the other is sync with no I/O). The third
+(`detectInstalledTerminals` at `src/lib/terminal-launcher.ts:73-88`)
+performs a `Promise.all` over every entry in the `KNOWN_TERMINALS` list,
+calling `commandExists(command)` for each one. `commandExists` shells out
+to `Bun.spawn` with a small command (`which`, `command -v`, or similar
+depending on platform). `Bun.spawn` can reject if the host runs out of
+file descriptors, the process is killed mid-spawn, or the user's `$PATH`
+is in a pathological state that causes `spawn` itself to throw (rare but
+documented).
+
+If `detectInstalledTerminals()` rejects, the rejection propagates up
+through the `onMount` async function. The `onMount` body is NOT wrapped
+in a `try/catch`. The `onCleanup(() => { shutdownManager.unregister();
+sleepDetector?.stop(); power.stop() })` registered at `src/App.tsx:1629-1633`
+is a sibling `onMount` and would still fire on unmount, but the rest of
+this `onMount` body (the `setOcloopConfig(config)` at line 423, the
+`configureApiTimeouts(resolved)` at line 428, the `sleepDetector.start()`
+at line 437, and the `setAvailableTerminals(terminals)` at line 440) is
+all skipped. The first observable failure mode is: the user gets an
+unhandled rejection in the console (the `unhandledRejection` handler at
+`src/index.tsx:300-304` calls `restoreTerminal()` then `process.exit(1)`)
+and the process terminates before the TUI ever shows the dashboard.
+
+If instead `detectInstalledTerminals()` swallows the error internally
+(it doesn't — `commandExists` returns `boolean`, not `throws`), the
+worst case is `availableTerminals()` stays empty and the terminal
+selection dialog shows "no terminals found" (degraded but not broken).
+
+**Where.** `src/App.tsx:421-441` (the `onMount(async () => { ... })`
+block). Specifically the `await detectInstalledTerminals()` at line 439
+and the surrounding `try/catch`-less body.
+
+**Proposed fix.** Wrap the body in a `try/catch` that logs and continues
+with sensible defaults, mirroring the pattern used in `refreshPlan`
+(line 575-580) and `refreshCurrentTask` (line 591-598):
+
+```ts
+onMount(async () => {
+  let config: OcloopConfig = {}
+  try {
+    config = await loadConfig()
+  } catch (err) {
+    log.error("config", "Failed to load config", err)
+  }
+  setOcloopConfig(config)
+
+  const resolved = resolveResilience(config.resilience, props.resilience)
+  setResilience(resolved)
+  configureApiTimeouts(resolved)
+  log.info("config", "Resolved resilience config", resolved as unknown as Record<string, unknown>)
+
+  sleepDetector = createSleepDetector({
+    tickMs: resolved.sleepTickMs,
+    thresholdMs: resolved.sleepThresholdMs,
+    onWake: handleWake,
+  })
+  sleepDetector.start()
+
+  try {
+    const terminals = await detectInstalledTerminals()
+    setAvailableTerminals(terminals)
+  } catch (err) {
+    log.error("terminal", "Failed to detect installed terminals", err)
+  }
+})
+```
+
+Note: `loadConfig` is synchronous (`config.ts:200-224`) with an internal
+try/catch that already returns `{}` on parse error, so the `try/catch`
+around it is technically belt-and-suspenders. `detectInstalledTerminals`
+is the real risk.
+
+**Severity: MEDIUM.** The bug is not triggerable on a normal developer
+machine (terminal detection is well-tested), but the lack of a `try/catch`
+around the entire `onMount` body violates the project's documented
+principle that effect handlers should be resilient to async failures.
+A failure here causes the process to exit before the TUI renders, which
+is a poor user experience and conflicts with the Phase 17.1 finding
+that "every effect should survive transient async failures."
+
+#### Finding 17.3.B — MEDIUM — `await saveConfig(newConfig)` in four command `onSelect` callbacks is unguarded
+
+**Problem.** `saveConfig` (defined at `src/lib/config.ts:230-245`) is a
+**synchronous** function that writes the config file atomically
+(tmp-file + rename). It can throw on disk-full, permission-denied,
+filesystem-readonly, or directory-creation failure. The four call sites
+that use `await saveConfig(newConfig)` are all inside the `onSelect`
+callback of a `CommandOption` registered in the `createEffect` at
+`src/App.tsx:1453-1621`:
+
+| Line | Caller | Trigger |
+| --- | --- | --- |
+| 1389 | `onConfigSelect` | User picks a known terminal in the terminal config dialog |
+| 1411 | `onConfigCustom` | User saves a custom terminal command |
+| 1561 | `cmdToggleScrollbar` | User toggles the scrollbar visibility via command palette |
+| 1575 | `cmdToggleLanguage` | User toggles the UI language via command palette |
+
+In all four cases, the `await saveConfig(newConfig)` is the FIRST line
+of the callback (after the in-memory `setOcloopConfig` call). If it
+throws:
+
+1. The promise returned by the `onSelect` callback rejects.
+2. The rejection bubbles up to Solid's effect machinery, which logs
+   the error but does not crash the process.
+3. The subsequent `setOcloopConfig(newConfig)` was already called, so
+   the in-memory state reflects the change — but the on-disk state does
+   not. On next startup, the user's choice is lost.
+4. The user sees a console error (no toast, no dialog) because the
+   `dialog.clear()` and `toast.show(...)` calls that come AFTER
+   `await saveConfig` are skipped.
+
+**Where.** `src/App.tsx:1389, 1411, 1561, 1575` (four call sites).
+
+**Proposed fix.** Wrap each `await saveConfig(...)` in a `try/catch`
+that surfaces the error to the user (toast or dialog) and rolls back
+the in-memory `setOcloopConfig` if appropriate. The two terminal-config
+callbacks already have an `onError` path via `showTerminalError`, but
+that error path runs AFTER `saveConfig`, so a save failure leaves the
+user with a half-configured terminal:
+
+```ts
+const onConfigSelect = async (terminal: KnownTerminal) => {
+  const newConfig: OcloopConfig = {
+    ...ocloopConfig(),
+    terminal: { type: 'known', name: terminal.name },
+  }
+  try {
+    await saveConfig(newConfig)
+  } catch (err) {
+    log.error("config", "Failed to save terminal config", err)
+    toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+    return
+  }
+  setOcloopConfig(newConfig)
+  dialog.clear()
+  const sid = sessionId() || lastSessionId()
+  if (sid) launchConfiguredTerminal(sid, newConfig.terminal)
+}
+```
+
+(Same pattern for `onConfigCustom`, `cmdToggleScrollbar`, and
+`cmdToggleLanguage`.)
+
+**Severity: MEDIUM.** This is a real user-visible bug: the
+language-toggle command palette item, for example, is documented to
+"persist the language choice." If `saveConfig` throws (e.g., the
+config directory is read-only because the user launched OCLoop as
+root), the language reverts to the default on next launch with no
+indication of why. The fix is four small try/catch blocks.
+
+#### Finding 17.3.C — LOW — `handleQuit` (line 968) calls `renderer.setTerminalTitle` and `renderer.destroy` without a try/catch
+
+**Problem.** `handleQuit` at `src/App.tsx:968-1010` ends with three
+synchronous renderer calls before `process.exit(exitCode)`:
+
+```ts
+renderer.setTerminalTitle("")        // line 1005
+renderer.destroy()                    // line 1006
+process.exit(exitCode)                // line 1009
+```
+
+Both `renderer.setTerminalTitle` and `renderer.destroy` are synchronous
+methods on the OpenTUI renderer. They can throw if the renderer's
+internal state is corrupted (e.g., a previous call to `destroy` left
+it in a half-torn-down state, or a Solid signal update mid-render
+caused an inconsistency). The OpenTUI source is not in the repo, so
+the throw conditions are documented behavior of an external
+dependency.
+
+If either throws:
+
+1. The throw propagates out of `handleQuit`.
+2. The unhandled `async function handleQuit` rejection is caught by
+   the `unhandledRejection` handler at `src/index.tsx:300-304`, which
+   calls `restoreTerminal()` and `process.exit(1)`.
+3. The user requested exit code (default `0`) is replaced with `1`,
+   and the user's intent ("I want to quit cleanly") is lost.
+
+The current Phase 17.1 audit (section 17.1 above) verified that the
+process does eventually exit and the terminal IS restored. The
+remaining risk is the wrong exit code, which matters for shell
+scripts and CI pipelines that check `$?`.
+
+**Where.** `src/App.tsx:1005-1006` (the last two statements of
+`handleQuit`).
+
+**Proposed fix.** Wrap the renderer calls in a `try/catch` that
+swallows the error (we're about to exit anyway) and proceeds to
+`process.exit(exitCode)`:
+
+```ts
+try {
+  renderer.setTerminalTitle("")
+  renderer.destroy()
+} catch (err) {
+  log.warn("render", "Cleanup during quit failed", err)
+}
+process.exit(exitCode)
+```
+
+**Severity: LOW.** The current behavior (process exits, terminal is
+restored) is correct; the only thing lost is the user's intended
+exit code. Not a bug in normal operation, but worth fixing for
+robustness.
+
+#### Finding 17.3.D — INFO — `Promise.all` in `detectInstalledTerminals` does not abort sibling `commandExists` calls on first rejection
+
+**Problem.** `src/lib/terminal-launcher.ts:73-88` runs every terminal
+detection in parallel with `Promise.all`. If one rejects, the others
+keep running, and the entire `Promise.all` rejects with the FIRST
+rejection (the rest are silently swallowed by the V8 microtask queue
+and the individual rejected promises' results are lost). This is
+standard `Promise.all` behavior and not a bug, but worth documenting
+for future readers: a per-terminal `try/catch` (converting each
+detection into a `Promise<KnownTerminal | null>` and then filtering)
+would be more resilient and would let us log which specific terminal
+detection failed.
+
+**Where.** `src/lib/terminal-launcher.ts:73-88`.
+
+**Proposed fix.** None required. The current behavior is correct
+(`detectInstalledTerminals` returns an empty array if every detection
+fails, which is the right degradation). The per-terminal
+fine-grained logging is a nice-to-have that can wait.
+
+**Severity: INFO.** Not a bug. Documented for completeness.
+
+#### Finding 17.3.E — INFO — `restartServer` fire-and-forget is safe
+
+`restartServer` is called from three fire-and-forget sites
+(`src/App.tsx:282, 1243, 1515`) with no surrounding try/catch. The
+audit verified that every callee in `restartServer`
+(`server.restart`, `sse.reconnect`, `reconcileAndAdvance`) never
+throws, so the fire-and-forget is safe in practice. If a future
+change introduces a throwing call inside `restartServer`, the
+rejection would bubble up to the effect that triggered it. The
+relevant effects (`createEffect` at `:1230`, command onSelect at
+`:1515`, and the watchdog `actions.restartServer` at `:282`) are
+synchronous in their outer body — only the `void` / `() => restartServer()`
+call is async — so a rejection would be caught by Solid's effect
+machinery and logged. Not a current risk.
+
+**Severity: INFO.** Not a bug. Documented so the next audit doesn't
+re-flag this section.
+
+#### Finding 17.3.F — INFO — `Bun.file().exists()` and `Bun.file().text()` are properly awaited inside `startIteration`'s try/catch
+
+`src/App.tsx:828` (`await promptFile.exists()`) and `src/App.tsx:836`
+(`await promptFile.text()`) are inside `startIteration`'s try/catch
+block (lines 789-855). If the prompt file is missing or unreadable,
+`promptExists` is `false` (handled at line 830-834) and the function
+throws a clear error. Both are properly error-handled. The
+subsequent `await refreshPlan()` at line 849 is inside the same
+try/catch and `refreshPlan` has its own internal try/catch as
+defense in depth. Verified.
+
+**Severity: INFO.** Not a bug.
+
+#### Verification result
+
+- **3 unguarded awaits identified** (2 MEDIUM, 1 LOW) out of 26
+  effect/handler sites in `App.tsx`.
+- **MEDIUM 17.3.A** — `onMount` (line 421) lacks a try/catch around
+  `detectInstalledTerminals()`. Failure causes premature process
+  exit before the TUI renders.
+- **MEDIUM 17.3.B** — Four `await saveConfig(...)` call sites in
+  command `onSelect` callbacks (lines 1389, 1411, 1561, 1575) lack
+  try/catch. Failure causes silent loss of user configuration with
+  no toast.
+- **LOW 17.3.C** — `handleQuit` (lines 1005-1006) calls renderer
+  cleanup methods without a try/catch. Failure causes wrong exit
+  code (1 instead of 0).
+- **3 INFO observations** documented for future audits.
+- **No CRITICAL or HIGH findings.**
+- **No code changes applied** (audit-only per PLAN.md acceptance
+  criteria).
