@@ -38,7 +38,9 @@ export function truncate(str: string, len: number): string {
 export function truncateText(text: string, maxLen: number): string {
   const normalized = text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLen) return normalized;
-  return normalized.substring(0, Math.max(0, maxLen - 3)) + "...";
+  // ponytail: maxLen < 3 can't fit the "..." ellipsis, so just slice without it.
+  if (maxLen < 3) return normalized.substring(0, Math.max(0, maxLen));
+  return normalized.substring(0, maxLen - 3) + "...";
 }
 
 export function formatDiffSummary(additions: number, deletions: number, files: number): string {

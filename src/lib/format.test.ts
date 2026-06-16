@@ -39,6 +39,19 @@ describe("format utilities", () => {
     expect(truncateText("hello", 4)).toBe("h...");
   });
 
+  test("truncateText handles maxLen < 3 without exceeding the limit", () => {
+    // maxLen = 0: return empty string
+    expect(truncateText("hello world", 0)).toBe("");
+    // maxLen = 1: truncate to 1 char, no ellipsis (can't fit "...")
+    expect(truncateText("hello world", 1)).toBe("h");
+    // maxLen = 2: truncate to 2 chars, no ellipsis
+    expect(truncateText("hello world", 2)).toBe("he");
+    // maxLen = 3: normal behavior with ellipsis
+    expect(truncateText("hello world", 3)).toBe("...");
+    // Negative maxLen: return empty string
+    expect(truncateText("hello world", -1)).toBe("");
+  });
+
   test("truncateText normalizes whitespace", () => {
     expect(truncateText("hello\nworld", 20)).toBe("hello world");
     expect(truncateText("hello   world", 20)).toBe("hello world");
