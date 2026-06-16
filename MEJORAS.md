@@ -23788,3 +23788,220 @@ practice).
 - **No production code changes** in `src/lib/with-timeout.ts`
   (audit-only per PLAN.md acceptance criteria; the verification
   is documentation, not a fix).
+
+### 17.7 — `shutdownManager` handler-throws-and-failsafe-fires race
+
+PLAN.md 17.7: "Verify: `shutdownManager` handles the case where `handler`
+throws AND the failsafe timer fires simultaneously."
+
+Source: `src/lib/shutdown.ts` (`ShutdownManager.handleSignal`).
+
+#### The scenario
+
+The `ShutdownManager` registers three signal handlers (SIGINT, SIGTERM,
+SIGHUP) and a programmatic `shutdown()` method. Each of those routes
+through `handleSignal(signal: string)`, which:
+
+1. Sets `isShuttingDown = true` (re-entrancy guard, line 54).
+2. Creates a 10-second failsafe `setTimeout` (line 58-63) that calls
+   `process.exit(1)` if cleanup stalls. The timer is `unref()`'d (line 65)
+   so it never keeps the process alive on its own.
+3. Awaits the registered handler inside a `try` (line 68-69). A
+   synchronous throw or a rejected promise is caught (line 70-74); the
+   catch block logs and calls `process.exit(1)`.
+4. A `finally` block (line 74-76) calls `clearTimeout(failsafe)`.
+5. After the `try/catch/finally`, the function calls `process.exit(0)`
+   (line 79) to ensure termination on the normal path.
+
+The "handler throws AND failsafe timer fires simultaneously" race is the
+case where, while the handler is awaiting inside the `try`, the 10-second
+failsafe timer expires and the timer's `process.exit(1)` callback is
+queued, and at the same time (or very close in time) the handler
+rejects. Both "wanting to exit" at once.
+
+#### The race, traced
+
+Node.js's event loop is single-threaded. Two callbacks — the timer's
+expiration handler and the awaited handler's rejection — cannot literally
+run at the same wall-clock instant. The question is which one runs
+first, and whether the other is then dropped, double-fired, or runs
+twice.
+
+There are three sub-cases:
+
+**Sub-case A — handler rejects before the failsafe expires (the
+common case, well within 10s).** The microtask that resolves the
+awaited handler fires, control re-enters `handleSignal` at the catch
+block (line 70), the catch block calls `console.error(...)` and then
+`process.exit(1)` (line 73). `process.exit` is documented as
+force-terminating the process "as quickly as possible" — Node flushes
+stdout/stderr synchronously and terminates. The `finally` block at
+line 74-76 is unreachable from this path (the catch block's
+`process.exit(1)` is the last statement of the function body before
+the `finally` keyword, and `process.exit` prevents further execution).
+The failsafe timer is in the macrotask queue with at least some
+milliseconds remaining on its 10s budget; it is discarded along with
+the rest of the queue when the process exits. **One exit, no
+double-execution.**
+
+**Sub-case B — failsafe timer fires before the handler rejects (the
+"hung handler" case).** The timer's callback runs at t = 10s (line
+58-63): `console.error("Shutdown timed out after ${signal}; forcing
+exit...")` then `process.exit(1)`. The handler is still awaiting (it
+has not yet returned or thrown). `process.exit(1)` terminates the
+process; the handler's eventual rejection is never delivered to the
+catch block. The `finally` block is never reached. **One exit, no
+double-execution.**
+
+**Sub-case C — the literal "same instant" (microsecond-level
+coincidence).** In practice, Node's event loop picks one macrotask at
+a time. The first one to run reaches `process.exit(1)` and terminates
+the process. The other one is discarded. This is identical to
+sub-case A or B, depending on which task the loop picked. **One
+exit, no double-execution.**
+
+#### What about the `finally` block?
+
+The `finally` block at line 74-76 calls `clearTimeout(failsafe)`. In
+sub-case A, it is unreachable because `process.exit(1)` in the catch
+block terminates the process before control returns. In sub-cases B
+and C, the failsafe timer has already fired and is no longer
+"pending" (Node's `clearTimeout` is a no-op on an already-fired
+timer), so the call is harmless. In the normal success path
+(handler returns without throwing), the `finally` runs and clears the
+timer before the `process.exit(0)` at line 79.
+
+This is a correct belt-and-suspenders design: the `finally` is the
+guaranteed-clear path for the normal exit; the catch-block exit is
+already past the point of needing cleanup (the process is dying);
+the failsafe-timer exit discards everything.
+
+#### What about `isShuttingDown` re-entrancy?
+
+The flag at line 51-53 is checked at the start of `handleSignal`. If
+the user hits Ctrl+C twice in a row, the second signal sees
+`isShuttingDown === true` and returns immediately. This is the
+correct behavior: we do not want a second `handleSignal` to
+re-register the failsafe, re-invoke the handler, and create a second
+exit attempt. The flag is set synchronously before the first await
+(line 54), so there is no race window where a second signal could
+slip in during the handler's execution.
+
+#### What if the handler calls `process.exit` itself?
+
+This is a separate scenario, but worth noting in the same audit. The
+`await this.handler()` line (line 69) returns the handler's promise;
+if the handler synchronously calls `process.exit(0)` (or any other
+exit code), Node terminates the process. The `process.exit(0)` at
+line 79 never runs. The failsafe timer is discarded by the runtime.
+The `finally` block is unreachable. **This is intentional** — the
+contract is "handler returns normally, then we exit 0; if the
+handler exits itself, we trust it." The comment at line 77-78 calls
+this out: "Handler finished without exiting (e.g. programmatic
+shutdown)".
+
+#### What if the handler registers a NEW handler or NEW signal?
+
+The `isShuttingDown` guard prevents re-entrancy, but a sufficiently
+crazy handler could call `shutdownManager.register(newHandler)` to
+swap in a new handler. The next call to `handleSignal` would see
+`isShuttingDown === true` and return — the new handler would never
+be invoked. This is a hypothetical footgun that no current code in
+`src/App.tsx:1625` exercises; the handler is registered once at
+`onMount` and unregistered at `onCleanup`. **Not a finding**;
+documented for completeness.
+
+#### Test coverage gap — INFO
+
+There is no `shutdown.test.ts` in the project. The behavior described
+above is verified by reading the code (`src/lib/shutdown.ts:49-85`)
+and by the Phase 17.1 audit's verification of the four process-exit
+layers. A future improvement would be a `shutdown.test.ts` that:
+
+1. Mocks `process.exit` to a no-op (so the test runner survives).
+2. Mocks `setTimeout`/`clearTimeout` to fire deterministically.
+3. Registers a handler that rejects, and asserts `process.exit` was
+   called exactly once with code 1, and `clearTimeout` was called on
+   the failsafe handle.
+4. Repeats for a handler that calls `process.exit(0)` itself, a
+   handler that throws synchronously, and the "no handler registered"
+   path.
+
+This test would pin all three sub-cases above. It is left as a
+follow-up (LOW priority) — the current code is unambiguous and the
+audit's verification rests on reading the implementation, which is
+the same approach used by every other Phase 17 task.
+
+#### Finding 17.7.A — INFO — The race is resolved correctly by single-threaded event loop semantics
+
+**Problem.** None. The `ShutdownManager` cannot double-exit, cannot
+double-log, and cannot leak the failsafe timer. The single-threaded
+event loop guarantees that exactly one of the two
+"wanting-to-exit" callbacks (the timer's `process.exit(1)` or the
+catch block's `process.exit(1)`) runs to completion; the other is
+discarded along with the rest of the macrotask queue when the
+process exits.
+
+**Where.** `src/lib/shutdown.ts:49-85` (the `handleSignal` method
+body). Key lines:
+
+- `:51-54` — `isShuttingDown` re-entrancy guard.
+- `:58-65` — failsafe `setTimeout` with `unref()`.
+- `:67-76` — `try { await this.handler() } catch { process.exit(1) }
+  finally { clearTimeout(failsafe) }`.
+- `:79` — `process.exit(0)` for the normal completion path.
+- `:82-83` — no-handler path: clear failsafe, exit 0.
+
+**Severity: INFO.** Verified by reading the code and tracing the
+three sub-cases (handler rejects first, failsafe fires first,
+literal "same instant"). The behavior is correct in all three.
+
+#### Finding 17.7.B — LOW — `finally { clearTimeout(failsafe) }` is unreachable from the catch-exit path
+
+**Problem.** The `finally` block at line 74-76 calls
+`clearTimeout(failsafe)`. In the catch-block path (handler rejects
+or throws), `process.exit(1)` at line 73 terminates the process
+synchronously, so the `finally` block is unreachable. The
+`clearTimeout` call is dead code in that path.
+
+This is not a bug — the process is exiting anyway, and the runtime
+discards the timer. The dead code is a minor code-smell: a reader
+might think the `finally` is the safety net for the catch path
+(it is not; `process.exit(1)` is the safety net). The `finally`
+is correct for the normal-completion path (line 77-79), where it
+clears the failsafe before the `process.exit(0)`.
+
+**Where.** `src/lib/shutdown.ts:74-76`.
+
+**Proposed fix.** None required. A comment in the `finally` could
+clarify the intent:
+
+```ts
+} finally {
+  // Normal-completion path: clear the failsafe now that we know
+  // the handler returned. The catch-block path is past the point
+  // of needing cleanup — process.exit(1) terminates the runtime.
+  clearTimeout(failsafe)
+}
+```
+
+**Severity: LOW.** Polish / clarity. No behavior change. The current
+code is correct; the comment is a "future maintainer hint."
+
+#### Verification result
+
+- **The handler-throws-and-failsafe-fires race is resolved
+  correctly** by Node.js's single-threaded event loop semantics.
+  Only one of the two exit-callbacks runs; the other is discarded.
+- **The `isShuttingDown` re-entrancy guard** at line 51-54 prevents
+  a second signal from re-invoking the handler or re-registering
+  the failsafe.
+- **The `finally { clearTimeout(failsafe) }`** at line 74-76 is
+  correct for the normal-completion path and dead-code for the
+  catch-exit path. Both are safe.
+- **One INFO finding** (17.7.A — race resolved correctly).
+- **One LOW finding** (17.7.B — `finally` could use a comment to
+  explain why it's unreachable from the catch-exit path).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+- **No code changes applied** in `src/lib/shutdown.ts` (audit-only
+  per PLAN.md acceptance criteria).

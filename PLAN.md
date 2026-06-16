@@ -183,7 +183,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: `Bun.file().exists()` and `Bun.file().text()` calls are properly awaited and error-handled
 - [x] Verify: `Bun.write()` in `validatePrerequisites` handles permission errors
 - [x] Verify: `withTimeout` always cleans up its timer even if the task throws synchronously
-- [ ] Verify: `shutdownManager` handles the case where `handler` throws AND the failsafe timer fires simultaneously
+- [x] Verify: `shutdownManager` handles the case where `handler` throws AND the failsafe timer fires simultaneously
 - [ ] Verify: The `require("../../package.json").version` in cli-args.ts works correctly in the built output (Bun bundling)
 
 ## Phase 18 — Test Coverage Gaps
