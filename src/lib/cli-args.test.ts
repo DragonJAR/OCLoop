@@ -222,6 +222,40 @@ describe("parseArgs — value flags reject a following flag as their value", () 
   })
 })
 
+describe("parseArgs — Phase 3 edge cases", () => {
+  it("--resilience caffeinate=0 maps to false", () => {
+    const { args, exitCode } = runParse(["--resilience", "caffeinate=0"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.caffeinate).toBe(false)
+  })
+
+  it("--resilience backoffBaseMs=0 accepts zero (valid non-negative integer)", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=0"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(0)
+  })
+
+  it("parseArgs does not mutate the input argv array", () => {
+    const argv = ["--run", "--port", "4096", "--model", "openai/gpt-5"]
+    const argvCopy = [...argv]
+    runParse(argv)
+    expect(argv).toEqual(argvCopy)
+    expect(argv.length).toBe(argvCopy.length)
+  })
+
+  it("--port 0 is accepted (TCP port 0 means OS-assigned)", () => {
+    const { args, exitCode } = runParse(["--port", "0"])
+    expect(exitCode).toBeNull()
+    expect(args?.port).toBe(0)
+  })
+
+  it("--model with extra slash a/b/c is rejected", () => {
+    const r = runParse(["--model", "a/b/c"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("provider/model")
+  })
+})
+
 describe("parseArgs — planTimeoutMs resilience override", () => {
   it("accepts --resilience planTimeoutMs=<ms>", () => {
     const { args, exitCode } = runParse(["--resilience", "planTimeoutMs=600000"])
