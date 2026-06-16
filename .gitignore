@@ -17,10 +17,15 @@ dist/
 !CHANGELOG.md
 !CHANGELOG.*.md
 !MEJORAS.md
+!AGENTS.md
 !examples/
 !examples/**/
 !examples/*.md
 !examples/**/*.md
+!docs/
+!docs/**/
+!docs/*.md
+!docs/**/*.md
 
 # Local OpenCode project config. Anchored so it does not match
 # src/lib/themes/opencode.json.

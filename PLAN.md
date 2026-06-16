@@ -7,9 +7,9 @@ Validar cada mejora propuesta en `MEJORAS.md` contra el estado real del proyecto
 - [x] Crear una lista numerada de mejoras candidatas manteniendo el orden original de `MEJORAS.md`.
 - [x] Actualizar este `PLAN.md` agregando al final de la Fase 2 un bloque explícito de tareas para cada mejora identificada en `MEJORAS.md`.
 - [x] Confirmar que cada mejora identificada tiene sus propias tareas de evaluación, decisión, implementación o descarte y verificación.
-- [ ] Revisar la estructura general del proyecto para entender stack, arquitectura, comandos disponibles y convenciones existentes.
-- [ ] Identificar los comandos mínimos de verificación del proyecto, como lint, typecheck, tests o build, sin modificar configuración.
-- [ ] Registrar el estado inicial relevante: archivos principales, comandos de validación y riesgos conocidos antes de aplicar mejoras.
+- [x] Revisar la estructura general del proyecto para entender stack, arquitectura, comandos disponibles y convenciones existentes.
+- [x] Identificar los comandos mínimos de verificación del proyecto, como lint, typecheck, tests o build, sin modificar configuración.
+- [x] Registrar el estado inicial relevante: archivos principales, comandos de validación y riesgos conocidos antes de aplicar mejoras.
 
 ## Fase 2 — Evaluación individual de mejoras
 
