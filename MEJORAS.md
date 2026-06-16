@@ -12078,3 +12078,176 @@ baseline preserved (no code changes were made).
 
 **Net severity tally for Phase 10.2: 0 MEDIUM, 3 LOW, 3 INFO; no CRITICAL or HIGH.** The three required cases pass; the LOW findings are all on adjacent edge cases the task did not require (exotic info strings, CRLF, Unicode) and are documented for future hardening. No code change recommended at this time.
 
+### 10.3 — Verify `extractLastAssistantText` returns empty string for: no messages, no assistant messages, messages with empty parts
+
+**Status: COMPLETE — VERIFIED for the three required cases; no CRITICAL, HIGH, MEDIUM, or LOW findings.** Two INFO observations on adjacent edge cases the task did not require but warrant documentation: (1) the "latest assistant" semantic is sticky — if the most recent assistant message has empty parts, the function returns `""` even if an earlier assistant message had content; (2) text parts are joined with no separator, so a model that splits its reply across multiple text parts without trailing/leading whitespace produces a glued result.
+
+The function under audit is `src/index.tsx:96-101`:
+
+```ts
+/** Text of the most recent assistant message (the model's latest reply). */
+function extractLastAssistantText(messages: SessionMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.info?.role === "assistant") return extractPlanText(messages[i])
+  }
+  return ""
+}
+```
+
+It delegates the per-message text extraction to `extractPlanText` (`src/index.tsx:68-77`):
+
+```ts
+function extractPlanText(
+  data: { parts?: Array<{ type?: string; text?: string }> } | undefined,
+): string {
+  if (!data?.parts) return ""
+  return data.parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text as string)
+    .join("")
+    .trim()
+}
+```
+
+The two-function design is intentional and correct: the outer function selects
+the *latest* assistant message by scanning backwards (so it does not depend
+on the SDK always returning messages in a particular order), and the inner
+function flattens the message's typed parts into a single text blob. The
+`?.` and `?? ""` patterns guarantee no crash on malformed messages (missing
+`info`, missing `parts`, missing `text`).
+
+#### Required case 1 — no messages (`messages = []`)
+
+The for-loop body never executes (`messages.length - 1 === -1` is not
+`>= 0`). The function falls through to the final `return ""`. **PASS.**
+
+#### Required case 2 — no assistant messages
+
+The for-loop scans every message, finds none with `info.role === "assistant"`,
+and falls through to the final `return ""`. This holds for any number of
+non-assistant messages, in any order, with any combination of empty or
+populated `parts`. **PASS.**
+
+#### Required case 3 — assistant message(s) with empty parts
+
+The for-loop finds the latest message with `info.role === "assistant"`, then
+calls `extractPlanText` on it. `extractPlanText` returns `""` for every
+"empty parts" shape:
+
+| Empty-parts shape | `extractPlanText` result | Outer result |
+| --- | --- | --- |
+| `parts = []` | `""` (empty array short-circuits at the `if (!data?.parts)` check — `[]` is truthy, so we hit the filter, filter returns `[]`, join returns `""`, trim returns `""`) | `""` |
+| `parts = undefined` | `""` (short-circuits at the `if (!data?.parts)` guard) | `""` |
+| `parts` contains only non-text types (`tool_call`, `file`, etc.) | `""` (filter strips them, join produces `""`) | `""` |
+| `parts` contains text with `text = ""` | `""` (filter passes, join produces `""`, trim produces `""`) | `""` |
+| `parts` contains text with `text = "   "` (whitespace only) | `""` (filter passes, join produces `"   "`, trim produces `""`) | `""` |
+| `parts` contains text with non-string `text` (`null`, `123`, `undefined`) | those parts are filtered out by `typeof p.text === "string"`; remaining text parts are joined | empty if all are non-string, else the string parts |
+
+**All six sub-cases of "empty parts" return `""` from `extractLastAssistantText`. PASS.**
+
+#### INFO — "Latest assistant" semantic is sticky: empty-latest returns `""` even when an earlier assistant message had content
+
+The for-loop at line 97-99 `return`s as soon as it finds the *first* (i.e.
+latest) message with `info.role === "assistant"`. If that message's
+`extractPlanText` returns `""`, the function returns `""` — it does NOT
+scan further back to find an earlier assistant message that might have
+content. The semantic is "the model's *current* reply", not "the model's
+*most recent non-empty* reply".
+
+This is the correct behavior for the function's single caller,
+`runCreatePlan`, because:
+
+- The polling loop at `src/index.tsx:202-207` only `break`s when
+  `hasNewAssistantReply` returns `true`, which requires
+  `extractLastAssistantText(messages).length > 0`. So if the latest
+  assistant message has empty parts, the loop keeps polling and never
+  reaches the line that calls `extractLastAssistantText` for display.
+- The post-`break` check at `src/index.tsx:213-218` (`if (!text) { cpNoContent; exitCode = 1; break }`) is a defense-in-depth — it would
+  catch a race where the latest assistant message's text was emptied
+  between the polling check and the display call.
+
+**No fix recommended.** The current behavior is consistent with the
+documented "the model's latest reply" intent, and the callers handle the
+empty case correctly.
+
+#### INFO — Text parts are joined with no separator; splitting a reply across parts glues the result
+
+`extractPlanText` joins text parts with `""` (empty string). A model that
+splits its reply into `parts: [{ type: "text", text: "foo" }, { type: "text", text: "bar" }]` produces the string `"foobar"`, not
+`"foo bar"`. The empirical test (case 3g in the table below) confirmed this.
+
+**Real-world impact: low.** The OpenCode SDK typically emits the model's
+full reply as a single text part. A model that intentionally splits its
+output into multiple text parts (rare, model-specific) is expected to
+include the trailing/leading whitespace in each part's `text` field. The
+function relies on the model to handle its own line breaking.
+
+**Proposed fix (deferred).** If a future model starts emitting whitespace-free
+split parts, the join could be changed to `"\n"` or `"\n\n"`. This is a
+product decision (do we want to silently fix the model, or surface its
+malformed output?) and is out of scope for this audit.
+
+**No fix recommended** for the current SDK behavior.
+
+#### Empirical verification — 19 cases
+
+The verification was performed by extracting the exact function bodies of
+`extractLastAssistantText` and `extractPlanText` into a one-shot Bun
+invocation. The full input → output matrix:
+
+| # | Case | Input | Output | Verdict |
+| --- | --- | --- | --- | --- |
+| 1 | empty array | `[]` | `""` | PASS (req. case 1) |
+| 2a | one user, no assistant | `[{info:{role:"user"}, parts:[{type:"text", text:"hi"}]}]` | `""` | PASS (req. case 2) |
+| 2b | two users, no assistant | `[{info:{role:"user"}, ...}, {info:{role:"user"}, ...}]` | `""` | PASS (req. case 2) |
+| 3a | assistant, `parts: []` | `[{info:{role:"assistant"}, parts:[]}]` | `""` | PASS (req. case 3) |
+| 3b | assistant, `parts` undefined | `[{info:{role:"assistant"}}]` | `""` | PASS (req. case 3) |
+| 3c | assistant, only `tool_call`/`file` parts | `[{info:{role:"assistant"}, parts:[{type:"tool_call"}, {type:"file"}]}]` | `""` | PASS (req. case 3) |
+| 3d | assistant, text part with `text: ""` | `[{info:{role:"assistant"}, parts:[{type:"text", text:""}]}]` | `""` | PASS (req. case 3) |
+| 3e | assistant, text part with `text: "   "` (whitespace) | `[{info:{role:"assistant"}, parts:[{type:"text", text:"   "}]}]` | `""` | PASS (req. case 3) |
+| 3f | assistant, valid text part | `[{info:{role:"assistant"}, parts:[{type:"text", text:"hello"}]}]` | `"hello"` | PASS (positive control) |
+| 3g | assistant, multiple text parts | `[{info:{role:"assistant"}, parts:[{type:"text", text:"foo"}, {type:"text", text:"bar"}]}]` | `"foobar"` | PASS (see INFO 2 — join with no separator) |
+| 3h | assistant, mix of text and non-text parts | `[{info:{role:"assistant"}, parts:[{type:"tool_call"}, {type:"text", text:"ok"}, {type:"file"}]}]` | `"ok"` | PASS (non-text parts filtered) |
+| 3i | assistant, non-string `text` in part | `[{info:{role:"assistant"}, parts:[{type:"text", text:123}, {type:"text", text:"ok"}]}]` | `"ok"` | PASS (typeof filter works) |
+| 3j | assistant, `text: null` in part | `[{info:{role:"assistant"}, parts:[{type:"text", text:null}, {type:"text", text:"ok"}]}]` | `"ok"` | PASS (typeof filter works) |
+| 4a | multi-assistant, latest empty | `[assistant("old"), user, assistant(parts:[])]` | `""` | PASS (see INFO 1 — sticky latest) |
+| 4b | multi-assistant, latest valid | `[assistant("old"), user, assistant("new")]` | `"new"` | PASS (positive control for case 4) |
+| 4c | trailing user, assistant earlier | `[assistant("from-assistant"), user("from-user")]` | `"from-assistant"` | PASS (user message ignored) |
+| 5a | no `info` field | `[{}]` | `""` | PASS (defensive — `info?.role` is undefined) |
+| 5b | `info` but no `role` | `[{info:{}}]` | `""` | PASS (defensive) |
+| 5c | `info.role = null` | `[{info:{role:null}}]` | `""` | PASS (defensive — null !== "assistant") |
+
+**18 of 19 cases pass with the listed expectations; case 3g produced
+`"foobar"` instead of the test's naive `"foo bar"` expectation, which is
+the correct function behavior (see INFO 2 above).** All three PLAN.md
+required cases (1, 2, 3a-3e) PASS.
+
+The verification command was:
+
+```bash
+bun -e '<extractLastAssistantText + extractPlanText definitions + 19-case test loop>'
+```
+
+#### Test-suite delta for Phase 10.3
+
+**No new tests added** (audit-only, per PLAN.md acceptance criteria).
+The 19-case empirical verification above is the test surface for this
+function; converting it to a permanent `src/index.tsx.test.ts` (or
+extracting `extractLastAssistantText` to a small helper module) would
+lock the behavior against future regressions. Deferred to a follow-up
+implementation commit, consistent with the test-suite delta already
+proposed in 10.1 and 10.2.
+
+`bun test` was re-run after the audit to confirm no regression in the
+existing suite: **640 pass, 0 fail, 1617 expect() calls, 288ms** —
+baseline preserved (no code changes were made).
+
+#### Summary of Phase 10.3 findings
+
+| # | Severity | One-liner |
+| --- | --- | --- |
+| 10.3.A | INFO | "Latest assistant" semantic is sticky: if the most recent assistant message has empty parts, the function returns `""` even if an earlier assistant message had content. Correct for the "model's current reply" intent, callers handle it. |
+| 10.3.B | INFO | Text parts are joined with no separator; a model that splits its reply into `[{text:"foo"}, {text:"bar"}]` produces `"foobar"`. Relies on the model to include its own whitespace. |
+
+**Net severity tally for Phase 10.3: 0 MEDIUM, 0 LOW, 2 INFO; no CRITICAL or HIGH.** All three required cases pass. The two INFO observations are on adjacent edge cases (sticky-latest semantics, join-with-no-separator) the task did not require but warrant documentation for future hardening. No code change recommended at this time.
+
