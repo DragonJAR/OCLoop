@@ -4,12 +4,12 @@ import { render } from "@opentui/solid"
 import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
+import { assertResponse, reconcileSession, sendPromptAsync, type OpencodeClient } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
 import type { CLIArgs } from "./types"
 import { loadConfig } from "./lib/config"
 import { parseArgs } from "./lib/cli-args"
 import { bar, titleBar, terminalCols } from "./lib/layout"
-import { withTimeout } from "./lib/with-timeout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
 
@@ -72,7 +72,7 @@ function stripCodeFences(text: string): string {
   return m ? m[1].trim() : t
 }
 
-/** Extract the assistant's text from a session.prompt response. */
+/** Extract the assistant's text from a message's parts. */
 function extractPlanText(
   data: { parts?: Array<{ type?: string; text?: string }> } | undefined,
 ): string {
@@ -82,6 +82,46 @@ function extractPlanText(
     .map((p) => p.text as string)
     .join("")
     .trim()
+}
+
+/** One session message (info + parts) as returned by `session.messages`. */
+type SessionMessage = {
+  info?: { role?: string }
+  parts?: Array<{ type?: string; text?: string }>
+}
+
+/** Fetch a session's messages, surfacing transport/HTTP errors consistently. */
+async function fetchMessages(
+  client: OpencodeClient,
+  sessionID: string,
+): Promise<SessionMessage[]> {
+  const res = await client.session.messages({ sessionID })
+  assertResponse(res, "read plan messages")
+  return (res.data ?? []) as SessionMessage[]
+}
+
+/** Text of the most recent assistant message (the model's latest reply). */
+function extractLastAssistantText(messages: SessionMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.info?.role === "assistant") return extractPlanText(messages[i])
+  }
+  return ""
+}
+
+/** Count assistant messages in a session snapshot. */
+function countAssistantMessages(messages: SessionMessage[]): number {
+  return messages.filter((message) => message.info?.role === "assistant").length
+}
+
+/** True once a new, non-empty assistant reply has landed after the prompt. */
+function hasNewAssistantReply(
+  messages: SessionMessage[],
+  assistantCountBefore: number,
+): boolean {
+  return (
+    countAssistantMessages(messages) > assistantCountBefore &&
+    extractLastAssistantText(messages).length > 0
+  )
 }
 
 /** Build the plan-generation prompt for a fresh goal (localized via i18n). */
@@ -97,7 +137,7 @@ function buildRefinePrompt(previousPlan: string, feedback: string): string {
 /**
  * Interactive plan generator (`--create-plan`).
  *
- * Headless CLI flow: asks what you want to build, uses glm-5.2 + the `plan`
+ * Headless CLI flow: asks what you want to build, uses zai-coding-plan/glm-5.2 + the `plan`
  * agent to draft a PLAN.md in OCLoop's format, shows it, and lets you approve,
  * refine, or cancel before writing the file. Runs instead of the TUI.
  */
@@ -126,7 +166,8 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
     const client = createOpencodeClient({ baseUrl: server.url })
 
     const created = await client.session.create({})
-    if (!created.response.ok || !created.data) {
+    assertResponse(created, "create session")
+    if (!created.data) {
       throw new Error(t("cpSessionFail"))
     }
     const sessionID = created.data.id
@@ -136,25 +177,39 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
 
     for (;;) {
       console.log("\n" + t("cpGenerating"))
-      const res = await withTimeout(
-        (signal) =>
-          client.session.prompt(
-            { sessionID, model, agent, parts: [{ type: "text", text: currentPrompt }] },
-            { signal },
-          ),
-        PLAN_GEN_TIMEOUT_MS,
-        "session.prompt",
+
+      // Kick off asynchronously and poll for completion. The synchronous
+      // `session.prompt` holds ONE HTTP request open for the whole (multi-minute)
+      // generation; on a long hold the connection drops and fetch throws. Doing
+      // it async means only short requests, robust on every OS / shell.
+      const assistantCountBefore = countAssistantMessages(
+        await fetchMessages(client, sessionID),
       )
-      if (!res.response.ok) {
-        throw new Error(
-          t("cpGenFail", {
-            status: res.response.status,
-            statusText: res.response.statusText,
-          }),
-        )
+      await sendPromptAsync(
+        client,
+        { sessionID, agent, model, parts: [{ type: "text", text: currentPrompt }] },
+        { timeoutMs: 30_000 },
+      )
+
+      const deadline = Date.now() + PLAN_GEN_TIMEOUT_MS
+      let messages: SessionMessage[] = []
+      for (;;) {
+        await Bun.sleep(1500)
+        const verdict = await reconcileSession(client, sessionID)
+        messages = await fetchMessages(client, sessionID)
+        // Done only when the session is idle AND a new non-empty assistant
+        // reply landed. Counting assistant messages avoids mistaking the newly
+        // added user prompt for a completed generation.
+        if (
+          (verdict === "idle" || verdict === "missing") &&
+          hasNewAssistantReply(messages, assistantCountBefore)
+        ) {
+          break
+        }
+        if (Date.now() > deadline) throw new Error(t("cpTimeout"))
       }
 
-      const text = extractPlanText(res.data as { parts?: Array<{ type?: string; text?: string }> })
+      const text = extractLastAssistantText(messages)
       if (!text) {
         console.error(t("cpNoContent"))
         process.exitCode = 1

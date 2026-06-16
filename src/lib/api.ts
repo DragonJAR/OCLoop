@@ -104,17 +104,57 @@ export interface Session {
 
 /** Parameters accepted by the SDK's promptAsync, derived to stay in sync. */
 type PromptAsyncParams = Parameters<OpencodeClient["session"]["promptAsync"]>[0]
+type PromptModel = PromptAsyncParams["model"]
+
+/** Normalize user/config model strings to the SDK's provider/model object. */
+export function toSdkModel(model: string | PromptModel | undefined): PromptModel | undefined {
+  if (!model) return undefined
+  if (typeof model !== "string") return model
+  const slash = model.indexOf("/")
+  if (slash <= 0 || slash === model.length - 1) return undefined
+  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
+}
 
 /**
  * Create a new session
  * @returns The created session data
  */
-/** Consistent message for a failed SDK response (single-sourced). */
-function httpErr(
+/** Extract a human-readable message from a thrown SDK transport error. */
+function sdkErrorMessage(error: unknown): string {
+  if (error instanceof Error) return error.message
+  if (typeof error === "string" && error) return error
+  if (error && typeof error === "object") {
+    const m = (error as { message?: unknown }).message
+    if (typeof m === "string" && m) return m
+    try {
+      return JSON.stringify(error)
+    } catch {
+      /* fall through */
+    }
+  }
+  return "network or connection error (no response)"
+}
+
+/**
+ * Throw a meaningful error unless an SDK call produced a 2xx response.
+ *
+ * Single source of truth for SDK result checking. The v2 client returns
+ * `response: undefined` when the underlying fetch THREW (timeout/abort,
+ * connection drop, network error) — the cause is then in `error`, not in
+ * `response`. Reading `result.response.ok` directly crashes with "undefined is
+ * not an object" and masks the real failure, so every call site goes through
+ * here. Exported so the plan generator (`index.tsx`) uses the same path.
+ */
+export function assertResponse(
+  result: { error?: unknown; response?: { ok: boolean; status: number; statusText: string } },
   op: string,
-  response: { status: number; statusText: string },
-): string {
-  return `Failed to ${op}: ${response.status} ${response.statusText}`
+): void {
+  if (!result.response) {
+    throw new Error(`Failed to ${op}: ${sdkErrorMessage(result.error)}`)
+  }
+  if (!result.response.ok) {
+    throw new Error(`Failed to ${op}: ${result.response.status} ${result.response.statusText}`)
+  }
 }
 
 export async function createSession(
@@ -128,8 +168,9 @@ export async function createSession(
     opts.signal,
   )
 
-  if (!result.response.ok || !result.data) {
-    throw new Error(httpErr("create session", result.response))
+  assertResponse(result, "create session")
+  if (!result.data) {
+    throw new Error("Failed to create session: empty response body")
   }
 
   return result.data
@@ -145,13 +186,20 @@ export async function sendPromptAsync(
     sessionID: string
     parts: NonNullable<PromptAsyncParams["parts"]>
     agent?: string
+    /** Optional explicit model; strings must be `provider/model` for the SDK. */
+    model?: string | PromptModel
   },
   opts: ApiCallOptions = {},
 ): Promise<void> {
   const result = await withTimeout(
     (signal) =>
       client.session.promptAsync(
-        { sessionID: params.sessionID, parts: params.parts, agent: params.agent },
+        {
+          sessionID: params.sessionID,
+          parts: params.parts,
+          agent: params.agent,
+          model: toSdkModel(params.model),
+        },
         { signal },
       ),
     opts.timeoutMs ?? apiTimeouts.prompt,
@@ -159,9 +207,7 @@ export async function sendPromptAsync(
     opts.signal,
   )
 
-  if (!result.response.ok) {
-    throw new Error(httpErr("send prompt", result.response))
-  }
+  assertResponse(result, "send prompt")
 }
 
 /**
@@ -180,9 +226,7 @@ export async function abortSession(
     opts.signal,
   )
 
-  if (!result.response.ok) {
-    throw new Error(httpErr("abort session", result.response))
-  }
+  assertResponse(result, "abort session")
 
   return result.data ?? false
 }
@@ -207,8 +251,9 @@ export async function getSessionStatus(
     opts.signal,
   )
 
-  if (!result.response.ok || !result.data) {
-    throw new Error(httpErr("get session status", result.response))
+  assertResponse(result, "get session status")
+  if (!result.data) {
+    throw new Error("Failed to get session status: empty response body")
   }
 
   return result.data[sessionId]

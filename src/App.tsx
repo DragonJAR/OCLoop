@@ -438,6 +438,14 @@ function AppContent(props: AppProps) {
           }
         } else {
           activityLog.addEvent("error", t("actSessionError", { message: error.message }))
+          if (st === "running" || st === "pausing" || st === "debug") {
+            loop.dispatch({
+              type: "error",
+              source: "sse",
+              message: t("actSessionError", { message: error.message }),
+              recoverable: error.kind === "transient",
+            })
+          }
         }
       },
       onSessionIdle: (eventSessionId) => {
@@ -777,6 +785,7 @@ function AppContent(props: AppProps) {
         sessionID: newSessionId,
         parts: [{ type: "text", text: prompt }],
         agent: activeAgent(),
+        model: activeModel(),
       })
 
       // Refresh plan progress
@@ -790,22 +799,20 @@ function AppContent(props: AppProps) {
   }
 
   /**
-   * Helper to insert sample activity for UI testing.
-   * The strings below are intentional debug-only fixture data (behind the debug
-   * "I" keybind); they are deliberately NOT routed through i18n.
+   * Helper to insert localized sample activity for UI testing.
    */
   const insertSampleActivity = () => {
-    activityLog.addEvent("session_start", "Session started")
-    activityLog.addEvent("user_message", "User: Implement feature X")
-    activityLog.addEvent("assistant_message", "Assistant: I'll help with that")
-    activityLog.addEvent("reasoning", "Analyzing the codebase structure...", { dimmed: true })
+    activityLog.addEvent("session_start", t("sampleSessionStarted"))
+    activityLog.addEvent("user_message", t("sampleUserMessage"))
+    activityLog.addEvent("assistant_message", t("sampleAssistantMessage"))
+    activityLog.addEvent("reasoning", t("sampleReasoning"), { dimmed: true })
     activityLog.addEvent("tool_use", "bash", { detail: "ls -la src/" })
-    activityLog.addEvent("file_read", "Reading src/App.tsx")
+    activityLog.addEvent("file_read", t("sampleFileRead"))
     activityLog.addEvent("tool_use", "edit", { detail: "src/components/Button.tsx" })
-    activityLog.addEvent("file_edit", "Modified src/components/Button.tsx (+15, -3)")
-    activityLog.addEvent("task", "Implementing dark mode toggle")
-    activityLog.addEvent("error", "Build failed: Type error in Button.tsx")
-    activityLog.addEvent("session_idle", "Session idle - waiting for input")
+    activityLog.addEvent("file_edit", t("sampleFileEdit"))
+    activityLog.addEvent("task", t("sampleTask"))
+    activityLog.addEvent("error", t("sampleError"))
+    activityLog.addEvent("session_idle", t("sampleSessionIdle"))
   }
 
   /**
@@ -870,6 +877,7 @@ function AppContent(props: AppProps) {
         sessionID: sid,
         parts: [{ type: "text", text }],
         agent: activeAgent(),
+        model: activeModel(),
       })
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)

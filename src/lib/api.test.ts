@@ -1,6 +1,69 @@
 import { describe, expect, it } from "bun:test"
-import { reconcileSession, getSessionStatus, type OpencodeClient } from "./api"
+import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, type OpencodeClient } from "./api"
 import type { SessionStatus } from "@opencode-ai/sdk/v2"
+
+describe("assertResponse", () => {
+  it("passes through a 2xx response", () => {
+    expect(() =>
+      assertResponse({ response: { ok: true, status: 200, statusText: "OK" } }, "x"),
+    ).not.toThrow()
+  })
+
+  it("throws the HTTP status on a non-ok response", () => {
+    expect(() =>
+      assertResponse({ response: { ok: false, status: 503, statusText: "Service Unavailable" } }, "send prompt"),
+    ).toThrow(/send prompt.*503.*Service Unavailable/)
+  })
+
+  it("surfaces the transport error when response is undefined (the masked-crash bug)", () => {
+    // The SDK returns { error, response: undefined } when fetch THREW. The old
+    // code did `res.response.ok` → "undefined is not an object". Now we surface
+    // the real cause instead.
+    expect(() =>
+      assertResponse({ error: new Error("socket hang up"), response: undefined }, "generate plan"),
+    ).toThrow(/generate plan.*socket hang up/)
+  })
+
+  it("never crashes when both error and response are missing", () => {
+    expect(() => assertResponse({}, "op")).toThrow(/op.*no response/)
+  })
+})
+
+describe("model normalization", () => {
+  it("converts provider/model strings to the SDK model object", () => {
+    expect(toSdkModel("anthropic/claude-sonnet-4")).toEqual({
+      providerID: "anthropic",
+      modelID: "claude-sonnet-4",
+    })
+  })
+
+  it("omits non-SDK model strings instead of passing an invalid shape", () => {
+    expect(toSdkModel("claude-sonnet-4")).toBeUndefined()
+  })
+
+  it("passes the normalized model through promptAsync", async () => {
+    let seen: unknown
+    const client = {
+      session: {
+        promptAsync: async (params: unknown) => {
+          seen = params
+          return { response: { ok: true, status: 200, statusText: "OK" } }
+        },
+      },
+    } as unknown as OpencodeClient
+
+    await sendPromptAsync(client, {
+      sessionID: "s1",
+      parts: [{ type: "text", text: "hello" }],
+      model: "anthropic/claude-sonnet-4",
+    })
+
+    expect(seen).toMatchObject({
+      sessionID: "s1",
+      model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
+    })
+  })
+})
 
 /**
  * Build a minimal fake OpencodeClient whose `session.status` returns a chosen

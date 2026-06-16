@@ -2,7 +2,7 @@ import { createSignal, onMount, onCleanup } from "solid-js"
 import { createOpencodeServer, type ServerOptions } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { withTimeout } from "../lib/with-timeout"
-import { getApiTimeouts } from "../lib/api"
+import { assertResponse, getApiTimeouts } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 
@@ -163,11 +163,12 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
 
     try {
       const client = createOpencodeClient({ baseUrl: current })
-      await withTimeout(
+      const result = await withTimeout(
         (signal) => client.app.agents({}, { signal }),
         getApiTimeouts().ping,
         "server.ping",
       )
+      assertResponse(result, "server ping")
       setLastHealthyAt(monotonicNow())
       if (status() === "unhealthy") {
         setStatus("ready")
