@@ -7,6 +7,14 @@ dist/
 # OCLoop runtime artifacts (logs, state, prompts)
 .loop*
 
+# Markdown files are ignored by default so ad-hoc plans/notes are not pushed.
+# Explicitly allow only project-facing release/readme docs.
+*.md
+!README.md
+!README.*.md
+!CHANGELOG.md
+!CHANGELOG.*.md
+
 # OpenCode server runtime state & local project config
 # NOTE: /opencode.json is anchored to the repo root so it does NOT match the
 # bundled theme src/lib/themes/opencode.json
