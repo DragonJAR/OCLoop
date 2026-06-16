@@ -40,11 +40,11 @@ Analizar el proyecto completo de forma sistemática: revisar cada flujo de ejecu
 
 ## Fase 5 — Auditoría estática: watchdog y resiliencia
 
-- [ ] Verificar que `createWatchdog` en `src/hooks/useWatchdog.ts` resetea `recoveryAttempts` en `notifyIdle` y `notifyIterationStart` pero NO en `recordHeartbeat` si ya está en `"HEALTHY"` — confirmar que un heartbeat durante CONFIRMING resetea a HEALTHY
-- [ ] Auditar la carrera entre `tick()` y `notifyWake()`: si el watchdog está en CONFIRMING y llega un `notifyWake()`, `lastHeartbeatAt` se resetea pero `ticking` sigue `true` — ¿puede la evaluación en curso decidir STUCK con el timestamp viejo?
-- [ ] Verificar que el circuit breaker `recoveryAttempts > cfg.maxRecoveryAttempts` usa `>` (estrictamente mayor) lo que significa que el primer intento es intento 1 y se permite hasta `maxRecoveryAttempts` intentos — confirmar que la semántica es correcta
-- [ ] Revisar `computeBackoff`: cuando `attempt` es un número muy grande (ej: 100), `2^100` excede `Number.MAX_VALUE` — confirmar que `Number.isFinite(uncapped)` lo capta y usa `safeMax`
-- [ ] Verificar que `withTimeout` limpia el timer en el path de éxito — confirmar que el `finally` siempre se ejecuta y el timer no queda pendiente
+- [x] Verificar que `createWatchdog` en `src/hooks/useWatchdog.ts` resetea `recoveryAttempts` en `notifyIdle` y `notifyIterationStart` pero NO en `recordHeartbeat` si ya está en `"HEALTHY"` — confirmar que un heartbeat durante CONFIRMING resetea a HEALTHY
+- [x] Auditar la carrera entre `tick()` y `notifyWake()`: si el watchdog está en CONFIRMING y llega un `notifyWake()`, `lastHeartbeatAt` se resetea pero `ticking` sigue `true` — ¿puede la evaluación en curso decidir STUCK con el timestamp viejo?
+- [x] Verificar que el circuit breaker `recoveryAttempts > cfg.maxRecoveryAttempts` usa `>` (estrictamente mayor) lo que significa que el primer intento es intento 1 y se permite hasta `maxRecoveryAttempts` intentos — confirmar que la semántica es correcta
+- [x] Revisar `computeBackoff`: cuando `attempt` es un número muy grande (ej: 100), `2^100` excede `Number.MAX_VALUE` — confirmar que `Number.isFinite(uncapped)` lo capta y usa `safeMax`
+- [x] Verificar que `withTimeout` limpia el timer en el path de éxito — confirmar que el `finally` siempre se ejecuta y el timer no queda pendiente
 
 ## Fase 6 — Auditoría estática: SSE y reconexión
 
