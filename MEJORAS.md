@@ -1792,3 +1792,91 @@ green.
 
 Full suite: `bun test` → **536 pass, 0 fail, 1192 expect() calls** across
 21 files. No regressions.
+
+### 2.2 — Verify `- [MANUAL]` without description is classified correctly
+
+**Status: COMPLETE — VERIFIED. The classification `manual` is correct; the
+asymmetry with `- [ ]` (which requires a description) is intentional and
+documented. No HIGH/CRITICAL/MEDIUM/LOW findings. Two INFO observations.**
+
+The function (`src/lib/plan-parser.ts:20-89`) returns a `manual` task for
+`- [MANUAL]` with no description. The natural follow-up question is
+"shouldn't a bare marker be `not-a-task` like a bare `- [ ]` is?" The
+answer is no — the rule is: **a bare `- [ ]` (empty checkbox content) is
+not actionable without a description, but a keyword marker (`x`,
+`MANUAL`, `BLOCKED`) is itself the task declaration and does not need
+description text.**
+
+#### 2.2.A — INFO — Bare `- [MANUAL]` is `manual`; bare `- [ ]` is `not-a-task`; the asymmetry is the rule
+
+The current behavior is pinned by `parseTaskLine` tests in
+`plan-parser.test.ts:163-201` (covered in 2.1) and the new
+`PLAN.md 2.2 — no-description classification contrast` sub-describe:
+
+| Input                          | `type`         | Why                                    |
+| ------------------------------ | -------------- | -------------------------------------- |
+| `- [ ]`                        | `not-a-task`   | Empty checkbox; no work declared       |
+| `- [MANUAL]`                   | `manual`       | Keyword marker = "this slot is manual" |
+| `- [ ] [MANUAL]`               | `manual`       | Tag form; same rule applies            |
+| `- [x]`                        | `completed`    | Keyword marker = "this slot is done"   |
+| `- [BLOCKED]`                  | `blocked`      | Keyword marker = "this slot is blocked"|
+
+The asymmetry is intentional. A bare `- [ ]` is anonymous: the user wrote
+"a thing exists" without saying what the thing is. A bare `- [MANUAL]`
+(or `- [x]`, or `- [BLOCKED]`) is a self-declaring task: the user wrote
+"this slot has property X". The marker is the task. The description
+would be additional context, but it is not required for the slot to mean
+something.
+
+This is consistent with how the three other markers behave: `- [x]`
+with no description is a real completed task (counted in `total` and
+`completed`), and `- [BLOCKED]` with no description is a real blocked
+task (counted in `total` and `blocked`). Both are covered in 2.1 and
+re-pinned together in the new 2.2 contrast test that asserts all three
+keyword markers accept bare form while the empty checkbox does not.
+
+**No code change needed; behavior pinned by 5 new contrast tests.**
+
+#### 2.2.B — INFO — `parsePlan` impact: bare `- [MANUAL]` is counted; bare `- [ ]` is excluded
+
+The asymmetry propagates to `parsePlan` as expected. A bare `- [MANUAL]`
+contributes to `total` and `manual`; a bare `- [ ]` is filtered out by
+the `not-a-task` short-circuit and contributes to nothing. Three new
+tests pin the downstream behavior:
+
+1. A plan of mixed bare manual markers (both `- [MANUAL]` and
+   `- [ ] [MANUAL]`) and described manual markers counts all four as
+   `manual` and resolves to 100% (manual is excluded from the denominator).
+2. A plan with two bare `- [ ]` and one bare `- [MANUAL]` and one bare
+   `- [x]` reports `total = 2`, `manual = 1`, `completed = 1`, and
+   `percentComplete = 100` (1 / (2 − 1) = 100%). The bare pending lines
+   are silently dropped, the bare manual is silently counted.
+3. A plan of only bare `- [MANUAL]` and `- [ ] [MANUAL]` lines reports
+   `total = 3`, `manual = 3`, `automatable = 0`, `percentComplete = 100`.
+   This is the "no automatable work" semantic: the loop has nothing to do
+   because every task is declared manual, so 100% is the correct reading.
+
+**No code change needed; behavior pinned by 3 new plan-level tests.**
+
+#### Test-suite delta for Task 2.2
+
+The `parseTaskLine` describe block grew from 50 to 55 cases (+5 new
+contrast assertions) and the `parsePlan` describe block grew from 14 to
+17 cases (+3 new plan-level assertions). File-level totals:
+
+- `parseTaskLine` sub-describe `PLAN.md 2.2 — no-description classification
+  contrast` — 5 cases covering: the core contrast (bare `- [ ]` vs bare
+  `- [MANUAL]`), the tag-form equivalent, the all-keyword-markers
+  grouped assertion, and the trailing-whitespace symmetry test (both
+  directions).
+- `parsePlan` it-blocks — 3 cases covering: bare manual markers counted
+  as manual (mixed with described manual), the explicit asymmetry at
+  the plan level (bare pending excluded, bare manual included), and
+  the all-bare-manual → 100% "no automatable work" semantic.
+
+`bun test src/lib/plan-parser.test.ts` → **93 pass, 0 fail, 160 expect()
+calls** (was 85/0/136 before this iteration). +8 tests, +24 expects, all
+green.
+
+Full suite: `bun test` → **544 pass, 0 fail, 1216 expect() calls** across
+21 files. No regressions.

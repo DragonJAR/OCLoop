@@ -306,6 +306,50 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("- [ x")).toEqual({ type: "not-a-task", description: "" })
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.2 — no-description classification contrast.
+  // Pins the asymmetry: a bare `- [ ]` (empty checkbox) is not-a-task, but a
+  // bare `- [MANUAL]` / `- [x]` / `- [BLOCKED]` is a real task. The marker
+  // keyword IS the task declaration; only the empty `[ ]` slot needs a
+  // description to be actionable.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.2 — no-description classification contrast", () => {
+    it("classifies bare - [ ] as not-a-task and bare - [MANUAL] as manual", () => {
+      // The asymmetry is intentional: empty-checkbox content is anonymous
+      // and needs a description to mean anything; a keyword marker
+      // (x, MANUAL, BLOCKED) is itself the task declaration.
+      expect(parseTaskLine("- [ ]")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [MANUAL]")).toEqual({ type: "manual", description: "" })
+    })
+
+    it("classifies tag-form bare - [ ] [MANUAL] as manual (marker is in the tag)", () => {
+      // The tag form is also valid: the user wrote a [MANUAL] marker, so the
+      // marker alone is the task even with no description text after it.
+      expect(parseTaskLine("- [ ] [MANUAL]")).toEqual({ type: "manual", description: "" })
+    })
+
+    it("keyword markers x, BLOCKED, MANUAL all accept bare (no description) form", () => {
+      // These three are pinned together to make the rule explicit:
+      // keyword = task, no description required. The empty `[ ]` checkbox
+      // is the ONLY marker that requires a description.
+      expect(parseTaskLine("- [x]")).toEqual({ type: "completed", description: "" })
+      expect(parseTaskLine("- [MANUAL]")).toEqual({ type: "manual", description: "" })
+      expect(parseTaskLine("- [BLOCKED]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
+    })
+
+    it("trailing whitespace on a bare - [MANUAL] still returns manual", () => {
+      // .trim() on the line collapses trailing whitespace, so the description
+      // stays empty and the classification is still manual.
+      expect(parseTaskLine("- [MANUAL]   ")).toEqual({ type: "manual", description: "" })
+    })
+
+    it("trailing whitespace on a bare - [ ] still returns not-a-task", () => {
+      // Mirror of the above: same .trim() rule, opposite outcome.
+      expect(parseTaskLine("- [ ]   ")).toEqual({ type: "not-a-task", description: "" })
+    })
+  })
 })
 
 describe("parsePlan", () => {
@@ -495,6 +539,67 @@ More text here.
     expect(result.manual).toBe(1)
     // percentComplete = 3 / (6 - 1) = 3/5 = 60%
     expect(result.percentComplete).toBe(60)
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.2 — downstream impact of bare - [MANUAL] on parsePlan.
+  // Pins the asymmetry at the plan level: bare `- [ ]` lines are excluded
+  // from `total`; bare `- [MANUAL]` lines are counted as manual tasks. A
+  // bare manual task does NOT contribute to the percentComplete denominator
+  // (manual is excluded from `automatable`), so a plan full of bare manual
+  // markers still resolves to 100%.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  it("counts bare - [MANUAL] lines as manual tasks (no description required)", () => {
+    const content = `
+- [MANUAL]
+- [MANUAL] Real manual task
+- [ ] [MANUAL]
+- [ ] [MANUAL] Real tagged manual task
+`
+    const result = parsePlan(content)
+
+    expect(result.total).toBe(4)
+    expect(result.manual).toBe(4)
+    expect(result.completed).toBe(0)
+    expect(result.pending).toBe(0)
+    expect(result.blocked).toBe(0)
+    expect(result.percentComplete).toBe(100) // manual is excluded from denominator
+  })
+
+  it("excludes bare - [ ] but INCLUDES bare - [MANUAL] from total — explicit asymmetry", () => {
+    // The first two lines are bare pending (not-a-task, skipped). The third
+    // is a bare manual (counted). The asymmetry is pinned at the plan level.
+    const content = `
+- [ ]
+- [ ]
+- [MANUAL]
+- [x]
+`
+    const result = parsePlan(content)
+
+    expect(result.total).toBe(2)
+    expect(result.completed).toBe(1)
+    expect(result.manual).toBe(1)
+    expect(result.pending).toBe(0)
+    expect(result.blocked).toBe(0)
+    // percentComplete = 1 / (2 - 1) = 1/1 = 100%
+    expect(result.percentComplete).toBe(100)
+  })
+
+  it("a plan of only bare - [MANUAL] lines resolves to 100% (no automatable work)", () => {
+    // The semantic: the loop has no work to do (all manual), so 100% is correct.
+    const content = `
+- [MANUAL]
+- [MANUAL]
+- [ ] [MANUAL]
+`
+    const result = parsePlan(content)
+
+    expect(result.total).toBe(3)
+    expect(result.manual).toBe(3)
+    expect(result.automatable).toBe(0)
+    expect(result.percentComplete).toBe(100)
   })
 })
 
