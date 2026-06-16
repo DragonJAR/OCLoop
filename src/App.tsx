@@ -787,6 +787,14 @@ function AppContent(props: AppProps) {
     // re-creates the session and re-sends the prompt for the same iteration.
     cooldownTimer = setTimeout(() => {
       cooldownTimer = null
+      // Clear cooldownTicker (sibling timer) before dispatching, mirroring
+      // handleWake (line 220), exhaustion (line 725), and the regular
+      // enterCooldown clear-then-dispatch (line 760). The ticker self-stops
+      // on remaining <= 0, so this is defensive — the invariant
+      // "all cooldown timers are cleared before leaving cooldown" now holds
+      // for every dispatch path, not just the externally-driven one.
+      // Source: MEJORAS.md Finding 5.3.A.
+      clearCooldownTimers()
       if (loop.state().type === "cooldown") {
         loop.dispatch({ type: "resume_cooldown" })
       }
