@@ -1926,10 +1926,63 @@ expects, sin cambio en el conteo de archivos. Commit
 
 ### Mejora 47 — Finding 12.2.B — LOW — `tmpPath` is a fixed suffix `.tmp`; simultaneous writes clobber each other
 
-- [ ] Evaluar la mejora 47 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 47 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 47 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 47 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 47 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 47 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 47 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 47 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14537-14575`): `tmpPath = configPath + ".tmp"`
+(`config.ts:325`) usa un suffix fijo, así que dos procesos `ocloop`
+apuntando al mismo `$XDG_CONFIG_HOME` (p. ej. una TUI en una
+terminal + un `--create-plan` en otra) escriben al mismo
+`ocloop.json.tmp` y pueden intercalar bytes del mid-write. El
+final `renameSync` a `ocloop.json` sigue siendo last-writer-wins
+(rename atómico en POSIX), así que la fix propuesta por el audit
+(`MEJORAS.md:14562-14567`, `randomBytes(6).toString("hex")`) NO
+cambia el comportamiento user-observable — solo elimina la ventana
+de clobbering intermedia del tmp. Es el mismo patrón de "defensa
+estructural mínima" que Mejoras 28, 36, 37 y 38 ya establecieron
+(los beneficios son invisibles al usuario en el happy path, pero
+cierran races latentes). Implementación mínima: 1 import
+(`import { randomBytes } from "node:crypto"`) + 1 línea que
+cambia el suffix fijo a `${randomBytes(6).toString("hex")}.tmp` +
+9 líneas de comentario que nombran el source `MEJORAS.md Finding
+12.2.B`, el race window concreto, y la invariante "el renameSync
+sigue siendo last-writer-wins; solo prevenimos el clobbering del
+tmp". El comentario está pineado al sitio del cambio (al lado del
+`const tmpPath = …`) en vez de en el docstring de la función para
+que un mantenedor que lea el rename no tenga que saltar hasta el
+header.
+
+Cero impacto en la firma de `saveConfig` (`(OcloopConfig) => void`
+intacta), cero impacto en `loadConfig`, cero impacto en
+`validateConfigShape` / `resolveResilience` / `getConfigDir` /
+`getConfigPath` / `hasTerminalConfig`, cero impacto en los 4 call
+sites de `App.tsx` (siguen llamando `await saveConfig(...)` con
+la misma shape de retorno). El `catch` block preexistente de
+Mejora 46 (Finding 12.2.A) sigue limpiando el tmp orfán con el
+mismo `unlinkSync(tmpPath)` — la variable `tmpPath` ahora carga el
+suffix random, pero la lógica de cleanup es path-agnostic. Cero
+cambio en el comportamiento del happy path (el random suffix es
+48 bits → probabilidad de colisión de 1/2^48 ≈ 1 en 281
+billones). Cero impacto en la ruta de error (un fallo de
+`writeFileSync` antes de crear el tmp sigue short-circuitando en
+el `existsSync(tmpPath)` del catch).
+
+El test preexistente "overwrites an existing config atomically (no
+leftover .tmp)" (`config.test.ts:245-251`) probaba
+`expect(existsSync(path + ".tmp")).toBe(false)` — esa probe se
+convierte en tautología passing después del fix porque `path +
+".tmp"` ya no es un path real. Actualizado a un dir-scan glob
+(`readdirSync(configDir).filter((e) => e.endsWith(".tmp"))`) que
+pinea la misma intención user-visible ("no orphan tmp después de
+un save exitoso") independientemente del suffix. Añadido un
+segundo test "uses a randomized tmp suffix per save" que ejercita
+la post-condición con dos saves consecutivos. `bun test` verde:
+730 pass / 1 skip / 0 fail (era 729 / 1 / 0), 1758 expect()
+calls (era 1756), 25 files, 328 ms — +1 test, +2 expects. Commit
+`d83b0fd`.
 
 ### Mejora 48 — Finding 12.2.C — LOW — Stale `.tmp` files not cleaned up after `writeFileSync` ok but `renameSync` failed
 
