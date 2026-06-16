@@ -25,7 +25,7 @@ Analizar el proyecto completo de forma sistemática: revisar cada flujo de ejecu
 ## Fase 3 — Auditoría estática: API y timeouts
 
 - [x] Auditar `assertResponse` en `src/lib/api.ts`: verificar que los casos donde `result.data` es `null` o `undefined` pero `result.response.ok` es `true` se manejen consistentemente en `createSession` (ya lo hace) pero también en otros consumidores
-- [ ] Revisar `toSdkModel`: confirmar que `"provider/"` y `"/model"` devuelven `undefined` ( actualmente `slash <= 0` y `slash === model.length - 1` cubren estos casos — verificar edge cases)
+- [x] Revisar `toSdkModel`: confirmar que `"provider/"` y `"/model"` devuelven `undefined` ( actualmente `slash <= 0` y `slash === model.length - 1` cubren estos casos — verificar edge cases)
 - [ ] Verificar que `createClient` no acumula entradas huérfanas en `clientCache` cuando el servidor cambia de URL frecuentemente (restart con puerto efímero) — ¿necesita purga?
 - [ ] Auditar `reconcileSession`: el case `default` retorna `"unknown"` para cualquier `status.type` no reconocido — ¿qué pasa si el SDK añade un nuevo tipo de status que debería ser `"working"`?
 - [ ] Verificar que `configureApiTimeouts` es llamado exactamente una vez antes de cualquier operación API, y que los tests que usan timeouts customizados los restauran
