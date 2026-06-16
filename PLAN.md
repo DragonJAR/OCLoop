@@ -867,10 +867,47 @@ antes del fix).
 
 ### Mejora 27 — Finding 7.5.A — HIGH — `server.restart()` has no in-flight guard; can leak the first server
 
-- [ ] Evaluar la mejora 27 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 27 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 27 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 27 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 27 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 27 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 27 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 27 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:9256-9267`): `restart()` (`useServer.ts:194-229`)
+no tiene guard de in-flight, así que dos llamantes concurrentes
+pueden ambos pasar por `setStatus("starting")` (que es no-op
+para el segundo) + `closeCurrent()` (que es no-op para el
+segundo) + `launch()`, y cada uno llama
+`serverRef = await createOpencodeServer(...)` en paralelo. El
+segundo resuelve y sobrescribe `serverRef`, dejando el handle
+del primer server en el piso (proceso leaked, port retenido
+hasta exit). La propuesta del audit
+(`MEJORAS.md:9370-9406`) es estrictamente la correcta: un
+early-return sobre `status() === "starting"` que reusa el
+mismo patrón que `startServer()` ya tiene en líneas 120-122.
+Implementación mínima: 11 líneas añadidas al inicio de
+`restart()` (1 `if` + 1 `return` + 9 líneas de comentario
+que nombran el source `MEJORAS.md Finding 7.5.A`, los dos
+triggers concurrentes del audit, y el paralelo con
+`startServer`), más un `log.health("server",
+"restart_in_flight_noop", { url })` que da visibilidad
+post-mortem de double-fires. Cero cambios al reducer del
+state, cero cambios al reducer del App, cero impacto en el
+camino feliz (bajo operación no-racily, `status()` está en
+`"ready"` / `"error"` / `"unhealthy"` cuando entra, y el
+guard nunca dispara), cero impacto en `startServer` (el
+patrón se reusa, no se introduce un nuevo state bit que
+mantener en sync). Sin nuevos tests — el audit
+(`MEJORAS.md:9594-9619`) ya justificó que `useServer.test.ts`
+no existe (Mejora 89, Finding 18.2.A) y que un test para el
+guard requeriría mockear `createOpencodeServer` con un
+handle slow-resolving; ese test es `useServer.test.ts`
+territory y queda pendiente para la fase de testing
+coverage. La garantía del guard es estructural: el mismo
+código de plomería que ya funciona en `startServer` ahora
+funciona en `restart`. `bun test` verde: 680 pass / 0
+fail, 1680 expect() calls, 23 files, 315 ms — sin cambio
+en el conteo (era 680 antes del guard). Commit `eeaf2fb`.
 
 ### Mejora 28 — Finding 8.1.A — LOW — Orphan `.tmp` file on `rename` failure
 
