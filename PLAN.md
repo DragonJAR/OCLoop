@@ -130,7 +130,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 12 — Configuration & i18n
 
-- [ ] Audit `loadConfig` for: missing file, invalid JSON, null JSON, array JSON, partial config, unknown keys
+- [x] Audit `loadConfig` for: missing file, invalid JSON, null JSON, array JSON, partial config, unknown keys
 - [ ] Verify: `saveConfig` writes atomically (tmp + rename) and creates directory if needed
 - [ ] Verify: `resolveResilience` merges correctly: defaults < file config < CLI overrides — undefined values in any layer are skipped
 - [ ] Verify: `isLocale` accepts only `en` and `es` — confirm case sensitivity

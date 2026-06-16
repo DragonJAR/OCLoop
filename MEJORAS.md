@@ -14086,3 +14086,308 @@ For the current use case, the existing `await proc.stdin.write(text); await proc
 ---
 
 **Combined tally for Phase 11 (11.1 + 11.2 + 11.3 + 11.4):** 3 MEDIUM (Windows path detection, no macOS-native terminals, missing `detached: true`) + 2 MEDIUM (macOS `pbcopy` not detected, Windows `clip.exe` not detected) = **5 MEDIUM**; 2 LOW (from 11.1) + 3 LOW (from 11.2) + 2 LOW (from 11.3) + 2 LOW (from 11.4) = **9 LOW**; 2 INFO (from 11.1) + 4 INFO (from 11.2) + 3 INFO (from 11.3) + 3 INFO (from 11.4) = **12 INFO**; no CRITICAL or HIGH. The MEDIUMs are real gaps on supported platforms (Windows, stock macOS) and a signal-propagation hardening (detached spawn). The LOWs are silent-no-op-launch variants (11.2.B/C/D), defensive empty-input guards (11.3.A/B), a result-discard UX gap (11.4.C), and a coverage gap (11.4.D). The INFOs document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+
+---
+
+## Phase 12 — Configuration & i18n
+
+The configuration layer reads `~/.config/ocloop/ocloop.json` (or
+`$XDG_CONFIG_HOME/ocloop/ocloop.json`) on startup and merges the optional
+`resilience` sub-section into the defaults before the TUI mounts. The i18n
+layer holds a single `localeSignal` that is set once at process start (CLI
+`--lang` > config `language` > "en") and updated when the user toggles from the
+command palette. Phase 12 audits the loader, saver, and merge logic in
+`src/lib/config.ts` and the locale helpers in `src/lib/i18n.ts`. **12.1
+audits `loadConfig`; 12.2-12.6 follow in subsequent iterations.**
+
+Source: `src/lib/config.ts` (272 lines), `src/lib/i18n.ts` (688 lines).
+Tests: `src/lib/config.test.ts` does NOT exist; `src/lib/i18n.test.ts` does
+NOT exist. Every audit below is performed by static reading of the source
+plus grep-based cross-referencing of all four call sites (App.tsx:422,
+index.tsx:145 + 315, ThemeContext.tsx:142).
+
+---
+
+### 12.1 — Audit `loadConfig` for missing file, invalid JSON, null JSON, array JSON, partial config, unknown keys
+
+**Status: COMPLETE — VERIFIED, one MEDIUM and two LOW findings; no CRITICAL or HIGH.**
+
+The `loadConfig` function (lines 200-224 of `src/lib/config.ts`) is small and
+deliberately minimal: a single `existsSync` short-circuit, one `JSON.parse`
+wrapped in a catch-all `try/catch`, and a single structural guard (must be a
+non-null, non-array object). The function returns `OcloopConfig` (a TypeScript
+interface with all-optional fields, lines 140-152), so the absence of a key
+is equivalent to its `undefined` value. Per-field type validation is **not**
+the loader's job; it is the responsibility of the consumer. I verified all
+four call sites do their own type-guard (`isLocale`, `hasTerminalConfig`,
+`isValidTheme`, `pickDefined` via `resolveResilience`, `?? true` for the
+boolean scrollbar toggle) — so the "trust the consumer" pattern is enforced
+in practice.
+
+```ts
+export function loadConfig(): OcloopConfig {
+  const configPath = getConfigPath()
+
+  if (!existsSync(configPath)) {
+    log.debug("config", "No config file found, using default")
+    return {}
+  }
+
+  try {
+    const content = readFileSync(configPath, "utf-8")
+    const parsed = JSON.parse(content)
+    // JSON.parse("null") succeeds but yields null; treat as missing config.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.warn("config", "Config file did not contain a JSON object, using default", parsed)
+      return {}
+    }
+    const config = parsed as OcloopConfig
+    log.info("config", "Loaded config", config)
+    return config
+  } catch (err) {
+    // If parsing fails, return empty config
+    log.warn("config", "Failed to load config, using default", err)
+    return {}
+  }
+}
+```
+
+The required case matrix from PLAN.md Task 12.1 maps to the code as follows:
+
+| Required case | Code path | Test coverage | Result |
+| --- | --- | --- | --- |
+| Missing file (`existsSync` false) | line 203-206 → return `{}` | None | OK (logged at debug) |
+| Invalid JSON (`JSON.parse` throws) | line 219-223 catch → return `{}` | None | OK (logged at warn) |
+| `null` JSON | line 212 guard hits `parsed === null` → return `{}` | None | OK (logged at warn) |
+| Array JSON (`[1,2,3]` or `[]`) | line 212 guard hits `Array.isArray` → return `{}` | None | OK (logged at warn) |
+| Partial config (`{"theme": "opencode"}`) | passes the guard, returned as-is | None | OK (consumer validates) |
+| Unknown keys (`{"foo": "bar"}`) | passes the guard, returned as-is (extra keys kept) | None | OK (silently kept, no warning) |
+| Empty file (0 bytes) | `JSON.parse("")` throws `SyntaxError` → catch → return `{}` | None | OK |
+| File is a string, number, or boolean | `typeof parsed !== "object"` is true → return `{}` | None | OK |
+| Permission denied on read | `readFileSync` throws `EACCES` → catch → return `{}` | None | OK (silent fallback) |
+| File deleted between `existsSync` and `readFileSync` (TOCTOU) | `readFileSync` throws `ENOENT` → catch → return `{}` | None | OK (benign — fallback to empty) |
+
+The first 5 required cases (PLAN.md) plus 4 additional cases (empty file,
+primitive JSON, EACCES, TOCTOU) are all correct: every malformed input
+collapses to `{}` and the consumer falls back to defaults. The four
+`log.warn` / `log.debug` calls surface the error in the debug log without
+crashing the process. **No CRITICAL or HIGH findings.**
+
+The MEDIUM and LOW findings below concern **defensive validation gaps** —
+inputs that are structurally valid JSON objects but contain the wrong types
+or unknown keys, which the loader happily passes through.
+
+#### Finding 12.1.A — MEDIUM — `loadConfig` does not validate per-field types; a wrong-type value in any field is silently passed to the consumer
+
+**Problem.** The structural guard at `src/lib/config.ts:212` checks only
+"is this a plain object?". It does NOT verify that `terminal` is an object
+with the right shape, that `language` is a string, that `theme` is a string
+matching a known theme id, that `scrollbar_visible` is a boolean, or that
+`resilience` is a plain object. Every consumer happens to have its own
+type-guard (`isLocale`, `hasTerminalConfig`, `isValidTheme`,
+`resolveResilience` with `pickDefined`, the `?? true` fallback for the
+scrollbar boolean), so a wrong-type value **does not crash today** — but the
+defense is implicit, distributed, and easy to break with a new field or a
+new consumer.
+
+Concrete wrong-type inputs that pass the loader but reach a consumer:
+
+| Input field | Consumer | Outcome |
+| --- | --- | --- |
+| `{"terminal": "not-an-object"}` | `hasTerminalConfig` (config.ts:250) | Returns `false` (rejected silently — user sees default terminal dialog). OK. |
+| `{"language": "fr"}` | `isLocale` (i18n.ts:22) | Returns `false`; `setLocale` falls back to `"en"`. OK. |
+| `{"language": 42}` | `isLocale` | Returns `false`; falls back to `"en"`. OK. |
+| `{"theme": null}` | `isValidTheme` (ThemeContext.tsx:146) | `requested && isValidTheme(requested)` short-circuits; falls back to `DEFAULT_THEME`. OK. |
+| `{"theme": 42}` | `isValidTheme` | `isValidTheme(42)` returns `false`; falls back. OK. |
+| `{"scrollbar_visible": "true"}` (string) | App.tsx:1555 `current ?? true` then `!current` | `current = "true"`; `!current = false`; toggling flips the displayed value. **Silent coercion — the user sees no warning.** |
+| `{"resilience": "fast"}` (string) | `resolveResilience` → `Object.entries("fast")` | `Object.entries` on a string returns `[["0","f"],["1","a"],["2","s"],["3","t"]]`; `pickDefined` keeps all four; spread into `DEFAULT_RESILIENCE` overwrites the `0`,`1`,`2`,`3` numeric keys with characters. **Silent corruption of all four resilience defaults.** |
+| `{"resilience": null}` | `resolveResilience(null, …)` | `pickDefined(null)` returns `{}` (the `if (!obj) return {}` guard). OK. |
+| `{"resilience": 42}` | `resolveResilience(42, …)` | `Object.entries(42)` returns `[]`; `pickDefined` returns `{}`. OK. |
+| `{"resilience": {"createTimeoutMs": "fast"}}` (string for a number field) | `resolveResilience` | `pickDefined` keeps the string; spread into defaults; later `setTimeout("fast")` coerces to `NaN`; the API call times out immediately. **Silent bug — the user sees instant timeouts with no diagnostic.** |
+
+The two non-OK rows (`scrollbar_visible: "true"`, `resilience: "fast"`, and
+`resilience: {"createTimeoutMs": "fast"}`) are the real risk. They are not
+crashes, but they produce wrong behavior with no error surface. The
+diagnosis cost (find the typo, realise the loader doesn't validate) is
+higher than the cost of a single `validateConfigShape` call inside the
+loader.
+
+**Where.** `src/lib/config.ts:200-224` (`loadConfig`).
+
+**Proposed fix.** Add a small `validateConfigShape` helper that checks each
+field's type and logs a `warn` for any mismatch (still returning `{}` for
+the offending field, so a single bad key doesn't take down the whole
+config). Wire it as the last step before `return config`:
+
+```ts
+function validateConfigShape(raw: unknown): OcloopConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    return {}
+  }
+  const r = raw as Record<string, unknown>
+  const out: OcloopConfig = {}
+
+  if ("terminal" in r) {
+    if (hasTerminalConfig(r as OcloopConfig)) {
+      out.terminal = (r as OcloopConfig).terminal
+    } else {
+      log.warn("config", "Ignoring malformed 'terminal' field", r.terminal)
+    }
+  }
+  if ("language" in r) {
+    if (typeof r.language === "string" && isLocale(r.language)) {
+      out.language = r.language
+    } else {
+      log.warn("config", "Ignoring malformed 'language' field", r.language)
+    }
+  }
+  if ("theme" in r) {
+    if (typeof r.theme === "string") out.theme = r.theme
+    else log.warn("config", "Ignoring malformed 'theme' field", r.theme)
+  }
+  if ("scrollbar_visible" in r) {
+    if (typeof r.scrollbar_visible === "boolean") {
+      out.scrollbar_visible = r.scrollbar_visible
+    } else {
+      log.warn("config", "Ignoring malformed 'scrollbar_visible' field", r.scrollbar_visible)
+    }
+  }
+  if ("resilience" in r && typeof r.resilience === "object" && r.resilience !== null && !Array.isArray(r.resilience)) {
+    out.resilience = r.resilience as Partial<ResilienceConfig>
+  } else if ("resilience" in r) {
+    log.warn("config", "Ignoring malformed 'resilience' field", r.resilience)
+  }
+
+  return out
+}
+```
+
+This change shifts validation from "every consumer must remember" to
+"the loader enforces it once", and the warn logs give the user a hint
+when a typo or schema mismatch slips through.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria). The MEDIUM rating is driven by the `resilience` rows above
+(string-where-number silently corrupts the timeout).
+
+#### Finding 12.1.B — LOW — Unknown top-level keys are silently kept; a typo like `languaje: "es"` falls back to English with no diagnostic
+
+**Problem.** A user with `{"languaje": "es"}` (typo) gets the whole object
+back from `loadConfig`; `index.tsx:315` reads `cfgLang = loadConfig().language`
+which is `undefined`; the `isLocale(undefined)` check at line 316 falls
+back to `"en"`. The user sees English UI with no warning. Same applies to
+any other typo (`themee`, `resillience`, `scrollbarVisible` vs
+`scrollbar_visible`).
+
+**Where.** `src/lib/config.ts:200-224` (`loadConfig`) and the
+`as OcloopConfig` cast at line 216.
+
+**Proposed fix.** Either (a) add unknown-key detection inside the proposed
+`validateConfigShape` helper above (log a warn for each key not in the
+allowlist) or (b) iterate `Object.keys(parsed)` after the structural guard
+and log a single `warn` summarizing the unknown keys:
+
+```ts
+const ALLOWED_KEYS = new Set(["terminal", "scrollbar_visible", "theme", "language", "resilience"])
+const unknown = Object.keys(parsed).filter(k => !ALLOWED_KEYS.has(k))
+if (unknown.length > 0) {
+  log.warn("config", `Unknown config keys ignored: ${unknown.join(", ")}`, unknown)
+}
+```
+
+The check is cheap (one `Set` lookup per key) and the warn is visible in
+`--debug` mode without affecting normal users.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 12.1.C — LOW — No test coverage for `loadConfig`; all six required cases are unverified
+
+**Problem.** `src/lib/config.ts` has no companion `src/lib/config.test.ts`
+(verified by `find src -name 'config*'` — only the implementation file).
+The six required cases (missing file, invalid JSON, null JSON, array JSON,
+partial config, unknown keys) plus the four additional cases I enumerated
+above (empty file, primitive JSON, EACCES, TOCTOU) are all currently
+untested. A regression in the `typeof !== "object" || parsed === null ||
+Array.isArray(parsed)` guard (e.g. dropping the `Array.isArray` check)
+would not be caught by `bun test`. The pattern of "small lib file, no
+tests" is consistent across the codebase (clipboard.ts, theme-resolver.ts,
+format.ts, glyphs.ts) — but config is the one with the most user-facing
+schema and the most call sites, so a small mockable test suite here is
+high-value.
+
+**Where.** `src/lib/config.ts` (272 lines, 0 tests).
+
+**Proposed fix.** Add `src/lib/config.test.ts` with a `bun:test` suite
+that injects the config path via a module-private setter (or a
+`__setConfigPathForTest` helper) and exercises each of the ten cases in
+the table above. The existing `cli-args.test.ts` is a good template for
+the style (parse-helper that returns `{ args, exitCode, errors }`,
+top-level `describe` per audit section, one `it` per case).
+
+```ts
+import { describe, it, expect, beforeEach, afterEach } from "bun:test"
+import { mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+
+describe("loadConfig — schema robustness", () => {
+  let dir: string
+  beforeEach(() => { dir = mkdtempSync(join(tmpdir(), "ocloop-cfg-")) })
+  afterEach(() => { rmSync(dir, { recursive: true, force: true }) })
+
+  it("returns {} when the file does not exist", () => { /* ... */ })
+  it("returns {} on invalid JSON", () => { /* ... */ })
+  it("returns {} when the file contains null", () => { /* ... */ })
+  it("returns {} when the file contains an array", () => { /* ... */ })
+  it("returns the parsed object for a partial config", () => { /* ... */ })
+  it("keeps unknown top-level keys (current behavior)", () => { /* ... */ })
+  it("returns {} for an empty file", () => { /* ... */ })
+  it("returns {} for a primitive JSON value", () => { /* ... */ })
+})
+```
+
+**Status.** Test coverage gap, not a bug. The proposed suite is ~80 lines
+and locks in the current contract.
+
+#### Finding 12.1.D — INFO — `loadConfig` is called on the hot path at App onMount (line 422) and at index.tsx:145, 315; no caching
+
+Two call sites: App.tsx (TUI mode, onMount) and index.tsx (CLI mode, twice
+— once for resilience at line 145 and once for language at line 315). All
+three are startup-only, so the synchronous `readFileSync` is not a
+performance concern. The lack of caching is desirable: an external edit
+(e.g., the user changing `theme` in another process) is picked up on next
+launch. No finding.
+
+#### Finding 12.1.E — INFO — TOCTOU between `existsSync` and `readFileSync` is benign
+
+`existsSync(configPath)` returns `true`, then a parallel process deletes
+the file, then `readFileSync` throws `ENOENT`. The catch block returns
+`{}`, which is the same answer `existsSync` would have produced. Could be
+simplified to a single `try { readFileSync } catch (ENOENT) { return {} }`,
+but the current two-step pattern is more readable. No finding.
+
+#### Finding 12.1.F — INFO — `loadConfig` returns the object reference, not a defensive copy
+
+The function returns the parsed object directly (line 218). A caller that
+mutates the result (e.g., `config.theme = "foo"`) would mutate the parsed
+JSON in memory — but the parsed JSON is the result of `JSON.parse` on a
+freshly-read string, so there is no shared reference to worry about.
+**However**, the two App.tsx call sites that build `newConfig =
+{...ocloopConfig(), ...}` rely on this property (spread is shallow; nested
+objects like `terminal` and `resilience` would be aliased). This is fine
+because the spread is followed by a `saveConfig(newConfig)` that
+re-serializes the whole object — but it is a subtle invariant worth
+documenting in a comment on line 218.
+
+#### Summary of Phase 12.1 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 12.1.A  | MEDIUM   | `loadConfig` does not validate per-field types; a wrong-type value (e.g., `resilience: "fast"` or `resilience: {"createTimeoutMs": "fast"}`) silently corrupts the merged config. Add a `validateConfigShape` helper inside the loader. |
+| 12.1.B  | LOW      | Unknown top-level keys are silently kept; a typo like `languaje: "es"` falls back to English with no diagnostic. Log a single warn summarizing the unknown keys. |
+| 12.1.C  | LOW      | No `config.test.ts`; all six required cases (plus four additional) are unverified. Add a ~80-line `bun:test` suite that injects the config path. |
+| 12.1.D  | INFO     | `loadConfig` is called on the hot path 3× at startup; no caching. Acceptable — startup-only and edits are picked up on next launch. |
+| 12.1.E  | INFO     | TOCTOU between `existsSync` and `readFileSync` is benign (both paths return `{}`). |
+| 12.1.F  | INFO     | `loadConfig` returns the object reference (not a defensive copy); relies on `JSON.parse` producing a fresh graph. Document the invariant. |
+
+**Net severity tally for Phase 12.1: 1 MEDIUM, 2 LOW, 3 INFO; no CRITICAL or HIGH.** The MEDIUM is a real silent-corruption risk for the `resilience` sub-config (string-where-number). The LOWs are a silent-typo risk and a coverage gap. The INFOs document benign design choices. The structural guard at line 212 (object-not-null-not-array) handles all five "malformed JSON" cases correctly; the gap is in per-field type validation, which the loader delegates to the consumer today (and every consumer happens to validate). Tasks 12.2-12.6 (atomic save, merge order, `isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
