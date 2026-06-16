@@ -1764,24 +1764,107 @@ file). Commit `8934ac0`.
 
 ### Mejora 43 — Finding 12.1.A — MEDIUM — `loadConfig` does not validate per-field types
 
-- [ ] Evaluar la mejora 43 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 43 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 43 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 43 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 43 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 43 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 43 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 43 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14180-14271`): el guard estructural en
+`config.ts:212` solo verificaba "is this a plain object?" — un
+`{"resilience": "fast"}` o un `{"resilience": {"createTimeoutMs":
+"fast"}}` pasaba el guard y llegaba a `resolveResilience`, donde
+`Object.entries("fast")` produce `[["0","f"],["1","a"],["2","s"],
+["3","t"]]` y el spread en `DEFAULT_RESILIENCE` sobreescribe los
+keys numéricos con caracteres (silent corruption). El audit propone
+un helper `validateConfigShape` que pinea el shape per-field; la
+implementación es estrictamente la mínima útil y reutiliza los
+type guards ya existentes (`isLocale` de `i18n.ts:22`,
+`hasTerminalConfig` de `config.ts:250`). El nuevo helper vive en
+`src/lib/config.ts:228-278` (51 líneas, una decisión por campo) y
+se invoca desde `loadConfig` justo antes del `return`, así que el
+guard estructural preexistente (`Array.isArray` etc.) sigue siendo
+el primer gate. `resilience` queda shallow-validado (non-null,
+non-array object) — el deep-validate de los 20+ keys numéricos
+queda deferido a `isValidResilienceValue` (Finding 12.3.B, Mejora
+52), siguiendo el patrón del codebase de "un helper, una decisión
+por gate". Cero cambios a las firmas públicas (`loadConfig`,
+`saveConfig`, `hasTerminalConfig`, `resolveResilience`, `getConfigDir`,
+`getConfigPath` quedan intactas), cero impacto en los 4 call sites
+(`App.tsx:426`, `index.tsx:146` y `:316`, `ThemeContext.tsx:142`
+siguen llamando `loadConfig()` con la misma shape de retorno
+`OcloopConfig`; los campos malformados ahora se omiten en vez de
+propagarse, lo cual es estrictamente más seguro). Cubierto por 18
+tests en `config.test.ts` (descritos en Mejora 45). `bun test`
+verde: 724 pass / 0 fail, 1749 expect() calls, 25 files. Commit
+`d9dd9ee` (parte 1: implementación + Mejora 44).
 
 ### Mejora 44 — Finding 12.1.B — LOW — Unknown top-level keys silently kept; typo like `languaje` falls back to English silently
 
-- [ ] Evaluar la mejora 44 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 44 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 44 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 44 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 44 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 44 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 44 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 44 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Mejora 44 es la opción (a) propuesta en
+`MEJORAS.md:14285-14296` ("add unknown-key detection inside the
+proposed `validateConfigShape` helper above") y se implementó
+acoplada con Mejora 43 porque el helper ya construye un `OcloopConfig`
+limpio desde cero — un unknown key no se copia a `out` naturalmente
+y agregar el `warn` es 4 líneas (`ALLOWED_CONFIG_KEYS` set +
+`Object.keys(r).filter` + `log.warn`). El set se declara a nivel de
+módulo (`config.ts:205-211`) para que un futuro campo nuevo lo
+agregue en un solo sitio, junto con la decisión de qué per-field
+type check aplicarle. Mejora 45 (siguiente bloque) cubre el
+comportamiento con 3 tests nuevos: "drops a typo'd language key
+and keeps the rest", "drops multiple unknown keys in one pass", y
+"preserves all known fields when no unknown keys are present". El
+último test pinea que el path "no unknown keys" sigue siendo
+observable-equivalente al pre-fix (cero warn, todos los campos
+conocidos se preservan). `bun test` verde: 724 pass / 0 fail. Commit
+`d9dd9ee` (parte 2: implementación + Mejora 44).
 
 ### Mejora 45 — Finding 12.1.C — LOW — No test coverage for `loadConfig`; six required cases unverified
 
-- [ ] Evaluar la mejora 45 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 45 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 45 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 45 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 45 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 45 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 45 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 45 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14303-14350`): `src/lib/config.ts` no tenía `*.test.ts`
+asociado. La opción del audit (suite ~80 líneas que inyecta el
+config path) se implementó con la variante más limpia del codebase:
+redirigir `XDG_CONFIG_HOME` a un `mkdtempSync` fresh per test
+(`config.test.ts:14-30`). Esto reusa el path real
+(`getConfigPath()` → `getConfigDir()` → `XDG_CONFIG_HOME/ocloop/ocloop.json`)
+sin tocar la API pública ni requerir un setter module-private. 27
+tests en `src/lib/config.test.ts` cubren:
+
+- 8 tests de schema robustness (Finding 12.1.C, casos 1-6 + empty file
+  + primitive value): missing file, invalid JSON, null JSON, array
+  JSON, empty file, primitive JSON, partial config, sanity check de
+  `getConfigPath`.
+- 15 tests de per-field validation (Finding 12.1.A, Mejora 43):
+  malformed terminal (string + missing nested), valid known
+  terminal, valid custom terminal, malformed language (non-locale
+  string + non-string), valid language, malformed theme
+  (non-string), valid string theme, malformed scrollbar_visible
+  (string + number), valid boolean, malformed resilience (string
+  — el caso central del audit + array + null), valid resilience
+  sub-object como-is (con la anotación de que el deep-validate
+  queda deferido a 12.3.B).
+- 3 tests de unknown-key drop+warn (Finding 12.1.B, Mejora 44):
+  typo'd language key preserva el resto, múltiples unknown keys,
+  todos los known fields sin unknowns.
+
+Cero cambios al production code — los tests son read-only sobre
+`loadConfig` y `getConfigPath`. Cero impacto en runtime, cero
+impacto en la TUI, cero impacto en el reducer. Sin nuevos
+archivos en `src/lib/` fuera del `.test.ts`. `bun test` verde:
+724 pass / 0 fail (era 697 antes de los 27 tests), 1749
+expect() calls, 25 files — +27 tests, +30 expects, +1 file.
+Commit `d9dd9ee` (parte 3: tests + Mejora 45).
 
 ### Mejora 46 — Finding 12.2.A — MEDIUM — `saveConfig` does not catch I/O errors
 
