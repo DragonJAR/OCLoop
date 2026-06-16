@@ -50,7 +50,22 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
   try {
     const json = JSON.stringify(state, null, 2)
     await writeFile(tmpPath(), json, "utf-8")
-    await rename(tmpPath(), statePath())
+    try {
+      await rename(tmpPath(), statePath())
+    } catch (renameErr) {
+      // Best-effort cleanup of the orphan tmp file. The rename failed (e.g. the
+      // destination dir became read-only mid-flight, ENOSPC, EPERM) but the
+      // tmp is still in our control — unlink it so the next save starts from
+      // a clean slate. The unlink is itself best-effort: in a degraded-disk
+      // situation we cannot do better than log the original rename error.
+      // Source: MEJORAS.md Finding 8.1.A.
+      try {
+        await unlink(tmpPath())
+      } catch {
+        // Nothing more we can do; the next saveLoopState overwrites the tmp.
+      }
+      throw renameErr
+    }
   } catch (err) {
     log.warn("persist", "Failed to save loop state", err)
   }
