@@ -1395,10 +1395,50 @@ lo cubrirá cuando llegue su turno, mismo argumento que Mejoras
 
 ### Mejora 36 — Finding 11.2.D — LOW — Empty `attachCmd` produces a corrupted spawn argv
 
-- [ ] Evaluar la mejora 36 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 36 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 36 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 36 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 36 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 36 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 36 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 36 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13533-13549`): `buildArgs`
+(`terminal-launcher.ts:101-114`) no defiende su precondición — un
+`attachCmd = ""` produce `cmdParts = []` y `flatMap` retorna el
+patrón literal sin substitución, así que `Bun.spawn` lanza la
+terminal sin comando (para alacritty, `alacritty -e`) y el usuario
+obtiene un shell vacío. La guarda de `App.tsx:1356-1357`
+(`if (!url) return`) bloquea este path en el call flow actual,
+pero `buildArgs` no se defiende a sí misma: cualquier futuro
+call site que bypase la guarda (o cualquier test que pase `""`
+directamente) obtiene un fallo silencioso. La opción del fix
+propuesta en `MEJORAS.md:13539-13548` (defensive guard al top
+de `buildArgs` con `throw`) es estrictamente la mínima útil y
+es la única opción correcta (vs. un check antes del `Bun.spawn`,
+que duplicaría la dependencia del trust boundary del call site;
+vs. devolver `[]`, que el `flatMap` no puede distinguir de un
+happy path). Implementación mínima: 12 líneas de comentario
+que nombran el source `MEJORAS.md Finding 11.2.D`, el patrón
+homólogo de Mejoras 34/35 (defense-in-depth via custom-dialog
+pre-validación + launcher backstop), y el racional defensivo
+del `throw` (cualquier call site que bypase el App-level guard
+queda atrapado en el outer `try/catch` y surface un error
+claro en vez de un shell mudo) + 4 líneas de guard + 1 blank
+line. Cero cambios a la firma de `buildArgs`
+(`(string[], string) => string[]` intacta), cero cambios a la
+firma de `launchTerminal` (`Promise<LaunchResult>` intacta),
+cero cambios a `KNOWN_TERMINALS` (sus 12 entries siguen
+cargando `{cmd}` por construcción), cero cambios al catch
+exterior (el `try/catch` ya convierte el `throw` en
+`{ success: false, error: "attachCmd is empty; cannot construct
+terminal command" }` sin intervención), cero impacto en el
+camino feliz (el guard es observable-equivalente a la línea
+`cmdParts.filter((p) => p.length > 0)` que ya está ahí: un
+`attachCmd` no-vacío sigue produciendo `cmdParts.length > 0`
+y el `if` es no-op). Cero impacto en tests
+(`terminal-launcher.test.ts` no existe, Mejora 92 lo cubrirá
+cuando llegue su turno, mismo argumento que Mejoras 33-35).
+`bun test` verde: 694 pass / 0 fail, 1714 expect() calls,
+23 files, 315 ms — sin cambio en el conteo. Commit `81d92e5`.
 
 ### Mejora 37 — Finding 11.3.A — LOW — Empty `url` produces a malformed `opencode attach` string (double space)
 
