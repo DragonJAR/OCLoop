@@ -12,7 +12,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string)
 - [x] Verify `--resilience key=value` with: unknown key, non-numeric value for numeric keys, empty value, value with `=` signs, boolean keys with non-boolean values
 - [x] Verify `--prompt` and `--plan` with: non-existent paths, directories, empty filenames, relative vs absolute paths
-- [ ] Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags
+- [x] Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags
 - [ ] Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior
 - [ ] Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename)
 - [ ] Check if `parseArgs` is idempotent — calling it twice should produce the same result

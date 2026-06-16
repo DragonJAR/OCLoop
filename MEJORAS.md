@@ -658,7 +658,7 @@ report stays ordered as additional sections are appended in order.
 
 - [x] **Task 1.5** — Verify `--resilience key=value` edge cases. ✅ COMPLETE — see section 1.5 above.
 - [x] **Task 1.6** — Verify `--prompt` and `--plan` path handling. ✅ COMPLETE — see section 1.6 below.
-- [ ] **Task 1.7** — Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags. (Tests at lines 161-188.)
+- [x] **Task 1.7** — Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags. ✅ COMPLETE — see section 1.7 below.
 - [ ] **Task 1.8** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior.
 - [ ] **Task 1.9** — Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename). (Covered by tests at lines 211-218; cross-pinned for --prompt and --plan paths in section 1.6.)
 - [ ] **Task 1.10** — Check if `parseArgs` is idempotent — calling it twice should produce the same result. (Test at lines 238-244.)
@@ -801,6 +801,255 @@ false and `validatePrerequisites` surfaces a clear error message).
 `bun test src/lib/cli-args.test.ts` → **118 pass, 0 fail, 264 expect() calls**
 (was 96/0/219 before this iteration). New describe block:
 - `parseArgs — --prompt / --plan path handling (Phase 1 Task 1.6)` — 22 cases.
+
+---
+
+### 1.7 — Audit `--create-plan` combined with other flags
+
+**Status: COMPLETE — VERIFIED, one MEDIUM and one LOW finding. Five INFO observations.**
+
+`--create-plan` (and its short form `-c`) is parsed by a single
+case in `parseArgs` (`src/lib/cli-args.ts:218-221`) that just sets
+`args.createPlan = true`. The actual plan-generation work lives in
+`runCreatePlan` (`src/index.tsx:136-261`) and is invoked from
+`main()` at `src/index.tsx:320-323`:
+
+```ts
+if (args.createPlan) {
+  await runCreatePlan(args)
+  process.exit(process.exitCode ?? 0)
+}
+```
+
+The early `process.exit()` means the TUI never starts. Therefore, any
+flag whose behavior is implemented inside the TUI (App.tsx effects,
+the loop reducer, the watchdog, the power manager) is **parsed and
+stored** on the args object but **never read**. `parseArgs` performs
+no semantic check on these combinations.
+
+#### What `runCreatePlan` actually reads from `args`
+
+Grep across `src/` for the TUI-side readers of the candidate flags:
+
+| Flag                  | Where read (TUI side)                                  | Read in `runCreatePlan`? |
+| --------------------- | ------------------------------------------------------ | ------------------------ |
+| `--port`              | n/a (passed to `createOpencodeServer` at index.tsx:164) | **Yes** (server port)    |
+| `--model`             | n/a                                                    | **Yes** (defaulted to `zai-coding-plan/glm-5.2` at index.tsx:138) |
+| `--agent`             | n/a                                                    | **Yes** (defaulted to `plan` at index.tsx:139) |
+| `--plan`              | n/a                                                    | **Yes** (output path)    |
+| `--prompt`            | `App.tsx:980` (`if (!props.debug)`) + `validatePrerequisites` (index.tsx:35-56) | **No** — silently ignored |
+| `--resilience`        | `App.tsx:190, 225, 1119` (`resilience().caffeinate / .chaos / .resume`) | **Partially** — only `planTimeoutMs` is read at index.tsx:147 |
+| `--lang`              | n/a (resolved before createPlan branch, index.tsx:316) | **Yes** (drives `t()` strings in plan-gen prompts) |
+| `--run`               | `App.tsx:1135, 1143, 1153` (`if (props.run) loop.dispatch({ type: "start" })`) | **No** — TUI never starts |
+| `--debug`             | `App.tsx:572, 588, 606, 980, 1017, 1100, 1269` (debug-only effects) | **No** — TUI never starts |
+| `--verbose`           | `App.tsx:1639` (TUI keyboard log)                      | **No** — TUI never starts |
+| `--resume`            | `App.tsx:1119` (`if (resilience().resume) ...`)        | **No** — TUI never starts |
+| `--chaos`             | `App.tsx:225` (`createChaos(() => resilience().chaos && !!props.debug)`) | **No** — TUI never starts |
+| `--no-caffeinate`     | `App.tsx:190` (`createPowerManager({ enabled: () => resilience().caffeinate })`) | **No** — TUI never starts |
+| `--help` / `--version`| n/a (handled by parseArgs, exits 0)                    | **N/A** (early exit, wins over create-plan) |
+
+#### Mapping each required case to a test (16 new cases)
+
+| Required case (PLAN.md 1.7)                                  | Test (this iteration)                                            | Behavior                                                                                  | Status   |
+| ------------------------------------------------------------ | ---------------------------------------------------------------- | ----------------------------------------------------------------------------------------- | -------- |
+| `--create-plan --run`                                        | `--create-plan + --run`                                          | Both stored; `--run` is silently ignored (TUI never starts).                              | OK ↓     |
+| `--create-plan --debug`                                      | `--create-plan + --debug`                                        | Both stored; `--debug` is silently ignored.                                               | OK ↓     |
+| `--create-plan --resume`                                     | `--create-plan + --resume`                                       | `args.resilience.resume === true`; flag silently ignored.                                 | OK ↓     |
+| Other combinations (`--chaos`, `--no-caffeinate`, `--verbose`, `--prompt`) | One test per flag (see test block)                                | All stored; all silently ignored.                                                         | OK ↓     |
+| Combined with `--port`, `--plan`, `--model`, `--agent`, `--lang`, `--resilience planTimeoutMs=` | One test per flag                                                 | All honored correctly by `runCreatePlan`.                                                  | OK       |
+| Idempotent `--create-plan --create-plan`                     | `--create-plan twice is idempotent`                              | Last-wins on the same field; identical args object.                                       | OK       |
+| Order independence                                           | `--create-plan order does not matter relative to other flags`    | Two permutations produce deep-equal args.                                                 | OK       |
+| Short + long form equivalence                                | `-c + -r + -d + -p + -m + -a is equivalent to long forms`        | All flags produce identical CLIArgs.                                                      | OK       |
+| `--help` / `--version` precedence                            | `--help wins over --create-plan`, `--version wins over --create-plan` | parseArgs hits the help/version case before the create-plan case; early exit 0.        | OK       |
+
+#### Finding 1.7.A — MEDIUM — `--create-plan` silently swallows TUI-only flags; no diagnostic
+
+**Problem.** `parseArgs` is a pure tokenizer and never warns when a
+user combines `--create-plan` with flags that the plan-generator
+ignores. A user who runs
+
+```
+ocloop --create-plan --run
+```
+
+expects either (a) the plan to be generated and the loop to start
+automatically, or (b) a clear error explaining the combination is
+unsupported. Instead, the plan is generated, the user is asked to
+approve, and then the process exits (`process.exit(0)` at
+`src/index.tsx:322`). The `--run` flag is stored on the args object
+but never read, because the TUI code that uses it
+(`App.tsx:1135`) never runs.
+
+The same silent-swallow applies to `--debug`, `--verbose`,
+`--resume`, `--chaos`, `--no-caffeinate`, and `--prompt` (the last
+because `validatePrerequisites` is also skipped in the create-plan
+branch — see Finding 1.7.B). All seven flags parse cleanly and the
+process exits without a hint that they had no effect.
+
+The blast radius is small (no security impact, no crash, no wrong
+output), but the UX cost is real: a user who pastes a "production"
+invocation from their shell history into a new terminal and adds
+`--create-plan` to it will see the plan get generated and the process
+exit with success, leaving them confused about why the loop didn't
+start.
+
+**Where.**
+- `src/lib/cli-args.ts:162-269` (the entire `parseArgs` function — no
+  cross-flag validation)
+- `src/index.tsx:320-323` (the create-plan short-circuit)
+
+**Proposed fix.** Add an explicit warning at the top of `main()`,
+right after `parseArgs`, that lists TUI-only flags detected in
+`args` when `args.createPlan` is set:
+
+```ts
+if (args.createPlan) {
+  const ignored: string[] = []
+  if (args.run)            ignored.push("--run")
+  if (args.debug)          ignored.push("--debug")
+  if (args.verbose)        ignored.push("--verbose")
+  if (args.resilience?.resume)    ignored.push("--resume")
+  if (args.resilience?.chaos)     ignored.push("--chaos")
+  if (args.resilience?.caffeinate === false) ignored.push("--no-caffeinate")
+  if (args.promptFile !== DEFAULTS.PROMPT_FILE) ignored.push("--prompt")
+  if (ignored.length > 0) {
+    console.error(
+      `Note: --create-plan ignores: ${ignored.join(", ")}. ` +
+      `These flags only affect the TUI loop, which does not start in plan-generator mode.`,
+    )
+  }
+  await runCreatePlan(args)
+  process.exit(process.exitCode ?? 0)
+}
+```
+
+Note: this is a *non-fatal* warning. The user can still pipe
+`2>/dev/null` or `--create-plan --run 2>&1 | grep -v Note` to silence
+it. The fix improves discoverability without breaking the "store
+everything, decide later" philosophy of `parseArgs`.
+
+**Status.** **NOT FIXED** — documented only. 7 new test cases pin
+the current behavior (store-don't-warn) so a future fix is visible as
+a behavioral change.
+
+#### Finding 1.7.B — LOW — `--create-plan --prompt X` skips the prompt-file validation
+
+**Problem.** `validatePrerequisites()` at `src/index.tsx:28-57` is
+the only place in the program that surfaces a "prompt file not
+found" error to the user. It is called at `src/index.tsx:343`, which
+is *after* the `args.createPlan` short-circuit at line 320. A user
+who runs
+
+```
+ocloop --create-plan --prompt /no/such/file.md
+```
+
+sees the plan generator start normally, the plan be approved, and
+the process exit 0. The `--prompt` value is stored on `args` but
+never validated. If the user later runs `ocloop` (without
+`--create-plan`), the missing prompt file *will* be caught — but in
+the create-plan invocation itself, the user gets no diagnostic.
+
+This is a more specific instance of Finding 1.7.A. The reason it
+deserves its own row is that `--prompt` is the only "TUI-only" flag
+whose absence-of-validation can have a downstream effect: the
+default prompt template is auto-created at `index.tsx:49-55`, but
+only in the TUI branch. In create-plan mode, the user's `--prompt`
+path is just stored and forgotten, so a typo silently survives the
+entire plan-generation session.
+
+**Where.** `src/index.tsx:343` (the `validatePrerequisites(args)`
+call is unreachable when `args.createPlan === true`).
+
+**Proposed fix.** Either (a) add `--prompt` to the warning list in
+Finding 1.7.A's fix, or (b) call `validatePrerequisites` *before* the
+create-plan short-circuit, so a missing `--prompt` fails fast for
+both modes. Option (b) is cleaner but would force a re-think of
+whether `--create-plan` should require a valid prompt file at all
+(currently it doesn't need one — the plan generator doesn't use it).
+
+**Status.** **NOT FIXED** — documented only. The new test
+`--create-plan + --prompt: parsed but not validated` pins the
+current behavior.
+
+#### Finding 1.7.C — INFO — `--create-plan` cannot be used to "resume" a previous plan-generation
+
+`--resume` is the only resilience flag that is semantically tied to
+a *previous* session (the `if (resilience().resume) { reconcile ... }`
+at `App.tsx:1119`). `--create-plan --resume` parses cleanly but the
+resume only makes sense for an in-flight loop session, not for the
+plan generator — `runCreatePlan` always creates a fresh
+`client.session.create({})` (index.tsx:167) and never reads
+`args.resilience.resume`. A user who interrupted a long plan-gen
+session with Ctrl-C cannot resume it; the next `ocloop --create-plan`
+starts a brand-new generator session.
+
+This is **INFO**, not a bug, because plan-gen is intended to be
+quick (default `planTimeoutMs` is 10 minutes, see
+`DEFAULT_RESILIENCE`) and resumability is out of scope. The point of
+the audit row is to make the limitation visible so a future user
+issue ("how do I resume my plan?") can be answered with a doc
+pointer rather than a code dive.
+
+#### Finding 1.7.D — INFO — `--create-plan` short-circuits before `log.sessionStart`
+
+The non-create-plan branch logs the CLI args and plan-file status
+before rendering (index.tsx:326-340). The create-plan branch
+(`index.tsx:320-323`) returns *before* the `log.sessionStart` call,
+so a `--create-plan` session produces no log entry. This is
+intentional (the headless flow does not need the same audit trail as
+the TUI), but it does mean a user cannot inspect the log to confirm
+which flags were active. A `--create-plan` user who wants the same
+visibility would need to add their own logging inside
+`runCreatePlan`. **No change needed** — out of scope for this audit.
+
+#### Finding 1.7.E — INFO — `--create-plan --lang` works through the pre-branch locale resolution
+
+`setLocale(...)` is called at `src/index.tsx:316` *before* the
+`if (args.createPlan)` check at line 320. This means `--lang es
+--create-plan` does affect the language of every `t()` string in
+`runCreatePlan` (the goal prompt, the approval prompt, the "saved"
+message, the error messages). This is a "silent but correct"
+behavior: the user is unlikely to be surprised, but the chain
+"CLI flag → setLocale → runCreatePlan → t()" spans three layers
+and is worth documenting. **No change needed.**
+
+#### Finding 1.7.F — INFO — `--create-plan --help` and `--create-plan --version` exit early
+
+`--help` and `--version` are handled in their own `case` branches
+*before* the `default` branch falls through. The for-loop in
+`parseArgs` iterates left-to-right, so `--create-plan --help`
+hits the help case on the second iteration and calls
+`process.exit(0)` (via `showHelp()` at line 67) before any
+create-plan-specific code can run. Same for `--version`. The new
+tests `--help wins over --create-plan` and `--version wins over
+--create-plan` pin this so a future refactor that reorders cases
+(e.g. moves the create-plan case earlier) is visible as a
+behavioral change. **No change needed.**
+
+#### Finding 1.7.G — INFO — `--create-plan` cannot be combined with positional args (and is not, anywhere)
+
+The `default` case in `parseArgs` (line 258-261) rejects any
+positional argument with `"Error: unknown argument"`. This is
+intentional — the CLI does not collect a position remainder (see
+section 1.10) — and applies uniformly to `--create-plan` invocations
+as well. There is no concept of `ocloop --create-plan foo.md`
+meaning "create a plan called foo.md"; the user must use
+`--plan foo.md` explicitly. **No change needed.**
+
+#### Summary
+
+| Severity | Count | Notes                                                              |
+| -------- | ----- | ------------------------------------------------------------------ |
+| CRITICAL | 0     |                                                                    |
+| HIGH     | 0     |                                                                    |
+| MEDIUM   | 1     | 1.7.A — `--create-plan` silently swallows TUI-only flags (not fixed, documented) |
+| LOW      | 1     | 1.7.B — `--create-plan --prompt` skips prompt validation (not fixed, documented) |
+| INFO     | 5     | 1.7.C (no plan-gen resume), 1.7.D (no log entry), 1.7.E (locale works), 1.7.F (help/version win), 1.7.G (no positional) |
+
+`bun test src/lib/cli-args.test.ts` → **134 pass, 0 fail, 305 expect() calls**
+(was 118/0/264 before this iteration). New describe block:
+- `parseArgs — --create-plan + other flag combinations (Phase 1 Task 1.7)` — 16 cases.
 
 ---
 

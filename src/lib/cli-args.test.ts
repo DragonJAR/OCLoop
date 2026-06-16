@@ -701,3 +701,174 @@ describe("parseArgs — --resilience numeric coercion strictness (Phase 1 Task 1
     expect(r.errors.join("\n")).toContain("non-negative integer")
   })
 })
+
+describe("parseArgs — --create-plan + other flag combinations (Phase 1 Task 1.7)", () => {
+  // parseArgs is a pure tokenizer; it accepts every combination of flags
+  // without checking semantic compatibility. The compatibility lives in
+  // src/index.tsx (line 320-323): when `args.createPlan` is true, main()
+  // short-circuits into runCreatePlan() and never reaches the TUI. So
+  // flags that only matter to the TUI (--run, --debug, --verbose,
+  // --resume, --chaos, --no-caffeinate, --prompt) are parsed and stored
+  // on the args object but never read by runCreatePlan. The tests below
+  // pin both the parseArgs contract and the "stores but does not validate"
+  // behavior so a future refactor that either (a) rejects the combination
+  // up-front, or (b) actually wires the TUI-only flags into the plan-gen
+  // flow, is visible as a behavioral change.
+
+  // --- flags that runCreatePlan reads -----------------------------------
+
+  it("--create-plan + --port: stored verbatim, used by runCreatePlan", () => {
+    const { args, exitCode } = runParse(["--create-plan", "--port", "8123"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.port).toBe(8123)
+  })
+
+  it("--create-plan + --plan X: stored, used as the output path", () => {
+    const { args, exitCode } = runParse(["--create-plan", "--plan", "my-plan.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.planFile).toBe("my-plan.md")
+  })
+
+  it("--create-plan + --resilience planTimeoutMs=N: stored, used as the budget", () => {
+    const { args, exitCode } = runParse([
+      "--create-plan", "--resilience", "planTimeoutMs=300000",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.resilience?.planTimeoutMs).toBe(300000)
+  })
+
+  // --- flags parsed but NOT read by runCreatePlan (TUI-only) ------------
+
+  it("--create-plan + --run: --run is parsed but ignored by the plan-gen flow", () => {
+    // The TUI never starts in create-plan mode, so the TUI's
+    // `if (props.run) loop.dispatch({ type: "start" })` never fires.
+    // parseArgs stores both flags independently — no conflict detected.
+    const { args, exitCode } = runParse(["--create-plan", "--run"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.run).toBe(true)
+  })
+
+  it("--create-plan + --debug: --debug is parsed but ignored by the plan-gen flow", () => {
+    // runCreatePlan has no debug branch; the TUI's debug-only effects
+    // (props.debug at App.tsx:572, 588, 606, 980, 1017, 1100, 1269) never
+    // run because main() exits before render().
+    const { args, exitCode } = runParse(["--create-plan", "--debug"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.debug).toBe(true)
+  })
+
+  it("--create-plan + --resume: --resume is parsed but ignored by the plan-gen flow", () => {
+    // resilience().resume is read only at App.tsx:1119 (TUI onMount). In
+    // create-plan mode that effect never runs. The session reconcile
+    // path that --resume unlocks is for the loop, not the plan generator.
+    const { args, exitCode } = runParse(["--create-plan", "--resume"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.resilience?.resume).toBe(true)
+  })
+
+  it("--create-plan + --chaos: parsed into resilience.chaos, ignored by plan-gen", () => {
+    // createChaos is constructed only inside App.tsx (line 225); the
+    // `resilience().chaos && props.debug` gate never evaluates.
+    const { args, exitCode } = runParse(["--create-plan", "--chaos"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.resilience?.chaos).toBe(true)
+  })
+
+  it("--create-plan + --no-caffeinate: parsed, ignored by plan-gen", () => {
+    // createPowerManager is constructed only inside App.tsx (line 190);
+    // the macOS caffeinate process never starts in create-plan mode.
+    const { args, exitCode } = runParse(["--create-plan", "--no-caffeinate"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.resilience?.caffeinate).toBe(false)
+  })
+
+  it("--create-plan + --verbose: parsed, ignored by plan-gen (TUI-only logging)", () => {
+    // props.verbose is read only at App.tsx:1639 (the TUI keyboard
+    // listener for verbose event logging). plan-gen has no verbose path.
+    const { args, exitCode } = runParse(["--create-plan", "--verbose"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.verbose).toBe(true)
+  })
+
+  it("--create-plan + --prompt: parsed but not validated (validatePrerequisites is skipped)", () => {
+    // src/index.tsx:343 calls validatePrerequisites() ONLY in the
+    // non-create-plan branch. A user who runs
+    // `ocloop --create-plan --prompt does-not-exist.md` gets the plan
+    // generator without any error about the missing --prompt path —
+    // args.promptFile is stored on the object but never read by
+    // runCreatePlan. The user only sees the prompt-path error after the
+    // plan is approved and the TUI starts (which it does NOT in
+    // create-plan mode — process exits at index.tsx:322).
+    const { args, exitCode } = runParse([
+      "--create-plan", "--prompt", "does-not-exist.md",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.promptFile).toBe("does-not-exist.md")
+  })
+
+  // --- flag that is read indirectly (locale drives plan-gen strings) -----
+
+  it("--create-plan + --lang es: stored, runCreatePlan uses it via t()", () => {
+    // The locale is resolved in main() (index.tsx:316) BEFORE the
+    // create-plan branch runs (line 320). runCreatePlan uses t() for
+    // every user-facing string, so --lang es does affect the plan-gen
+    // output. parseArgs does not need to know this — it just stores.
+    const { args, exitCode } = runParse(["--create-plan", "--lang", "es"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+    expect(args?.lang).toBe("es")
+  })
+
+  // --- idempotency and order independence --------------------------------
+
+  it("--create-plan twice is idempotent (last-wins = same value)", () => {
+    const { args, exitCode } = runParse(["--create-plan", "--create-plan"])
+    expect(exitCode).toBeNull()
+    expect(args?.createPlan).toBe(true)
+  })
+
+  it("--create-plan order does not matter relative to other flags", () => {
+    // No flag in parseArgs consumes the next token, so all orderings
+    // produce the same args shape.
+    const a = runParse(["--create-plan", "--run", "--debug", "--port", "8080"]).args
+    const b = runParse(["--port", "8080", "--debug", "--run", "--create-plan"]).args
+    expect(a).toEqual(b)
+  })
+
+  // --- short + long forms produce identical args ------------------------
+
+  it("-c + -r + -d + -p + -m + -a is equivalent to their long forms", () => {
+    const short = runParse([
+      "-c", "-r", "-d", "-p", "8080", "-m", "anthropic/claude", "-a", "build",
+    ]).args
+    const long = runParse([
+      "--create-plan", "--run", "--debug", "--port", "8080",
+      "--model", "anthropic/claude", "--agent", "build",
+    ]).args
+    expect(short).toEqual(long)
+  })
+
+  // --- --help / --version always win (even combined with --create-plan) --
+
+  it("--help wins over --create-plan (exits 0, prints usage)", () => {
+    const r = runParse(["--create-plan", "--help"])
+    expect(r.exitCode).toBe(0)
+    expect(r.logs.join("\n")).toContain("Usage: ocloop")
+  })
+
+  it("--version wins over --create-plan (exits 0, prints version)", () => {
+    const r = runParse(["--create-plan", "--version"])
+    expect(r.exitCode).toBe(0)
+    expect(r.logs.join("\n")).toContain("ocloop ")
+  })
+})
