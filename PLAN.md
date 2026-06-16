@@ -140,7 +140,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 ## Phase 13 — Chaos Module & Debug Mode
 
 - [x] Audit `createChaos` for: enable/disable conditions (`--chaos` flag AND `--debug` flag required)
-- [ ] Verify: Chaos fault injection (`killServer`, `reviveServer`, `freezeSession`, `unfreezeSession`, injected 429) only activates when both flags are set
+- [x] Verify: Chaos fault injection (`killServer`, `reviveServer`, `freezeSession`, `unfreezeSession`, injected 429) only activates when both flags are set
 - [ ] Verify: Debug mode (`--debug`) skips plan file validation, creates sessions without prompts, and allows manual interaction
 - [ ] Verify: Debug keybindings (N, P, I, Q, T) work correctly in debug state
 - [ ] Verify: Debug mode does NOT persist loop state (`if (props.debug) return` in persistence effect)
