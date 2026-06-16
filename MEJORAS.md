@@ -2891,3 +2891,235 @@ No new tests required for this batch — all 13 behaviors are
 covered by the existing 3.1 suite. `bun test
 src/hooks/useLoopState.test.ts` → **74 pass, 0 fail, 253 expect()
 calls**, no regressions.
+
+---
+
+## Phase 4 — Session Lifecycle & Iteration Driver
+
+Source: `src/App.tsx` · Tested via existing unit suites
+(`hooks/useLoopState.test.ts` for state-contract pinning,
+`lib/api.test.ts` for `createSession` / `sendPromptAsync` mock
+coverage). `startIteration()` itself has no dedicated unit test
+(it is the side-effectful entry point of the TUI; the pure
+contracts it depends on are tested).
+
+### 4.1 — Audit `startIteration` failure-mode coverage
+
+**Status: COMPLETE — VERIFIED, one MEDIUM and one LOW finding.**
+
+`startIteration` (App.tsx:776-856) is the single entry point that
+turns the state-machine condition `running("")` into an actual
+OpenCode session. It is invoked by the single iteration-driver
+effect (App.tsx:1217-1222) and the only place a new session is
+created on a non-debug flow. The function is wrapped in a single
+top-level `try/catch/finally`; every async call inside the `try`
+flows into `handleIterationError` on rejection and resets the
+in-flight guard (`startingIteration = false`) in `finally`.
+
+The five required failure surfaces (per PLAN.md task 4.1) are
+covered as follows:
+
+| Surface | Lines | Behavior | Verdict |
+| --- | --- | --- | --- |
+| Server not ready | 782-786 | Early-return with `console.error`; never sets the in-flight guard. | OK (defense-in-depth; see Finding 4.1.A) |
+| `createSession` failure | 818, 850-852 | Caught at top-level `try/catch` → `handleIterationError` (rate_limit / transient → cooldown, fatal → recoverable error). | OK |
+| `sendPromptAsync` failure | 841-846, 850-852 | Same catch path. The session is already created on the server; if the prompt send fails, the session is orphaned (see Finding 4.1.C). | OK with caveat |
+| Prompt file missing | 827-834 | `Bun.file().exists()` check; throws a plain `Error` with the resolved path. Caught at top-level → `classifySessionError` returns `fatal` → dispatched as recoverable `error` requiring user intervention. | OK (correct UX) |
+| Prompt file empty / whitespace-only | 836-838 | NOT checked. `promptContent` is sent as-is. The server receives an empty (or whitespace-only) text part. | **MEDIUM** (Finding 4.1.B) |
+
+#### Finding 4.1.A — LOW — `console.error` used in TUI flow where `log.error` is the project convention
+
+**Problem.** Line 784 (`console.error("Cannot start iteration:
+server not ready")`) bypasses the structured `log` logger (imported
+on App.tsx:21) and writes directly to stderr. The same pattern
+appears at App.tsx:884 (`createDebugSession`) and App.tsx:1150
+(`Failed to initialize session`). Per the Phase 16.6 doc, the
+project's `log` is the canonical writer (it rotates `.loop.log`,
+records structured `[LEVEL] [context] message` lines, and is
+already imported). Three reasons this matters in the audit
+context:
+
+1. The user looking at `.loop.log` post-mortem cannot see "Cannot
+   start iteration: server not ready" — it went to the TUI's
+   stderr and is gone.
+2. `console.error` writes to the TUI's alt-screen stderr, which
+   is the renderer’s own pipe; in some TTY configurations it can
+   pollute the frame buffer.
+3. Inconsistent with the rest of the file, where every other
+   diagnostic uses `log.health(...)`, `log.info(...)`, or
+   `log.error(...)`.
+
+**Where.** `src/App.tsx:784`, `src/App.tsx:884`, `src/App.tsx:1150`.
+
+**Proposed fix.** Replace with `log.error("iteration",
+"server_not_ready")` (or equivalent structured level/context).
+Keep `console.error` for genuine user-facing fatal errors that
+should appear on the terminal regardless of debug logging being
+disabled (e.g. the `restoreTerminal`/exit-handler path).
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria). Observation is also re-stated in Phase
+16.6 for the global sweep.
+
+#### Finding 4.1.B — MEDIUM — Empty / whitespace-only prompt file is sent verbatim
+
+**Problem.** Line 836-838 reads the prompt file content and
+replaces `{{PLAN_FILE}}` with the resolved plan path. It does
+NOT validate the result. If `promptFile` exists but is empty
+(0 bytes), or contains only whitespace/newlines, the loop sends
+`{ type: "text", text: "" }` to the server:
+
+```ts
+const promptContent = await promptFile.text()
+const prompt = promptContent.replaceAll(
+  "{{PLAN_FILE}}",
+  props.planFile || DEFAULTS.PLAN_FILE,
+)
+```
+
+The user-visible failure mode is wasteful, not catastrophic: the
+session is created (a network round-trip + server-side
+allocation), the empty prompt is sent, and the server either
+(a) rejects the empty `text` part with a 4xx, which `handleIterationError`
+classifies as `fatal` (no rate_limit markers), and the user
+sees a recoverable error pointing at the prompt path; or (b)
+accepts the empty text and the session idles immediately with
+no work done, the SSE `session_idle` event fires, the reducer
+advances to `running("")`, the driver re-fires, and the same
+empty prompt is sent again. Case (b) is a tight loop until
+either the user pauses/quits or the provider rate-limits the
+loop (which would eventually surface as a real error via the
+cooldown path).
+
+**Where.** `src/App.tsx:836-838`.
+
+**Proposed fix.** Add an empty-prompt guard before `sendPromptAsync`:
+
+```ts
+const prompt = promptContent.replaceAll(
+  "{{PLAN_FILE}}",
+  props.planFile || DEFAULTS.PLAN_FILE,
+)
+if (prompt.trim() === "") {
+  throw new Error(
+    `Prompt file is empty: ${props.promptFile || DEFAULTS.PROMPT_FILE}`,
+  )
+}
+```
+
+This makes the failure consistent with the missing-file case
+(line 830-833) — the user sees a single recoverable error with
+a clear message instead of either a 4xx from the server or a
+tight re-iteration loop.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria). The check is one line; the cost of
+applying it is essentially zero. Would not require a new unit
+test (the existing `classifySessionError` tests cover the
+`fatal` branch that the thrown `Error` would land in).
+
+#### Finding 4.1.C — LOW — Orphaned session on `sendPromptAsync` failure
+
+**Problem.** If `createSession` succeeds (line 818) but
+`sendPromptAsync` fails (line 841), the session exists on the
+server but has no prompt and is not aborted. The
+top-level `try/catch` routes the error to `handleIterationError`,
+which either enters cooldown (rate_limit / transient) or
+dispatches a recoverable `error` (fatal). In the cooldown
+case, the loop will retry the same iteration — which will
+`createSession` AGAIN, leaving the first session orphaned on
+the server. In the recoverable-error case, the user is shown
+the error but the orphaned session keeps burning server-side
+state until manual cleanup or server restart.
+
+This is not catastrophic (sessions are cheap, and the
+in-flight guard at line 781 prevents the iteration driver
+from racing), but the leak is observable in
+`.loop.log` (the server logs the created session) and
+contradicts the comment at line 779-780 which explicitly
+worries about orphaned sessions.
+
+**Where.** `src/App.tsx:818-846`.
+
+**Proposed fix.** Track `newSessionId` outside the `try` and
+call `abortSession(client, newSessionId)` in the `catch`
+block when `newSessionId` is set and the failure is on the
+`sendPromptAsync` path. A simpler alternative: hoist the
+`createClient` + `createSession` + `sendPromptAsync` into a
+single helper that owns the abort on its own failure path,
+so the iteration driver remains a thin orchestrator. The
+helper would mirror the pattern already used in
+`runCreatePlan` (see Phase 10 audit).
+
+**Status.** Fix proposed, not applied. The leak is bounded
+by the in-flight guard (at most one orphan per failed
+iteration) and by the server-side TTL on unused sessions;
+this is documentation, not an emergency.
+
+#### Finding 4.1.D — INFO — `Bun.file().text()` is unawaited-timeout on hung filesystems
+
+**Problem.** None at the moment — `Bun.file().text()` is
+expected to return quickly on local FS. On a hung NFS mount
+or stalled FUSE filesystem, the await would block
+indefinitely. The `finally` block would still release
+`startingIteration` once the await resolves, so the iteration
+driver would not wedge forever; it would just sit idle until
+the FS responds. Documenting for completeness, not a finding.
+
+**Where.** `src/App.tsx:828` (`.exists()`), `src/App.tsx:836`
+(`.text()`).
+
+**Status.** No fix needed. If this becomes a real issue,
+wrap the reads in `withTimeout` (already imported,
+App.tsx:52) the same way `api.ts` does.
+
+#### Finding 4.1.E — INFO — `server.url()` is captured once, no re-read between async hops
+
+**Problem.** None — `url` is captured at line 782 and used
+for `createClient` at line 815. The intervening
+`checkPlanComplete` + `getPlanCompleteSummary` (line 791-800)
+and the optional `minIterationGapMs` `setTimeout` (line 808-810)
+are async hops during which the server could be stopped (e.g.
+by an external `ocloop` process, or by a kill on the
+launcher). If the server stops mid-iteration, `createSession`
+will fail with a connection-refused error, which is caught
+and routed to `handleIterationError`. The behavior is
+correct (no crash, user sees a recoverable error after
+classification), so this is an observation, not a finding.
+
+**Where.** `src/App.tsx:782, 815`.
+
+**Status.** No fix needed.
+
+#### Test-suite delta for Task 4.1
+
+No new unit tests added. Rationale:
+
+- `startIteration` is a side-effectful function (it reads
+  the filesystem, calls the OpenCode server, dispatches to
+  the reducer, notifies the watchdog). The existing test
+  infra does not mount Solid's reactive runtime for
+  App.tsx — testing the function in isolation would require
+  stubbing `server.url()`, `createClient`, `createSession`,
+  `sendPromptAsync`, `Bun.file`, `parsePlanFile`,
+  `isPlanComplete`, `getPlanCompleteSummary`, `refreshPlan`,
+  and `loop.dispatch` simultaneously. That is integration
+  test territory and is called out in Phase 18 ("Document
+  which integration scenarios are untestable without a
+  real OpenCode server mock").
+- Every pure-contract component that `startIteration`
+  depends on is already covered: `classifySessionError`
+  (`hooks/useSSE.test.ts`), `createSession` /
+  `sendPromptAsync` (`lib/api.test.ts:65-100` and
+  `lib/api.test.ts:230-250` for the empty-response
+  cases), `isPlanComplete` / `getPlanCompleteSummary`
+  (`lib/plan-parser.test.ts`), `monotonicNow`
+  (`lib/clock.test.ts`).
+- The two proposed fixes (4.1.A and 4.1.B) are mechanical
+  one-liners whose only new behavior is "throw on empty
+  prompt" and "log via `log` instead of `console.error`";
+  both land in the existing `fatal` / recoverable-error
+  classification path, which is already pinned.
+
+`bun test` → **623 pass, 0 fail, 1512 expect() calls** across
+21 files. No regressions.
