@@ -613,6 +613,13 @@ describe("parseArgs — --prompt / --plan path handling (Phase 1 Task 1.6)", () 
   // (tested at the "--prompt accepts a path containing whitespace in the
   // middle" block above). Reject with the same "requires a value" error
   // used for the empty-string case so the failure mode is uniform.
+  //
+  // Cross-reference: FINDING 1.6.D — MEDIUM (path-handling surface for
+  // 1.1.A). MEJORAS.md lists 1.6.D as a cross-reference to 1.1.A because the
+  // symptom "accepts a whitespace-only value as a path" is observable in
+  // this very describe block (--prompt / --plan callers of requireValue).
+  // Fixing the root cause in cli-args.ts (requireValue's trim guard)
+  // transitively covers the surface, so no extra test is needed here.
   it("rejects --prompt with a single space (Finding 1.1.A — whitespace-only)", () => {
     const r = runParse(["--prompt", " "])
     expect(r.exitCode).toBe(1)
