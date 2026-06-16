@@ -32,6 +32,7 @@ import {
   clearLoopState,
   type PersistedLoopState,
 } from "./lib/loop-state-store"
+import { describeResumeAttempt } from "./lib/resume-decision"
 import {
   loadConfig,
   saveConfig,
@@ -1128,6 +1129,17 @@ function AppContent(props: AppProps) {
       // died mid-run. Reconcile/continue automatically with --resume, otherwise
       // offer the choice.
       const persisted = await loadLoopState()
+      // Finding 1.8.B: when --resume is passed on a clean run (no .loop-state.json
+      // or a stale one with iteration=0), the flag is parsed and stored but
+      // produces zero observable effect. Log the no-op here so anyone reading
+      // .loop.log can see the user's intent and the runtime outcome together.
+      const resumeAttempt = describeResumeAttempt(
+        { resilience: resilience() },
+        persisted,
+      )
+      if (resumeAttempt) {
+        log.health(resumeAttempt.event, "requested", resumeAttempt.payload)
+      }
       if (persisted && persisted.iteration > 0) {
         log.health("resume", "found", {
           iteration: persisted.iteration,
