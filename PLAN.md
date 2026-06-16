@@ -2782,10 +2782,102 @@ verde. Commit `aee3963`.
 
 ### Mejora 59 — Finding 15.8.A — MEDIUM — `initializeSession` can read default `resilience` before `onMount` resolves on-disk config
 
-- [ ] Evaluar la mejora 59 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 59 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 59 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 59 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 59 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 59 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 59 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 59 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20321-20354`): el `resilience` signal (`App.tsx:160-162`)
+se sembraba con `resolveResilience(undefined, props.resilience)` — el
+layer CLI-only, sin el on-disk config — y la única promesa de
+fusionar el layer del config file estaba en `onMount` (`App.tsx:475`,
+`setResilience(resolved)` tras el `await loadConfig()`). Si el
+opencode child process alcanzaba `"ready"` antes de que ese await
+resolviera, el `createEffect` (`App.tsx:1180-1257`) corría con
+`resilience().resume` aún en su default `false`, y el
+`initializeSession` resultante (`App.tsx:1297`, `if
+(resilience().resume)`) sobreescribía silenciosamente la
+configuración del usuario por una ventana de startup — el caso más
+visible: un usuario con `resume: true` en `ocloop.json` que recibe
+el `dlgResumeTitle` dialog en vez del auto-resume. La opción (a) del
+audit (`MEJORAS.md:20359-20384`, "one signal, one line in the
+createEffect, no body changes") es estrictamente la mínima útil vs.
+la opción (b) (mover todo `loadConfig → setResilience` a un
+`createEffect` top-level) por tres razones concretas:
+
+1. **1 signal en vez de reordering** — un `createSignal` adicional
+   + un `setResilienceReady(true)` al final del `onMount` + un
+   `&& resilienceReady()` en el guard del `createEffect` es
+   estrictamente 19 insertions / 1 deletion; la opción (b)
+   reordena el cuerpo del `onMount` (sleep detector, terminal
+   detection) y abre la puerta a regresiones de orden en la
+   inicialización de `sleepDetector` y `setAvailableTerminals`.
+2. **Idempotencia del body preservada** — el body del
+   `createEffect` ya envuelve el `initializeSession` en un
+   `startOnce()` con guard `sessionInitialized` (línea 1214-1218),
+   así que el re-run que dispara `setResilienceReady(true)` es
+   safe-by-construction: la primera invocación del effect (con
+   `resilienceReady = false`) retorna en el guard; la segunda
+   (post-`setResilienceReady(true)`) corre el body una vez;
+   la tercera (si el effect re-triggea por otra razón) corta
+   en `loop.state().type !== "starting"`.
+3. **Sigue el patrón del codebase** — la opción (a) es la
+   misma forma que la señal `cooldownRemainingMs` en
+   `App.tsx:224` y los closures `startingIteration` /
+   `isShuttingDown` (Mejora 55 / Finding 15.4.A): un bit
+   de "listo para usar" que arranca `false` y flipea a `true`
+   en el momento del setup que el código dependiente necesita.
+
+Implementación: 3 edits puntuales a `src/App.tsx`:
+
+- `src/App.tsx:164-173` — declaración de
+  `const [resilienceReady, setResilienceReady] = createSignal(false)`
+  con comment block de 10 líneas que nombra el source `MEJORAS.md
+  Finding 15.8.A`, la race window entre `server.status() === "ready"`
+  y `await loadConfig()`, y la invariante "el effect re-corre
+  exactamente una vez".
+- `src/App.tsx:498-505` — `setResilienceReady(true)` al final del
+  `onMount`, después de `setAvailableTerminals(terminals)`, con
+  comment block de 5 líneas que justifica el orden (después de
+  `setResilience(resolved)` y `setAvailableTerminals(terminals)`)
+  y nombra la consecuencia observable del re-run.
+- `src/App.tsx:1199` — el guard del `createEffect` gana un
+  tercer término `&& resilienceReady()`. Cero cambios al body
+  del effect.
+
+Cero cambios al `resilience` signal existente (sigue siendo
+`createSignal<ResilienceConfig>` con la misma inicialización y
+los mismos 11 call sites: `App.tsx:240, 275, 283, 466, 767, 934,
+1285, 1297` + 3 sites en hooks), cero cambios a `loadConfig`,
+`resolveResilience`, `configureApiTimeouts`, `setResilience`, o
+`createSleepDetector` en el `onMount`, cero cambios a
+`initializeSession` (sigue leyendo `resilience()` en línea 1285 y
+1297 — la diferencia es que ahora `resilience()` ya está en su
+valor final cuando `initializeSession` corre), cero cambios al
+reducer, cero cambios al SSE handler, cero cambios al watchdog.
+Cero impacto en la ruta `--create-plan` (ese path bypasea
+`App.onMount` enteramente, per `project-context.md:109-112`, así
+que el `resilienceReady` flag nunca llega a flipear — irrelevante
+porque el `createEffect` no corre para `--create-plan` users
+tampoco). Cero impacto en la ruta de `--debug` (la línea 1186
+dispara `server_ready_debug` que va al `debug` branch de
+`createDebugSession` que no lee `resilience().resume`).
+
+Cero impacto en tests: el audit (`MEJORAS.md:20443-20448`) ya
+documentó que un test del race requeriría fake server + fake
+`onMount` + Solid render (Mejora 89/96 territory). La garantía
+del gate es estructural (un `createSignal` + un guard en el
+condition), no computacional, y code review cubre el gap. El
+test del reducer `useLoopState` permanece pineado (los 9 tests
+existentes de `iteration_started` con `resumedFromIdle` no se
+ven afectados porque el reducer no cambia). El
+`resilience-integration.test.ts` permanece pineado porque los
+hooks se ejercitan independientemente de App.tsx.
+
+`bun test` verde: 750 pass / 1 skip / 0 fail, 1784 expect()
+calls, 25 files, 332 ms — sin cambio en el conteo (era 750 / 1
+/ 0 antes del fix). `bun run build` verde. Commit `8cf685c`.
 
 ### Mejora 60 — Finding 15.8.B — LOW — `setActiveModel` in the server-ready effect can clobber an explicit `--model`
 
