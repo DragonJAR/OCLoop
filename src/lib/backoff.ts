@@ -46,6 +46,10 @@ export function computeBackoff(attempt: number, opts: BackoffOptions): number {
   const safeMax = Math.max(0, max)
 
   // min(max, base * 2^attempt) — guard against Infinity from large attempts.
+  // When uncapped is Infinity (e.g. attempt=100), Number.isFinite catches it
+  // and we use safeMax instead. Both the jitter and non-jitter paths are
+  // protected: the jitter path clamps to [0, exp] where exp ≤ safeMax, and the
+  // non-jitter path returns exp directly (also ≤ safeMax).
   const uncapped = safeBase * Math.pow(2, safeAttempt)
   const exp = Math.min(safeMax, Number.isFinite(uncapped) ? uncapped : safeMax)
 

@@ -127,6 +127,9 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
 
   function recordHeartbeat(): void {
     lastHeartbeatAt = clock.monotonicNow()
+    // Reset recoveryAttempts on every heartbeat, including during CONFIRMING —
+    // a heartbeat is proof of life, so any recovery tracking is obsolete.
+    // When already HEALTHY, recoveryAttempts is already 0 (no-op).
     recoveryAttempts = 0
     if (health !== "HEALTHY") {
       log("recovered", { via: "heartbeat" })
@@ -149,6 +152,10 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     // Don't judge the session on the sleep gap. Reset the baseline so the model
     // gets a fresh T1 window to prove it's alive; the wake handler does the
     // ground-truth reconcile separately.
+    // Note: if a tick() is in progress (ticking=true), it will complete with
+    // the old lastHeartbeatAt. This is safe — the next tick will see the reset
+    // timestamp and evaluate correctly. The ticking guard only prevents overlap,
+    // it doesn't cause stale decisions.
     lastHeartbeatAt = clock.monotonicNow()
     setHealth("HEALTHY")
     log("wake_reset", {})
@@ -171,6 +178,9 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
 
     // Circuit breaker: stop trying after maxRecoveryAttempts and surface a
     // recoverable error with full diagnostics rather than looping forever.
+    // Semantics: recoveryAttempts increments before this check (1-indexed),
+    // so `> maxRecoveryAttempts` means exactly maxRecoveryAttempts attempts
+    // were allowed (attempts 1..N), and attempt N+1 triggers the fail.
     if (recoveryAttempts > cfg.maxRecoveryAttempts) {
       log("exhausted", { reason, attempts: recoveryAttempts - 1, lastVerdict })
       options.actions.fail({

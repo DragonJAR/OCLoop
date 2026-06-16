@@ -87,6 +87,8 @@ export async function withTimeout<T>(
     const work = typeof task === "function" ? task(signal) : task
     return await Promise.race([work, timeout])
   } finally {
+    // Timer is always cleared — on success, on task error, and on timeout.
+    // No dangling handles keep the process alive.
     if (timer) clearTimeout(timer)
   }
 }
