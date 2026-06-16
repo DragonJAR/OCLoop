@@ -19920,3 +19920,289 @@ audit on `server.restart()` idempotency).
 - One LOW finding (15.6.A — wasted TCP connection).
 - Two INFO-level notes (15.6.B and the test-coverage gap
   for the `myController` pattern).
+
+---
+
+### 15.7 — `server.restart()` called during an ongoing restart — is it idempotent?
+
+PLAN.md 15.7: "Verify: `server.restart()` called during an
+ongoing restart — is it idempotent?"
+
+**Status: COMPLETE — NOT idempotent. ONE HIGH finding
+(15.7.A — concurrent `server.restart()` calls abort the
+in-flight launch and leak server processes). ONE MEDIUM
+finding (15.7.B — App-level `restartServer()` has no
+re-entry guard either).**
+
+`grep -rn "server\.restart()" src/` returns three call sites
+in `App.tsx`. All three funnel through the App-level
+`restartServer()` function (line 649), which is the only
+caller of the hook-level `server.restart()`:
+
+| # | Site | File:line | Trigger |
+| - | --- | --- | --- |
+| 1 | SSE-exhaustion effect | `src/App.tsx:1243` | `sse.reconnectAttempts() >= SSE_RECONNECT_RESTART_THRESHOLD` and `loop.isRunning()` |
+| 2 | Watchdog `restartServer` action | `src/App.tsx:282` (wiring) → `useWatchdog.ts:205` (call) | `reason === "server_hung"` or `recoveryAttempts >= 2` in the watchdog escalation ladder |
+| 3 | Command palette action | `src/App.tsx:1515` | User selects "Restart server" in the command palette |
+
+Sites 1 and 2 are the load-bearing concurrent-call risk
+(2 is the manual path; concurrent with 1/2 requires a user
+keypress mid-recovery, which is rare).
+
+#### The hook-level `server.restart()` body — VERIFIED
+
+`src/hooks/useServer.ts:194-229`:
+
+```ts
+async function restart(): Promise<void> {
+  const preferredPort = serverPort() ?? port ?? 0
+  log.health("server", "restart_begin", { preferredPort })
+
+  setStatus("starting")
+  setError(undefined)
+  closeCurrent()                 // <-- aborts in-flight launch
+  setUrl(null)
+
+  try {
+    await launch(preferredPort)  // <-- async, yields
+    log.health("server", "restart_done", { url: url(), port: serverPort() })
+  } catch (errPreferred) {
+    log.health("server", "restart_retry_ephemeral", { ... })
+    try {
+      await launch(0)
+      log.health("server", "restart_done", { ... })
+    } catch (err) {
+      const serverError = err instanceof Error ? err : new Error(String(err))
+      setError(serverError)
+      setStatus("error")
+      serverRef = null
+      log.health("server", "restart_failed", { message: serverError.message })
+    }
+  }
+}
+```
+
+There is **no** re-entry guard. The function:
+
+1. Sets status to `"starting"` (idempotent if already
+   `"starting"`).
+2. Calls `closeCurrent()` which aborts the in-flight
+   `AbortController` and discards the `serverRef`.
+3. Calls `setUrl(null)`.
+4. `await launch(preferredPort)` — `launch()` is async, so
+   step 1-3 run synchronously, then the function **yields**
+   while the SDK spins up a new server.
+
+A second `restart()` invocation during that yield window
+hits the same `closeCurrent()` (which **aborts the first
+invocation's in-flight `launch()`**), then starts its own
+`launch()`. The first invocation's `await launch()` throws
+(abort signal), the `catch` runs, it tries a second
+`launch(0)` on a fresh port — **while the second invocation
+is also trying to launch** — and the two race for
+`serverRef`, `setUrl`, and `setStatus("ready")`.
+
+#### Concurrency walk-through — concurrent calls
+
+Let `R1` and `R2` be two overlapping `restart()` invocations.
+`launch(P)` means "create server on port P, set serverRef /
+url / port, set status=ready".
+
+| t | R1 | R2 | State |
+| - | -- | -- | ----- |
+| t0 | `closeCurrent()` (no-op) | (not started) | status=ready, serverRef=A |
+| t0+ε | `setStatus("starting")` | | status=starting |
+| t0+ε | `setUrl(null)` | | url=null |
+| t0+ε | `await launch(P1)` — yields | | launch in flight, abortController=AC1 |
+| t1 | (yielded) | `setStatus("starting")` | status=starting (idempotent) |
+| t1 | | `closeCurrent()` — aborts AC1, discards serverRef | serverRef=null, AC1 aborted |
+| t1 | | `setUrl(null)` | url=null |
+| t1 | | `await launch(P2)` — yields | launch in flight, abortController=AC2 |
+| t2 | R1's `launch(P1)` throws (AbortError) | | (R1 catch path) |
+| t2 | R1 catches `errPreferred` | | |
+| t2 | R1: `log.health("restart_retry_ephemeral")` | | |
+| t2 | R1: `await launch(0)` — yields | (R2 still in flight) | abortController=AC3 (R1's new one) |
+| t3 | (R1 yielded) | R2's `launch(P2)` resolves | serverRef=B, url=B.url, status=ready |
+| t3 | (R1 yielded) | R2: `log.health("restart_done")` | |
+| t3 | (R1 yielded) | R2: `restart()` returns | |
+| t4 | R1's `launch(0)` resolves (NEW server on port 0) | | serverRef=C (R1's launch overwrote B), url=C.url, status=ready |
+| t4 | R1: `log.health("restart_done")` (reports C, not B) | | |
+| t4 | R1: `restart()` returns | | |
+
+**End state:** `serverRef = C` (R1's ephemeral port server).
+**B is leaked** — R2 created it, but R1's later
+`launch(0)` overwrote `serverRef` without ever closing B.
+B's process is still alive, holding its port, but nothing in
+the hook references it. `onCleanup`'s `stop()` will close C
+only.
+
+The hook-level `restart()` is **not idempotent and not safe
+under concurrent calls**.
+
+#### Finding 15.7.A — HIGH — `server.restart()` aborts in-flight launches and leaks server processes
+
+**Problem.** Concurrent `server.restart()` calls produce:
+
+1. **Server process leak.** Each overlapping `restart()`
+   spawns at least one new server process; the first
+   invocation's catch-path spawns a second one (port 0
+   retry). Whichever `launch()` returns last wins
+   `serverRef`. Earlier launches are not closed.
+2. **URL flip mid-recovery.** A late
+   `setUrl(C.url)` overwrites the URL the SSE handler just
+   reconnected to (B.url). The next SSE event targets
+   the wrong server, or a `null` URL if the late
+   `setUrl(null)` from a third restart lands first.
+3. **False "restart_failed" log on success.** If the
+   preferred-port `launch()` of the **second** call is
+   also aborted by a hypothetical third call, R2's
+   catch-path runs `await launch(0)` and either succeeds
+   or fails. A failure here sets `status="error"` and
+   `serverRef=null`, even though the *original* server
+   (A) is still alive and would be a perfectly valid
+   fallback.
+4. **Lost `setError`.** If R1's catch-path
+   `setError(serverError)` runs after R2's successful
+   `setStatus("ready")`, the UI displays the error state
+   despite a live, working server. (Or the other way:
+   R2's `setError(undefined)` clears an error that R1's
+   catch-path set.)
+
+**Where.** `src/hooks/useServer.ts:194-229` — `restart()`
+function body. The root cause is the absence of a
+re-entry guard (compare with the synchronous
+`if (status() !== "starting" && status() !== "stopped")
+return` guard at line 120 in `startServer()`).
+
+**Proposed fix.** Add a module-scoped `restartInProgress`
+boolean (mirroring `startIteration` in `App.tsx:171`):
+
+```ts
+let restartInProgress = false
+
+async function restart(): Promise<void> {
+  if (restartInProgress) {
+    log.health("server", "restart_skipped_in_flight", {})
+    return
+  }
+  restartInProgress = true
+  try {
+    // ... existing body ...
+  } finally {
+    restartInProgress = false
+  }
+}
+```
+
+This is the minimum fix. A more thorough version would
+also coalesce calls (the second caller awaits the first
+caller's promise and returns when it resolves), but the
+"skip" semantic is sufficient because all three call sites
+already have their own retry/heartbeat logic (watchdog
+escalation, SSE reconnect backoff, manual user
+re-trigger).
+
+**Severity: HIGH.** A server process leak is not a
+correctness bug per se (the new server works), but the
+flapping URL/state and the false "restart_failed" log
+are observable in production. The watchdog's recovery
+ladder (`useWatchdog.ts:184-198`) does
+`recoveryAttempts++` on every failed `recover()`, so a
+flapping server can hit `maxRecoveryAttempts` faster
+than expected, surfacing a recoverable error to the user
+prematurely.
+
+#### Finding 15.7.B — MEDIUM — App-level `restartServer()` has no re-entry guard
+
+**Problem.** The App-level wrapper at
+`src/App.tsx:649-663` is the only caller of the hook-level
+`server.restart()`, but it also has no re-entry guard:
+
+```ts
+async function restartServer(): Promise<void> {
+  log.health("server", "recovery_restart", { url: server.url() })
+  activityLog.addEvent("error", t("actGuardRestart"))
+  await server.restart()
+  sse.reconnect()
+  const verdict = await reconcileAndAdvance()
+  if (verdict === "working") {
+    watchdog.notifyWake()
+  }
+}
+```
+
+Under the same concurrent-call scenario from 15.7.A, the
+App-level function also runs twice, producing:
+
+1. **Duplicate `actGuardRestart` activity event** — the
+   user sees two "Server restart" entries in the activity
+   log for what was logically one restart.
+2. **Double `reconcileAndAdvance()` call.** `reconcileAndAdvance()`
+   (line 627-643) is a state-mutating operation that
+   dispatches `session_idle` if the session is gone. Two
+   concurrent invocations can race: both call
+   `loop.dispatch({ type: "session_idle" })`, but the
+   reducer's `session_idle` from `running(0, "")` is a
+   no-op (already covered in 15.3), so the duplicate is
+   benign — but the API round-trip cost is wasted.
+3. **Double `sse.reconnect()`.** This is benign (covered
+   in 15.6 — the `useSSE` hook's `myController` pattern
+   makes it safe), but it does two TCP connection
+   attempts to the (possibly dead) server.
+
+**Where.** `src/App.tsx:649-663`.
+
+**Proposed fix.** Same shape as 15.7.A — add a module-
+scoped `restartServerInProgress` guard around the body.
+Alternatively, fix it at the hook level (15.7.A) and rely
+on the hook to swallow the second call; the App-level
+duplicate is then only the activity log noise (LOW
+severity). Both fixes are cheap; doing both is the
+defensive choice.
+
+**Severity: MEDIUM.** The duplicate activity event is
+visible to the user, and the double `reconcileAndAdvance()`
+is wasted work. Neither breaks correctness because the
+underlying hooks are themselves idempotent or guard-
+protected (SSE's `myController`, the session_idle
+reducer). This becomes HIGH only if a non-idempotent
+operation is added to the body in the future.
+
+#### Test coverage gap — INFO
+
+There is no test for concurrent `server.restart()` calls.
+The `useServer` hook is consumed by `App.tsx` only; the
+test suite (`useWatchdog.test.ts`) mocks the `server`
+object via the `actions` interface, so it never exercises
+the real hook body. A targeted test would:
+
+1. Mock `createOpencodeServer` to return a controllable
+   promise (so `launch()` can be paused mid-flight).
+2. Mount `useServer` with a known port.
+3. Call `restart()` twice without awaiting the first.
+4. Assert: `createOpencodeServer` was called exactly
+   **once** (the second call short-circuited), or — with
+   the coalesce-fixes — was called once and the second
+   call awaited the first's resolution.
+
+Worth adding in a future coverage pass. The fix itself
+is mechanical, but the test pins the contract.
+
+#### Verification result
+
+`server.restart()` is **not idempotent** under concurrent
+calls. The two failure modes (hook-level abort + leak;
+App-level duplicate activity events) are independent
+findings, but they have the same root cause: no re-entry
+guard.
+
+- One HIGH finding (15.7.A — hook-level `restart()`
+  concurrency).
+- One MEDIUM finding (15.7.B — App-level
+  `restartServer()` concurrency).
+- One INFO-level test-coverage note.
+- No CRITICAL or LOW findings.
+
+The fix is one boolean (15.7.A) plus optionally another
+(15.7.B); both are ~5 lines and match the existing
+`startingIteration` pattern at `App.tsx:171-172`.
