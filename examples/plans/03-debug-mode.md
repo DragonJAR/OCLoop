@@ -113,7 +113,7 @@ Should complete without TypeScript errors.
 6. **With options**
    ```bash
    ./dist/ocloop -d -p 4099
-   ./dist/ocloop --debug -m claude-sonnet-4
+   ./dist/ocloop --debug -m opencode/claude-sonnet-4
    ```
    Port and model options should still work in debug mode.
 

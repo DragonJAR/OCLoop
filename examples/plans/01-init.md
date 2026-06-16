@@ -688,7 +688,7 @@ Options:
 
 Examples:
   ocloop                           # Start with defaults
-  ocloop -m claude-sonnet-4        # Use specific model
+  ocloop -m opencode/claude-sonnet-4 # Use specific model
   ocloop --plan my-plan.md         # Use custom plan file
 ```
 
@@ -868,7 +868,7 @@ Examples:
 ```json
 {
   "name": "ocloop",
-  "version": "0.1.0",
+  "version": "0.5.0",
   "type": "module",
   "bin": {
     "ocloop": "./dist/index.js"

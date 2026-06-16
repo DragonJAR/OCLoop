@@ -165,7 +165,7 @@ if (import.meta.main) {
     // Responsive dashboard summary line (most important first).
     const filled = Math.round(0.1 * lay.progressWidth)
     const pbar = "█".repeat(filled) + "░".repeat(lay.progressWidth - filled)
-    const segs = ["[▶ RUNNING]", "Iter 1", `Tasks 4/39 ${pbar} 10%`, "Model glm-5.2", "Guard ● OK"]
+    const segs = ["[▶ RUNNING]", "Iter 1", `Tasks 4/39 ${pbar} 10%`, "Model zai-coding-plan/glm-5.2", "Guard ● OK"]
     console.log(titleBar("dashboard", Math.min(cols, lay.cols)))
     console.log("  " + fitSegments(segs, lay.inner))
     console.log(bar(Math.min(cols, lay.cols)))

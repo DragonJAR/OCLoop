@@ -82,9 +82,8 @@ bun link        # deja `ocloop` disponible globalmente
 ## Inicio rápido
 
 ```bash
-# 1. Crea un plan (interactivamente) y un prompt de bucle
+# 1. Crea un plan interactivamente
 ocloop --create-plan
-cp examples/loop-prompt.md ./.loop-prompt.md   # ojo con el punto inicial
 
 # 2. Ejecuta OCLoop y pulsa S para empezar
 ocloop
@@ -101,7 +100,7 @@ cp examples/PLAN.md ./PLAN.md
 Una ejecución completa y fiable desde cero:
 
 1. **Instala los requisitos** — Bun y OpenCode, con tu modelo/agente/claves de API configurados en OpenCode.
-2. **Crea el prompt de bucle** — `cp examples/loop-prompt.md ./.loop-prompt.md`. Es la instrucción que se envía a OpenCode en cada iteración; edítala según las convenciones de tu proyecto.
+2. **Personaliza el prompt de bucle si hace falta** — el `.loop-prompt.md` por defecto se crea automáticamente en la primera ejecución. Para personalizarlo antes, copia `examples/loop-prompt.es.md` a `.loop-prompt.md` y edítalo. Un `--prompt <ruta>` personalizado debe existir de antemano.
 3. **Crea el plan** — una de dos:
    - ejecuta **`ocloop --create-plan`**, describe tu objetivo, revisa el plan propuesto y guárdalo; o
    - escribe `PLAN.md` a mano con el [formato de plan](#formato-del-archivo-de-plan) (parte de `examples/PLAN.md`).
@@ -115,14 +114,14 @@ Una ejecución completa y fiable desde cero:
 `ocloop --create-plan` (o `-c`) lanza un generador interactivo en lugar de la TUI:
 
 1. Te pregunta qué quieres que OCLoop construya.
-2. Usa **glm-5.2** y el agente **`plan`** por defecto para redactar un `PLAN.md` con el formato de OCLoop.
+2. Usa **zai-coding-plan/glm-5.2** y el agente **`plan`** por defecto para redactar un `PLAN.md` con el formato de OCLoop.
 3. Te muestra el plan propuesto y pregunta si **guardar**, **editar** (refinar con feedback) o **cancelar**.
 4. Al guardar, escribe el archivo (en `--plan <ruta>`, por defecto `PLAN.md`) y te indica cómo empezar.
 
-El plan generado sigue el [idioma de la interfaz](#idioma-i18n). Cambia el modelo/agente con `--model` / `--agent`:
+El plan generado sigue el [idioma de la interfaz](#idioma-i18n). Cambia el modelo/agente con `--model <proveedor/modelo>` / `--agent`:
 
 ```bash
-ocloop --create-plan                       # glm-5.2 + agente plan
+ocloop --create-plan                       # zai-coding-plan/glm-5.2 + agente plan
 ocloop --create-plan --model openai/gpt-5  # modelo personalizado
 ocloop --create-plan --plan roadmap.md     # escribir en una ruta personalizada
 ```
@@ -136,10 +135,10 @@ Uso: ocloop [opciones]
 | Opción | Descripción |
 | --- | --- |
 | `-p, --port <número>` | Puerto del servidor (por defecto de OpenCode: probar 4096, luego aleatorio) |
-| `-m, --model <string>` | Modelo a usar (se pasa a OpenCode) |
+| `-m, --model <proveedor/modelo>` | Modelo a usar, por ejemplo `openai/gpt-5` |
 | `-a, --agent <string>` | Agente a usar (se pasa a OpenCode) |
 | `-r, --run` | Inicia las iteraciones de inmediato (por defecto: espera `S`) |
-| `-c, --create-plan` | Genera `PLAN.md` interactivamente y sale (modelo glm-5.2, agente plan) |
+| `-c, --create-plan` | Genera `PLAN.md` interactivamente y sale (modelo zai-coding-plan/glm-5.2, agente plan) |
 | `-d, --debug` | Modo debug/sandbox (sin validación del plan, sesiones manuales) |
 | `--verbose` | Activa el registro detallado (eventos de teclado, etc.) |
 | `--prompt <ruta>` | Ruta del archivo de prompt de bucle (por defecto: `.loop-prompt.md`) |
@@ -157,7 +156,7 @@ Uso: ocloop [opciones]
 ocloop                              # inicia, espera S
 ocloop --create-plan                # genera un PLAN.md y sale
 ocloop -r                           # inicia las iteraciones de inmediato
-ocloop -m claude-sonnet-4           # usa un modelo específico
+ocloop -m opencode/claude-sonnet-4  # usa un proveedor/modelo específico
 ocloop -a plan                      # usa el agente plan
 ocloop --plan mi-plan.md            # usa un archivo de plan personalizado
 ocloop --lang es                    # interfaz en español
@@ -315,14 +314,14 @@ Todos los archivos `.loop*` se ignoran en git automáticamente.
 
 ## Solución de problemas
 
-**"Error: Plan file not found"** — crea un `PLAN.md` (o ejecuta `ocloop --create-plan`). Como mínimo:
+**"Error: archivo de plan no encontrado"** — crea un `PLAN.md` (o ejecuta `ocloop --create-plan`). Como mínimo:
 
 ```markdown
 ## Backlog
 - [ ] Tu primera tarea
 ```
 
-**"Error: Prompt file not found"** — crea `.loop-prompt.md` (copia `examples/loop-prompt.md`).
+**"Error: archivo de prompt no encontrado"** — esto solo ocurre con un `--prompt <ruta>` personalizado. Crea ese archivo, u omite `--prompt` y deja que OCLoop cree automáticamente el `.loop-prompt.md` por defecto.
 
 **El servidor no arranca** — asegúrate de que OpenCode esté instalado y en tu `PATH`, que tus claves de API estén configuradas, y revisa los logs de OpenCode.
 

@@ -82,9 +82,8 @@ bun link        # makes `ocloop` available globally
 ## Quick start
 
 ```bash
-# 1. Create a plan (interactively) and a loop prompt
+# 1. Create a plan interactively
 ocloop --create-plan
-cp examples/loop-prompt.md ./.loop-prompt.md   # note the leading dot
 
 # 2. Run OCLoop and press S to begin
 ocloop
@@ -101,7 +100,7 @@ cp examples/PLAN.md ./PLAN.md
 A complete, reliable run from zero:
 
 1. **Install prerequisites** — Bun and OpenCode, with your model/agent/API keys configured in OpenCode.
-2. **Create the loop prompt** — `cp examples/loop-prompt.md ./.loop-prompt.md`. This is the instruction sent to OpenCode each iteration; edit it to fit your project conventions.
+2. **Customize the loop prompt if needed** — the default `.loop-prompt.md` is auto-created on first run. To customize it before running, copy `examples/loop-prompt.md` to `.loop-prompt.md` and edit it. A custom `--prompt <path>` must already exist.
 3. **Create the plan** — either:
    - run **`ocloop --create-plan`**, describe your goal, review the proposed plan, and save it; or
    - write `PLAN.md` by hand using the [plan format](#plan-file-format) (start from `examples/PLAN.md`).
@@ -115,14 +114,14 @@ A complete, reliable run from zero:
 `ocloop --create-plan` (or `-c`) launches an interactive generator instead of the TUI:
 
 1. It asks what you want OCLoop to build.
-2. It uses **glm-5.2** and the **`plan`** agent by default to draft a `PLAN.md` in OCLoop's format.
+2. It uses **zai-coding-plan/glm-5.2** and the **`plan`** agent by default to draft a `PLAN.md` in OCLoop's format.
 3. It shows you the proposed plan and asks to **save**, **edit** (refine with feedback), or **cancel**.
 4. On save, it writes the file (to `--plan <path>`, default `PLAN.md`) and tells you how to start.
 
-The generated plan follows the current [UI language](#language-i18n). Override the model/agent with `--model` / `--agent`:
+The generated plan follows the current [UI language](#language-i18n). Override the model/agent with `--model <provider/model>` / `--agent`:
 
 ```bash
-ocloop --create-plan                       # glm-5.2 + plan agent
+ocloop --create-plan                       # zai-coding-plan/glm-5.2 + plan agent
 ocloop --create-plan --model openai/gpt-5  # custom model
 ocloop --create-plan --plan roadmap.md     # write to a custom path
 ```
@@ -136,10 +135,10 @@ Usage: ocloop [options]
 | Option | Description |
 | --- | --- |
 | `-p, --port <number>` | Server port (OpenCode default: try 4096, then random) |
-| `-m, --model <string>` | Model to use (passed to OpenCode) |
+| `-m, --model <provider/model>` | Model to use, for example `openai/gpt-5` |
 | `-a, --agent <string>` | Agent to use (passed to OpenCode) |
 | `-r, --run` | Start iterations immediately (default: wait for `S`) |
-| `-c, --create-plan` | Interactively generate `PLAN.md`, then exit (model glm-5.2, agent plan) |
+| `-c, --create-plan` | Interactively generate `PLAN.md`, then exit (model zai-coding-plan/glm-5.2, agent plan) |
 | `-d, --debug` | Debug/sandbox mode (no plan-file validation, manual sessions) |
 | `--verbose` | Enable verbose logging (keyboard events, etc.) |
 | `--prompt <path>` | Path to the loop prompt file (default: `.loop-prompt.md`) |
@@ -157,7 +156,7 @@ Usage: ocloop [options]
 ocloop                              # start, wait for S
 ocloop --create-plan                # generate a PLAN.md, then exit
 ocloop -r                           # start iterations immediately
-ocloop -m claude-sonnet-4           # use a specific model
+ocloop -m opencode/claude-sonnet-4  # use a specific provider/model
 ocloop -a plan                      # use the plan agent
 ocloop --plan my-plan.md            # use a custom plan file
 ocloop --lang es                    # Spanish UI
@@ -322,7 +321,7 @@ All `.loop*` files are git-ignored automatically.
 - [ ] Your first task
 ```
 
-**"Error: Prompt file not found"** — create `.loop-prompt.md` (copy `examples/loop-prompt.md`).
+**"Error: Prompt file not found"** — this only happens for a custom `--prompt <path>`. Create that file, or omit `--prompt` and let OCLoop auto-create the default `.loop-prompt.md`.
 
 **Server fails to start** — make sure OpenCode is installed and on your `PATH`, your API keys are configured, and check OpenCode's logs.
 
