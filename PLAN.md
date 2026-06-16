@@ -1067,10 +1067,87 @@ antes del fix), 1685 expect() calls, 23 files,
 
 ### Mejora 30 — Finding 8.3.A — LOW — No test for the `EACCES` / `EPERM` branch of `clearLoopState`
 
-- [ ] Evaluar la mejora 30 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 30 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 30 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 30 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 30 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 30 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 30 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 30 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:10081-10125`: el
+catch type-agnostic de `clearLoopState`
+(`loop-state-store.ts:114-119`) cubre `ENOENT`
+(ya pineado en el test "clearing a
+non-existent file does not throw", líneas
+61-64) y el happy path (líneas 55-59), pero
+NO está pineada la rama `EACCES` / `EPERM`
+— la regresión canónica del audit
+(`MEJORAS.md:10086-10089`): "cambiar el catch
+a `if (err.code !== "ENOENT") throw`". El
+test actual pasaría con esa regresión porque
+el `if` lanza el mismo `ENOENT` que ya cubría
+el test pineado, y el nuevo branch `EACCES`
+queda sin vigilancia.
+
+La opción del fix propuesta en
+`MEJORAS.md:10094-10122` es estrictamente la
+mínima útil:
+
+1. **`chmodSync(dir, 0o555)` sobre el
+   tempdir** es el canónico POSIX para
+   forzar un `EACCES` (macOS) o `EPERM`
+   (Linux) en el `unlink` del state file
+   dentro de un dir read-only. El
+   `mkdtempSync` ya existente en
+   `beforeEach` (línea 18) crea el dir como
+   owner = test process, así que el `chmod`
+   está permitido sin escalación.
+
+2. **`it.skipIf(process.platform === "win32"
+   || getuid?.() === 0)`** replica
+   exactamente las dos guardas que el audit
+   recomienda (líneas 10117-10121) — Windows
+   ACLs no mapean a POSIX `chmod`, y root
+   bypasea el read-only check. Bun 1.3.x
+   expone `it.skipIf` en la `bun:test`
+   module, así que no requiere imports
+   adicionales.
+
+3. **`try/finally` que restaura
+   `chmodSync(dir, 0o755)`** mantiene el
+   contrato del `afterEach` (línea 24) — si
+   el test fallara, el `rmSync` corre con
+   permisos restaurados y el tempdir se
+   limpia. Sin esta guarda, un test
+   fallido dejaría el tempdir no-eliminable
+   hasta intervención manual.
+
+Implementación: 1 import (`chmodSync`
+añadido a la línea 2) + 27 líneas nuevas en
+`src/lib/loop-state-store.test.ts:66-92`
+(test + comment block que nombra el source
+`MEJORAS.md Finding 8.3.A`, las dos guardas
+cross-platform, y la regresión canónica que
+el test pinea). Cero cambios al production
+code — el contract de `clearLoopState` ya
+era correcto, solo faltaba el pineo.
+
+Cero impacto en el camino feliz del
+production code (el cambio es test-only).
+Cero impacto en los otros 11 tests del file
+(el `chmod 0o555` se aplica solo dentro del
+nuevo test, y el `finally` lo restaura
+antes de que `afterEach` corra).
+
+El test es ejecutable end-to-end en el
+entorno de desarrollo (macOS, user no-root):
+`bun test src/lib/loop-state-store.test.ts`
+pasa con 12 tests (era 11 antes del fix).
+En el suite completo: 686 pass / 0 fail
+(era 685), 1685 expect() calls (era 1685),
+23 files, 316 ms — +1 test, mismo número
+de expects (el nuevo test tiene 0
+expect() calls explícitos; la aserción es
+"no throw"). Commit `3d3a2f2`.
 
 ### Mejora 31 — Finding 8.4.A — LOW — `void saveLoopState(snapshot)` is fire-and-forget
 
