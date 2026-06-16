@@ -1545,26 +1545,40 @@ function AppContent(props: AppProps) {
      }
   }
   
-  const onConfigCopy = () => {
-     const sid = sessionId() || lastSessionId()
-     const url = server.url()
-     if (sid && url) {
-        const cmd = getAttachCommand(url, sid)
-        copyToClipboard(cmd)
-        toast.show({ variant: "success", message: t("toastCopied") })
-     }
-     dialog.clear()
-  }
-  
-  const onErrorCopy = () => {
-     const sid = sessionId() || lastSessionId()
-     const url = server.url()
-     if (sid && url) {
-        const cmd = getAttachCommand(url, sid)
-        copyToClipboard(cmd)
-        toast.show({ variant: "success", message: t("toastCopied") })
-     }
-  }
+   const onConfigCopy = async () => {
+      const sid = sessionId() || lastSessionId()
+      const url = server.url()
+      if (sid && url) {
+         const cmd = getAttachCommand(url, sid)
+         const result = await copyToClipboard(cmd)
+         if (result.success) {
+            toast.show({ variant: "success", message: t("toastCopied") })
+         } else {
+            // Source: MEJORAS.md Finding 11.4.C — show the actual error
+            // to the user instead of a misleading "Copied to clipboard"
+            // toast when the clipboard command failed.
+            toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
+         }
+      }
+      dialog.clear()
+   }
+   
+   const onErrorCopy = async () => {
+      const sid = sessionId() || lastSessionId()
+      const url = server.url()
+      if (sid && url) {
+         const cmd = getAttachCommand(url, sid)
+         const result = await copyToClipboard(cmd)
+         if (result.success) {
+            toast.show({ variant: "success", message: t("toastCopied") })
+         } else {
+            // Source: MEJORAS.md Finding 11.4.C — branch on the
+            // ClipboardResult so a failure surfaces a real error toast
+            // instead of a silent no-op.
+            toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
+         }
+      }
+   }
 
   // Create state for terminal config dialog
   const terminalConfigState = createTerminalConfigState(
@@ -1648,11 +1662,21 @@ function AppContent(props: AppProps) {
         category: t("catTerminal"),
         keybind: "C",
         disabled: !hasSession,
-        onSelect: () => {
+        onSelect: async () => {
           if (sid && url) {
             const cmd = getAttachCommand(url, sid)
-            copyToClipboard(cmd)
-            toast.show({ variant: "success", message: t("toastCopied") })
+            const result = await copyToClipboard(cmd)
+            if (result.success) {
+              toast.show({ variant: "success", message: t("toastCopied") })
+            } else {
+              // Source: MEJORAS.md Finding 11.4.C — the previous code
+              // fired a success toast synchronously on the next line
+              // before the clipboard command was even spawned; on
+              // macOS/Windows the user saw "Copied to clipboard" with
+              // an empty pasteboard. Now we await and surface the
+              // real error.
+              toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
+            }
           }
         },
       },
