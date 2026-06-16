@@ -10,7 +10,7 @@ import {
 describe("formatActivityLine — label & level", () => {
   it("derives a descriptive, bracketed, padded label from the type", () => {
     const f = formatActivityLine({ type: "assistant_message", message: "hi" }, 80)
-    expect(f.label).toBe("[assistant]".padEnd(LABEL_WIDTH))
+    expect(f.label).toBe("[responding]".padEnd(LABEL_WIDTH))
     expect(f.label.length).toBe(LABEL_WIDTH)
   })
 

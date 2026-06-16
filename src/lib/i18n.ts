@@ -359,16 +359,16 @@ const en = {
   sampleSessionIdle: "Session idle - waiting for input",
 
   // --- Activity-log event labels (bracketed [tag] in the log stream) ---
-  logLblStart: "start",
-  logLblIdle: "idle",
-  logLblTask: "task",
-  logLblEdit: "edit",
-  logLblRead: "read",
-  logLblTool: "tool",
-  logLblYou: "you",
-  logLblAssistant: "assistant",
+  logLblStart: "starting",
+  logLblIdle: "waiting",
+  logLblTask: "working",
+  logLblEdit: "editing",
+  logLblRead: "reading",
+  logLblTool: "running",
+  logLblYou: "asking",
+  logLblAssistant: "responding",
   logLblReason: "reasoning",
-  logLblEvent: "event",
+  logLblEvent: "processing",
 } satisfies Record<string, Msg>
 
 export type MessageKey = keyof typeof en
@@ -656,16 +656,16 @@ const es: Record<MessageKey, Msg> = {
   sampleError: "Falló el build: error de tipos en Button.tsx",
   sampleSessionIdle: "Sesión inactiva: esperando entrada",
 
-  logLblStart: "inicio",
-  logLblIdle: "inactivo",
-  logLblTask: "tarea",
-  logLblEdit: "editar",
-  logLblRead: "leer",
-  logLblTool: "herramienta",
-  logLblYou: "tú",
-  logLblAssistant: "asistente",
+  logLblStart: "iniciando",
+  logLblIdle: "esperando",
+  logLblTask: "trabajando",
+  logLblEdit: "editando",
+  logLblRead: "leyendo",
+  logLblTool: "ejecutando",
+  logLblYou: "preguntando",
+  logLblAssistant: "respondiendo",
   logLblReason: "razonando",
-  logLblEvent: "evento",
+  logLblEvent: "procesando",
 }
 
 // Reactive locale: a Solid signal so the TUI re-renders live when the language
