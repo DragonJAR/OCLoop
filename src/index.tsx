@@ -12,6 +12,7 @@ import { parseArgs } from "./lib/cli-args"
 import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
+import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 
 /**
  * Defaults for the interactive plan generator (`--create-plan`).
@@ -318,6 +319,15 @@ async function main(): Promise<void> {
   // Interactive plan generator: runs instead of the TUI and exits. Force the
   // exit so the embedded OpenCode server child can't keep the process alive.
   if (args.createPlan) {
+    // Warn about TUI-only flags that will be silently ignored in plan-gen mode
+    // (Finding 1.7.A). Non-fatal: user can `2>/dev/null` it away.
+    const ignored = getIgnoredCreatePlanFlags(args)
+    if (ignored.length > 0) {
+      console.error(
+        `Note: --create-plan ignores: ${ignored.join(", ")}. ` +
+          `These flags only affect the TUI loop, which does not start in plan-generator mode.`,
+      )
+    }
     await runCreatePlan(args)
     process.exit(process.exitCode ?? 0)
   }
