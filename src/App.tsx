@@ -908,7 +908,12 @@ function AppContent(props: AppProps) {
       type: "error",
       source: "api",
       message: t("errIterationStart", { message }),
-      recoverable: true,
+      // Honor the classified kind the same way SSE onSessionError does
+      // (App.tsx:562): transient is recoverable, auth/fatal are not. A 401
+      // surfaced through the iteration-start path would otherwise advertise
+      // Retry as a one-click fix and waste an iteration on the same failure.
+      // Source: MEJORAS.md Finding 16.1.A.
+      recoverable: classified.kind === "transient",
     })
   }
 

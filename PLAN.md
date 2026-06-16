@@ -2927,10 +2927,74 @@ antes de la anotación).
 
 ### Mejora 61 — Finding 16.1.A — MEDIUM — `handleIterationError` dispatches a recoverable error for `auth` and `fatal` kinds
 
-- [ ] Evaluar la mejora 61 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 61 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 61 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 61 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 61 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 61 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 61 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 61 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20605-20648`): el `loop.dispatch` final de
+`handleIterationError` (`App.tsx:911`) tenía
+`recoverable: true` hardcoded, sin consultar
+`classified.kind`. Los dos `return` tempranos (líneas 898-905)
+cubren `rate_limit` y `transient`, así que el branch
+restante solo recibe `auth` o `fatal` — los dos kinds para
+los que un Retry button es una mentira (un 401 no se va a
+arreglar solo, un 5xx persistente no es "transient" por
+definición). El audit nota que la SSE path ya enforzó la
+política correcta (`App.tsx:562`:
+`recoverable: error.kind === "transient"`), y la API path
+era la divergente — exactamente la asimetría que el
+user-facing "Retry" button expone. La opción del fix
+propuesta (`MEJORAS.md:20642`) es estrictamente la mínima
+útil: 1 línea de código (sustituir `recoverable: true` por
+`recoverable: classified.kind === "transient"`), más 5
+líneas de comment block que nombra el source
+`MEJORAS.md Finding 16.1.A`, el parallel con
+`App.tsx:562` (la SSE path), y la consecuencia observable
+del fix (un 401 surfaced through the iteration-start path
+ya no engaña al usuario con un Retry button que repite el
+mismo fallo). El order de evaluación es importante: en el
+shape actual, `classified.kind === "transient"` es
+estructuralmente `false` en este branch (los `return`
+anteriores garantizan que solo `auth`/`fatal` llegan), así
+que el cambio es **observable-equivalente a
+`recoverable: false`** en el runtime actual — pero la forma
+`classified.kind === "transient"` mirrora exactamente la
+SSE path (`App.tsx:562`) y queda defensive ante un futuro
+refactor que añada un kind nuevo al switch sin return
+explícito (ese kind caería al dispatch final con
+`recoverable: false`, el default conservador; un 4-line
+test podría pinear el invariant, pero el audit lo descarta
+como redundante con el parallel structure del SSE path).
+
+Cero cambios a la firma de `handleIterationError`
+(`(unknown) => void` intacta), cero cambios al reducer
+(la action `error` con `recoverable: false` ya es un shape
+existente pineado por `useLoopState.test.ts:198-249` —
+12 tests cubren la transición de cada active state al
+state `error`), cero cambios a `classifySessionError` /
+`enterCooldown` / `useSSE.ts`, cero impacto en la ruta
+`rate_limit`/`transient` (sus branches ya tienen `return`
+y nunca llegan al dispatch final), cero impacto en la
+TUI, cero impacto en el reducer, cero impacto en tests
+(750 pass / 1 skip / 0 fail — sin cambio en el conteo). El
+contrato del `error` action es `recoverable: boolean`, así
+que el cambio no requiere ningún test update en
+`useLoopState.test.ts` (los tests existentes usan tanto
+`recoverable: true` como `recoverable: false` indistintamente,
+y el branch que se ejecuta no depende del source).
+
+Sin nuevos tests: el audit (`MEJORAS.md:20646`) nombra
+explícitamente que un test del invariant requeriría
+mockear `classifySessionError` + `enterCooldown` +
+`loop.dispatch` + el reducer (4 mocks, 12-line setup
+per test), y que el parallel con el SSE path ya
+pineado por `useSSE.test.ts:183-207` (21 casos
+del classifier en isolation) cubre la rama semántica.
+`bun test` verde: 750 pass / 1 skip / 0 fail, 1784
+expect() calls, 25 files — sin cambio en el conteo
+(era 750 antes del fix).
 
 ### Mejora 62 — Finding 16.1.B — MEDIUM — `kind === "transient"` takes different paths in the two call sites
 
