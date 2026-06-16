@@ -2106,3 +2106,183 @@ expect() calls** (was 100/0/169 before this iteration). +12 tests,
 
 Full suite: `bun test` → **563 pass, 0 fail, 1238 expect() calls**
 across 21 files. No regressions.
+
+---
+
+### 2.4 — Verify `percentComplete` math
+
+**Status: COMPLETE — VERIFIED. The formula is correct on every boundary
+the audit walks: total=0, all-MANUAL, all-BLOCKED, mixed terminal
+categories, single pending, single completed, exact halves, and
+non-trivial rounding (1/3, 2/3, 3/7, 3/8, 1/8). No
+HIGH/CRITICAL/MEDIUM/LOW findings. Five INFO observations.**
+
+The formula in `src/lib/plan-parser.ts:133-142`:
+
+```ts
+const pending = total - completed - manual - blocked
+const automatable = pending
+const denominator = total - manual - blocked
+const percentComplete = denominator > 0
+  ? Math.round((completed / denominator) * 100)
+  : 100
+```
+
+is the contract. It is a one-liner that hides three coupled rules:
+
+1. **`pending` and `automatable` are the same value.** This is
+   deliberate: "automatable" = "pending" because the only kind of
+   task the loop will work on is a pending one. The double name is
+   for UI/readability (the dashboard speaks "automatable", the
+   parser thinks "pending").
+2. **The denominator excludes MANUAL and BLOCKED tasks.** The
+   in-source comment at lines 135-137 explains the semantic: the
+   loop treats `[x]` AND `[BLOCKED]` as terminal, so a plan with
+   only completed+blocked items has nothing the loop can do and
+   must report 100%. Without the subtraction, a plan that ended
+   in "all done, but here's a leftover BLOCKED note" would be
+   stuck at <100% forever, which is wrong from the user's
+   perspective.
+3. **The denominator>0 check selects between the computed path
+   and the "nothing to do → 100%" fallback.** When there are zero
+   automatable tasks (denominator=0), there is nothing to compute
+   against, so the loop is by definition "done" with this plan
+   (the user has only left themselves MANUAL or BLOCKED items).
+   The strict `>` is important: a single-pending plan
+   (denominator=1, completed=0) must compute 0/1 = 0%, not
+   trip the fallback.
+
+#### 2.4.A — INFO — Empty file and all-terminal-category plans resolve to 100% via the denominator=0 fallback
+
+Four degenerate whole-plan shapes all collapse to `denominator = 0`
+and therefore `percentComplete = 100`. Each is pinned by a
+dedicated test:
+
+| Plan shape                                       | `total` | `manual` | `blocked` | `denominator` | `percentComplete` |
+| ------------------------------------------------ | ------- | -------- | --------- | ------------- | ----------------- |
+| Empty file (or prose-only / headings-only)       | 0       | 0        | 0         | 0             | 100               |
+| Only MANUAL tasks (any mix of forms)             | n       | n        | 0         | 0             | 100               |
+| Only BLOCKED tasks (any mix of forms)            | n       | 0        | n         | 0             | 100               |
+| Only MANUAL + BLOCKED (no pending, no completed) | n       | m        | b         | 0             | 100               |
+
+The 100% is not a coincidence and not "off by one" — it is the
+intended semantic for the loop driver: "no work to do" means the
+plan is complete from the loop's perspective. The user may still
+have manual work to do themselves, but the automation has
+finished.
+
+**No code change needed; behavior pinned by 4 dedicated tests
+inside the new `PLAN.md 2.4 — percentComplete math` block (the
+2.1 whole-file-edge-cases block already pinned the empty-file
+and all-terminal-cases too — the 2.4 block adds explicit,
+math-focused assertions).**
+
+#### 2.4.B — INFO — Single pending and single completed plans exercise the computed branch (denominator>0)
+
+Two boundary tests pin that the strict-greater-than check on
+denominator is the ONLY thing that drives the 100% fallback:
+
+- A plan with one pending task: `total=1, manual=0, blocked=0 →
+  denominator=1, completed=0, percentComplete = 0/1 = 0`. NOT 100.
+- A plan with one completed task: `total=1, manual=0, blocked=0 →
+  denominator=1, completed=1, percentComplete = 1/1 = 100`. NOT
+  undefined.
+
+If the check were ever weakened to `denominator >= 0` (or
+replaced with `completed === 0 ? 0 : ...`), both tests would
+flip to the wrong result, catching the regression immediately.
+
+**No code change needed; behavior pinned by 2 dedicated tests.**
+
+#### 2.4.C — INFO — Manual and blocked tasks never penalise the percentage
+
+The formula is `denominator = total - manual - blocked`, so
+manual and blocked tasks are explicitly removed from the
+denominator. A plan with 2 completed + 1 pending + 1 manual + 1
+blocked has `denominator = 4 - 1 - 1 = 2` and
+`percentComplete = 2/2 = 100`, not `2/4 = 50`.
+
+This is the documented behavior in the in-source comment at
+lines 135-137. The audit's largest mixing test (10 tasks: 3
+completed + 5 manual + 2 blocked) returns 100% via the computed
+branch, confirming that a long MANUAL/BLOCKED tail does not
+distort the percentage of the completed portion.
+
+**No code change needed; behavior pinned by 3 dedicated mixing
+tests (2/3 of a 5-task plan, 3/3 of a 10-task plan, 3/8 of an
+11-task plan).**
+
+#### 2.4.D — INFO — Rounding uses JS `Math.round` (half-up for positives), not floor/ceil/truncate
+
+The rounding step is `Math.round((completed / denominator) * 100)`.
+JS `Math.round` rounds half AWAY FROM zero for positive numbers
+and half TOWARD zero for negative numbers. Since the percentage
+is always non-negative here (both `completed` and `denominator`
+are non-negative integers and `denominator > 0` in this branch),
+the rule is "≥ .5 rounds up".
+
+Pinned by 5 dedicated rounding tests:
+
+| Numerator / Denominator | Decimal | `Math.round` | Pinned value |
+| ----------------------- | ------- | ------------ | ------------ |
+| 1/3                     | 33.333… | 33           | 33           |
+| 2/3                     | 66.666… | 67           | 67           |
+| 3/7                     | 42.857… | 43           | 43           |
+| 3/8                     | 37.5    | 38           | 38           |
+| 1/8                     | 12.5    | 13           | 13           |
+
+Exact halves (2/4 = 50, 4/6 = 66.666… → 67) are also pinned to
+catch a future swap to `Math.floor` or `Math.ceil` — both would
+change the value immediately.
+
+**No code change needed; behavior pinned by 7 dedicated
+rounding/computed-branch tests.**
+
+#### 2.4.E — INFO — The companion test fences off the "computed branch is reachable" invariant
+
+The `all completed → 100%` test and the `4/6 completed → 67%`
+test form a pair. The first pins the 100% via the computed
+branch (denominator=6, 6/6=100). The second pins that 100% via
+the fallback is NOT what fires for a non-zero denominator. If
+the ternary were ever inverted (`denominator <= 0 ? ... :
+...`), the all-completed test would still pass by accident, but
+the 4/6 test would flip to 100 (wrong) and fail immediately.
+
+The negative-control `completed=0 with denominator>0 → 0%` test
+fences off the symmetric inversion: if the check were
+`denominator >= 0 ? 100 : ...`, this test would return 100
+(wrong) and fail. Together, the three tests pin the exact shape
+of the ternary.
+
+**No code change needed; behavior pinned by 3 invariant
+fencing tests.**
+
+#### Test-suite delta for Task 2.4
+
+New `describe` block `PLAN.md 2.4 — percentComplete math` added
+inside `parsePlan` with **17 cases / 33 expect() calls**:
+
+1. Denominator is total - manual - blocked (the formula pin).
+2. total=0 (empty file) → 100% via fallback.
+3. all-MANUAL → 100% via fallback.
+4. all-BLOCKED → 100% via fallback.
+5. only MANUAL + BLOCKED → 100% via fallback.
+6. single pending task → 0% (computed branch).
+7. single completed task → 100% (computed branch).
+8. half completed (2/4) → 50 (no rounding bias).
+9. 1/3 completed → 33 (rounding down).
+10. 2/3 completed → 67 (rounding up).
+11. 3/7 completed → 43 (non-trivial rounding).
+12. all completed → 100 (computed branch, not fallback).
+13. 4/6 completed → 67 (companion: confirms fallback is not used).
+14. completed=0 with denominator>0 → 0 (negative-control).
+15. mixed: 3/10 with long MANUAL/BLOCKED tail → 100.
+16. interleaved 3/8 of 11 → 38 (0.5 boundary).
+17. 1/8 → 13 (0.5 boundary on small denominator).
+
+`bun test src/lib/plan-parser.test.ts` → **139 pass, 0 fail,
+305 expect() calls** (was 122/0/227 before this iteration).
++17 tests, +78 expects, all green.
+
+Full suite: `bun test` → **590 pass, 0 fail, 1361 expect()
+calls** across 21 files. No regressions.

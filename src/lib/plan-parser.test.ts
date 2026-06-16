@@ -972,6 +972,378 @@ Some intro.
       expect(result.percentComplete).toBe(100)
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.4 — percentComplete math.
+  // The formula in plan-parser.ts:138-142 is:
+  //
+  //   denominator       = total - manual - blocked
+  //   percentComplete   = denominator > 0
+  //                         ? Math.round((completed / denominator) * 100)
+  //                         : 100
+  //
+  // Pin every boundary the audit walks:
+  //   - total = 0                       → denominator = 0 → 100%
+  //   - all tasks are MANUAL            → denominator = 0 → 100%
+  //   - all tasks are BLOCKED           → denominator = 0 → 100%
+  //   - mix of MANUAL + BLOCKED only    → denominator = 0 → 100%
+  //   - single pending task             → 1/1 = 0%  (rounded)
+  //   - single completed task           → 1/1 = 100%
+  //   - half completed                  → exact 50% (no rounding bias)
+  //   - 1/3, 2/3                        → 33% / 67% (Math.round behaviour)
+  //   - manual and blocked tasks NEVER
+  //     penalise the percentage — they
+  //     leave the denominator entirely.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.4 — percentComplete math", () => {
+    it("denominator is total - manual - blocked (manual + blocked leave the denominator)", () => {
+      // 2 completed, 1 pending, 1 manual, 1 blocked.
+      // denominator = 5 - 1 - 1 = 3.  completed / denominator = 2/3 → 67%.
+      // The manual and blocked tasks must NOT reduce the denominator against
+      // completed: a 1/5 plan would be wrong (20%); the correct semantic is
+      // 2/3 (67%) because the loop has 3 automatable tasks and 2 are done.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [ ] Pending
+- [MANUAL] Manual
+- [BLOCKED: x] Blocked
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(5)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(1)
+      expect(result.blocked).toBe(1)
+      // 2 / (5 - 1 - 1) = 2/3 = 66.666… → Math.round → 67
+      expect(result.percentComplete).toBe(67)
+    })
+
+    it("total=0 (empty file) → denominator=0 → percentComplete=100 (nothing to do)", () => {
+      // PLAN.md 2.4 line 29: confirm total=0 returns 100%, not NaN/0/throw.
+      const result = parsePlan("")
+
+      expect(result.total).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      // denominator = 0 - 0 - 0 = 0 → ternary picks the :100 branch
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("all tasks are MANUAL (denominator=0) → percentComplete=100", () => {
+      // PLAN.md 2.4 line 30: confirm all-manual resolves to 100%, not 0%.
+      const content = `
+- [MANUAL] Manual A
+- [MANUAL] Manual B
+- [ ] [MANUAL] Tagged manual
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.manual).toBe(3)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(0)
+      // denominator = 3 - 3 - 0 = 0 → 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("all tasks are BLOCKED (denominator=0) → percentComplete=100", () => {
+      // PLAN.md 2.4 line 30: confirm all-blocked resolves to 100%, not 0%.
+      const content = `
+- [BLOCKED: needs API] Blocked A
+- [BLOCKED] Blocked B
+- [ ] [BLOCKED: x] Tagged blocked
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(3)
+      expect(result.automatable).toBe(0)
+      // denominator = 3 - 0 - 3 = 0 → 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("only MANUAL + BLOCKED tasks (no completed, no pending) → percentComplete=100", () => {
+      // PLAN.md 2.4 line 30: confirm the mixed-terminal-category case
+      // also resolves to 100% (denominator=0 from any combination of
+      // MANUAL+BLOCKED).
+      const content = `
+- [MANUAL] Manual A
+- [MANUAL] Manual B
+- [BLOCKED: reason] Blocked A
+- [ ] [BLOCKED] Tagged blocked
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.manual).toBe(2)
+      expect(result.blocked).toBe(2)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("single pending task (1 automatable, 0 completed) → percentComplete=0", () => {
+      // PLAN.md 2.4 line 31: confirm 0/1 = 0%, not 100% (which would be the
+      // denominator=0 fallback). This pins that the ternary on denominator>0
+      // is the ONLY thing that drives the 100% branch — a single-pending
+      // plan has denominator=1 and must compute 0/1, not the fallback.
+      const content = `
+- [ ] The only thing to do
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(1)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(1)
+      // denominator = 1 - 0 - 0 = 1, completed/denominator = 0/1 = 0
+      expect(result.percentComplete).toBe(0)
+    })
+
+    it("single completed task (1 automatable, 1 completed) → percentComplete=100", () => {
+      // Mirror of the single-pending test: 1/1 = 100% via the computed
+      // branch, not the fallback. Confirms denominator=1 does NOT trip
+      // the :100 branch.
+      const content = `
+- [x] The only thing that was done
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(1)
+      expect(result.completed).toBe(1)
+      expect(result.automatable).toBe(0)
+      // denominator = 1 - 0 - 0 = 1, completed/denominator = 1/1 = 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("half completed (2/4 automatable) → percentComplete=50 (no rounding bias on exact halves)", () => {
+      // Exact-half case: 2/4 = 0.5 → 50.0 → Math.round → 50. Pins that
+      // the rounding rule (Math.round, NOT floor/ceil/truncate) does
+      // not bias this clean case.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [ ] Pending 1
+- [ ] Pending 2
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(2)
+      expect(result.automatable).toBe(2)
+      // 2/4 = 0.5 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("1/3 completed → percentComplete=33 (Math.round: 33.33… → 33, not 34)", () => {
+      // 1/3 = 0.333… → 33.33… → Math.round → 33. Pins that rounding is
+      // ROUND-HALF-AWAY-FROM-ZERO (JS default), not ceiling.
+      const content = `
+- [x] Done
+- [ ] Pending 1
+- [ ] Pending 2
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(1)
+      expect(result.automatable).toBe(2)
+      // 1/3 = 33.333… → 33
+      expect(result.percentComplete).toBe(33)
+    })
+
+    it("2/3 completed → percentComplete=67 (Math.round: 66.66… → 67, not 66)", () => {
+      // 2/3 = 0.666… → 66.66… → Math.round → 67. Pins that 0.66 rounds
+      // UP, not down. This is the rule JS Math.round applies for
+      // positive numbers (banker's rounding is NOT used).
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [ ] Pending
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(2)
+      expect(result.automatable).toBe(1)
+      // 2/3 = 66.666… → 67
+      expect(result.percentComplete).toBe(67)
+    })
+
+    it("3/7 completed → percentComplete=43 (rounding of 42.857… → 43)", () => {
+      // 3/7 = 0.42857… → 42.857… → Math.round → 43. Pins another
+      // non-trivial rounding case (not at 0.5) to confirm the round
+      // direction is consistent: anything ≥ x.5 rounds up.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [x] Done 3
+- [ ] Pending 1
+- [ ] Pending 2
+- [ ] Pending 3
+- [ ] Pending 4
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(7)
+      expect(result.completed).toBe(3)
+      expect(result.automatable).toBe(4)
+      // 3/7 = 42.857… → 43
+      expect(result.percentComplete).toBe(43)
+    })
+
+    it("all completed → percentComplete=100 via the computed branch, not the fallback", () => {
+      // 6/6 = 100.0 → 100. The denominator is non-zero (6 - 0 - 0 = 6)
+      // so the computed branch fires; this test pins that the 100%
+      // result here is the COMPUTED path, not the denominator=0 fallback.
+      // If the ternary were ever inverted (denominator <= 0), this test
+      // would still pass by accident — the next test (4/6 = 67) fences
+      // off that case so a future inversion is caught immediately.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [x] Done 3
+- [x] Done 4
+- [x] Done 5
+- [x] Done 6
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(6)
+      expect(result.completed).toBe(6)
+      expect(result.automatable).toBe(0)
+      // 6/6 = 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("completed tasks with a tail of pending tasks never collapse to the fallback (4/6 → 67)", () => {
+      // Companion to the previous test: 4/6 = 66.66… → 67. If the
+      // ternary were ever changed to denominator >= 0 (i.e. the
+      // fallback fires for denominator=0 AND the 100%-completion
+      // case), this test would also return 100 (wrong). With the
+      // current `denominator > 0` check, this test pins 4/6 = 67
+      // and proves the computed branch is reachable for non-zero
+      // denominators.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [x] Done 3
+- [x] Done 4
+- [ ] Pending 1
+- [ ] Pending 2
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(6)
+      expect(result.completed).toBe(4)
+      expect(result.automatable).toBe(2)
+      // 4/6 = 66.666… → 67
+      expect(result.percentComplete).toBe(67)
+    })
+
+    it("completed=0 with denominator>0 → percentComplete=0 (not the 100% fallback)", () => {
+      // The negative-control for the denominator=0 fallback: a plan
+      // with PENDING tasks only (no completed) must return 0%, NOT 100%.
+      // If the formula were ever changed to `denominator >= 0 ? 100 :
+      // ...`, this test would fail. Pins the strict-greater-than check.
+      const content = `
+- [ ] Pending 1
+- [ ] Pending 2
+- [ ] Pending 3
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(0)
+      expect(result.automatable).toBe(3)
+      // denominator = 3, completed/denominator = 0/3 = 0
+      expect(result.percentComplete).toBe(0)
+    })
+
+    it("MANUAL count larger than completed (denominator=0) → percentComplete=100", () => {
+      // Boundary stress: 3 completed, 5 manual, 2 blocked. denominator
+      // = 10 - 5 - 2 = 3. completed/denominator = 3/3 = 100. Confirms
+      // a fully-automated plan with a long manual/blocked tail still
+      // resolves to 100% via the computed branch.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [x] Done 3
+- [MANUAL] Manual 1
+- [MANUAL] Manual 2
+- [MANUAL] Manual 3
+- [MANUAL] Manual 4
+- [MANUAL] Manual 5
+- [BLOCKED: a] Blocked 1
+- [BLOCKED: b] Blocked 2
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(10)
+      expect(result.completed).toBe(3)
+      expect(result.manual).toBe(5)
+      expect(result.blocked).toBe(2)
+      // denominator = 10 - 5 - 2 = 3, completed/denominator = 3/3 = 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("interleaved completed/pending/manual/blocked at a non-round ratio (3/8 → 38)", () => {
+      // Realistic mixed plan: 3 completed, 5 pending, 2 manual, 1 blocked.
+      // denominator = 11 - 2 - 1 = 8. 3/8 = 37.5 → Math.round → 38
+      // (0.5 rounds UP for positive numbers in JS). Pins the rule on
+      // an exact .5 boundary in a realistic shape.
+      const content = `
+- [x] Done 1
+- [x] Done 2
+- [x] Done 3
+- [ ] Pending 1
+- [ ] Pending 2
+- [ ] Pending 3
+- [ ] Pending 4
+- [ ] Pending 5
+- [MANUAL] Manual 1
+- [MANUAL] Manual 2
+- [BLOCKED: x] Blocked
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(11)
+      expect(result.completed).toBe(3)
+      expect(result.manual).toBe(2)
+      expect(result.blocked).toBe(1)
+      // denominator = 11 - 2 - 1 = 8, completed/denominator = 3/8 = 0.375 → 38
+      expect(result.percentComplete).toBe(38)
+    })
+
+    it("rounding: 1/8 completed → 13 (12.5 rounds UP for positives)", () => {
+      // 1/8 = 0.125 → 12.5 → Math.round → 13. Pins that the half-point
+      // in the rounding rule (≥ 0.5 → up) is the JS default for
+      // positive numbers. (Negative would round toward zero, but the
+      // percentage can never be negative here.)
+      const content = `
+- [x] Done
+- [ ] Pending 1
+- [ ] Pending 2
+- [ ] Pending 3
+- [ ] Pending 4
+- [ ] Pending 5
+- [ ] Pending 6
+- [ ] Pending 7
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(8)
+      expect(result.completed).toBe(1)
+      expect(result.automatable).toBe(7)
+      // 1/8 = 12.5 → 13
+      expect(result.percentComplete).toBe(13)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
