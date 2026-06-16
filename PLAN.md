@@ -815,10 +815,55 @@ fail, 1680 expect() calls, 23 files, 320 ms. Commit `7fd66c6`.
 
 ### Mejora 26 — Finding 7.3.A — LOW — Hook-layer filter for `session.idle` is **opposite** to `session.error`
 
-- [ ] Evaluar la mejora 26 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 26 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 26 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 26 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 26 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 26 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 26 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 26 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:8201-8275`): los 6 call sites de per-session
+filter en `useSSE.ts` (líneas 346, 362, 377-383, 400, 428,
+466) usaban 2 shapes opuestas — `session.idle` / `todo.updated`
+eran conservative (drop un-attributed via
+`filterSessionId && eventSessionId !== filterSessionId`),
+mientras `session.error` / `message.part.updated` /
+`session.diff` eran permissive (pass un-attributed via el
+short-circuit `eventSessionId &&`). La opción del fix
+propuesta en `MEJORAS.md:8241-8275` ("pick one shape and
+apply it uniformly") es estrictamente la correcta: el audit
+recomienda la lectura conservative como "safer default"
+porque (a) el OpenCode SDK siempre popula `sessionID`
+(SessionIdleEvent / SessionErrorEvent declaran `sessionID:
+SessionID` como required branded string — `MEJORAS.md:8216-8222`)
+así que el gap es dormant, y (b) el App-level consumer
+filter (e.g. `App.tsx:472` para session.error) ya tiene su
+propia verdad de sessionID y short-circuita en state, así
+que un drop en el hook layer es invisible al state
+machine. Implementación mínima: (1) eliminar la cláusula
+`eventSessionId &&` de los 3 filtros permissive
+(`session.error:385`, `message.part.updated:423`,
+`session.diff:461`) — 1 línea de cambio cada uno, mismo
+patrón que ya tenían `session.idle` y `todo.updated`; (2)
+eliminar el comment block de 10 líneas en `session.error`
+que documentaba la asimetría deliberada (era la única
+explicación de la policy en el codebase, ahora reemplazada
+por una sola); (3) añadir un comment block de 9 líneas
+sobre `case "session.idle":` que documenta la policy
+uniforme en un solo lugar, referenciando el finding; (4)
+actualizar el comment del App-level onSessionError handler
+(`App.tsx:465-470`) — el `eventSessionId &&` truthy guard
+del consumer ahora es defense-in-depth (la policy hook-layer
+ya drop un-attributed), no load-bearing. Cero cambios al
+comportamiento observable (el SDK nunca emite un-attributed
+events, y el consumer ya los drop). Cero impacto en el
+reducer, cero impacto en la TUI, cero impacto en tests
+(`MEJORAS.md:8331-8350` ya justificó que el filter
+stale-session del hook + consumer no es unit-testable sin
+Solid render + fake SSE stream; el 21-case
+`classifySessionError` test suite permanece verde).
+`bun test` verde: 680 pass / 0 fail, 1680 expect() calls,
+23 files, 317 ms — sin cambio en el conteo (era 680
+antes del fix).
 
 ### Mejora 27 — Finding 7.5.A — HIGH — `server.restart()` has no in-flight guard; can leak the first server
 
