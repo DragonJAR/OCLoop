@@ -1,5 +1,6 @@
 import { createMemo } from "solid-js"
 import { useTheme } from "../context/ThemeContext"
+import { glyph } from "../lib/glyphs"
 
 /**
  * Props for the ProgressIndicator component
@@ -24,7 +25,7 @@ export interface ProgressIndicatorProps {
  * ```
  */
 export function ProgressIndicator(props: ProgressIndicatorProps) {
-  const { theme } = useTheme()
+  const { theme, unicode } = useTheme()
 
   // Clamp the ratio to [0,1] so an over-/under-count never produces a bar
   // longer than `width` or a negative repeat() (which throws RangeError).
@@ -40,11 +41,11 @@ export function ProgressIndicator(props: ProgressIndicatorProps) {
   const emptyWidth = createMemo(() => Math.max(0, props.width - filledWidth()))
 
   const filledChars = createMemo(() => {
-    return "█".repeat(filledWidth())
+    return glyph("progressFull", unicode()).repeat(filledWidth())
   })
 
   const emptyChars = createMemo(() => {
-    return "░".repeat(emptyWidth())
+    return glyph("progressEmpty", unicode()).repeat(emptyWidth())
   })
 
   return (

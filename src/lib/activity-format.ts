@@ -7,6 +7,7 @@
 
 import type { ActivityEventType } from "../hooks/useActivityLog"
 import { truncateText } from "./format"
+import { glyph, type GlyphName } from "./glyphs"
 import { getLayout } from "./layout"
 import { t, type MessageKey } from "./i18n"
 
@@ -47,8 +48,14 @@ const META: Record<ActivityEventType, EventMeta> = {
 
 const DEFAULT_META: EventMeta = { level: "info", label: "logLblEvent", colorKey: "text" }
 
-/** Scannable glyph per severity. Info is blank to keep routine lines quiet. */
-export const LEVEL_GLYPH: Record<Level, string> = { info: " ", warn: "▲", error: "✖" }
+/** Severity level → semantic glyph name (resolved via glyphs.ts). */
+const LEVEL_TO_GLYPH: Record<Level, GlyphName> = { info: "sevInfo", warn: "sevWarn", error: "sevError" }
+/** Scannable Unicode glyph per severity — single-sourced from glyphs.ts. */
+export const LEVEL_GLYPH: Record<Level, string> = {
+  info: glyph("sevInfo", true),
+  warn: glyph("sevWarn", true),
+  error: glyph("sevError", true),
+}
 /** Color key for the severity glyph. */
 export const LEVEL_COLOR: Record<Level, ColorKey> = {
   info: "textMuted",
@@ -99,15 +106,15 @@ function progressSuffix(p?: FormatInput["progress"]): string {
  * Format one activity line into width-fitted, severity-tagged parts. The
  * renderer colors `glyph`/`label`/`text` by the returned color keys.
  */
-export function formatActivityLine(e: FormatInput, contentWidth: number): FormattedLine {
+export function formatActivityLine(e: FormatInput, contentWidth: number, unicode = true): FormattedLine {
   const meta = META[e.type] ?? DEFAULT_META
   const level = e.level ?? meta.level
   // Tool calls read better as "preview: message"; everything else is the message.
   const base = e.type === "tool_use" && e.detail ? `${e.detail}: ${e.message}` : e.message
-  const count = e.count && e.count > 1 ? `  (×${e.count})` : ""
+  const count = e.count && e.count > 1 ? `  (${glyph("times", unicode)}${e.count})` : ""
   const text = truncateText(base + progressSuffix(e.progress) + count, Math.max(8, contentWidth))
   return {
-    glyph: LEVEL_GLYPH[level],
+    glyph: glyph(LEVEL_TO_GLYPH[level], unicode),
     glyphColor: LEVEL_COLOR[level],
     label: `[${t(meta.label)}]`.padEnd(LABEL_WIDTH),
     labelColor: meta.colorKey,

@@ -5,9 +5,12 @@ import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { stripMarkdown, truncate, formatDuration } from "../lib/format"
 import { getLayout } from "../lib/layout"
+import { glyph } from "../lib/glyphs"
 import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
 import { ProgressIndicator } from "./ProgressIndicator"
+import { StatusBadge } from "./StatusBadge"
+import { LabelValue } from "./LabelValue"
 
 /**
  * Props for the Dashboard component
@@ -24,38 +27,6 @@ export interface DashboardProps {
   cooldownRemainingMs?: number
   /** Current watchdog health, shown as a colored indicator while iterating. */
   watchdogHealth?: WatchdogHealth
-}
-
-/**
- * Get the state badge display info
- */
-function getStateBadge(state: LoopState): { icon: string; text: string; colorKey: "success" | "warning" | "error" | "info" | "primary" } {
-  switch (state.type) {
-    case "starting":
-      return { icon: "◐", text: t("badgeStarting"), colorKey: "warning" }
-    case "ready":
-      return { icon: "●", text: t("badgeReady"), colorKey: "info" }
-    case "running":
-      return { icon: "▶", text: t("badgeRunning"), colorKey: "success" }
-    case "pausing":
-      return { icon: "◑", text: t("badgePausing"), colorKey: "warning" }
-    case "paused":
-      return { icon: "⏸", text: t("badgePaused"), colorKey: "warning" }
-    case "cooldown":
-      return { icon: "◴", text: t("badgeCooldown"), colorKey: "warning" }
-    case "stopping":
-      return { icon: "◌", text: t("badgeStopping"), colorKey: "error" }
-    case "stopped":
-      return { icon: "⏹", text: t("badgeStopped"), colorKey: "error" }
-    case "complete":
-      return { icon: "✓", text: t("badgeComplete"), colorKey: "success" }
-    case "error":
-      return { icon: "!", text: t("badgeError"), colorKey: "error" }
-    case "debug":
-      return { icon: "⚙", text: t("badgeDebug"), colorKey: "info" }
-    default:
-      return { icon: "?", text: t("badgeUnknown"), colorKey: "info" }
-  }
 }
 
 /**
@@ -81,13 +52,10 @@ function getStateBadge(state: LoopState): { icon: string; text: string; colorKey
  * ```
  */
 export function Dashboard(props: DashboardProps) {
-  const { theme } = useTheme()
+  const { theme, unicode } = useTheme()
   const dimensions = useTerminalDimensions()
   // Responsive layout, recomputed on every resize.
   const layout = createMemo(() => getLayout(dimensions().width, dimensions().height))
-
-  // State badge info
-  const badge = createMemo(() => getStateBadge(props.state))
 
   // Get iteration number
   const iteration = createMemo(() => {
@@ -273,43 +241,26 @@ export function Dashboard(props: DashboardProps) {
     >
       {/* Row 1: State badge + Iteration + Progress */}
       <box style={{ flexDirection: "row" }}>
-        {/* State badge */}
-        <text>
-          <span style={{ fg: theme()[badge().colorKey], bold: true }}>
-            [{badge().icon} {badge().text}]
-          </span>
-        </text>
+        <StatusBadge state={props.state} />
 
         {/* Model display — dropped on narrow terminals to save space */}
         <Show when={props.model && !layout().compact}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblModel")}</span>
-            <span style={{ fg: theme().text }}> {props.model}</span>
-          </text>
+          <LabelValue label={t("lblModel")} value={props.model!} marginLeft={2} />
         </Show>
 
         {/* Agent display — dropped on narrow terminals to save space */}
         <Show when={props.agent && !layout().compact}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblAgent")}</span>
-            <span style={{ fg: theme().text }}> {props.agent}</span>
-          </text>
+          <LabelValue label={t("lblAgent")} value={props.agent!} marginLeft={2} />
         </Show>
 
         {/* Iteration counter */}
         <Show when={iteration() > 0}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblIter")}</span>
-            <span style={{ fg: theme().text }}> {iteration()}</span>
-          </text>
+          <LabelValue label={t("lblIter")} value={iteration()} marginLeft={2} />
         </Show>
 
         {/* Plan progress - hide in debug mode */}
         <Show when={props.progress && props.state.type !== "debug"}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblTasks")}</span>
-            <span style={{ fg: theme().primary }}> {progressText()}</span>
-          </text>
+          <LabelValue label={t("lblTasks")} value={progressText() ?? ""} valueColor={theme().primary} marginLeft={2} />
           <box style={{ marginLeft: 1 }}>
             <ProgressIndicator
               completed={props.progress!.completed}
@@ -323,32 +274,23 @@ export function Dashboard(props: DashboardProps) {
         <Show when={watchdogIndicator() && !layout().compact}>
           <text style={{ marginLeft: 2 }}>
             <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
-            <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> ●</span>
+            <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> {glyph("dot", unicode())}</span>
             <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
           </text>
         </Show>
       </box>
 
-      {/* Row 2: Timing stats */}
+      {/* Row 2: Timing stats (current task) */}
       <box style={{ flexDirection: "row" }}>
-        <text>
-          <span style={{ fg: theme().textMuted }}>{t("lblTime")}</span>
-          <span style={{ fg: theme().text }}> {formatDuration(props.stats.elapsedTime())}</span>
-        </text>
+        <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime())} />
 
         {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
         <Show when={props.stats.averageTime() !== null}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblAvg")}</span>
-            <span style={{ fg: theme().text }}> {averageDisplay()}</span>
-          </text>
+          <LabelValue label={t("lblAvg")} value={averageDisplay()} marginLeft={2} />
         </Show>
 
         <Show when={estimatedDisplay() !== "N/A"}>
-          <text style={{ marginLeft: 2 }}>
-            <span style={{ fg: theme().textMuted }}>{t("lblEta")}</span>
-            <span style={{ fg: theme().text }}> {estimatedDisplay()}</span>
-          </text>
+          <LabelValue label={t("lblEta")} value={estimatedDisplay()} marginLeft={2} />
         </Show>
       </box>
 

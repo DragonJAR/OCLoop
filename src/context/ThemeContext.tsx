@@ -12,28 +12,46 @@ import { createContext, useContext, createSignal, onMount, type JSX } from "soli
 import {
   getResolvedTheme,
   isValidTheme,
+  toMonochrome,
   type ThemeColors,
   type ThemeMode,
 } from "../lib/theme-resolver"
 import { DEFAULT_THEME } from "../lib/themes"
 import { loadConfig } from "../lib/config"
+import { detectTerminalCapabilities, type TerminalCapabilities } from "../lib/term-caps"
+
+/**
+ * Terminal capabilities (color depth, Unicode support, TTY) — detected ONCE at
+ * startup; they don't change during a run. Drives color degradation and glyph
+ * fallbacks across the UI.
+ */
+const termCaps = detectTerminalCapabilities()
+
+/** Collapse to monochrome when the terminal can't/shouldn't use color. */
+function applyCaps(colors: ThemeColors): ThemeColors {
+  return termCaps.color === "none" ? toMonochrome(colors) : colors
+}
 
 /**
  * Value provided by the ThemeContext
  */
 export interface ThemeContextValue {
-  /** Resolved theme colors (hex values) */
+  /** Resolved theme colors (hex values; monochrome when color is unsupported) */
   theme: () => ThemeColors
   /** Current theme mode (dark/light) */
   mode: () => ThemeMode
   /** Name of the current theme */
   themeName: () => string
+  /** Whether to draw Unicode glyphs (else ASCII fallbacks — see glyphs.ts) */
+  unicode: () => boolean
+  /** Detected terminal capabilities (color level, unicode, TTY, CI) */
+  caps: () => TerminalCapabilities
 }
 
 /**
- * Default theme colors for SSR/initial render
+ * Default theme colors for SSR/initial render (capability-adjusted)
  */
-const defaultTheme = getResolvedTheme(DEFAULT_THEME, "dark")
+const defaultTheme = applyCaps(getResolvedTheme(DEFAULT_THEME, "dark"))
 
 /**
  * The Theme Context
@@ -42,6 +60,8 @@ const ThemeContext = createContext<ThemeContextValue>({
   theme: () => defaultTheme,
   mode: () => "dark" as ThemeMode,
   themeName: () => DEFAULT_THEME,
+  unicode: () => termCaps.unicode,
+  caps: () => termCaps,
 })
 
 /**
@@ -126,7 +146,7 @@ export function ThemeProvider(props: ThemeProviderProps) {
       requested && isValidTheme(requested) ? requested : DEFAULT_THEME
     const selectedMode: ThemeMode = kv?.theme_mode || "dark"
 
-    const resolvedColors = getResolvedTheme(selectedTheme, selectedMode)
+    const resolvedColors = applyCaps(getResolvedTheme(selectedTheme, selectedMode))
 
     setTheme(resolvedColors)
     setMode(selectedMode)
@@ -137,6 +157,8 @@ export function ThemeProvider(props: ThemeProviderProps) {
     theme,
     mode,
     themeName,
+    unicode: () => termCaps.unicode,
+    caps: () => termCaps,
   }
 
   return (

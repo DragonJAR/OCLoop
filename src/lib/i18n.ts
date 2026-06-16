@@ -207,13 +207,14 @@ const en = {
   lblModel: "Model",
   lblAgent: "Agent",
   lblTasks: "Tasks",
-  lblTime: "Time",
+  lblTime: "Task Time",
   lblAvg: "Avg",
   lblTaskPrefix: "Task: ",
   lblWaiting: "waiting...",
   lblGuard: "Guard",
   // --- BottomPanel labels ---
   lblTotal: "Total Time",
+  lblTaskTokens: "Task Tokens",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
@@ -365,7 +366,7 @@ const en = {
   logLblTool: "tool",
   logLblYou: "you",
   logLblAssistant: "assistant",
-  logLblReason: "reason",
+  logLblReason: "reasoning",
   logLblEvent: "event",
 } satisfies Record<string, Msg>
 
@@ -513,12 +514,13 @@ const es: Record<MessageKey, Msg> = {
   lblModel: "Modelo",
   lblAgent: "Agente",
   lblTasks: "Tareas",
-  lblTime: "Tiempo",
+  lblTime: "Tiempo de Tarea",
   lblAvg: "Prom",
   lblTaskPrefix: "Tarea: ",
   lblWaiting: "esperando...",
   lblGuard: "Guardián",
   lblTotal: "Tiempo total",
+  lblTaskTokens: "Tokens de Tarea",
 
   hintStart: "iniciar",
   hintPause: "pausar",
@@ -658,7 +660,7 @@ const es: Record<MessageKey, Msg> = {
   logLblTool: "herram",
   logLblYou: "tú",
   logLblAssistant: "asistente",
-  logLblReason: "razón",
+  logLblReason: "razonando",
   logLblEvent: "evento",
 }
 

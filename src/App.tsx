@@ -343,6 +343,7 @@ function AppContent(props: AppProps) {
         pendingCooldownResume = false
       } else {
         stats.startIteration()
+        sessionStats.resetTaskTokens()
       }
       log.iterationStart(state.iteration)
       log.debug("state", "Iteration started", { sessionId: state.sessionId, iteration: state.iteration })
@@ -1830,6 +1831,7 @@ function AppContent(props: AppProps) {
         currentTask={currentTask() ?? null}
         stats={stats}
         tokens={sessionStats.tokens()}
+        taskTokens={sessionStats.taskTokens()}
       />
 
       {/* Overlays */}

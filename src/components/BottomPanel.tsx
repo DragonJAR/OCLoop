@@ -12,6 +12,7 @@ import {
 } from "../lib/format"
 import { getLayout, fitSegments } from "../lib/layout"
 import { t } from "../lib/i18n"
+import { LabelValue } from "./LabelValue"
 
 /**
  * BottomPanel — the second status box, below the activity log.
@@ -34,6 +35,8 @@ export interface BottomPanelProps {
   stats: UseLoopStatsReturn
   /** Global token counters for the run. */
   tokens: SessionTokens
+  /** Per-task (current iteration) token counters. */
+  taskTokens: SessionTokens
 }
 
 export function BottomPanel(props: BottomPanelProps) {
@@ -47,6 +50,8 @@ export function BottomPanel(props: BottomPanelProps) {
 
   const totalTokens = () =>
     props.tokens.input + props.tokens.output + props.tokens.reasoning
+  const taskTotal = () =>
+    props.taskTokens.input + props.taskTokens.output + props.taskTokens.reasoning
   const rate = () => tokensPerMin(totalTokens(), props.stats.globalElapsedTime())
 
   const tokenBreakdown = () =>
@@ -121,26 +126,18 @@ export function BottomPanel(props: BottomPanelProps) {
 
         {/* Global run metrics — none of these appear in the top bar. */}
         <box style={{ flexDirection: "row", flexWrap: "wrap", marginTop: 1 }}>
-          <Chip label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} />
-          {/* Total tokens always; full in/out/rsn breakdown only when wide enough. */}
-          <Chip
+          <LabelValue label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} marginRight={2} />
+          {/* Global tokens: total always; full in/out/rsn breakdown only when wide. */}
+          <LabelValue
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
+            marginRight={2}
           />
-          <Chip label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} />
+          {/* Per-task tokens (current iteration). */}
+          <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} marginRight={2} />
+          <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} marginRight={2} />
         </box>
       </Show>
     </box>
-  )
-}
-
-/** A muted-label + value pair with trailing gap; used for the metric row. */
-function Chip(props: { label: string; value: string }) {
-  const { theme } = useTheme()
-  return (
-    <text style={{ marginRight: 2 }}>
-      <span style={{ fg: theme().textMuted }}>{props.label} </span>
-      <span style={{ fg: theme().text }}>{props.value}</span>
-    </text>
   )
 }

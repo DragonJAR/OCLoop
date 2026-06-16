@@ -16,10 +16,14 @@ export interface SessionDiff {
 
 export interface UseSessionStatsReturn {
   tokens: Accessor<SessionTokens>;
+  /** Tokens for the CURRENT task/iteration only (zeroed via resetTaskTokens). */
+  taskTokens: Accessor<SessionTokens>;
   diff: Accessor<SessionDiff>;
   totalTokens: Accessor<number>;
   addTokens: (tokens: Partial<SessionTokens>) => void;
   setDiff: (diff: SessionDiff) => void;
+  /** Zero the per-task counter — call at each fresh iteration start. */
+  resetTaskTokens: () => void;
   reset: () => void;
 }
 
@@ -39,6 +43,8 @@ const INITIAL_DIFF: SessionDiff = {
 
 export function useSessionStats(): UseSessionStatsReturn {
   const [tokens, setTokens] = createSignal<SessionTokens>({ ...INITIAL_TOKENS });
+  // Per-task tokens: same stream as `tokens`, zeroed at each iteration start.
+  const [taskTokens, setTaskTokens] = createSignal<SessionTokens>({ ...INITIAL_TOKENS });
   const [diff, setDiff] = createSignal<SessionDiff>({ ...INITIAL_DIFF });
 
   const totalTokens = () => {
@@ -47,26 +53,35 @@ export function useSessionStats(): UseSessionStatsReturn {
   };
 
   function addTokens(newTokens: Partial<SessionTokens>) {
-    setTokens((prev) => ({
+    const add = (prev: SessionTokens): SessionTokens => ({
       input: prev.input + (newTokens.input || 0),
       output: prev.output + (newTokens.output || 0),
       reasoning: prev.reasoning + (newTokens.reasoning || 0),
       cacheRead: prev.cacheRead + (newTokens.cacheRead || 0),
       cacheWrite: prev.cacheWrite + (newTokens.cacheWrite || 0),
-    }));
+    });
+    setTokens(add);
+    setTaskTokens(add);
+  }
+
+  function resetTaskTokens() {
+    setTaskTokens({ ...INITIAL_TOKENS });
   }
 
   function reset() {
     setTokens({ ...INITIAL_TOKENS });
+    setTaskTokens({ ...INITIAL_TOKENS });
     setDiff({ ...INITIAL_DIFF });
   }
 
   return {
     tokens,
+    taskTokens,
     diff,
     totalTokens,
     addTokens,
     setDiff,
+    resetTaskTokens,
     reset,
   };
 }

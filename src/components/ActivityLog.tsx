@@ -38,7 +38,7 @@ export interface ActivityLogProps {
  * ```
  */
 export function ActivityLog(props: ActivityLogProps) {
-  const { theme } = useTheme();
+  const { theme, unicode } = useTheme();
   const dimensions = useTerminalDimensions();
   // Message width, derived from the real terminal size (re-runs on resize).
   // This is the SINGLE, width-aware truncation point for log lines — upstream
@@ -107,6 +107,7 @@ export function ActivityLog(props: ActivityLogProps) {
                 progress: event.progress,
               },
               contentWidth(),
+              unicode(),
             );
 
             return (

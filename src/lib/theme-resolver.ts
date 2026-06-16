@@ -150,3 +150,35 @@ export function getResolvedTheme(
 export function isValidTheme(themeName: string): boolean {
   return themeName in themes;
 }
+
+/**
+ * Collapse a resolved theme to monochrome: every foreground token becomes the
+ * theme's text color and every background its base background, so color stops
+ * conveying meaning. Used when the terminal can't (or shouldn't) use color
+ * (NO_COLOR, TERM=dumb, non-interactive output — see term-caps.ts).
+ *
+ * Caveat: OpenTUI still emits truecolor ANSI for the single fg/bg, so this is
+ * "no color *differentiation*", not "no ANSI at all" (OpenTUI exposes no knob to
+ * suppress color emission). It satisfies the intent of NO_COLOR for accessibility.
+ */
+export function toMonochrome(t: ThemeColors): ThemeColors {
+  const fg = t.text;
+  const bg = t.background;
+  return {
+    primary: fg,
+    secondary: fg,
+    accent: fg,
+    background: bg,
+    backgroundPanel: bg,
+    backgroundElement: bg,
+    text: fg,
+    textMuted: fg,
+    border: fg,
+    borderActive: fg,
+    borderSubtle: fg,
+    success: fg,
+    warning: fg,
+    error: fg,
+    info: fg,
+  };
+}
