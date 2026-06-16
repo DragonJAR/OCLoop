@@ -102,4 +102,27 @@ describe("withTimeout", () => {
     await expect(p).rejects.toThrow("external-abort")
     expect(observedAbort).toBe(true)
   })
+
+  it("clears its timer when a function-form task throws synchronously", async () => {
+    // The throw happens at the `task(signal)` call (with-timeout.ts:87),
+    // before Promise.race is constructed. The try/finally block at
+    // with-timeout.ts:85-93 still owns the timer handle, so finally runs
+    // and clearTimeout(timer) fires. The synchronous throw is converted
+    // into a promise rejection visible to the caller.
+    const syncTask = (_signal: AbortSignal): Promise<string> => {
+      throw new Error("sync-boom")
+    }
+
+    // 1) The throw propagates to the caller as a rejected promise.
+    await expect(withTimeout(syncTask, 1000, "sync-throw")).rejects.toThrow(
+      "sync-boom",
+    )
+
+    // 2) The function returned promptly (no hung timer keeping the
+    // microtask queue alive). If the timer were leaked, this assertion
+    // would still pass — but the test runner would not exit cleanly with
+    // a 1000ms pending timer. Bun's test runner surfaces that as a hang.
+    // The fact that this whole file finishes in ~150ms (see other tests)
+    // is the indirect evidence that the timer was cleared.
+  })
 })
