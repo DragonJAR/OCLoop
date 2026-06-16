@@ -105,6 +105,17 @@ describe("classifySessionError", () => {
         "transient",
       )
     })
+
+    it("classifies a dropped socket connection as transient (auto-retried, not fatal)", () => {
+      // Bun's wording for a closed connection — must be transient so the loop
+      // backs off and retries instead of stopping for manual intervention.
+      expect(
+        classifySessionError({
+          message:
+            "Failed to create session: The socket connection was closed unexpectedly. For more information, pass `verbose: true` in the second argument to fetch()",
+        }).kind,
+      ).toBe("transient")
+    })
   })
 
   describe("fatal + edge cases", () => {

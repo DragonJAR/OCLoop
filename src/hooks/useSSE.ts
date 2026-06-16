@@ -108,7 +108,7 @@ const RATE_LIMIT_RE =
 const AUTH_RE =
   /(\b401\b|\b403\b|unauthorized|forbidden|invalid api key|authentication failed|invalid x-api-key)/i
 const TRANSIENT_RE =
-  /(\b50\d\b|\b529\b|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection (?:closed|reset|refused|error))/i
+  /(\b50\d\b|\b529\b|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection\b[^.]{0,24}\b(?:closed|reset|refused|error)|closed unexpectedly)/i
 
 /**
  * Map an error name + message to a {@link SessionErrorKind}.

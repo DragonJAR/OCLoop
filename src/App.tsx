@@ -667,18 +667,28 @@ function AppContent(props: AppProps) {
    * error after `maxRateLimitRetries` consecutive rate limits so we never loop
    * forever against a provider that is down.
    */
-  function enterCooldown(reason: string, retryAfterSeconds?: number): void {
+  function enterCooldown(
+    reason: string,
+    retryAfterSeconds?: number,
+    kind: "rate_limit" | "transient" = "rate_limit",
+  ): void {
     const r = resilience()
     rateLimitAttempts++
 
     if (rateLimitAttempts > r.maxRateLimitRetries) {
       const tried = rateLimitAttempts - 1
-      log.health("ratelimit", "exhausted", { attempts: tried, reason })
-      activityLog.addEvent("error", t("actRateExhausted", { attempts: tried }))
+      log.health("ratelimit", "exhausted", { attempts: tried, reason, kind })
+      activityLog.addEvent(
+        "error",
+        t(kind === "transient" ? "actRetryExhausted" : "actRateExhausted", { attempts: tried }),
+      )
       loop.dispatch({
         type: "error",
         source: "api",
-        message: t("errRatePersistent", { attempts: tried, reason }),
+        message: t(kind === "transient" ? "errRetryPersistent" : "errRatePersistent", {
+          attempts: tried,
+          reason,
+        }),
         recoverable: true,
       })
       rateLimitAttempts = 0
@@ -702,7 +712,10 @@ function AppContent(props: AppProps) {
     })
     activityLog.addEvent(
       "error",
-      t("cooldownText", { secs: Math.ceil(delayMs / 1000), attempt: rateLimitAttempts }),
+      t(kind === "transient" ? "cooldownRetryText" : "cooldownText", {
+        secs: Math.ceil(delayMs / 1000),
+        attempt: rateLimitAttempts,
+      }),
       { level: "warn", progress: { current: rateLimitAttempts, total: r.maxRateLimitRetries } },
     )
 
@@ -731,13 +744,20 @@ function AppContent(props: AppProps) {
   }
 
   /**
-   * Route an iteration-start failure: rate limits go to cooldown (retry the same
-   * iteration), everything else becomes a recoverable error.
+   * Route an iteration-start failure. Rate limits AND transient connection blips
+   * (dropped socket, reset, timeout, 5xx) both back off and retry the same
+   * iteration automatically — an unattended harness shouldn't stop on a flaky
+   * network. Only auth/fatal errors (and exhausted retries) surface as a
+   * recoverable error needing the user.
    */
   function handleIterationError(err: unknown): void {
     const classified = classifySessionError(err)
     if (classified.kind === "rate_limit") {
-      enterCooldown(classified.message, classified.retryAfter)
+      enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+      return
+    }
+    if (classified.kind === "transient") {
+      enterCooldown(classified.message, undefined, "transient")
       return
     }
     const message = err instanceof Error ? err.message : String(err)
@@ -1021,38 +1041,49 @@ function AppContent(props: AppProps) {
         }
       }
 
-      // Validate agent if specified
-      if (props.agent) {
-        const url = server.url()
-        if (url) {
-          const client = createClient(url)
-          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
-            .then(res => {
-              const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
-              if (!primaryAgents.includes(props.agent!)) {
-                dialog.show(() => (
-                  <DialogInvalidAgent
-                    agentName={props.agent!}
-                    availableAgents={primaryAgents}
-                    onUseDefault={() => {
-                      setActiveAgent(undefined)
-                      dialog.clear()
-                    }}
-                    onQuit={() => handleQuit(1)}
-                  />
-                ))
-              }
-            })
-            .catch(err => {
-              log.error("agent", "Failed to validate agent", err)
-            })
+      // Start the session lifecycle exactly once.
+      const startOnce = () => {
+        if (!sessionInitialized) {
+          sessionInitialized = true
+          initializeSession()
         }
       }
 
-      // Initialize session persistence (only once)
-      if (!sessionInitialized) {
-        sessionInitialized = true
-        initializeSession()
+      // Validate an explicit --agent BEFORE starting, and gate the session
+      // start on it. Otherwise the validation (async) raced initializeSession
+      // and the first prompt went out with a nonexistent agent, which the
+      // server rejects mid-iteration as a fatal "agent not found".
+      const agentUrl = server.url()
+      if (props.agent && agentUrl) {
+        const client = createClient(agentUrl)
+        withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
+          .then(res => {
+            const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
+            if (primaryAgents.includes(props.agent!)) {
+              startOnce()
+            } else {
+              dialog.show(() => (
+                <DialogInvalidAgent
+                  agentName={props.agent!}
+                  availableAgents={primaryAgents}
+                  onUseDefault={() => {
+                    setActiveAgent(undefined)
+                    dialog.clear()
+                    startOnce()
+                  }}
+                  onQuit={() => handleQuit(1)}
+                />
+              ))
+            }
+          })
+          .catch(err => {
+            // Don't block startup on a validation-infrastructure failure.
+            log.error("agent", "Failed to validate agent", err)
+            startOnce()
+          })
+      } else {
+        // No explicit agent (server uses its configured default) or no URL yet.
+        startOnce()
       }
     }
   })

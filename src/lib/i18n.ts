@@ -232,6 +232,8 @@ const en = {
   // --- Cooldown / dashboard countdown ---
   cooldownText: (p: Params) =>
     `Rate limited — retrying in ${p.secs}s (attempt ${p.attempt})`,
+  cooldownRetryText: (p: Params) =>
+    `Connection issue — retrying in ${p.secs}s (attempt ${p.attempt})`,
 
   // --- Runtime / activity log messages ---
   actSessionAborted: "Session aborted by user",
@@ -241,6 +243,10 @@ const en = {
     `Persistent rate limit after ${p.attempts} attempts`,
   errRatePersistent: (p: Params) =>
     `Persistent rate limit after ${p.attempts} attempts: ${p.reason}`,
+  actRetryExhausted: (p: Params) =>
+    `Persistent connection error after ${p.attempts} attempts`,
+  errRetryPersistent: (p: Params) =>
+    `Persistent connection error after ${p.attempts} attempts: ${p.reason}`,
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
   errServerStart:
     "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
@@ -515,6 +521,8 @@ const es: Record<MessageKey, Msg> = {
 
   cooldownText: (p) =>
     `Rate limited — reintentando en ${p.secs}s (intento ${p.attempt})`,
+  cooldownRetryText: (p) =>
+    `Problema de conexión — reintentando en ${p.secs}s (intento ${p.attempt})`,
 
   actSessionAborted: "Sesión abortada por el usuario",
   actSessionError: (p) => `Error de sesión: ${p.message}`,
@@ -522,6 +530,9 @@ const es: Record<MessageKey, Msg> = {
   actRateExhausted: (p) => `Rate limit persistente tras ${p.attempts} intentos`,
   errRatePersistent: (p) =>
     `Rate limit persistente tras ${p.attempts} intentos: ${p.reason}`,
+  actRetryExhausted: (p) => `Error de conexión persistente tras ${p.attempts} intentos`,
+  errRetryPersistent: (p) =>
+    `Error de conexión persistente tras ${p.attempts} intentos: ${p.reason}`,
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
   errServerStart:
     "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",

@@ -11,6 +11,19 @@ All notable changes to OCLoop are documented here. Format based on
   file. The timeout message names the parameter and how to raise it.
 
 ### Fixed
+- **Transient connection errors at iteration start now auto-retry with backoff.**
+  A dropped/reset socket (e.g. "The socket connection was closed unexpectedly")
+  while creating the session stopped the loop with a manual-retry dialog. It now
+  backs off and retries the same iteration like a rate limit (bounded by
+  `maxRateLimitRetries`), with a connection-specific message; only auth/fatal
+  errors still need the user. The transient classifier also recognizes a
+  connection "…was closed…" phrasing (was previously misread as fatal).
+- **An invalid `--agent` is now caught before the loop starts.** Agent
+  validation was fire-and-forget and raced `initializeSession`, so with
+  `-r`/auto-start the first prompt went out with a nonexistent agent and the
+  server rejected it mid-iteration with a fatal `agent "…" not found`. Session
+  start is now gated on agent validation: an unknown agent shows the
+  invalid-agent picker (with the available agents) and never starts a session.
 - **Watchdog no longer near-instantly fails after a server restart.** When a
   restart left the session genuinely "working", the stale pre-restart heartbeat
   timestamp tripped STUCK on the next tick, collapsing the recovery ladder into
