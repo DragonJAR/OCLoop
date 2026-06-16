@@ -14725,3 +14725,296 @@ opportunity.
 | 12.2.G  | INFO     | `saveConfig` does not validate the config shape; same refactor as 12.1.A — a shared `validateConfigShape` / `normalizeConfig` helper would enforce the schema at both read and write. |
 
 **Net severity tally for Phase 12.2: 1 MEDIUM, 4 LOW, 2 INFO; no CRITICAL or HIGH.** The MEDIUM is a real consistency gap with `saveLoopState` (which already swallows errors per its "never throws" contract) and is reachable on every supported platform via disk-full / read-only-mount / sandboxed-install. The 4 LOWs are maintenance hazards (tmp filename, stale-tmp leak, redundant check, misleading `await`) — individually correct behavior, collectively a code-smell cluster that the proposed wrapper in 12.2.A would resolve. The 2 INFOs document umask behavior and a symmetry opportunity with 12.1.A. The atomic write (tmp + rename) and the `mkdirSync({ recursive: true })` directory creation are both correct as written. Tasks 12.3-12.6 (merge order, `isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
+
+---
+
+### 12.3 — Audit `resolveResilience` merge order: defaults < file config < CLI overrides, undefined values skipped
+
+**Status: COMPLETE — VERIFIED the two required cases (3-level merge order and undefined-skip); one MEDIUM finding (null is NOT skipped) and one LOW finding (no per-key validation) uncovered; no CRITICAL or HIGH.**
+
+The `resolveResilience` function (lines 160-175 of `src/lib/config.ts`) is the
+merge layer for every resilience threshold. It is invoked at three call sites:
+
+| Call site | Mode | Layer roles |
+| --- | --- | --- |
+| `src/App.tsx:160` | TUI (initial seed) | `fileConfig=undefined`, `cliOverrides=props.resilience` |
+| `src/App.tsx:426` | TUI (after `onMount` loads config) | `fileConfig=config.resilience`, `cliOverrides=props.resilience` |
+| `src/index.tsx:145` | Headless `--create-plan` | `fileConfig=loadConfig().resilience`, `cliOverrides=args.resilience` |
+
+The function is 16 lines of source (including the 6-line `pickDefined`
+helper). Tests: `src/lib/config.test.ts` does **not** exist; the merge
+function is untested. Every audit below is performed by static reading
+plus cross-referencing the three call sites.
+
+```ts
+export function resolveResilience(
+  fileConfig?: Partial<ResilienceConfig>,
+  cliOverrides?: Partial<ResilienceConfig>,
+): ResilienceConfig {
+  const pickDefined = <T extends object>(obj?: T): Partial<T> => {
+    if (!obj) return {}
+    return Object.fromEntries(
+      Object.entries(obj).filter(([, v]) => v !== undefined),
+    ) as Partial<T>
+  }
+  return {
+    ...DEFAULT_RESILIENCE,
+    ...pickDefined(fileConfig),
+    ...pickDefined(cliOverrides),
+  }
+}
+```
+
+The required case matrix from PLAN.md Task 12.3 maps to the code as follows:
+
+| Required case | Code path | Test coverage | Result |
+| --- | --- | --- | --- |
+| **defaults < file < CLI merge order** (later wins) | spread order `{...DEFAULT_RESILIENCE, ...fileDefined, ...cliDefined}` | None | **OK** — three spread layers, last one wins for any key present in multiple layers |
+| **undefined values in any layer are skipped** | `pickDefined` filters `v !== undefined` (line 167) | None | **PARTIAL** — `undefined` is correctly skipped, but `null` is NOT (see Finding 12.3.A) |
+| `null` for the whole `fileConfig` / `cliOverrides` argument | `if (!obj) return {}` (line 165) catches both | None | **OK** — `!null` is truthy, returns `{}` |
+| Empty object `{}` for either layer | `Object.entries({})` is `[]`, `Object.fromEntries([])` is `{}` | None | **OK** — spread is a no-op |
+| Falsy-but-defined values (`0`, `false`, `""`) | `0 !== undefined`, `false !== undefined` | None | **OK** — `caffeinate: false` and `minIterationGapMs: 0` are correctly preserved through the merge |
+| Same key in file config and CLI override | CLI wins (later spread) | None | **OK** — verified by reading the spread order |
+| Same key in defaults and CLI override | CLI wins | None | **OK** — spread order guarantees it |
+| Unknown / extra keys in either layer | `pickDefined` does NOT validate keys (only filters `undefined`) | None | **OK at runtime** — extra key is preserved; nothing reads it (see Finding 12.3.C) |
+| Array as `fileConfig` (e.g. `[100, 200, 300]`) | `Object.entries([100,200,300])` returns `[["0",100],["1",200],["2",300]]`; spread corrupts first three numeric defaults | None | **Silent corruption** — see Finding 12.3.A (same root cause: no `validateConfigShape`) |
+| `null` for a single field (e.g. `createTimeoutMs: null`) | `null !== undefined` so `null` is kept; spread writes `null` over the default | None | **Silent corruption** — `setTimeout(null)` coerces to `0`; the API call times out immediately. See Finding 12.3.A |
+| CLI flag `--no-caffeinate` and CLI flag `--resilience caffeinate=true` in the same argv | Both write to the same `resilience` object in `parseArgs` (lines 238-243, 249-256); the last one in argv wins | None | **OK** — `parseArgs` builds one `resilience` object; `--resilience` calls `applyResilienceOverride` which writes the typed value to that same object; last-wins is the standard CLI contract |
+| Repeated `--resilience key=val` for the same key | `applyResilienceOverride` overwrites the same key on the same object; last value wins | None | **OK** — verified by reading `applyResilienceOverride` (lines 85-117) |
+| Idempotency: `resolveResilience(resolveResilience(a, b), c) === resolveResilience(a, { ...b, ...c })` | First call returns a full `ResilienceConfig` (no `undefined`); second call's `pickDefined` does NOT filter filled-in values | None | **NOT strictly idempotent** — first call "promotes" `undefined` slots to defaults; second call treats those defaults as overrides. This is INFO-level, not a bug (see Finding 12.3.D) |
+
+The first two required PLAN.md cases (3-level merge, undefined-skip) are
+**correct for `undefined` but not for `null`**. Every other runtime case is
+correct as written. **No CRITICAL or HIGH findings.** The MEDIUM below
+concerns the `null` gap; the LOW concerns key validation; the INFO notes
+non-idempotency.
+
+#### Finding 12.3.A — MEDIUM — `pickDefined` skips `undefined` but NOT `null`; a `null` value in either layer silently corrupts the merged config
+
+**Problem.** The `pickDefined` filter (line 167) uses `v !== undefined`,
+which means `null` is treated as a defined value and overwrites the
+default. The downstream consumer of every numeric field is `setTimeout`
+or `setInterval` (in `configureApiTimeouts`, see `src/lib/api.ts`),
+both of which coerce `null` to `0` and fire the callback on the next
+tick. The downstream consumer of every boolean field is a JS boolean
+context (e.g. `if (caffeinate)`), which treats `null` as falsy. The
+result is wrong-but-not-crashing behavior with no error surface.
+
+Concrete corruption scenarios reachable from a hand-edited
+`ocloop.json`:
+
+| Config input | Resolved value | Runtime effect |
+| --- | --- | --- |
+| `{"resilience": {"createTimeoutMs": null}}` | `createTimeoutMs: null` | `setTimeout(null, …)` → immediate timeout on every `session.create`; the loop burns through 8 retries in seconds before going into a recoverable error |
+| `{"resilience": {"maxRateLimitRetries": null}}` | `maxRateLimitRetries: null` | `if (rateLimitAttempts < null)` → `null < n` is `false` for any `n`; the cooldown never retries. The loop appears to stop handling rate limits silently |
+| `{"resilience": {"caffeinate": null}}` | `caffeinate: null` | `if (loop.isRunning() || loop.isCooldown())` short-circuits to false (null is falsy); macOS caffeinate is disabled. Silent behavioral change. |
+| `{"resilience": {"backoffJitter": null}}` | `backoffJitter: null` | `computeBackoff`'s `jitter ? random : 0` picks `0` (no jitter); retries become predictable. Behavioral regression. |
+| `{"resilience": {"resume": null}}` | `resume: null` | `if (resilience.resume)` in `App.tsx:init` short-circuits to false; auto-resume is silently disabled. |
+
+None of these are reachable from the CLI — `applyResilienceOverride` in
+`src/lib/cli-args.ts:85-117` validates booleans and non-negative
+integers and `process.exit(1)` on any other value. The `null` path is
+**only** reachable via a hand-edited `ocloop.json`, but the loader
+passes the file content straight to `resolveResilience` with no
+per-field type check, and the warn log from 12.1.A's proposed
+`validateConfigShape` would be the only line of defense.
+
+**Where.** `src/lib/config.ts:160-175` (`resolveResilience` /
+`pickDefined`).
+
+**Proposed fix.** Two changes that compose well:
+
+1. **Tighten the filter** to also skip `null`:
+
+   ```ts
+   const pickDefined = <T extends object>(obj?: T): Partial<T> => {
+     if (!obj) return {}
+     return Object.fromEntries(
+       Object.entries(obj).filter(([, v]) => v !== undefined && v !== null),
+     ) as Partial<T>
+   }
+   ```
+
+2. **Reject non-objects** (the array case above):
+
+   ```ts
+   const pickDefined = <T extends object>(obj?: T): Partial<T> => {
+     if (!obj || Array.isArray(obj)) return {}
+     return Object.fromEntries(
+       Object.entries(obj).filter(([, v]) => v !== undefined && v !== null),
+     ) as Partial<T>
+   }
+   ```
+
+   `Array.isArray(obj)` is the same guard `loadConfig` already uses
+   (`config.ts:212`); reusing it keeps the two functions consistent.
+
+The MEDIUM rating reflects that the `null` corruption paths are
+reachable from a hand-edited config (the only place a user can supply
+`null` to a numeric/boolean field) and the resulting behavior is
+silently wrong (no warn, no log) for a `setTimeout`/`null` user. The
+fix is two lines and matches the loader's existing array guard.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria). The two-line tightening should be combined with the
+`validateConfigShape` proposed in 12.1.A so the loader also rejects the
+bad value at the source (defense in depth).
+
+#### Finding 12.3.B — LOW — `pickDefined` does not validate per-field types; `applyResilienceOverride` does it for CLI input but `loadConfig` does not for the file input
+
+**Problem.** The numeric/boolean contract on `ResilienceConfig` is
+**enforced once**, in `applyResilienceOverride` (`src/lib/cli-args.ts:85-117`).
+The function uses `DEFAULT_RESILIENCE[key]` to decide the expected type
+(line 102), then `Number.isFinite(num) && Number.isInteger(num) && num >= 0`
+for numbers, and `raw === "true" || raw === "false" || raw === "1" || raw === "0"`
+for booleans. Anything else → `console.error` + `process.exit(1)`.
+
+The file config path skips this check. `loadConfig` returns the parsed
+JSON object as-is (with the structural guard at line 212), and
+`resolveResilience` trusts the result. A hand-edited config with
+`{"resilience": {"createTimeoutMs": "fast"}}` flows through
+`pickDefined` (the string is defined), spreads over the default, and
+`configureApiTimeouts` later calls `setTimeout("fast", …)` — which
+coerces to `NaN` and the API call times out immediately with no
+diagnostic.
+
+This is the **same root cause as Finding 12.1.A** (loader does not
+validate per-field types). The contract is duplicated in two places
+(CLI parser enforces it, loader does not); a single
+`validateResilienceShape` helper in `config.ts` would close the gap for
+both layers.
+
+**Where.** `src/lib/config.ts:160-175` (`resolveResilience` /
+`pickDefined`), read together with `src/lib/cli-args.ts:85-117`
+(`applyResilienceOverride`) and `src/lib/config.ts:200-224`
+(`loadConfig`).
+
+**Proposed fix.** Reuse the same per-field check that
+`applyResilienceOverride` does, in a shared helper:
+
+```ts
+import { DEFAULT_RESILIENCE } from "./config" // or local
+
+const isValidResilienceValue = (key: string, v: unknown): boolean => {
+  if (!(key in DEFAULT_RESILIENCE)) return false // unknown key
+  const def = (DEFAULT_RESILIENCE as Record<string, unknown>)[key]
+  if (typeof def === "boolean") return typeof v === "boolean"
+  if (typeof def === "number") return typeof v === "number" && Number.isFinite(v) && v >= 0
+  return false
+}
+```
+
+Wire it into both `loadConfig` (reject the whole `resilience` block
+with a warn if any field fails) and `applyResilienceOverride` (replace
+the duplicated logic with a call to the helper). The MEDIUM in 12.1.A
+and the LOW here collapse into one fix.
+
+**Status.** Fix proposed, not applied. LOW rating because the CLI path
+(which is the only one exercised in CI) does enforce the contract; the
+file path is reachable but requires a hand-edited config.
+
+#### Finding 12.3.C — LOW — `pickDefined` does not reject unknown keys; extra fields in either layer propagate to the result object
+
+**Problem.** `pickDefined` only filters `undefined` (and per 12.3.A,
+`null` if the proposed fix is applied). It does not check whether each
+key is a known `ResilienceConfig` field. A file config with
+`{"resilience": {"createTimeoutMs": 5000, "totallyMadeUpKey": 42}}`
+produces a result object that includes `totallyMadeUpKey: 42`. The TypeScript
+type annotation `Partial<ResilienceConfig>` on the function parameter
+catches this at the type level, but the JSON loader bypasses the
+TypeScript layer entirely (the `as OcloopConfig` cast at `config.ts:216`
+is unchecked), so the extra key lands in the runtime config object.
+
+The practical impact is zero today: every consumer reads a specific
+field by name (`resilience.createTimeoutMs`, `resilience.maxRateLimitRetries`,
+etc.), and a field nobody reads is inert. The risk is **future
+maintenance**: a refactor that adds a generic `for (const k of
+Object.keys(resilience)) …` loop (e.g. for logging, validation, or
+forwarding to a new SDK call) would silently see the extra key.
+
+**Where.** `src/lib/config.ts:164-169` (`pickDefined`).
+
+**Proposed fix.** Add a key allowlist check in `pickDefined` (or in the
+proposed `validateResilienceShape` from 12.3.B):
+
+```ts
+const pickDefined = <T extends object>(obj?: T): Partial<T> => {
+  if (!obj || Array.isArray(obj)) return {}
+  return Object.fromEntries(
+    Object.entries(obj).filter(([k, v]) =>
+      k in DEFAULT_RESILIENCE && v !== undefined && v !== null,
+    ),
+  ) as Partial<T>
+}
+```
+
+The `k in DEFAULT_RESILIENCE` check is O(1) and guarantees only
+known keys reach the spread. Same fix composes with 12.3.A.
+
+**Status.** Fix proposed, not applied. LOW rating — no current
+consumer is affected, but the unknown-key propagation is a latent
+footgun.
+
+#### Finding 12.3.D — INFO — `resolveResilience` is not strictly idempotent: feeding its own output back through it "promotes" defaults to overrides
+
+**Problem.** `resolveResilience` returns a **full** `ResilienceConfig`
+(no `undefined` slots, every field populated). If a caller feeds that
+result back through `resolveResilience` (e.g.
+`resolveResilience(resolveResilience(a, b), c)`), the inner call has
+already filled every slot with a concrete value; the outer call's
+`pickDefined` does NOT filter those concrete values, so they are
+spread over the outer call's `DEFAULT_RESILIENCE` and win. The net
+effect is that **any value present in the inner result is "locked in"
+as an override for the outer call**, even if the inner call inherited
+it from defaults.
+
+Concrete example:
+
+```ts
+const inner = resolveResilience(undefined, { maxRateLimitRetries: 4 })
+// inner.maxRateLimitRetries === 4
+// inner.createTimeoutMs === 15000 (inherited from defaults)
+
+const outer = resolveResilience(inner, { planTimeoutMs: 120_000 })
+// outer.maxRateLimitRetries === 4 (carried over from inner, not the new default)
+// outer.planTimeoutMs === 120_000 (from CLI)
+// outer.createTimeoutMs === 15000 (carried over from inner, same as default — no observable change here, but the value is now a "first-class" override)
+```
+
+In the example above, `maxRateLimitRetries: 4` is correctly preserved
+through the second call (no behavior change), but `createTimeoutMs:
+15000` is also preserved (which happens to equal the default but is
+now sourced from the inner result, not from `DEFAULT_RESILIENCE`). If a
+future change moves `DEFAULT_RESILIENCE.createTimeoutMs` to a new
+value, the second call would still see the **old** default (locked in
+by the first call). This is a snapshot-vs-default divergence.
+
+In practice, no call site feeds `resolveResilience`'s output back in
+(all three call sites use `loadConfig().resilience` for the file
+layer, which is the **raw** parsed JSON, not a previous
+`resolveResilience` result). So the non-idempotency is theoretical for
+the current code. It is worth documenting in a comment on line 175 so
+a future refactor doesn't accidentally create the divergence.
+
+**Where.** `src/lib/config.ts:160-175` (`resolveResilience`).
+
+**Proposed fix.** Either (a) add a docstring comment noting "do not
+feed this function's output back into itself; pass the **raw** file
+config and CLI overrides only" or (b) make the function more
+defensive by re-introducing `undefined` for fields that were not
+explicitly overridden. Option (b) is over-engineering for a function
+that is not used recursively; option (a) is enough.
+
+**Status.** INFO — design observation, no fix required. Document the
+non-idempotency on the function header.
+
+#### Summary of Phase 12.3 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 12.3.A  | MEDIUM   | `pickDefined` filters `undefined` but NOT `null`; a `null` value for a numeric/boolean field in `ocloop.json` silently corrupts the merged config (e.g. `setTimeout(null, …)` → immediate timeout). Tighten the filter to also skip `null` and `Array.isArray(obj)`. |
+| 12.3.B  | LOW      | Per-field type validation exists in `applyResilienceOverride` (CLI) but not in `loadConfig` (file); a hand-edited `resilience: {"createTimeoutMs": "fast"}` corrupts the config silently. Extract the type check into a shared `isValidResilienceValue` helper. |
+| 12.3.C  | LOW      | `pickDefined` does not reject unknown keys; a stray `"totallyMadeUpKey": 42` propagates to the result. Add `k in DEFAULT_RESILIENCE` to the filter. |
+| 12.3.D  | INFO     | `resolveResilience` is not idempotent in the strict sense — feeding its output back through it locks the inner call's filled-in slots as outer overrides. Not reachable from any current call site; add a docstring comment. |
+
+**Net severity tally for Phase 12.3: 1 MEDIUM, 2 LOW, 1 INFO; no CRITICAL or HIGH.** The two PLAN.md-required cases (3-level merge order and `undefined`-skip) are both correct as written. The MEDIUM is the `null` gap: the `undefined` filter is too permissive and a single missing comparison allows hand-edited configs to produce silently-wrong behavior. The two LOWs (per-field type validation, unknown-key rejection) share the same root cause as Finding 12.1.A (loader has no schema check) and can be folded into the same `validateConfigShape` / `isValidResilienceValue` refactor. The INFO notes non-idempotency for future maintainers. No tests exist for `resolveResilience`; the 4-case table above is a candidate starter set for `src/lib/config.test.ts`. Tasks 12.4-12.6 (`isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
