@@ -406,10 +406,32 @@ Commit `9c490a0`.
 
 ### Mejora 15 — Finding 4.2.B — LOW — `startingIteration` is a plain variable, not part of the persisted state
 
-- [ ] Evaluar la mejora 15 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 15 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 15 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 15 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 15 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 15 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 15 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 15 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es la asimetría entre la persistencia
+de `iteration` (que sí se guarda en `PersistedLoopState`,
+`App.tsx:1333-1340`) y el guard `startingIteration` (que no). El
+behavior es correcto: `let startingIteration = false` siempre
+arranca limpio en un proceso fresco, y un crash mid-`startIteration`
+deja al reducer como fuente de verdad para "tenemos sesión". La
+propuesta de `MEJORAS.md:3254-3266` es la opción correcta: una
+afordancia de documentación en el sitio del `let` que nombra los
+tres hechos que un lector podría derivar mal — que el guard es
+process-scoped, que NO se persiste, y que el `iteration_started`
+del reducer es la fuente de verdad. Implementación mínima: 1 edit
+puntual a `src/App.tsx:172-178` (1 línea → 6 líneas) que reemplaza
+el comentario existente por la versión expandida propuesta en
+`MEJORAS.md:3259-3266`. Cero cambios al behavior, cero impacto en
+runtime, cero impacto en la TUI, cero impacto en tests
+(`MEJORAS.md:3273-3302` ya justificó que la encapsulación del
+`let` en el closure de `App.tsx` es la propiedad que mantiene el
+guard seguro — un unit test requeriría extraerlo a module-level y
+eso debilitaría la garantía). `bun test` verde: 678 pass / 0
+fail, 23 files, 1676 expect() calls, 317 ms — sin cambio en el
+conteo. Commit `f80a823`.
 
 ### Mejora 16 — Finding 5.1.A — MEDIUM — `transient` kind dispatched as `rate_limited` to the reducer
 
