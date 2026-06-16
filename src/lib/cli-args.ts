@@ -83,8 +83,13 @@ export function applyResilienceOverride(
   const key = kv.slice(0, eq).trim()
   const raw = kv.slice(eq + 1).trim()
 
+  if (!key) {
+    console.error(`Error: --resilience key is empty in "${kv}"`)
+    process.exit(1)
+  }
+
   if (!raw) {
-    console.error(`Error: --resilience ${key || "<empty>"} requires a non-empty value`)
+    console.error(`Error: --resilience ${key} requires a non-empty value`)
     process.exit(1)
   }
 

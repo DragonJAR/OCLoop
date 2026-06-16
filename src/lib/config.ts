@@ -5,7 +5,7 @@
  * ~/.config/ocloop/ocloop.json (or XDG_CONFIG_HOME equivalent).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./debug-logger"
@@ -207,7 +207,13 @@ export function loadConfig(): OcloopConfig {
 
   try {
     const content = readFileSync(configPath, "utf-8")
-    const config = JSON.parse(content) as OcloopConfig
+    const parsed = JSON.parse(content)
+    // JSON.parse("null") succeeds but yields null; treat as missing config.
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      log.warn("config", "Config file did not contain a JSON object, using default", parsed)
+      return {}
+    }
+    const config = parsed as OcloopConfig
     log.info("config", "Loaded config", config)
     return config
   } catch (err) {
@@ -230,7 +236,11 @@ export function saveConfig(config: OcloopConfig): void {
     mkdirSync(configDir, { recursive: true })
   }
 
-  writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+  // Write atomically: tmp file then rename (rename is atomic on the same
+  // filesystem, so a reader never sees a half-written config).
+  const tmpPath = configPath + ".tmp"
+  writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+  renameSync(tmpPath, configPath)
   log.info("config", "Saved config", config)
 }
 
