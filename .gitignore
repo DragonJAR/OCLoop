@@ -4,49 +4,32 @@ node_modules/
 # Build output
 dist/
 
-# OCLoop runtime artifacts (logs, state, prompts)
-.loop*
-
 # Dotfiles/dotfolders are local-only by default. Allowlist exceptions only when
 # the project explicitly decides they belong in Git.
 .*
 !/.gitignore
 
 # Markdown files are ignored by default so ad-hoc plans/notes are not pushed.
-# Explicitly allow only project-facing release/readme docs.
+# Explicitly allow root release/readme docs and versioned examples.
 *.md
 !README.md
 !README.*.md
 !CHANGELOG.md
 !CHANGELOG.*.md
 !examples/
-!examples/**
+!examples/**/
+!examples/*.md
+!examples/**/*.md
 
-# OpenCode server runtime state & local project config
-# NOTE: /opencode.json is anchored to the repo root so it does NOT match the
-# bundled theme src/lib/themes/opencode.json
-.opencode
+# Local OpenCode project config. Anchored so it does not match
+# src/lib/themes/opencode.json.
 /opencode.json
-
-# Spec / AI tooling state (local)
-.ai/
-.atl/
-.openspec/
 
 # Bun
 bunfig.toml.lock
 
-# Environment
-.env
-.env.*
-
-# Editor
-.vscode/
-.idea/
+# Editor/OS leftovers that do not necessarily start with a dot
 *.swp
 *.swo
 *~
-
-# OS
-.DS_Store
 Thumbs.db
