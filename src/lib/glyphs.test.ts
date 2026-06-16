@@ -14,7 +14,7 @@ describe("glyph", () => {
       "stateStarting", "stateReady", "stateRunning", "statePausing", "statePaused",
       "stateCooldown", "stateStopping", "stateStopped", "stateComplete", "stateError",
       "stateDebug", "stateUnknown", "sevWarn", "sevError", "dot", "progressFull",
-      "progressEmpty", "times", "barH",
+      "progressEmpty", "times", "barH", "check",
     ]
     for (const name of singleCol) {
       expect(glyph(name, false)).toHaveLength(1)

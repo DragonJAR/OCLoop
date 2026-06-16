@@ -38,6 +38,7 @@ export type GlyphName =
   | "progressEmpty"
   | "times"
   | "barH"
+  | "check"
 
 const GLYPHS: Record<GlyphName, { u: string; a: string }> = {
   stateStarting: { u: "◐", a: "*" },
@@ -60,6 +61,7 @@ const GLYPHS: Record<GlyphName, { u: string; a: string }> = {
   progressEmpty: { u: "░", a: "-" },
   times: { u: "×", a: "x" },
   barH: { u: "═", a: "=" },
+  check: { u: "✓", a: "+" },
 }
 
 /** Resolve a semantic glyph to Unicode or its ASCII fallback. */
