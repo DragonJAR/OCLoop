@@ -18952,3 +18952,271 @@ duplicate activity-log entry — already documented as
 - No MEDIUM findings.
 - No new LOW findings (15.2.B already covers the duplicate
   activity-log entry).
+
+### 15.4 — `handleQuit` idempotency under SIGINT-during-Q and double-dispatch
+
+PLAN.md 15.4: "Verify: `handleQuit` is idempotent — called from
+both SIGINT handler and Q key; confirm it doesn't double-abort
+or double-disconnect."
+
+**Status: COMPLETE — VERIFIED with one LOW finding (15.4.A).**
+
+`handleQuit` is the single teardown function for the TUI. It
+runs in two completely independent entry paths:
+
+1. **Signal path** — `shutdownManager.handleSignal` (line 49 of
+   `src/lib/shutdown.ts`) awaits the registered handler
+   (`handleQuit`) on `SIGINT`/`SIGTERM`/`SIGHUP`. Guarded by the
+   singleton's `isShuttingDown` flag.
+2. **Key/dialog path** — `useKeyboard` (line 1637 of
+   `src/App.tsx`) handles the Q key (line 1671-1676, 1745-1749,
+   1755-1762, 1794-1800), which routes to `showQuitConfirmation`
+   (or `handleQuit` directly in the `complete` state). The
+   dialog's `onConfirm` (line 955-958) and the error/completion/
+   invalid-agent dialogs (line 1075, 1305, 1326) also call
+   `handleQuit` directly.
+
+The two paths share no coordination primitive — the
+`shutdownManager` is initialized at module load, the Q key
+handler is registered at `onMount`, and `handleQuit` itself
+holds no in-process `isShuttingDown` flag. The question is
+whether the body of `handleQuit` is naturally idempotent under
+concurrent invocation.
+
+#### Body of `handleQuit` (App.tsx:968-1010)
+
+The function performs eight side-effecting operations in order:
+
+| # | Operation | Idempotent? | Mechanism |
+| - | --- | --- | --- |
+| 1 | `loop.dispatch({ type: "quit" })` | **Yes** | Reducer only transitions to `stopping` from active states (`useLoopState.ts:202-215`); second call from `stopping` is a no-op. |
+| 2 | `clearCooldownTimers()` | **Yes** | `App.tsx:177-186` — both timers null-checked before `clearTimeout`/`clearInterval`, then set to `null`. |
+| 3 | `watchdog.stop()` | **Yes** | `useWatchdog.ts:308-313` — `if (timer) { clearInterval; timer = null }`. Pinned by `useWatchdog.test.ts:495-507`. |
+| 4 | `sleepDetector?.stop()` | **Yes** | `sleep-detector.ts:69-74` — `if (timer) { clearInterval; timer = null }`. |
+| 5 | `power.stop()` | **Yes** | `power.ts:63-72` — `if (!proc) return` early, then `proc.kill()` (sync, errors caught) and `proc = null`. |
+| 6 | `await clearLoopState()` | **Yes** | `loop-state-store.ts:85-91` — wraps `unlink` in try/catch ("Already gone — fine."). |
+| 7 | `await abortSession(client, currentSessionId)` | **No** — sends a second HTTP request | Wrapped in `try { ... } catch {}` at `App.tsx:987-995`, so any error (e.g. 404 "session not found", 5xx, timeout) is silently dropped. The wasted request is the only side effect. |
+| 8 | `sse.disconnect()` | **Yes** | `useSSE.ts:596-611` — null-checks `reconnectTimeout` and `abortController` before clearing. |
+| 9 | `await server.stop()` → `closeCurrent()` | **Yes** | `useServer.ts:141-154` — `if (abortController)` and `if (serverRef)` both null-checked before `abort()` and `close()`. |
+| 10 | `renderer.setTerminalTitle("")` + `renderer.destroy()` | **Unknown** | Third-party `@opentui/solid` `useRenderer()` (line 128). Not verifiable from project code. The Bun event loop is about to exit, so the second call is the only thing that would matter. |
+| 11 | `process.exit(exitCode)` | **Terminator** | Process exits; any in-flight promises are abandoned. |
+
+The reducer-side, signal-path, and Q-key-path concurrency
+controls all sit on top of these primitives.
+
+#### Trace: double SIGINT (canonical safe case)
+
+1. First SIGINT arrives. `shutdownManager.handleSignal("SIGINT")`
+   runs. `this.isShuttingDown` is `false` → sets it to `true`.
+2. Awaits `this.handler()` (i.e. `handleQuit`). `handleQuit` body
+   begins; step 1 dispatches `quit`, state becomes `stopping`.
+3. Second SIGINT arrives. `shutdownManager.handleSignal` runs
+   again. `this.isShuttingDown` is `true` → returns immediately
+   at line 51-53. `handleQuit` is NOT invoked a second time.
+
+**Result: single `handleQuit` call. Idempotent via the
+shutdownManager's flag.** ✓
+
+#### Trace: Q pressed twice in `running` (canonical safe case)
+
+1. First Q. `useKeyboard` runs (line 1637). `dialog.hasDialogs()`
+   is `false` (no dialog open). Reaches line 1794. `canQuit()`
+   for `running` returns `true`. `showQuitConfirmation` shows
+   the confirm dialog.
+2. User confirms. `dialog.clear()` removes the dialog, then
+   `handleQuit()` is called.
+3. `handleQuit` step 1: dispatches `quit`. State transitions
+   `running` → `stopping`. (Reducer at `useLoopState.ts:202-215`
+   accepts this transition.)
+4. `handleQuit` reaches `await clearLoopState()` (first await).
+5. User presses Q again. `useKeyboard` runs. `dialog.hasDialogs()`
+   is `false`. Reaches line 1794. `loop.canQuit()` reads the new
+   state — `stopping` is NOT in the `canQuit` whitelist
+   (`useLoopState.ts:347-362`) → returns `false`. The Q key is
+   `preventDefault`ed but no second `showQuitConfirmation` is
+   fired. `handleQuit` is NOT invoked again.
+6. The original `handleQuit` resumes from the await, runs through
+   steps 2-11, terminates via `process.exit(0)`.
+
+**Result: single `handleQuit` call. Idempotent via the
+`canQuit` gate from the `stopping` state.** ✓
+
+Same trace applies to `pausing`, `paused`, `cooldown`, `ready`,
+`debug`, and `error` states — they all transition to `stopping`
+on the first `quit` dispatch, and the second Q cannot enter
+because `canQuit` excludes `stopping`.
+
+#### Trace: Q pressed twice in `complete` (degenerate case)
+
+The `complete` state is unique: line 1755-1762 handles Q by
+calling `handleQuit()` directly, NOT through
+`showQuitConfirmation`. The state never transitions to
+`stopping` because the reducer's `quit` case
+(`useLoopState.ts:202-215`) only acts on the six active states
+— `complete` is not in the list, so step 1 of `handleQuit` is a
+no-op. The state stays `complete` for the entire call.
+
+1. First Q. `useKeyboard` reaches line 1756
+   (`state.type === "complete"`). Calls `handleQuit()`.
+2. `handleQuit` step 1: dispatches `quit` from `complete` →
+   no-op (state unchanged).
+3. `handleQuit` step 6: `await clearLoopState()`.
+4. Second Q. `useKeyboard` reaches line 1756 again (state is
+   still `complete`). Calls `handleQuit()` a second time.
+5. Both `handleQuit` invocations proceed in parallel through
+   the body.
+6. Step 7 (`abortSession`): in `complete` state, `sessionId()`
+   is empty (the plan is finished; there is no active session
+   for the iteration driver to track). The `if (currentSessionId)`
+   guard at line 986 is `false` — neither call sends an HTTP
+   request.
+7. Step 11: the first `process.exit(0)` reaches and terminates
+   the process. The second's awaits are abandoned.
+
+**Result: double `handleQuit` call, but no double `abortSession`
+(both bail on the empty `sessionId` guard) and no duplicate
+side effects beyond an extra `log.info("Quit initiated", ...)`
+line. Idempotent in practice.** ✓
+
+#### Trace: Q (in `running`) followed by SIGINT (the realistic race)
+
+1. Q → showQuitConfirmation → confirm → `handleQuit()` starts.
+2. State `running` → `stopping` (after step 1).
+3. `handleQuit` reaches `await clearLoopState()`.
+4. User presses Ctrl+C. `shutdownManager.handleSignal("SIGINT")`
+   runs. `this.isShuttingDown` is `false` — the Q path never
+   touched it. Sets it to `true`. Awaits `this.handler()` which
+   is `handleQuit` again.
+5. **Two `handleQuit` invocations are now running concurrently.**
+6. Second invocation step 1: dispatches `quit` from `stopping` →
+   no-op (the `stopping` state is not in the active-state
+   whitelist).
+7. Steps 2-6: all idempotent (see table above).
+8. Step 7: BOTH invocations reach `abortSession`. `sessionId()`
+   is still non-empty in `stopping` (the dispatch in step 2 of
+   the first call only changed the state machine, not the
+   `sessionId` signal). Both invocations send an HTTP
+   `session.abort` request to the OpenCode server.
+9. First `abortSession` succeeds (or times out). Second
+   `abortSession` likely fails with a 404 / "session already
+   aborted" error. The `try { ... } catch {}` at line 987-995
+   drops the error.
+10. Both invocations proceed to steps 8-10 and call
+    `process.exit(0)`. First wins; process terminates.
+
+**Result: one wasted HTTP `session.abort` request at worst.
+No data corruption, no orphan sessions, no double-`process.exit`
+side effects. The catch-all makes the wasted call safe.**
+
+#### Finding 15.4.A — LOW — `handleQuit` lacks a module-level `isShuttingDown` guard; SIGINT-during-Q can cause a wasted `abortSession` HTTP call
+
+**Problem.** The signal path's `shutdownManager` has its own
+`isShuttingDown` flag (line 17, 51-53) that prevents two SIGINTs
+from racing. The Q path (and the dialog `onQuit` paths: lines
+1075, 1305, 1326) have NO corresponding guard. The race
+window between `dialog.clear()` (in `onConfirm`) and
+`process.exit(0)` is small (a few ms during the awaits), but
+it is non-zero: a user who confirms the dialog and immediately
+hits Ctrl+C — or a parallel dialog close + signal handler
+during a test — will trigger a second `handleQuit` invocation.
+
+The reducer's `quit` action is a no-op from `stopping`, and
+`clearCooldownTimers` / `watchdog.stop` / `sleepDetector.stop` /
+`power.stop` / `clearLoopState` / `sse.disconnect` /
+`server.stop` are all individually idempotent. The only
+non-idempotent operation is `abortSession` at line 991, which
+sends a second HTTP request to the OpenCode server. The
+`try { ... } catch {}` at line 987-995 prevents any user-visible
+error, but the network round-trip is wasted.
+
+**Where.** `src/App.tsx:968-1010` — the entire body of
+`handleQuit`. Specifically:
+- No `isShuttingDown` flag declared alongside `startingIteration`
+  at line 170-174.
+- Step 1 (`loop.dispatch({ type: "quit" })`) is the only step
+  that the reducer's idempotency contract protects; the
+  remaining steps rely on the per-operation idempotency
+  documented in the table above.
+- Step 7 (`abortSession`) is the only step that produces a
+  non-recoverable, non-idempotent side effect (an HTTP request
+  to a remote server).
+
+**Proposed fix.** Add a single `isShuttingDown` guard at the
+top of `handleQuit`, mirroring the `shutdownManager` pattern
+and the existing `startingIteration` pattern in the same file:
+
+```ts
+// Module-level: alongside startingIteration at App.tsx:170-174.
+let isShuttingDown = false
+
+async function handleQuit(exitCode: number = 0): Promise<void> {
+  if (isShuttingDown) return       // ← guard against double-dispatch
+  isShuttingDown = true            // ← sync, before any await
+  // ... existing body, unchanged
+}
+```
+
+The flag is set synchronously (no `await` before it), so the
+two-entry-point race closes the moment `handleQuit` is
+invoked a second time. The check happens BEFORE any
+side-effecting step, including `log.info` (which is the only
+visible artifact of a wasted double call today — the activity
+log would otherwise show two `Quit initiated` lines for the
+single observable quit).
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria).
+
+#### Test coverage
+
+No existing test covers `handleQuit` idempotency directly
+(grep for `handleQuit` across `src/**/*.test.ts` returns only
+the two reducer tests at `useLoopState.test.ts:836` and `:994`
+that document the reducer contract; the App-level integration
+is unverified). The underlying primitives each have their own
+idempotency test:
+
+- `useWatchdog.test.ts:495-507` — `stop() is idempotent: safe
+  to call on a non-running watchdog`, plus the start/stop/start
+  sequence at line 510-516.
+- `useSSE.ts:596-611` is structurally symmetric to
+  `clearCooldownTimers` (null-check → clear → nullify), and
+  is exercised by the reconnect/disconnect tests in
+  `useSSE.test.ts`.
+- `loop-state-store.test.ts:55-65` — `clearLoopState` is
+  exercised on a missing file and on a second call after a
+  successful first.
+- The reducer's `quit` action is exercised at
+  `useLoopState.test.ts:198-249` (one positive case per
+  active state) and `:988-1001` (the no-op cases from
+  `starting`, `stopping`, `stopped`, `complete`, `error`).
+
+A direct `handleQuit` integration test would require a
+running OpenCode server (or a deep mock of `createClient`,
+`abortSession`, `server.stop`, `sse.disconnect`, the
+`shutdownManager`, and the renderer), which is the same
+"untestable without a real OpenCode server mock" pattern
+called out in Phase 18 below. The proposed `isShuttingDown`
+guard is small enough that the existing primitive-level
+test coverage is sufficient to catch regressions in the
+body — only the new top-of-function flag needs a unit test
+(an `if (isShuttingDown) return` test in a future App-level
+test file).
+
+#### Verification result
+
+`handleQuit` is idempotent in the steady state. The reducer's
+`quit` action is a no-op from `stopping`; the Q-key handler's
+`canQuit` gate is `false` for `stopping`; the
+`shutdownManager` flag prevents two SIGINTs from racing. The
+ONE race — Q-then-SIGINT during the first call's awaits —
+results in a wasted `session.abort` HTTP request, not in
+double-aborting an active session or double-disconnecting
+the SSE stream. The catch-all at line 987-995 keeps the
+wasted call from surfacing to the user.
+
+- No CRITICAL findings.
+- No HIGH findings.
+- No MEDIUM findings.
+- One LOW finding (15.4.A — wasted `abortSession` HTTP call
+  under SIGINT-during-Q).
