@@ -160,6 +160,17 @@ function AppContent(props: AppProps) {
   const [resilience, setResilience] = createSignal<ResilienceConfig>(
     resolveResilience(undefined, props.resilience),
   )
+  // Race gate for the server-ready createEffect. The `resilience` signal above
+  // is seeded with the CLI-only layer; the on-disk config layer only lands
+  // after `onMount` resolves `loadConfig()` + `resolveResilience()`. If the
+  // opencode server becomes "ready" before that await completes, the
+  // createEffect (line 1180) would otherwise call `initializeSession` with
+  // `resilience().resume` still defaulting to `false`, silently overriding
+  // a user who set `resume: true` in their config for one startup window.
+  // The flag flips to `true` at the end of `onMount` (line 488), so the
+  // createEffect re-runs exactly once with the resolved resilience.
+  // Source: MEJORAS.md Finding 15.8.A.
+  const [resilienceReady, setResilienceReady] = createSignal(false)
 
   // --- Rate-limit cooldown bookkeeping (Phase 1) ---
   // Consecutive rate-limit attempts; reset whenever an iteration completes ok.
@@ -486,6 +497,13 @@ function AppContent(props: AppProps) {
 
     const terminals = await detectInstalledTerminals()
     setAvailableTerminals(terminals)
+    // Finding 15.8.A: release the server-ready createEffect now that the
+    // on-disk config layer has been merged into `resilience`. The order
+    // matters — set AFTER both `setResilience(resolved)` (line 475) and
+    // `setAvailableTerminals(terminals)` so the first effect re-run sees
+    // the fully-resolved state. Mirrors the timing of the synchronous
+    // `setResilience` in `onMount`'s body.
+    setResilienceReady(true)
   })
 
   // SSE subscription (only when server is ready)
@@ -1178,7 +1196,7 @@ function AppContent(props: AppProps) {
 
   // Server ready effect - transition to ready state and connect SSE
   createEffect(() => {
-    if (server.status() === "ready" && loop.state().type === "starting") {
+    if (server.status() === "ready" && loop.state().type === "starting" && resilienceReady()) {
       log.info("server", "Ready", { url: server.url(), debug: props.debug })
       // Server is ready, transition to appropriate state
       if (props.debug) {
