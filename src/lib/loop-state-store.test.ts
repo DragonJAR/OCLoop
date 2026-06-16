@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, existsSync, chmodSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -61,6 +61,34 @@ describe("loop-state-store", () => {
   it("clearing a non-existent file does not throw", async () => {
     await clearLoopState()
     expect(await loadLoopState()).toBeNull()
+  })
+
+  // The EACCES/EPERM branch of clearLoopState's catch is identical to ENOENT
+  // by inspection (the catch is type-agnostic), but the audit (MEJORAS.md
+  // Finding 8.3.A) calls out a regression that narrowed the catch to
+  // `if (err.code !== "ENOENT") throw` as the kind of silent footgun that
+  // would slip past the existing two tests. Pin the contract with a real
+  // permission-denied unlink.
+  //
+  // Cross-platform caveats: Windows ACLs do not map to POSIX chmod, and root
+  // bypasses the read-only check entirely. The audit recommends skipIf on both
+  // axes; the tempdir is owned by the test process so chmod is permitted
+  // (root runs of the suite on CI are the realistic root case to skip).
+  it.skipIf(
+    process.platform === "win32" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )("clearLoopState swallows EACCES on a read-only dir", async () => {
+    await saveLoopState(sample)
+    // 0o555 = r-xr-xr-x. On the parent dir, this blocks create/rename/unlink
+    // inside, so the next clearLoopState's unlink fails with EACCES (macOS) or
+    // EPERM (Linux). The store's type-agnostic catch must swallow it.
+    chmodSync(dir, 0o555)
+    try {
+      await clearLoopState() // must not throw
+    } finally {
+      // Restore so afterEach's rmSync can clean up the tempdir.
+      chmodSync(dir, 0o755)
+    }
   })
 
   it("returns null for an unsupported version", async () => {
