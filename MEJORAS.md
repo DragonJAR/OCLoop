@@ -13313,3 +13313,462 @@ right pattern for fan-out / fan-in checks. **No fix recommended.**
 
 **Net severity tally for Phase 11.1: 2 MEDIUM, 2 LOW, 2 INFO; no CRITICAL or HIGH.** The two MEDIUM findings are real functional/UX gaps on supported platforms (Windows + stock macOS) — both have a workaround (the Custom dialog) and neither breaks the documented happy path on macOS-with-third-party-terminal / Linux. The LOW findings are operational/observability/coverage gaps. The INFO findings document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
 
+---
+
+### 11.2 — Verify `launchTerminal` correctly constructs commands for each terminal type and handles launch failures
+
+**Status: COMPLETE — VERIFIED, one MEDIUM, three LOW, four INFO findings; no CRITICAL or HIGH.** The function is small (61 lines), has a single try/catch that covers the spawn path, and the per-terminal `args` patterns in `KNOWN_TERMINALS` were manually traced for correct argv construction. The MEDIUM finding is a missing `detached: true` flag, not a runtime error.
+
+The function under audit is `src/lib/terminal-launcher.ts:120-181`:
+
+```ts
+export async function launchTerminal(
+  config: TerminalConfig,
+  attachCmd: string,
+): Promise<LaunchResult> {
+  try {
+    let command: string
+    let args: string[]
+
+    if (config.type === "known") {
+      const terminal = getKnownTerminalByName(config.name)
+      if (!terminal) {
+        return {
+          success: false,
+          error: `Unknown terminal: ${config.name}`,
+        }
+      }
+      command = terminal.command
+      args = buildArgs(terminal.args, attachCmd)
+    } else {
+      // Custom terminal
+      command = config.command
+
+      // Parse the args pattern, replacing {cmd}
+      const argsPattern = config.args.split(/\s+/).filter((a) => a.length > 0)
+      args = buildArgs(argsPattern, attachCmd)
+    }
+
+    // Verify the command exists
+    const exists = await commandExists(command)
+    if (!exists) {
+      log.warn("terminal", "Command not found", { command })
+      return {
+        success: false,
+        error: `Terminal command not found: ${command}`,
+      }
+    }
+
+    log.info("terminal", "Spawning terminal", { command, args })
+
+    // Spawn the terminal as a detached process
+    // Using 'inherit' for stdio so the terminal can run independently
+    const proc = Bun.spawn([command, ...args], {
+      stdout: "ignore",
+      stderr: "ignore",
+      stdin: "ignore",
+    })
+
+    // Unref the process so it doesn't keep the parent alive
+    proc.unref()
+    
+    log.info("terminal", "Terminal spawned successfully")
+
+    return { success: true }
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err)
+    log.error("terminal", "Failed to launch terminal", error)
+    return {
+      success: false,
+      error,
+    }
+  }
+}
+```
+
+The shared helper `buildArgs` at `src/lib/terminal-launcher.ts:101-114`:
+
+```ts
+function buildArgs(argsPattern: string[], attachCmd: string): string[] {
+  // Split the attach command into parts for proper shell handling.
+  // Drop empty tokens so a stray/extra space never yields a blank argv entry.
+  const cmdParts = attachCmd.split(" ").filter((p) => p.length > 0)
+
+  return argsPattern.flatMap((arg) => {
+    if (arg === "{cmd}") {
+      // Replace placeholder with command parts
+      return cmdParts
+    }
+    // Keep other args as-is
+    return [arg]
+  })
+}
+```
+
+**Call sites** (verified by grep — one actual call to `launchTerminal` in `src/App.tsx`):
+
+| Line | Context | Guard before call |
+|------|---------|-------------------|
+| App.tsx:1366 | `launchConfiguredTerminal` helper, after a `terminalConfig` is saved | `if (!terminalConfig) return` and `if (!url) return` |
+
+The only actual `launchTerminal` call is in `launchConfiguredTerminal` (App.tsx:1353-1376), and it is guarded by `if (!terminalConfig)` and `if (!url)`. The `sessionId` is also pre-validated: `if (sid) { launchConfiguredTerminal(sid, ...) }` at App.tsx:1394-1397 and 1416-1419.
+
+#### Per-known-terminal argv construction — manual trace
+
+For each entry in `KNOWN_TERMINALS` (terminal-launcher.ts:33-58), I traced the spawn argv that would result from `getAttachCommand("http://localhost:8080", "ses_AB12cd")` = `"opencode attach http://localhost:8080 --session ses_AB12cd"`, then `cmdParts = ["opencode", "attach", "http://localhost:8080", "--session", "ses_AB12cd"]` (5 parts), and `buildArgs(pattern, ...)`:
+
+| Terminal        | Pattern                  | Final argv                                                                                                                                  | Correct? |
+| --------------- | ------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| alacritty       | `["-e", "{cmd}"]`        | `alacritty -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                   | ✓ — alacritty treats everything after `-e` as the command and its args. |
+| kitty           | `["{cmd}"]`              | `kitty opencode attach http://localhost:8080 --session ses_AB12cd`                                                                         | ✓ — kitty takes the command as a positional arg and re-spawns it. |
+| wezterm         | `["start", "--", "{cmd}"]` | `wezterm start -- opencode attach http://localhost:8080 --session ses_AB12cd`                                                              | ✓ — wezterm `start -- cmd args...` form. |
+| gnome-terminal  | `["--", "{cmd}"]`        | `gnome-terminal -- opencode attach http://localhost:8080 --session ses_AB12cd`                                                              | ✓ — gnome-terminal `-- command` form. |
+| konsole         | `["-e", "{cmd}"]`        | `konsole -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                     | ✓ — konsole `-e` form. |
+| xfce4-terminal  | `["-e", "{cmd}"]`        | `xfce4-terminal -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                              | ✓ — same `-e` form. |
+| foot            | `["{cmd}"]`              | `foot opencode attach http://localhost:8080 --session ses_AB12cd`                                                                           | ✓ — foot takes the command as a positional arg. |
+| tilix           | `["-e", "{cmd}"]`        | `tilix -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                       | ✓ — tilix `-e` form. |
+| terminator      | `["-e", "{cmd}"]`        | `terminator -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                  | ✓ — terminator `-e` form. |
+| xterm           | `["-e", "{cmd}"]`        | `xterm -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                       | ✓ — xterm `-e` form. |
+| urxvt           | `["-e", "{cmd}"]`        | `urxvt -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                                       | ✓ — urxvt `-e` form. |
+| x-terminal-emulator | `["-e", "{cmd}"]`     | `x-terminal-emulator -e opencode attach http://localhost:8080 --session ses_AB12cd`                                                         | ✓ — Debian alternative, standard `-e`. |
+
+**All 12 known terminals produce a syntactically correct argv for the happy-path attach command.** No `{cmd}` doubling, no extra quoting, no missing flags. The same trace for `http://127.0.0.1:54321` and `http://localhost:9999` produces the same shape (the port is just a substring of the URL, the split on space keeps it together).
+
+#### Per-edge-case behavior
+
+| # | Input | Result | Correct? |
+|---|-------|--------|----------|
+| 1 | `config = { type: "known", name: "alacritty" }`, alacritty not on PATH | `commandExists("alacritty")` returns false → `{ success: false, error: "Terminal command not found: alacritty" }` | ✓ |
+| 2 | `config = { type: "known", name: "wezterm" }`, wezterm on PATH | commandExists OK → spawn succeeds → `{ success: true }` | ✓ |
+| 3 | `config = { type: "known", name: "alacrittt" }` (typo, hand-edited config) | `getKnownTerminalByName` returns undefined → `{ success: false, error: "Unknown terminal: alacrittt" }` | ✓ |
+| 4 | `config = { type: "custom", command: "", args: "-e {cmd}" }` | `commandExists("")` returns false (which exits non-zero for empty arg) → `{ success: false, error: "Terminal command not found: " }` | ✓ — the error message is a bit ugly (trailing colon) but the function correctly rejects. |
+| 5 | `config = { type: "custom", command: "wezterm", args: "" }` (empty args) | `argsPattern = []` → `args = []` → spawn `[command]` (no attach command) | **✗** — the terminal opens an empty shell. See Finding 11.2.B. |
+| 6 | `config = { type: "custom", command: "wezterm", args: "-e bash" }` (no `{cmd}` token) | `argsPattern = ["-e", "bash"]` → `args = ["-e", "bash"]` → spawn `wezterm -e bash` | **✗** — the terminal opens a bash shell, never runs the attach command. See Finding 11.2.C. |
+| 7 | `config = { type: "custom", command: "wezterm", args: "{cmd} {cmd}" }` (duplicate placeholder) | `argsPattern = ["{cmd}", "{cmd}"]` → first `{cmd}` expands to `cmdParts`, second `{cmd}` also expands to `cmdParts` → `args = ["opencode", "attach", "...", "--session", "...", "opencode", "attach", "...", "--session", "..."]` | ✓ (deterministic) — the command is run twice in the terminal. Unusual but not destructive. |
+| 8 | `attachCmd = ""` (empty) | `cmdParts = []` → for alacritty, `args = ["-e"]` → spawn `alacritty -e` | **✗** — terminal opens empty shell. See Finding 11.2.D. |
+| 9 | `attachCmd = "opencode  attach  http://x  --session  sid"` (extra spaces) | `split(/ /).filter(len > 0)` collapses them → `cmdParts` is clean. | ✓ — the empty-token filter handles this. |
+| 10 | `config = { type: "known", name: "alacritty" }`, alacritty removed from PATH between `commandExists` and `Bun.spawn` | `commandExists` returns true; `Bun.spawn` throws `ENOENT`; caught by the outer try/catch → `{ success: false, error: "ENOENT: no such file or directory" }` | ✓ — TOCTOU is rare and the catch covers it. |
+| 11 | User spams the "Open in terminal" command | N parallel `Bun.spawn` calls, no shared state, no race | ✓ — concurrent launches are independent. |
+| 12 | `config = { type: "custom", command: "/Applications/Terminal.app/Contents/MacOS/Terminal", args: "..." }` | `commandExists` runs `which /Applications/Terminal.app/...` which searches `$PATH` (the binary is not on `$PATH`) → returns false → "not found" | **✗** for the use case, but **INFO** — the documented flow is "use a wrapper script or run from the terminal's `bin/` path". See Finding 11.2.E. |
+| 13 | `config = { type: "custom", command: "alacritty; rm -rf /", args: "{cmd}" }` (shell-injection attempt in command) | `commandExists("alacritty; rm -rf /")` runs `which "alacritty; rm -rf /"` → exits non-zero → "not found" | ✓ — the probe treats the whole string as a single token; only the literal `alacritty; rm -rf /` command would be "executable", and it isn't. |
+| 14 | `Bun.spawn` returns successfully, but the terminal app fails to start (e.g., missing display) | `Bun.spawn` returns a process object before the child executes; the launcher doesn't `await proc.exited` → returns `{ success: true }` even though the terminal will probably die | **INFO** — fire-and-forget is the right pattern for a UI launcher; the user observes the terminal window directly. |
+
+#### Finding 11.2.A — MEDIUM — `Bun.spawn` is missing `detached: true`, so the launched terminal can receive SIGHUP when OCLoop exits
+
+**Problem.** `launchTerminal` calls `proc.unref()` (terminal-launcher.ts:168) to prevent OCLoop from waiting for the child, but it does **not** pass `detached: true` to `Bun.spawn` (terminal-launcher.ts:161-165). On POSIX, the absence of `detached: true` means the child inherits the parent's process group. If the user closes their TUI session (e.g., the terminal running OCLoop exits, the SSH session ends, or OCLoop is killed by a signal), the launched terminal app is in the same group and can receive SIGHUP / SIGTERM. The fire-and-forget intent of the launcher is undermined.
+
+**Where.** `src/lib/terminal-launcher.ts:161-168` (the `Bun.spawn` call).
+
+**Proposed fix.** Add `detached: true` to the options, and (for the same reason) consider setting `windowsHide: true` on Windows. The comment block above the call should also be corrected (see Finding 11.2.F below — the comment claims "inherit" for stdio, the code uses "ignore").
+
+```ts
+const proc = Bun.spawn([command, ...args], {
+  stdout: "ignore",
+  stderr: "ignore",
+  stdin: "ignore",
+  detached: true,
+  windowsHide: true,
+})
+proc.unref()
+```
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance criteria).
+
+#### Finding 11.2.B — LOW — Empty `config.args` for a custom terminal silently launches without the attach command
+
+**Problem.** For a custom terminal, `config.args` is split on whitespace and filtered to drop empties (terminal-launcher.ts:143):
+```ts
+const argsPattern = config.args.split(/\s+/).filter((a) => a.length > 0)
+```
+If the user clears the args field in the custom-args dialog and saves, `config.args = ""` → `argsPattern = []` → `buildArgs` returns `[]` → `Bun.spawn([command])` runs the terminal with no command. The terminal opens an empty shell; the attach command never runs; the user assumes the launcher is broken.
+
+The custom-args dialog (`src/components/DialogTerminalConfig.tsx:62-66`) only validates that the **command** is non-empty:
+```ts
+const onSaveCustom = () => {
+  if (customCommand().trim()) {
+    onCustom(customCommand().trim(), customArgs().trim())
+  }
+}
+```
+A user who clears the args field gets a silent no-op launch.
+
+**Where.** `src/lib/terminal-launcher.ts:143` (parse), `src/components/DialogTerminalConfig.tsx:62-66` (dialog validation).
+
+**Proposed fix.** Two layers:
+1. Dialog: reject save if `customArgs().trim()` is empty OR does not contain `{cmd}`. The custom dialog could surface a hint "args must include `{cmd}` placeholder".
+2. Launcher (defensive): in `launchTerminal`, if `argsPattern.length === 0` and the path is custom, return `{ success: false, error: "Custom terminal args must include the {cmd} placeholder" }`. The known-terminal path is safe because the data table guarantees a non-empty `args` array.
+
+```ts
+// In the custom branch:
+if (argsPattern.length === 0) {
+  return {
+    success: false,
+    error: "Custom terminal args must include the {cmd} placeholder",
+  }
+}
+```
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.2.C — LOW — Missing `{cmd}` placeholder in custom args silently launches without the attach command
+
+**Problem.** If a custom-args string is provided with no `{cmd}` token (e.g., `"-e bash"`), the args pattern passes through `buildArgs` unchanged and the attach command is never substituted. The terminal opens a `bash` shell; the user has no idea why. Same root cause as 11.2.B (silent no-op launch), but the input is "looks valid" — non-empty args, just no placeholder.
+
+**Where.** `src/lib/terminal-launcher.ts:101-114` (`buildArgs`), `src/components/DialogTerminalConfig.tsx:62-66` (dialog validation).
+
+**Proposed fix.** After parsing the custom args pattern, require it to contain at least one `{cmd}` token:
+```ts
+if (!argsPattern.includes("{cmd}")) {
+  return {
+    success: false,
+    error: "Custom terminal args must include the {cmd} placeholder",
+  }
+}
+```
+
+The known-terminal path is safe — every entry in `KNOWN_TERMINALS` includes `{cmd}` in its pattern (verified by `grep "{cmd}" src/lib/terminal-launcher.ts` → 12 matches, one per entry).
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.2.D — LOW — Empty `attachCmd` produces a corrupted spawn argv (terminal opens empty shell)
+
+**Problem.** If `attachCmd = ""`, `cmdParts = []` (terminal-launcher.ts:104) and `flatMap` returns the literal pattern with no substitution. For alacritty: `args = ["-e"]` → spawn `alacritty -e` (no command). The terminal opens an empty shell rather than reporting a clear error. The guard at App.tsx:1356-1357 (`if (!url) return`) prevents this in the **current** call flow, but the function does not defend itself: any future caller that bypasses the guard (or any test that passes `""` directly) gets a silent failure.
+
+**Where.** `src/lib/terminal-launcher.ts:101-114` (`buildArgs`).
+
+**Proposed fix.** Defensive guard at the top of `buildArgs`:
+```ts
+function buildArgs(argsPattern: string[], attachCmd: string): string[] {
+  const cmdParts = attachCmd.split(" ").filter((p) => p.length > 0)
+  if (cmdParts.length === 0) {
+    throw new Error("attachCmd is empty; cannot construct terminal command")
+  }
+  return argsPattern.flatMap((arg) => { ... })
+}
+```
+The throw is caught by the outer `try/catch` in `launchTerminal` (line 124, 173) and surfaces as `{ success: false, error: "attachCmd is empty; cannot construct terminal command" }`. The user gets a clear error instead of a silent empty-shell launch.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.2.E — INFO — `commandExists` does not handle custom commands that are absolute paths
+
+**Problem.** `commandExists` (src/lib/command-exists.ts:8-19) runs `which <command>`, which searches `$PATH` and **does not** check absolute paths. A user who enters the absolute path to a terminal app (e.g., `/Applications/Terminal.app/Contents/MacOS/Terminal` on macOS, or `/snap/bin/gnome-terminal` on Linux) gets a "Terminal command not found" error even though the file is on disk. Workaround: create a wrapper shell script in `$PATH` that execs the absolute path, then point the custom terminal at the wrapper.
+
+**Where.** `src/lib/command-exists.ts:8-19`, `src/lib/terminal-launcher.ts:148-155`.
+
+**Proposed fix.** If the command starts with `/` (or `~/` resolved), check the file directly with `Bun.file(command).exists()` or `existsSync(command)` from `node:fs`, and mark it executable. This is a minor convenience, not a bug.
+
+**Status.** Diagnostic improvement, not a bug.
+
+#### Finding 11.2.F — INFO — Misleading comment claims "Using 'inherit' for stdio" but the code uses "ignore"
+
+**Problem.** The comment at terminal-launcher.ts:160-161 reads:
+```ts
+// Spawn the terminal as a detached process
+// Using 'inherit' for stdio so the terminal can run independently
+```
+The actual code (lines 162-164) sets all three streams to `"ignore"`:
+```ts
+const proc = Bun.spawn([command, ...args], {
+  stdout: "ignore",
+  stderr: "ignore",
+  stdin: "ignore",
+})
+```
+The intent of the comment — "the child should not be tied to OCLoop's stdio" — is correct, and `"ignore"` is the right value to achieve that. The comment is wrong about the mechanism. This is documentation accuracy, not a bug.
+
+**Where.** `src/lib/terminal-launcher.ts:160-164`.
+
+**Proposed fix.** Update the comment:
+```ts
+// Spawn the terminal as a detached process. The child owns its own stdio
+// (the terminal app will attach to the user's TTY/display directly); we
+// set all three to "ignore" so OCLoop does not block on terminal output.
+```
+
+**Status.** Documentation fix, not a bug.
+
+#### Finding 11.2.G — INFO — Spawn errors are caught by a single try/catch but do not differentiate "command not found" from "spawn failed (permissions)" from "terminal crashed"
+
+**Problem.** The catch block at terminal-launcher.ts:173-180 returns a generic `err.message`. For `Bun.spawn`, a missing binary throws `ENOENT: no such file or directory`, a permissions error throws `EACCES: permission denied`, a crash throws whatever the OS reports. All three are surfaced verbatim. The pre-spawn `commandExists` check (line 148-154) covers the common "not found" case, but a TOCTOU window or a permission failure still produces a raw OS error string in the user-facing dialog.
+
+**Where.** `src/lib/terminal-launcher.ts:173-180`.
+
+**Proposed fix.** Optional: pattern-match on the `err` code in the catch block and translate to user-friendly messages:
+```ts
+} catch (err) {
+  const code = (err as NodeJS.ErrnoException)?.code
+  const message = err instanceof Error ? err.message : String(err)
+  let friendly = message
+  if (code === "ENOENT") friendly = `Terminal command not found: ${command}`
+  else if (code === "EACCES") friendly = `Permission denied launching ${command}`
+  log.error("terminal", "Failed to launch terminal", message)
+  return { success: false, error: friendly }
+}
+```
+The `code === "ENOENT"` path is largely redundant with the pre-spawn check (line 148-155), but it covers the TOCTOU case. The `EACCES` path is the new value.
+
+**Status.** UX polish, not a bug.
+
+#### Finding 11.2.H — INFO — `Bun.spawn` exit code is not awaited; the launcher cannot tell if the terminal actually opened
+
+**Problem.** The function returns `{ success: true }` immediately after `Bun.spawn` returns a process object. The terminal may fail to start (e.g., display error, missing X server, no PTY) and the launcher has no way to know. This is intentional for a UI launcher — the user observes the terminal window directly, and the launcher's job is just to put the command in front of the OS.
+
+**Where.** `src/lib/terminal-launcher.ts:161-172`.
+
+**Status.** No fix recommended — fire-and-forget is the correct pattern for this use case.
+
+#### Summary of Phase 11.2 findings
+
+| #     | Severity | One-liner |
+|-------|----------|-----------|
+| 11.2.A | MEDIUM  | `Bun.spawn` is missing `detached: true`; SIGHUP from OCLoop exit can kill the launched terminal. |
+| 11.2.B | LOW     | Empty `config.args` for a custom terminal silently spawns with no command; dialog should reject empty args and launcher should reject empty `argsPattern`. |
+| 11.2.C | LOW     | Missing `{cmd}` placeholder in custom args silently spawns without the attach command; launcher should require the placeholder. |
+| 11.2.D | LOW     | Empty `attachCmd` produces a corrupted spawn argv (terminal opens empty shell); `buildArgs` should throw. |
+| 11.2.E | INFO    | `commandExists` does not handle absolute paths in custom commands; add a direct-file-existence check for `/`-prefixed commands. |
+| 11.2.F | INFO    | Misleading "Using 'inherit' for stdio" comment — code uses "ignore". |
+| 11.2.G | INFO    | Catch block returns raw OS error messages; pattern-match on `err.code` for user-friendly translations. |
+| 11.2.H | INFO    | Spawn exit code is not awaited; fire-and-forget is correct for a UI launcher. |
+
+**Net severity tally for Phase 11.2: 1 MEDIUM, 3 LOW, 4 INFO; no CRITICAL or HIGH.** The MEDIUM finding is a real-but-narrow signal-propagation risk that does not affect the happy path (OCLoop's TUI does not normally exit while a child terminal is running). The LOW findings are all "silent no-op launch" variants that are recoverable by the user (re-launch with the right args). The INFO findings document intentional design choices and minor diagnostic improvements. The 12-entry `KNOWN_TERMINALS` table was manually traced for argv correctness and every entry produces a valid spawn argv. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+
+---
+
+### 11.3 — Verify `getAttachCommand` produces valid commands for different server URLs (localhost, 127.0.0.1, custom ports)
+
+**Status: COMPLETE — VERIFIED, two LOW, three INFO findings; no MEDIUM/HIGH/CRITICAL.** The function is a one-line template literal; the manual trace across all 12 `KNOWN_TERMINALS` x 3 server-URL shapes (localhost, 127.0.0.1, custom port) produced identical, correct output. The LOW findings are defensive concerns about empty/edge-case inputs that the call site already guards against.
+
+The function under audit is `src/lib/terminal-launcher.ts:93-95`:
+
+```ts
+export function getAttachCommand(url: string, sessionId: string): string {
+  return `opencode attach ${url} --session ${sessionId}`
+}
+```
+
+This is a one-line template literal. There is no validation, no normalization, no escaping. It is exported and consumed in five places (verified by grep):
+
+| Caller | Line | Guard before call |
+|--------|------|-------------------|
+| `App.tsx` `showTerminalError` helper | 1336-1337 | `(sessionId() \|\| lastSessionId()) && server.url()` (short-circuit) |
+| `App.tsx` `launchConfiguredTerminal` | 1359 | `if (!url) return` (line 1357) |
+| `App.tsx` `onConfigCopy` | 1426 | `if (sid && url)` |
+| `App.tsx` `onErrorCopy` | 1437 | `if (sid && url)` |
+| `App.tsx` command handler `copy_attach` | 1527 | `if (sid && url)` (inline) |
+
+Every call site guards `url` and `sessionId` for non-null/non-empty. The function itself does not enforce this, which is the source of the LOW findings below.
+
+#### Per-URL-shape manual trace
+
+For a fixed session ID `ses_AB12cd`, the output of `getAttachCommand` for each URL shape:
+
+| URL                                            | Output                                                                     | Notes |
+|------------------------------------------------|----------------------------------------------------------------------------|-------|
+| `http://localhost:8080`                        | `opencode attach http://localhost:8080 --session ses_AB12cd`               | OK — default, happy path |
+| `http://localhost:9999`                        | `opencode attach http://localhost:9999 --session ses_AB12cd`               | OK — custom port works identically |
+| `http://127.0.0.1:8080`                        | `opencode attach http://127.0.0.1:8080 --session ses_AB12cd`               | OK — IPv4 loopback works |
+| `http://127.0.0.1` (no port)                   | `opencode attach http://127.0.0.1 --session ses_AB12cd`                    | OK — opencode defaults to :80 if no port; not exercised by OCLoop (the SDK always sets a port) |
+| `http://[::1]:8080`                            | `opencode attach http://[::1]:8080 --session ses_AB12cd`                   | OK — IPv6 loopback works (no spaces in the URL) |
+| `http://localhost:8080/` (trailing slash)      | `opencode attach http://localhost:8080/ --session ses_AB12cd`              | OK — opencode handles the trailing slash |
+| `https://localhost:8443`                       | `opencode attach https://localhost:8443 --session ses_AB12cd`              | OK — TLS scheme works |
+| `""` (empty)                                   | `opencode attach  --session ses_AB12cd` (double space)                    | **BAD** — See Finding 11.3.A. |
+| `"http://localhost:8080 path/with/space"`      | `opencode attach http://localhost:8080 path/with/space --session ses_AB12cd` | The space in the URL would cause `buildArgs` (line 104) to over-split the URL into two argv entries. The spawn would fail. **INFO** — URLs with spaces are not generated by `server.url()` (the SDK always returns a clean URL), so this is defensive only. |
+
+**Conclusion:** For the URLs the SDK actually produces (`http://127.0.0.1:<port>` or `http://localhost:<port>`), `getAttachCommand` is correct. The same shape holds for all 12 `KNOWN_TERMINALS` x all listed URL shapes — the manual trace through `buildArgs` produces the expected argv.
+
+#### Per-sessionId-shape manual trace
+
+| Session ID                | Output                                                              | Notes |
+|---------------------------|---------------------------------------------------------------------|-------|
+| `"ses_AB12cd"`            | `opencode attach <url> --session ses_AB12cd`                        | OK — typical opencode session ID |
+| `"ses_1234567890abcdef"`  | `opencode attach <url> --session ses_1234567890abcdef`              | OK — long form |
+| `""` (empty)              | `opencode attach <url> --session ` (trailing space)                 | **BAD** — opencode will error with "missing argument". The `if (sid)` guard at all call sites prevents this in practice. See Finding 11.3.B. |
+| `"ses with space"`        | `opencode attach <url> --session ses with space`                    | `buildArgs` would split on the space and produce `["opencode", "attach", "<url>", "--session", "ses", "with", "space"]`. The opencode command would fail. **INFO** — opencode session IDs are always flat ASCII (no spaces), so this is defensive only. |
+| `"ses_123; rm -rf /"`     | `opencode attach <url> --session ses_123; rm -rf /`                  | When the value flows into `buildArgs` and then into `Bun.spawn`, the `;` is just a literal character in an argv entry (Bun.spawn does not invoke a shell). When the value is **copied to the clipboard** (App.tsx:1427, 1437, 1528), a user who pastes it into a real shell WOULD trigger the `rm -rf /`. **INFO** — the value comes from opencode and never contains metacharacters, so the risk is theoretical. See Finding 11.3.C. |
+
+#### Finding 11.3.A — LOW — Empty `url` produces a malformed `opencode attach  --session ...` string (double space)
+
+**Problem.** `getAttachCommand("", "ses_AB12cd")` returns `"opencode attach  --session ses_AB12cd"` with a literal double space. `buildArgs` (terminal-launcher.ts:104) splits on space and filters empties, so the resulting argv is `["opencode", "attach", "--session", "ses_AB12cd"]` — the empty URL token is silently dropped, and `opencode attach --session ses_AB12cd` runs with the URL argument missing entirely. The error path (`commandExists` for the URL? — no, the URL is just an arg to `opencode attach`) surfaces as `opencode: error: missing URL argument`, which the user sees as a confusing "the terminal opened but the attach command failed" message.
+
+The current call sites all guard `url` for non-null/non-empty:
+- `App.tsx:1336-1337` — `(sessionId() || lastSessionId()) && server.url()` short-circuits
+- `App.tsx:1356-1357` — `if (!url) return` in `launchConfiguredTerminal`
+- `App.tsx:1425-1426`, `1436-1437` — `if (sid && url)` in copy handlers
+- `App.tsx:1526-1527` — `if (sid && url)` in copy_attach command
+
+So the function is never called with an empty `url` in the current code. The finding is defensive.
+
+**Where.** `src/lib/terminal-launcher.ts:93-95`.
+
+**Proposed fix.** Defensive guard at the top of the function:
+```ts
+export function getAttachCommand(url: string, sessionId: string): string {
+  if (!url) {
+    throw new Error("getAttachCommand: url is required")
+  }
+  if (!sessionId) {
+    throw new Error("getAttachCommand: sessionId is required")
+  }
+  return `opencode attach ${url} --session ${sessionId}`
+}
+```
+The throw surfaces to the caller, which already has a `try/catch` only in `launchTerminal` (line 124, 173). The other call sites (copy handlers, command handler) would need to add a guard or try/catch if they want a user-friendly fallback. The simpler fix is to **not throw** and instead return a sentinel like `""` so the copy-to-clipboard path can skip the copy and show a toast — but that pushes the validation to the caller. The throw is more correct; the caller fix is to add a try/catch.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.3.B — LOW — Empty `sessionId` produces a malformed `opencode attach <url> --session ` string (trailing space)
+
+**Problem.** `getAttachCommand("http://localhost:8080", "")` returns `"opencode attach http://localhost:8080 --session "` (trailing space). The empty `--session` value is passed to opencode, which errors with `opencode: error: argument --session requires a value`. The current call sites all guard `sessionId` for non-null/non-empty (same guards as Finding 11.3.A), so this is defensive.
+
+**Where.** `src/lib/terminal-launcher.ts:93-95`.
+
+**Proposed fix.** Same as 11.3.A — add a guard inside the function that throws on empty inputs.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.3.C — INFO — `getAttachCommand` output is not shell-escaped; safe for `Bun.spawn` but unsafe if pasted into a real shell
+
+**Problem.** The output of `getAttachCommand` is consumed in two ways:
+1. Passed to `launchTerminal` (App.tsx:1359 -> 1366) -> `buildArgs` -> `Bun.spawn` argv. **Safe** — `Bun.spawn` does not invoke a shell; each argv entry is passed verbatim to `execve`.
+2. Copied to the clipboard (App.tsx:1427, 1437, 1528) -> the user pastes it into a real shell. **Unsafe if the URL or session ID contains shell metacharacters** — but neither ever does in the current code path. The URL comes from `server.url()` (the SDK always returns a clean `http://localhost:<port>` shape), and the session ID comes from opencode (always a flat ASCII token like `ses_AB12cd`).
+
+The current data flow is safe, but the function has no defensive escaping in case a future caller passes an unsanitized value.
+
+**Where.** `src/lib/terminal-launcher.ts:93-95`.
+
+**Proposed fix.** Not recommended for the current data flow (it would add complexity for a non-existent risk). If the function is ever exposed to user-supplied URLs, the output should be passed as argv to `Bun.spawn` (not shell-parsed), or shell-escaped via a library like `shell-escape` before being copied to the clipboard.
+
+**Status.** No fix recommended for the current data flow; flagged for the next time `getAttachCommand` is touched.
+
+#### Finding 11.3.D — INFO — Trailing slash in URL is preserved verbatim
+
+**Problem.** `getAttachCommand("http://localhost:8080/", "ses_AB12cd")` returns `opencode attach http://localhost:8080/ --session ses_AB12cd`. The `opencode attach` subcommand is documented to accept both `http://localhost:8080` and `http://localhost:8080/` (the trailing slash is stripped by most HTTP clients). The OCLoop SDK never produces a trailing slash, so this is theoretical.
+
+**Where.** `src/lib/terminal-launcher.ts:93-95`.
+
+**Status.** No fix recommended — `opencode attach` handles the trailing slash.
+
+#### Finding 11.3.E — INFO — IPv6 loopback (`http://[::1]:port`) is preserved verbatim
+
+**Problem.** `getAttachCommand("http://[::1]:8080", "ses_AB12cd")` returns `opencode attach http://[::1]:8080 --session ses_AB12cd`. The brackets are part of the URL, no spaces, no shell metacharacters. `buildArgs` splits correctly, `Bun.spawn` passes it verbatim. The OCLoop SDK does not currently produce IPv6 URLs (it always uses `127.0.0.1`), so this is theoretical.
+
+**Where.** `src/lib/terminal-launcher.ts:93-95`.
+
+**Status.** No fix recommended — works correctly if the SDK ever starts producing IPv6 URLs.
+
+#### Summary of Phase 11.3 findings
+
+| #     | Severity | One-liner |
+|-------|----------|-----------|
+| 11.3.A | LOW     | Empty `url` produces a malformed `opencode attach  --session ...` (double space); function should throw on empty inputs. |
+| 11.3.B | LOW     | Empty `sessionId` produces a trailing-space string; function should throw on empty inputs. |
+| 11.3.C | INFO    | Output is not shell-escaped; safe for `Bun.spawn` (argv), unsafe if pasted into a shell — but URL/sessionId come from trusted sources (SDK + opencode), so no current risk. |
+| 11.3.D | INFO    | Trailing slash in URL is preserved verbatim; `opencode attach` handles it. |
+| 11.3.E | INFO    | IPv6 loopback (`http://[::1]:port`) is preserved verbatim; not currently produced by the SDK. |
+
+**Net severity tally for Phase 11.3: 2 LOW, 3 INFO; no CRITICAL, HIGH, or MEDIUM.** The function is correct for the URLs and session IDs the SDK actually produces — `http://127.0.0.1:<port>` and `http://localhost:<port>` paired with a flat-ASCII opencode session ID. The two LOW findings are defensive guards against empty inputs that the call sites already prevent; the three INFO findings document design choices that work for the current data flow. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+
+---
+
+**Combined tally for Phase 11 (1.1 + 1.2 + 1.3):** 2 MEDIUM (Windows path detection, no macOS-native terminals — both from 11.1) + 1 MEDIUM (missing `detached: true` — 11.2.A) = **3 MEDIUM**; 2 LOW (from 11.1) + 3 LOW (from 11.2) + 2 LOW (from 11.3) = **7 LOW**; 2 INFO (from 11.1) + 4 INFO (from 11.2) + 3 INFO (from 11.3) = **9 INFO**; no CRITICAL or HIGH. The MEDIUMs are real gaps on supported platforms (Windows + stock macOS) and a signal-propagation hardening (detached spawn). The LOWs are silent-no-op-launch variants (11.2.B/C/D) and defensive empty-input guards (11.3.A/B). The INFOs document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
