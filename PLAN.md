@@ -1692,10 +1692,75 @@ cambio en el conteo (era 694 antes del fix). Commit `04e7829`.
 
 ### Mejora 42 — Finding 11.4.D — LOW — `clipboard.ts` has no test coverage
 
-- [ ] Evaluar la mejora 42 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 42 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 42 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 42 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 42 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 42 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 42 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 42 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: el audit (`MEJORAS.md:14004-14028`) propone una
+suite "mockable" que inyecta `commandExists` y el exit code de
+`Bun.spawn`. La opción de **PATH manipulation** (mi primer
+intento) falla porque `Bun.spawn` no hereda mutaciones de
+`process.env` cuando se ejecuta dentro de `bun test` (verificado
+empíricamente: `Bun.spawn(["/bin/sh", "-c", "echo $PATH"])` dentro
+de un test con `process.env.PATH = ""` ve el PATH original del
+parent, no el modificado). Eso descarta la opción "drive
+`commandExists` through PATH" del audit.
+
+La opción de **dependency injection** (refactor a
+`createClipboard({ commandExists })` siguiendo el patrón de
+`createSleepDetector`) sería la más consistente con el codebase
+pero cambia la API pública de dos funciones usadas desde
+`App.tsx:1427, 1438, 1528` — overhead desproporcionado para un
+LOW finding que solo agrega cobertura, no cambia comportamiento.
+
+La opción de **`mock.module`** (escogida) sí es segura aquí: la
+advertencia de `docs/testing.md` sobre `mock.module` es
+JSX-transform-específica ("@opentui/solid mocks via mock.module
+rompen el JSX transform"), y `clipboard.ts` /
+`command-exists.ts` no tienen JSX. El patrón funciona: el factory
+del mock se ejecuta una vez por import de `command-exists` y la
+closure sobre `commandExistsImpl` permite a cada test swap-ear
+el comportamiento entre runs.
+
+4 tests en `src/lib/clipboard.test.ts` cubren los 3 escenarios
+del audit más el cross-reference 11.4.G:
+
+1. `skipIf(process.platform !== "darwin")`: cuando `commandExists`
+   retorna `true` para `pbcopy`, `detectClipboardTool` retorna
+   `{ command: "pbcopy", args: [] }`.
+2. `skipIf(process.platform !== "win32")`: análogo para `clip` /
+   `win32`.
+3. **Todos los platforms**: con todos los probes en `false`,
+   `detectClipboardTool` retorna `null` (la platform check
+   happens before the probes, así que el resultado es
+   platform-independent).
+4. **Todos los platforms**: `copyToClipboard("hello")` con no
+   tool available retorna `{ success: false, error: ... }` cuyo
+   `error` contiene el hint específico del platform
+   (pbcopy / clip.exe / wl-copy-or-xclip-or-xsel). Esto cierra
+   Finding 11.4.G como side-effect (Mejora 39/40 agregó el
+   per-platform hint; este test lo pinea).
+
+Cero cambios al production code de `clipboard.ts` — el contract
+de `detectClipboardTool` y `copyToClipboard` es el mismo. Cero
+cambios a `App.tsx` (sus 3 call sites siguen intactos). Cero
+cambios al reducer o al lifecycle de iteración. El único
+"side-effect" del test file es la llamada top-level a
+`mock.module("./command-exists", ...)` que Bun hoistea antes del
+`await import("./clipboard")` — exactamente la única forma de
+hacer que el módulo bajo test vea el mock.
+
+**Por qué no se testea el camino del éxito del spawn**: el
+audit tampoco lo pide (sus 3 tests son pbcopy/null/copy-fail).
+Testear el spawn real requeriría o bien un shim en PATH (frágil
+cross-platform) o un mock de `Bun.spawn` (no usado en ningún test
+del codebase). El test del path no-tool cierra el user-facing gap
+de 11.4.G; el resto del spawn code (write/end/exitCode
+parsing) es estructural y code review lo cubre. `bun test`
+verde: 697 pass / 1 skip / 0 fail, 1719 expect() calls, 24
+files, 310 ms (era 694 / 0 / 0 / 23, +4 tests, +5 expects, +1
+file). Commit `8934ac0`.
 
 ### Mejora 43 — Finding 12.1.A — MEDIUM — `loadConfig` does not validate per-field types
 
