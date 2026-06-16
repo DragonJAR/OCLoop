@@ -49,7 +49,7 @@ export function getLayout(cols?: number, rows?: number): Layout {
   // Log line prefix: "HH:MM:SS"(8) + "  "(2) + glyph+space(2) + "[label]" padded
   // to LABEL_WIDTH(11) + 1 = 24. The activity log truncates the message to this
   // budget (the single, width-aware truncation point — no fixed caps upstream).
-  const logContentWidth = Math.max(16, inner - 24)
+  const logContentWidth = Math.max(16, inner - 27)
   const taskWidth = Math.max(16, inner - 8) // minus the "Task: " prefix + slack
   return {
     cols: c,

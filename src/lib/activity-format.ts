@@ -68,7 +68,7 @@ export const LEVEL_COLOR: Record<Level, ColorKey> = {
  * ponytail: every `logLbl*` translation must fit `[label]` ≤ this (≤ 9 chars);
  * longer ones break column alignment (padEnd won't shrink them).
  */
-export const LABEL_WIDTH = 11
+export const LABEL_WIDTH = 14
 
 export interface FormatInput {
   type: ActivityEventType

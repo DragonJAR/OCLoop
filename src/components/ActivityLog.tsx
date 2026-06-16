@@ -84,13 +84,10 @@ export function ActivityLog(props: ActivityLogProps) {
         viewportOptions={{
           paddingRight: props.showScrollbar ? 1 : 0,
         }}
-        // ponytail: pack events to the bottom so a short log hugs the fold instead
-        // of leaving a blank band below it (matches stickyStart:"bottom" intent).
-        contentOptions={{ justifyContent: "flex-end" }}
         flexGrow={1}
         style={{
           flexDirection: "column",
-          paddingLeft: 1,
+          paddingLeft: 2,
           paddingBottom: 2,
           overflow: "hidden",
         }}
