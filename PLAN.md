@@ -169,10 +169,26 @@ cambios de código.
 
 ### Mejora 7 — Finding 1.7.A — MEDIUM — `--create-plan` silently swallows TUI-only flags; no diagnostic
 
-- [ ] Evaluar la mejora 7 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 7 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 7 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 7 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 7 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 7 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 7 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 7 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural: `parseArgs` es un tokenizer
+puro y no valida compatibilidad semántica entre flags. La superficie
+de "ignorar silenciosamente" es real (7 flags), pero la corrección en
+raíz está acotada: añadir un warning no-fatal en la rama
+`args.createPlan` de `main()` que liste los flags TUI-only detectados.
+Implementación mínima: extraer la lógica a una función pura
+`getIgnoredCreatePlanFlags(args)` en `src/lib/create-plan-warning.ts`
+(12 líneas, una decisión por flag) y llamarla desde `src/index.tsx`
+justo antes de `runCreatePlan()`. Cero cambios al parser, cero cambios
+a la TUI, cero impacto en los caminos `--create-plan` que ya no
+ignoran nada. Warning es pipeable (`2>/dev/null`) y sigue la
+convención `console.error → stderr` de `cli-args.ts`. Cubierto por 7
+tests en `create-plan-warning.test.ts` que pinean defaults → [],
+cada flag, `--prompt` solo cuando el path difiere del default, sin
+falsos positivos en `planTimeoutMs`/etc., y orden estable.
 
 ### Mejora 8 — Finding 1.7.B — LOW — `--create-plan --prompt X` skips the prompt-file validation
 
