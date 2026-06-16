@@ -3123,3 +3123,185 @@ No new unit tests added. Rationale:
 
 `bun test` → **623 pass, 0 fail, 1512 expect() calls** across
 21 files. No regressions.
+
+### 4.2 — Verify the `startingIteration` guard against rapid state transitions
+
+**Status: COMPLETE — VERIFIED, one INFO finding and one LOW
+finding (defensive cleanup of an already-safe pattern).**
+
+The `startingIteration` flag (App.tsx:172) is a plain
+`let`-bound boolean (NOT a Solid signal), owned by the
+closure created in `App.tsx`. The guard is a
+`if (startingIteration) return` early-return at App.tsx:781,
+set to `true` at App.tsx:787, and reset to `false` in the
+`finally` block at App.tsx:854. The function is invoked from
+exactly one site: the iteration-driver effect at
+App.tsx:1217-1222, whose condition is
+`state.type === "running" && state.sessionId === ""`.
+
+#### Walkthrough: can the effect re-fire while the guard is `true`?
+
+The effect depends on `loop.state()` only; it does NOT read
+`startingIteration`. So the effect re-runs only when
+`loop.state()` returns a new value. The state can only change
+via `loop.dispatch(...)`, and the only dispatches reachable
+from inside `startIteration` are:
+
+1. **Line 796-799** — `plan_complete` (only if
+   `checkPlanComplete()` returns `true`). State moves
+   `running("") → complete`. The next effect run sees
+   `state.type !== "running"` and skips the call. ✓
+2. **Line 822** — `iteration_started` (after `createSession`
+   succeeds). State moves
+   `running("") → running(newSessionId)`. The next effect run
+   sees `sessionId !== ""` and skips the call. ✓
+
+Both transitions move the state OUT of the
+`running("")` gate, so the effect's condition becomes false
+the moment either dispatch lands. The effect therefore
+cannot re-fire `startIteration` while the guard is held.
+The `try/catch/finally` releases the guard before
+control returns to the iteration-driver for any of these
+exit paths:
+
+- **Success** (line 818-846): `finally` runs after
+  `refreshPlan()` resolves.
+- **`plan_complete` early-return** (line 800): the
+  `try` was already entered, so `finally` runs.
+- **Caught error** (line 850-852): `handleIterationError`
+  returns, `finally` runs.
+
+There is no code path between `startingIteration = true`
+(line 787) and `try {` (line 789) that can throw
+synchronously, so the flag cannot "stick" — the only
+synchronous exits above line 789 are the `if (startingIteration) return` and the `if (!url) return`,
+both of which set nothing and leave the flag at `false`.
+
+#### Walkthrough: what if the effect DOES re-fire before the guard is cleared?
+
+Even though the state-machine transitions make a
+during-flight re-fire impossible via the in-function
+dispatchers, the guard ALSO protects against a class of
+re-fires it cannot enumerate:
+
+- **External dispatches** that re-enter `running("")` while
+  `startIteration` is in flight. The reducer has no such
+  transition today (every `session_idle` from `running` is
+  idempotent at line 136, and `iteration_started` from any
+  non-running/paused state is a no-op at line 78-96), but a
+  future dispatch from a watchdog action or a future SSE
+  event handler could in principle reset `sessionId` to `""`
+  without going through the normal idle path. The guard
+  prevents that hypothetical second session creation.
+- **Microtask ordering surprises** introduced by future
+  refactors of `createSession` or `sendPromptAsync` (e.g.
+  if either begins touching a Solid signal as a side
+  effect). The guard is the last line of defense.
+- **Solid effect batching edge cases** — Solid's
+  `createEffect` runs once per dependency change in a
+  single tick, so it cannot double-fire from the same state
+  change, but the contract is not statically obvious and a
+  future contributor might reasonably worry that it could.
+
+In all three cases, the guard's
+`if (startingIteration) return` is the correct
+response: skip the second iteration silently, leaving the
+in-flight call to own the actual session creation. The
+in-flight call's `finally` releases the guard once it
+completes (success, error, or plan_complete), at which
+point the next effect run will see `sessionId` either set
+(normally) or the state out of `running("")` (plan
+complete), and will not call `startIteration` again until
+the next genuine idle.
+
+#### Finding 4.2.A — INFO — The guard is correctly released on every exit path
+
+No fix needed. The `finally` block at App.tsx:853-855
+is reachable from every branch:
+
+- Normal completion (line 849 → finally)
+- `plan_complete` early-return (line 800 → finally)
+- `handleIterationError` caught (line 852 → finally)
+- `url` early-return (line 785, before the guard is set;
+  trivially correct)
+- Guard early-return (line 781, before the guard is set;
+  trivially correct)
+
+The only escape route is a process abort (uncaught
+exception in a higher-up microtask, or `process.exit()`
+from another handler) — in which case the whole process
+is gone and the flag's value is irrelevant.
+
+#### Finding 4.2.B — LOW — `startingIteration` is a plain variable, not part of the persisted state
+
+**Problem.** `startingIteration` lives only in the
+`App.tsx` closure. After a hard crash of the OCLoop
+process while a `startIteration` call was in flight, the
+process restart begins with `startingIteration = false`
+(via the `let` initialization at line 172). This is
+correct — the in-flight call is dead — but a code reader
+who only looks at the `let` declaration might miss the
+fact that the guard is intentionally process-scoped, not
+session-scoped. The persisted snapshot
+(`PersistedLoopState`, App.tsx:1278-1285) does NOT carry
+the flag, which is the right call (it would be stale
+after restart), but the asymmetry between "the iteration
+count is persisted" and "the in-flight guard is not" is
+worth a one-line comment.
+
+**Where.** `src/App.tsx:172` (declaration), `src/App.tsx:1278-1285` (persisted snapshot).
+
+**Proposed fix.** Add a comment on the `let
+startingIteration = false` line clarifying that the guard
+is process-scoped and intentionally NOT persisted (a fresh
+process always starts with no in-flight iteration):
+
+```ts
+// Process-scoped in-flight guard. NOT persisted: a fresh
+// process always starts with no in-flight iteration, even
+// if `.loop-state.json` says the previous process was
+// mid-start. The reducer's `iteration_started` dispatch
+// is the source of truth for "we have a session".
+let startingIteration = false
+```
+
+**Status.** Fix proposed, not applied. A comment-only
+change, zero runtime impact. No test required (the
+behavior is already correct, this is purely a
+documentation affordance).
+
+#### Test-suite delta for Task 4.2
+
+No new unit tests added. Rationale:
+
+- The guard is a plain non-reactive `let`; it is not
+  reachable from outside the `App.tsx` closure. A unit
+  test that imports the flag would require extracting it
+  into a module-level binding, which would weaken the
+  encapsulation that makes the guard safe in the first
+  place.
+- The state-machine guarantee (effect re-fires only when
+  `loop.state()` changes, and every in-function dispatch
+  moves state OUT of `running("")`) is already pinned by
+  the 3.1 matrix tests
+  (`src/hooks/useLoopState.test.ts:833-1056`), which
+  exhaustively test every action's transition and
+  no-op set.
+- The `finally` release is implicit JavaScript semantics
+  — every `try` block has a `finally` and the only way
+  for the body to bypass it is `process.exit()` (which
+  also kills the persistence effect, so the unpersisted
+  flag is moot).
+- The defenses in depth enumerated above (External
+  dispatches / Microtask surprises / Solid batching) are
+  hypothetical; the existing code cannot trigger them, so
+  a test would either be a tautology (`if (true)
+  return;`) or a test of the JavaScript runtime itself.
+
+`bun test` → **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
+
+---
+
+
+21 files. No regressions.
