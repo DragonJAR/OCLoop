@@ -1151,10 +1151,33 @@ expect() calls explícitos; la aserción es
 
 ### Mejora 31 — Finding 8.4.A — LOW — `void saveLoopState(snapshot)` is fire-and-forget
 
-- [ ] Evaluar la mejora 31 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 31 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 31 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 31 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 31 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 31 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 31 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 31 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: el propio audit (`MEJORAS.md:10195-10229`) cierra el
+finding con un veredicto explícito: **"Mark as INFO (not LOW) —
+the finding is recorded for completeness but no change is proposed"**,
+y la tabla resumen (`MEJORAS.md:10694`) reclasifica 8.4.A como
+`LOW (INFO)`. La causa raíz es estructural y la fix propuesta
+(`MEJORAS.md:10219-10226`) sería contraproducente: bloquear el
+`createEffect` reactivo (`App.tsx:1381-1401`, donde ahora vive la
+llamada — la auditoría referenciaba la línea 1286, pero el bloque
+driitó por los commits Mejoras 11/12/14 sin cambiar la
+intención) sobre un `writeFile`+`rename` acoplaría la
+responsividad de la TUI a la latencia del filesystem. El contrato
+existente de `saveLoopState` (`loop-state-store.ts:46-48`,
+"Never throws — persistence is best-effort and must not crash
+the app") refuerza la misma política: el caller no debe
+bloquearse, y el error ya se loggea como `log.warn` en la
+línea 70. La ventana de staleness (~1ms en SSD local) es
+asumida por el audit como "indicador de un problema mucho
+mayor (kernel bug, hardware fault)" — a ese nivel perder 1ms de
+progreso es irrelevante. Implementación mínima: anotación en
+este plan; cero cambios de código. `bun test` verde: 686
+pass / 0 fail, 1685 expect() calls, 23 files, 301 ms — sin
+cambio en el conteo (era 686 antes de la anotación).
 
 ### Mejora 32 — Finding 8.5.A — MEDIUM — `verdict === "idle"` discards the in-flight iteration's result and may over-count work
 
