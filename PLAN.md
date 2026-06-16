@@ -77,7 +77,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: watchdog `isActive` probe returns true only for `running`/`pausing` states with a non-empty sessionId — confirm this matches `getActiveSessionId`
 - [x] Verify: watchdog stops and starts correctly based on `loop.isRunning()` — paused and cooldown states should NOT have the watchdog running
 - [x] Verify: `notifyWake` resets the heartbeat baseline — confirm this prevents immediate re-triggering after a server restart
-- [ ] Verify: `notifyIdle` resets the watchdog — called on `session_idle` and on `reconcileAndAdvance` returning `idle`/`missing`
+- [x] Verify: `notifyIdle` resets the watchdog — called on `session_idle` and on `reconcileAndAdvance` returning `idle`/`missing`
 - [ ] Verify: `abortAndRetry` in watchdog actions dispatches `session_idle` — this re-enters the iteration driver; confirm there's no infinite loop if the session keeps failing
 - [ ] Verify: `restartServer` in watchdog actions — if the server fails to restart, does the watchdog escalate to `fail`?
 

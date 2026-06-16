@@ -688,4 +688,106 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.calls.abortAndRetry).toBe(0) // unchanged
     expect(s.calls.fail.length).toBe(0) // breaker not yet tripped
   })
+
+  // --- Phase 6.5: notifyIdle audit coverage ---
+
+  it("notifyIdle resets recoveryAttempts and sets health to HEALTHY (clean session end)", async () => {
+    // PLAN.md 6.5: notifyIdle represents "the session completed cleanly"
+    // — the legitimate end-of-iteration signal. It must (a) drop the
+    // watchdog back to HEALTHY and (b) zero the recovery budget, because
+    // a real session-end is a stronger proof of life than any heartbeat.
+    // (Contrast with notifyIterationStart, which resets the baseline but
+    // deliberately PRESERVES the budget — see the design-symmetry
+    // discussion in Phase 6.1 / 6.4 of MEJORAS.md.)
+    const s = setup({ reconcile: "working" })
+
+    // Drive past T2 to wedge and force attempt 1 = abortAndRetry.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.abortAndRetry).toBe(1)
+    expect(s.calls.restartServer).toBe(0)
+
+    // The "session ended" signal arrives (e.g. SSE onSessionIdle or a
+    // reconcile verdict of "idle"/"missing" — the watchdog's own tick
+    // resets state inline at useWatchdog.ts:263-264 for the latter).
+    s.wd.notifyIdle()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Verify recoveryAttempts was actually reset to 0 (not just set
+    // HEALTHY while leaving the counter non-zero). A fresh wedge must
+    // start from attempt 1 (abortAndRetry), not attempt 2 (restartServer).
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(2) // new attempt 1 of next cycle
+    expect(s.calls.restartServer).toBe(0) // not attempt 2
+    expect(s.calls.fail.length).toBe(0) // breaker not yet tripped
+  })
+
+  it("notifyIdle does NOT reset lastHeartbeatAt (deliberate, unlike recordHeartbeat and notifyWake)", async () => {
+    // The watchdog's three "context-change" notifiers each touch a
+    // different subset of state. The asymmetry is documented in the
+    // source comments at useWatchdog.ts:140-167 and pinned in tests:
+    //
+    //   recordHeartbeat    — resets lastHeartbeatAt + recoveryAttempts + HEALTHY
+    //   notifyIterationStart — resets lastHeartbeatAt + HEALTHY (preserves budget)
+    //   notifyWake         — resets lastHeartbeatAt + HEALTHY (preserves budget)
+    //   notifyIdle         — resets recoveryAttempts + HEALTHY (preserves baseline)
+    //
+    // notifyIdle represents "the session is gone, no in-flight work to
+    // measure silence against". The next iteration's startIteration
+    // calls notifyIterationStart, which DOES reset the baseline. Until
+    // then, the stale baseline is correct — there is no live session
+    // whose silence could indicate a wedge.
+    const s = setup({ reconcile: "working" })
+
+    // Force a non-HEALTHY state by advancing past T1 (suspicion).
+    s.clk.advance(T1 + 10_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("SUSPECT")
+
+    // notifyIdle drops the watchdog to HEALTHY but leaves the baseline
+    // alone. To prove this, advance the clock by a small amount and
+    // tick. If notifyIdle HAD reset the baseline, dt would be small
+    // (well under T1) and the tick would short-circuit to HEALTHY.
+    // Since notifyIdle does NOT reset the baseline, dt is still over
+    // T1, the tick re-enters CONFIRMING, and the watchdog lands on
+    // SUSPECT (working + dt in [T1, T2)) — not HEALTHY.
+    s.wd.notifyIdle()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    s.clk.advance(1_000) // dt is now T1+11_000, well over the suspect threshold
+    await s.wd.tick()
+    expect(s.wd.health()).not.toBe("HEALTHY") // baseline NOT reset by notifyIdle
+    expect(s.wd.health()).toBe("SUSPECT") // verdict=working + dt<T2
+  })
+
+  it("notifyIdle in RECOVERING state: cancels the in-flight recovery and drops to HEALTHY", async () => {
+    // A real-world race: the watchdog has just dispatched a recovery
+    // action (e.g. abortAndRetry) when a legitimate session.idle event
+    // arrives from the SSE stream. The abort is now wasted (the session
+    // was actually done), but the recovery counter must still be reset
+    // — the idle is genuine proof that the session completed. This
+    // pins that notifyIdle is a hard reset for recoveryAttempts, not
+    // a soft hint that can be ignored if RECOVERING is set.
+    const s = setup({ reconcile: "working" })
+
+    // Wedge → attempt 1 = abort. State is RECOVERING.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("RECOVERING")
+    expect(s.calls.abortAndRetry).toBe(1)
+
+    // The session.idle event arrives (mid-recovery, race condition).
+    s.wd.notifyIdle()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // A subsequent wedge starts at attempt 1, not attempt 2. This
+    // proves the recovery counter was zeroed even though the prior
+    // attempt 1 had fired.
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(2) // new attempt 1 of next cycle
+    expect(s.calls.restartServer).toBe(0) // not attempt 2
+  })
 })

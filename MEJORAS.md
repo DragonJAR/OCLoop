@@ -6111,3 +6111,365 @@ Added 3 new tests to `useWatchdog.test.ts` to pin the
 
 `bun test` -> **635 pass, 0 fail, 1575 expect() calls**
 across 21 files. No regressions.
+
+### Task 6.5 — `notifyIdle` resets the watchdog on a clean session end (called from `onSessionIdle`; the reconcile path resets state inline)
+
+PLAN.md 6.5: "Verify: `notifyIdle` resets the
+watchdog — called on `session_idle` and on
+`reconcileAndAdvance` returning `idle`/`missing`."
+
+**Status: COMPLETE — VERIFIED. One LOW finding
+(reconcileAndAdvance does not call `notifyIdle`, by
+design). No HIGH/CRITICAL findings.**
+
+#### What `notifyIdle` actually does
+
+`useWatchdog.ts:151-154`:
+
+```ts
+function notifyIdle(): void {
+  recoveryAttempts = 0
+  setHealth("HEALTHY")
+}
+```
+
+Two observable side effects:
+
+1. **`recoveryAttempts = 0`** — the recovery
+   budget is zeroed. A clean session end is the
+   strongest possible "proof of life" the
+   watchdog can witness (stronger than a
+   heartbeat, which is just a tool call), so
+   any in-progress circuit-breaker accounting
+   is obsolete.
+2. **`setHealth("HEALTHY")`** — the reactive
+   `health` signal is forced back to `HEALTHY`
+   regardless of prior value (`SUSPECT`,
+   `CONFIRMING`, `STUCK`, or `RECOVERING`).
+
+The function does **not** reset
+`lastHeartbeatAt` (deliberate — see design
+symmetry below), and it does **not** log
+(silent).
+
+#### Single call site in `App.tsx`
+
+```
+$ grep -n 'watchdog\.notifyIdle' src/App.tsx
+503:    watchdog.notifyIdle()   # onSessionIdle (SSE handler)
+```
+
+`notifyIdle` is called from exactly one place
+in the App: the SSE `onSessionIdle` handler at
+`App.tsx:491-507`, which fires when the OpenCode
+SSE stream delivers a `session.idle` event for
+the current session. The handler:
+
+1. Verifies the event's sessionId matches the
+   current or debug session (stale-session
+   guard).
+2. Resets the rate-limit counter
+   (`rateLimitAttempts = 0`).
+3. Calls `watchdog.notifyIdle()` ← the reset.
+4. Dispatches `{ type: "session_idle" }` to
+   the loop reducer.
+5. Logs the activity.
+
+The call ordering matters: `notifyIdle` is
+invoked *before* the loop dispatch, so the
+watchdog's recovery counter is zeroed in the
+same microtask as the loop transition. By the
+time the loop reducer runs and the next
+iteration is queued, the watchdog is in a
+clean state.
+
+#### Why the reconcile path does NOT call `notifyIdle`
+
+The PLAN.md task statement hypothesises that
+`reconcileAndAdvance` returning `"idle"` or
+`"missing"` should also call `notifyIdle`. The
+audit verifies that **it does not, and that this
+is correct by design**. Two distinct paths
+handle the reconcile outcome, and neither needs
+to call `notifyIdle`:
+
+**Path A — the watchdog's own `tick()` sees
+`verdict === "idle" | "missing"`.** At
+`useWatchdog.ts:259-266`:
+
+```ts
+if (verdict === "idle" || verdict === "missing") {
+  log("desync_recovered", { verdict })
+  options.actions.synthesizeIdle()
+  recoveryAttempts = 0
+  setHealth("HEALTHY")
+  return
+}
+```
+
+The watchdog resets `recoveryAttempts = 0` and
+`setHealth("HEALTHY")` *inline* before
+dispatching the `synthesizeIdle` action. This
+is the same two-step recipe as `notifyIdle`
+(plus a log line), so calling the public
+`notifyIdle` from inside `synthesizeIdle` would
+be redundant. The test at
+`useWatchdog.test.ts:317-334`
+("`tick() path: server ping succeeds,
+reconcile=idle → synthesizeIdle, recovery
+attempts reset`") pins that a subsequent wedge
+after this reset starts at attempt 1 (abort),
+not attempt 2 (restart).
+
+**Path B — external callers of
+`reconcileAndAdvance`.** Three external
+callers in `App.tsx`:
+
+- `handleWake` (line 219) — post-sleep
+  recovery. The handler *already* called
+  `watchdog.notifyWake()` (line 208) before
+  the reconcile, which sets `health =
+  "HEALTHY"` and resets the baseline. The
+  only state `notifyIdle` would change
+  beyond `notifyWake` is `recoveryAttempts =
+  0`. The recovery budget is preserved
+  across wakes by design (Phase 6.4
+  invariant), so the post-wake state is
+  correct without `notifyIdle`.
+- `restartServer` (line 654) — post-restart
+  recovery. The action body is guarded by
+  `if (verdict === "working")` for the
+  `notifyWake()` call (line 660). When
+  verdict is `"idle"` or `"missing"`, the
+  loop advances via `session_idle` (the
+  dispatch at line 640), which transitions
+  `running("sessionId") → running("")`. The
+  watchdog's `isActive` probe
+  (`App.tsx:242-247`) then returns `false`
+  (no sessionId), and the next tick
+  short-circuits to `HEALTHY` at
+  `useWatchdog.ts:216-219`. The
+  `recoveryAttempts` counter is stale, but
+  the watchdog is no longer active, so it
+  is irrelevant.
+- `doResume` (line 1187) — post-resume
+  recovery. The reconcile call is guarded
+  by `if (verdict === "working" &&
+  p.sessionId)` (line 1176), so the
+  reconcile path is only reached when the
+  verdict is `"working"`. The `"idle"` /
+  `"missing"` branch takes a different
+  `else` (line 1188) that does not call
+  `reconcileAndAdvance`.
+
+**Finding 6.5.A — LOW — `reconcileAndAdvance`
+does not call `watchdog.notifyIdle()` when it
+returns `"idle"` or `"missing"`, by design.**
+
+The PLAN.md task statement suggested that
+`notifyIdle` should be called from
+`reconcileAndAdvance` on a `"idle"`/`"missing"`
+verdict. The audit confirms the call is
+absent in `App.tsx:625-643`, but the behavior
+is correct because:
+
+1. The watchdog's own `tick()` (the primary
+   reconcile trigger) resets
+   `recoveryAttempts = 0` and sets
+   `health = "HEALTHY"` inline at
+   `useWatchdog.ts:263-264` before
+   dispatching `synthesizeIdle`. The
+   public `notifyIdle` is a thin wrapper
+   around these same two operations (plus
+   `recoveryAttempts = 0`), so calling
+   it from `synthesizeIdle` would be a
+   no-op.
+2. External `reconcileAndAdvance` callers
+   (`handleWake`, `restartServer`) reach
+   the `"idle"`/`"missing"` branch only
+   after the loop has been (or will be)
+   transitioned via `session_idle`. The
+   watchdog's `isActive` probe returns
+   `false` post-transition, so the
+   watchdog short-circuits to `HEALTHY`
+   on the next tick. The
+   `recoveryAttempts` counter is stale
+   but the watchdog is dormant.
+3. The recovery budget is *deliberately*
+   preserved across iteration boundaries
+   (see Phase 6.1 / 6.4 design symmetry in
+   this file). A "session ended" event
+   from the reconcile path is not
+   qualitatively stronger than a clean SSE
+   `session.idle`; both represent the
+   *same* kind of clean end. Resetting
+   only in the SSE path and not the
+   reconcile path keeps the "genuine
+   progress" gate uniform: a heartbeat
+   or a direct `session.idle` SSE event
+   is required to clear the budget, not
+   a reconcile-derived inference.
+
+**Severity is LOW** because the behavior
+is correct, but the inconsistency with the
+PLAN.md task statement is worth pinning
+explicitly so a future refactor of
+`reconcileAndAdvance` does not add a
+redundant `notifyIdle()` call (or, worse,
+*rely* on the absent call to keep state
+in sync).
+
+**Where.** `src/App.tsx:625-643`
+(`reconcileAndAdvance`).
+
+**Proposed fix.** Add a code comment at
+`App.tsx:634-641` making the design intent
+explicit so a future reviewer does not
+add the call:
+
+```ts
+if (result === "idle" || result === "missing") {
+  activityLog.addEvent(...)
+  rateLimitAttempts = 0
+  // The watchdog's recovery counter is intentionally
+  // NOT reset here. The watchdog's own tick()
+  // (useWatchdog.ts:263-264) handles the same
+  // verdict inline, and the next iteration's
+  // notifyIterationStart preserves the budget by
+  // design (Phase 6.1 / 6.4). Resetting here would
+  // diverge the SSE and reconcile code paths.
+  loop.dispatch({ type: "session_idle" })
+}
+```
+
+Fix proposed, not applied (audit-only).
+
+#### Design symmetry — `notifyIdle` is the budget-reset half of the watchdog's vocabulary
+
+The four notifier functions split cleanly into
+two pairs based on whether they reset
+`recoveryAttempts`:
+
+| Notifier               | lastHeartbeatAt | recoveryAttempts | health   | Used by                                |
+| ---------------------- | --------------- | ---------------- | -------- | -------------------------------------- |
+| `recordHeartbeat`      | reset           | **reset**        | HEALTHY  | Any SSE progress event                 |
+| `notifyIterationStart` | reset           | preserved        | HEALTHY  | `startIteration` (App.tsx:824)         |
+| `notifyWake`           | reset           | preserved        | HEALTHY  | `handleWake` (App.tsx:208), post-restart (App.tsx:661) |
+| `notifyIdle`           | preserved       | **reset**        | HEALTHY  | SSE `onSessionIdle` (App.tsx:503)      |
+
+The split matches the design intent: only
+"proof of progress" signals (`recordHeartbeat`)
+and "proof of completion" signals
+(`notifyIdle`) reset the budget. Context
+switches (`notifyIterationStart`, `notifyWake`)
+do not, because a context switch could mask a
+real wedge (the new session could be the
+re-execution of the same bad task).
+
+`notifyIdle` is unique in preserving the
+baseline. The reasoning, made explicit in the
+new tests below: there is no in-flight work to
+measure silence against once the session has
+ended. The next iteration's `startIteration`
+calls `notifyIterationStart`, which resets
+the baseline. Until then, the stale baseline
+is benign — the watchdog's `isActive` probe
+returns `false` (no sessionId), so the
+`tick()` short-circuits to `HEALTHY` at
+`useWatchdog.ts:216-219`.
+
+#### Verifier checklist for Task 6.5
+
+- [x] `notifyIdle` body at `useWatchdog.ts:151-154`
+  sets `recoveryAttempts = 0` and `setHealth("HEALTHY")`
+  — verified by direct file read and by the new
+  test `notifyIdle resets recoveryAttempts and
+  sets health to HEALTHY (clean session end)`.
+- [x] `notifyIdle` does NOT touch `lastHeartbeatAt`
+  — verified by direct file read and by the new
+  test `notifyIdle does NOT reset lastHeartbeatAt
+  (deliberate, unlike recordHeartbeat and notifyWake)`.
+- [x] `notifyIdle` called from the SSE `onSessionIdle`
+  handler at `App.tsx:503` — verified by `grep`
+  (single call site).
+- [x] `notifyIdle` is NOT called from
+  `reconcileAndAdvance` at `App.tsx:625-643` —
+  verified by `grep`. Behavior is correct because
+  the watchdog's own `tick()` and the loop
+  transition cover the reset.
+- [x] `notifyIdle` is NOT called from the
+  `synthesizeIdle` action at `App.tsx:262-266` —
+  verified by `grep`. Behavior is correct because
+  the watchdog's own `tick()` resets state inline
+  before dispatching the action.
+- [x] The `RECOVERING` → `notifyIdle` → `HEALTHY`
+  transition is pinned by the new test
+  `notifyIdle in RECOVERING state: cancels the
+  in-flight recovery and drops to HEALTHY`.
+- [x] The post-`notifyIdle` budget is verified to
+  be zero (not just `HEALTHY` while leaving the
+  counter non-zero) by the new test asserting
+  that a fresh wedge starts at attempt 1
+  (`abortAndRetry` count increases), not attempt
+  2 (`restartServer` count stays 0).
+
+#### INFO — the SSE onSessionIdle / reconcileAndAdvance asymmetry is observed behavior, not a bug
+
+`reconcileAndAdvance` is described in its
+docstring at `App.tsx:617-624` as the "single
+source of truth shared by the watchdog
+(Phase 4) and the sleep/wake handler
+(Phase 2)". The phrase "single source of
+truth" suggests a symmetry that the current
+implementation does not deliver: the SSE
+`onSessionIdle` handler calls `notifyIdle`,
+but `reconcileAndAdvance` does not. The
+audit's Finding 6.5.A documents that the
+asymmetry is correct, not a bug. The
+proposed fix is a one-line comment in
+`reconcileAndAdvance` to make the design
+intent explicit; no behavioral change.
+
+#### Test-suite delta for Task 6.5
+
+Added 3 new tests to `useWatchdog.test.ts`
+to pin the `notifyIdle` contract:
+
+1. **`notifyIdle resets recoveryAttempts and
+   sets health to HEALTHY (clean session
+   end)`** — drives the watchdog into
+   `RECOVERING` via a real wedge (attempt 1
+   = abort), then calls `notifyIdle()` and
+   asserts both `health === "HEALTHY"` and
+   the counter is zero (proven by a fresh
+   wedge that starts at attempt 1, not
+   attempt 2).
+2. **`notifyIdle does NOT reset
+   lastHeartbeatAt (deliberate, unlike
+   recordHeartbeat and notifyWake)`** —
+   drives the watchdog into `SUSPECT` past
+   T1, calls `notifyIdle()`, then advances
+   the clock and ticks. The test asserts
+   that the watchdog does NOT short-circuit
+   to `HEALTHY` on the next tick (which it
+   would have if `notifyIdle` had reset the
+   baseline); it lands on `SUSPECT` again
+   because the stale baseline is still
+   measured. This pins the asymmetry
+   documented in the design-symmetry
+   table.
+3. **`notifyIdle in RECOVERING state:
+   cancels the in-flight recovery and drops
+   to HEALTHY`** — exercises the
+   `session.idle`-arrives-mid-recovery race:
+   the watchdog is in `RECOVERING` from a
+   real wedge, the legitimate idle event
+   arrives, `notifyIdle` is called, and the
+   next wedge starts at attempt 1. This is
+   the strongest assertion that
+   `recoveryAttempts` is a *hard* reset
+   inside `notifyIdle`, not a soft hint.
+
+`bun test` -> **638 pass, 0 fail, 1591
+expect() calls** across 21 files.
+No regressions.
