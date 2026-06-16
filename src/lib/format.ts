@@ -117,6 +117,20 @@ export function wrapText(text: string, width: number): string[] {
   return lines;
 }
 
+/**
+ * Cap already-wrapped `lines` to `max`, reserving the last slot for an overflow
+ * indicator when truncating. Returns the lines to render plus how many were hidden
+ * (0 when nothing is cut). The caller renders one "+{hidden}" line so the total
+ * stays within `max`. ponytail: pure + tiny so the bottom panel's budget math is
+ * testable instead of buried inline in JSX.
+ */
+export function clampLines(lines: string[], max: number): { shown: string[]; hidden: number } {
+  const m = Math.max(1, Math.floor(max));
+  if (lines.length <= m) return { shown: lines, hidden: 0 };
+  const shown = lines.slice(0, m - 1); // reserve one slot for the indicator line
+  return { shown, hidden: lines.length - shown.length };
+}
+
 export function stripMarkdown(text: string): string {
   if (!text) return "";
 

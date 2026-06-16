@@ -33,6 +33,8 @@ export interface Layout {
   logContentWidth: number
   /** Width budget for the dashboard current-task line. */
   taskWidth: number
+  /** Max wrapped task lines the bottom panel shows before truncating (responsive). */
+  maxTaskLines: number
   /** Narrow terminals drop secondary fields and shorten hints. */
   compact: boolean
   /** Short terminals (few rows) collapse multi-line panels to a single line. */
@@ -59,6 +61,10 @@ export function getLayout(cols?: number, rows?: number): Layout {
   // budget (the single, width-aware truncation point — no fixed caps upstream).
   const logContentWidth = Math.max(16, inner - 27)
   const taskWidth = Math.max(16, inner - 8) // minus the "Task: " prefix + slack
+  // Bottom panel caps the wrapped task to this many lines so a long task can't
+  // starve the activity log; responsive (grows with rows, ceiling 10). The log
+  // reclaims the freed gap via its existing flexGrow — no maxHeight needed there.
+  const maxTaskLines = Math.max(1, Math.min(10, Math.floor(r / 5)))
   return {
     cols: c,
     rows: r,
@@ -67,6 +73,7 @@ export function getLayout(cols?: number, rows?: number): Layout {
     progressWidth,
     logContentWidth,
     taskWidth,
+    maxTaskLines,
     compact: breakpoint === "narrow",
     // < 18 rows: collapse the bottom panel to one line so it never crowds out the log.
     short: r < 18,

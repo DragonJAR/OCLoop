@@ -214,6 +214,8 @@ const en = {
   // --- BottomPanel labels ---
   lblTotal: "Total Time",
   lblTaskTokens: "Task Tokens",
+  // Overflow indicator when the bottom-panel task is capped to maxTaskLines.
+  lblTaskMore: (p: Params) => `+${p.n} more`,
   // Token breakdown: reasoning differs by locale (en reasoning / es razonando)
   logTokenRsn: "reasoning:",
 
@@ -524,6 +526,7 @@ const es: Record<MessageKey, Msg> = {
   lblGuard: "Salud",
   lblTotal: "Tiempo total",
   lblTaskTokens: "Tokens de Tarea",
+  lblTaskMore: (p: Params) => `+${p.n} líneas`,
   logTokenRsn: "razonando:",
 
   hintStart: "iniciar",

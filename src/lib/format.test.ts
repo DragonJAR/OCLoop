@@ -1,6 +1,6 @@
 
 import { describe, expect, test } from "bun:test";
-import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown, tokensPerMin, wrapText } from "./format";
+import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown, tokensPerMin, wrapText, clampLines } from "./format";
 
 describe("format utilities", () => {
   describe("truncate (width-exact, …)", () => {
@@ -123,6 +123,23 @@ describe("format utilities", () => {
     test("returns [] for empty input or non-positive width", () => {
       expect(wrapText("", 10)).toEqual([]);
       expect(wrapText("hi", 0)).toEqual([]);
+    });
+  });
+
+  describe("clampLines (bottom-panel task budget)", () => {
+    test("returns all lines untouched when within max", () => {
+      expect(clampLines(["a", "b", "c"], 5)).toEqual({ shown: ["a", "b", "c"], hidden: 0 });
+      expect(clampLines(["a", "b"], 2)).toEqual({ shown: ["a", "b"], hidden: 0 });
+    });
+    test("reserves one slot for the indicator when overflowing (total stays <= max)", () => {
+      const r = clampLines(["a", "b", "c", "d", "e"], 3);
+      expect(r.shown).toEqual(["a", "b"]); // max-1 shown
+      expect(r.hidden).toBe(3); // c, d, e
+      expect(r.shown.length + 1).toBeLessThanOrEqual(3); // shown + 1 indicator line
+    });
+    test("clamps non-positive/odd max to at least 1", () => {
+      expect(clampLines(["a", "b"], 0)).toEqual({ shown: [], hidden: 2 });
+      expect(clampLines(["a", "b", "c"], 2.9)).toEqual({ shown: ["a"], hidden: 2 });
     });
   });
 });
