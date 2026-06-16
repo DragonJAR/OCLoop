@@ -992,10 +992,78 @@ pass / 0 fail, 1680 expect() calls, 23 files,
 
 ### Mejora 29 — Finding 8.2.A — MEDIUM — `loadLoopState` only validates `version` and `iteration`; other fields slip through
 
-- [ ] Evaluar la mejora 29 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 29 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 29 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 29 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 29 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 29 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 29 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 29 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:9971-10032`: la guarda
+inline de `loadLoopState`
+(`loop-state-store.ts:81-88`) solo verificaba
+`version === 1` y `typeof iteration === "number"`,
+así que un archivo hand-edited o parcialmente
+escrito con un `sessionId` de tipo incorrecto
+(42, un objeto), un `stateType` no-string, un
+`rateLimitAttempts` no-numérico, o un `updatedAt`
+no-string pasaba la validación y se entregaba a
+`App.tsx:1168-1169` que lo serializaba en la URL
+de `reconcileSession`. El peor caso observable
+(un `sessionId` basura) producía un verdict
+`"unknown"` de `getSessionStatus` que `doResume`
+trataba como "missing" y arrancaba iteración
+fresca con el contador preservado — recoverable
+pero ugly, y la validación debería estar en el
+trust boundary, no esparcida defensivamente en
+cada consumer. La propuesta de
+`MEJORAS.md:10004-10030` (extraer un type guard
+`isPersistedLoopState`) es estrictamente la
+mínima útil y reusa el patrón ya establecido en
+`i18n.ts:22` (`isLocale(v: unknown): v is Locale`)
+y `with-timeout.ts:37` (`isTimeoutError(err: unknown)`).
+
+Implementación: 11 líneas añadidas a
+`src/lib/loop-state-store.ts:75-94` (función pura
+`isPersistedLoopState` con la lógica de
+validación per-field propuesta en `MEJORAS.md:10008-10019`),
+4 líneas modificadas en `loadLoopState` para
+reemplazar la guarda inline de 7 líneas por
+`isPersistedLoopState(parsed) ? parsed : null`,
+más 8 líneas de comentario que nombran el source
+`MEJORAS.md Finding 8.2.A`, el trust boundary
+argument, y el paralelo con `isLocale` /
+`isTimeoutError`. Cero cambios a la firma de
+`loadLoopState` (`Promise<PersistedLoopState | null>`),
+cero cambios a `saveLoopState`, cero cambios a
+`clearLoopState`, cero cambios a la interfaz
+`PersistedLoopState`, cero cambios al consumer
+`App.tsx:1168-1169`, cero impacto en el camino
+feliz (el 99.9% de los `.loop-state.json` se
+escriben desde el producer de `App.tsx:1284-1290`
+y siempre satisfacen el type guard). Cero impacto
+en el resume path — un archivo corrupto se
+rechaza con `null` y se inicia iteración fresca,
+exactamente el mismo path que ya tomaba un
+archivo con `version !== 1` (test pineado en
+`loop-state-store.test.ts:66-69` antes del fix).
+
+Cubierto por 5 tests nuevos en
+`loop-state-store.test.ts:71-97` que pinean:
+`sessionId: 42` → `null` (caso central del
+finding, sesión con tipo incorrecto),
+`sessionId: null` → acepta (entre iteraciones
+es válido, defensa contra la simetría
+`string-or-null`), `stateType: 42` → `null`,
+`rateLimitAttempts: "x"` → `null`, `updatedAt:
+42` → `null`. El test existente "returns null for
+an unsupported version" (`loop-state-store.test.ts:66-69`)
+sigue pineando el path de `version: 99`, así
+que las 6 guards del type guard quedan
+ejercitadas — 1 por test, sin solapamiento.
+`bun test` verde: 685 pass / 0 fail (era 680
+antes del fix), 1685 expect() calls, 23 files,
+324 ms — sin cambio en el conteo de archivos,
++5 tests, +5 expects. Commit `55b9fdd`.
 
 ### Mejora 30 — Finding 8.3.A — LOW — No test for the `EACCES` / `EPERM` branch of `clearLoopState`
 
