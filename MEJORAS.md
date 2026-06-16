@@ -8802,3 +8802,825 @@ is not load-bearing for the audit.
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+### 7.5 — Verify `sse.reconnect()` is called on wake, watchdog recovery, and server restart; confirm no double-reconnection issues
+
+PLAN.md 7.5: "Verify: `sse.reconnect()`
+is called on wake, on watchdog
+recovery, and on server restart — no
+double-reconnection issues?"
+
+**Status: COMPLETE — VERIFIED with ONE
+finding. `sse.reconnect()` is correctly
+invoked from all three documented call
+sites (wake, watchdog, server restart)
+plus a fourth (server-ready effect).
+The **supersession pattern** in
+`useSSE.ts:489-513` and `useSSE.ts:543-551`
+correctly serializes overlapping
+`connect()` invocations, so the
+**intentional** double-call inside the
+watchdog's recovery ladder
+(`reconnectSSE` + `restartServer`) is
+safe. The **one** HIGH finding is a
+**concurrency gap** in `server.restart()`:
+two independent triggers
+(SSE-reconnect-exhaustion effect,
+watchdog recovery, manual command
+palette) can each call `restartServer()`
+concurrently, with no in-flight guard.
+`server.restart()` may then launch
+**two** server instances and leak the
+first. No CRITICAL findings; one HIGH,
+two INFO.**
+
+#### The four call sites of `sse.reconnect()` in `App.tsx`
+
+| # | Path | Location | What it reconnects to |
+| - | --- | --- | --- |
+| 1 | Server ready effect | `App.tsx:1013-1089`, the call at `:1026` | The initial SSE stream for the freshly-started server. |
+| 2 | Wake handler | `App.tsx:199-221`, the call at `:207` | The SSE stream that almost certainly died during sleep. |
+| 3 | Watchdog recovery action | `App.tsx:257-261` (`reconnectSSE` action), invoked from `useWatchdog.ts:203` | The SSE stream after the first escalation step (cheap reconnect). |
+| 4 | `restartServer` body | `App.tsx:649-663`, the call at `:653` | The SSE stream after `server.restart()` has rebuilt the server. |
+
+(The 5th apparent call, at
+`useSSE.ts:644` and `useSSE.ts:650`, is
+the `onMount` auto-connect and the
+`onCleanup` disconnect — not `reconnect`
+proper, but they bracket the same
+lifecycle.)
+
+The fourth call site is the
+**purpose** of this audit: `restartServer()`
+is invoked from three independent
+triggers (each will eventually call
+`sse.reconnect()`):
+
+| Trigger | Location | Notes |
+| - | --- | --- |
+| Watchdog recovery ladder | `useWatchdog.ts:204-205` → `App.tsx:282` → `App.tsx:649` | For "server_hung" reason **or** when `recoveryAttempts >= 2`. |
+| SSE reconnect exhaustion | `App.tsx:1224-1245` | When `sse.reconnectAttempts() >= 6` and `loop.isRunning()`. |
+| Manual command palette | `App.tsx:1507-1517` | User selects "Restart server" in the command palette (kbd `C`/`R`-style entry). |
+
+#### Path 1 — Server ready effect (`App.tsx:1013-1089`)
+
+```ts
+createEffect(() => {
+  if (server.status() === "ready" && loop.state().type === "starting") {
+    // ... server_ready / server_ready_debug dispatch ...
+    sse.reconnect()  // line 1026
+    // ... fetch active model, validate --agent, then initializeSession()
+  }
+})
+```
+
+**Why `reconnect()` and not `connect()`.** `useSSE` has an `onMount` hook
+that auto-connects with whatever URL
+`server.url()` returned at mount time
+(`useSSE.ts:642-646`). But on the very
+first effect tick, `server.url()` is
+still `null` (the server status is
+"starting"). The first auto-connect
+bails at the `if (!currentUrl)` guard
+(`useSSE.ts:481-484`). When the server
+later transitions to "ready" and gets a
+URL, this effect calls `sse.reconnect()`
+to attach the SSE stream to the now-
+valid URL.
+
+This is also a **first connection**,
+not a true "reconnect" — but
+`sse.reconnect()` is the right verb
+because it also clears any stale
+`reconnectTimeout` (none here, but
+defensive) and resets the
+`reconnectAttempts` counter to `0`. Using
+`reconnect()` instead of `connect()`
+makes the call site robust to a
+hypothetical future where the server
+flapped before the effect fired.
+
+**No double-fire concern.** This effect
+is gated by `loop.state().type === "starting"`.
+The starting state is a one-shot
+transition (`starting` → `ready` or
+`starting` → `debug` or `starting` →
+`error`); once the loop leaves
+`starting`, the condition short-
+circuits to false. Subsequent
+`restartServer()` calls do NOT return
+the loop to `starting` (the loop state
+stays `running`/`pausing` across
+restarts, only the server state
+flaps), so this effect won't re-fire on
+a recovery restart.
+
+#### Path 2 — Wake handler (`App.tsx:199-221`)
+
+```ts
+function handleWake(gapMs: number): void {
+  log.health("sleep", "wake", { gapMs })
+  activityLog.addEvent("task", t("actWake", { secs: Math.round(gapMs / 1000) }))
+  sse.reconnect()  // line 207
+  watchdog.notifyWake()
+  const st = loop.state()
+  if (st.type === "cooldown") {
+    if (monotonicNow() >= st.resumeAt) {
+      clearCooldownTimers()
+      loop.dispatch({ type: "resume_cooldown" })
+    }
+  } else {
+    void reconcileAndAdvance()
+  }
+}
+```
+
+The comment on the function is the
+specification:
+
+> The SSE stream almost always died
+> while asleep, so reconnect it; then
+> reconcile the in-flight session in case
+> we slept through its `session.idle`.
+
+`watchdog.notifyWake()` (`useWatchdog.ts:156-167`)
+resets `lastHeartbeatAt = clock.monotonicNow()`,
+so the watchdog's next tick sees a
+fresh grace window and does **not**
+trip on the sleep gap as a stuck
+session. (Phase 6.4 audit covers this
+in detail.)
+
+**Possible concurrent call: watchdog
+recovery.** If the wake happens while
+the watchdog is mid-recovery (e.g.,
+the watchdog fired `recover()` at tick
+N, the recovery action is awaiting
+`server.restart()`, the system
+suspends, the user resumes), the
+following sequence is possible:
+
+1. Watchdog tick → `recover("server_hung")` →
+   `reconnectSSE()` (sse.reconnect() #1).
+2. `await restartServer()` (still
+   running; in the middle of
+   `server.restart()`).
+3. **System suspends.**
+4. **User resumes** → `handleWake` fires.
+5. `sse.reconnect()` (#2) — supersedes
+   the in-flight #1's connect.
+6. `watchdog.notifyWake()` — resets
+   heartbeat.
+7. The original `restartServer()` from
+   step 2 resumes: `sse.reconnect()` (#3)
+   — supersedes #2.
+8. `reconcileAndAdvance()` runs (twice,
+   once per path).
+
+The triple-call is **safe** by the
+supersession pattern (see "Why
+multiple `sse.reconnect()` is safe"
+below). The duplicate
+`reconcileAndAdvance()` is the real
+concern — and that's a Phase 15 (race
+conditions) audit item, not this one.
+
+The watchdog's recovery is a no-op on
+subsequent ticks because
+`notifyWake()` reset the heartbeat and
+the (eventually completed) `restartServer`
+also calls `notifyWake()` on a
+"working" verdict (`App.tsx:660-662`).
+
+#### Path 3 — Watchdog recovery action (`App.tsx:257-261`)
+
+```ts
+reconnectSSE: () => {
+  activityLog.addEvent("task", t("actGuardReconnect"))
+  sse.reconnect()
+},
+```
+
+The escalation ladder at
+`useWatchdog.ts:201-208` shows the
+**double-call**:
+
+```ts
+options.actions.reconnectSSE()         // (A) sse.reconnect()
+if (reason === "server_hung" || recoveryAttempts >= 2) {
+  await options.actions.restartServer()  // (B) restartServer() → sse.reconnect()
+} else {
+  await options.actions.abortAndRetry()
+}
+```
+
+(A) is the **cheap first step** — try
+a fresh SSE connect before doing
+anything heavier. (B) is the
+escalation — restart the server and
+re-reconcile. (B) calls
+`sse.reconnect()` again inside
+`restartServer()` because the URL
+might have changed after the restart
+(actually, the URL stays the same
+unless the port is in use and the
+fallback ephemeral port kicks in — see
+Phase 6 audit for the port-stability
+guarantee).
+
+This is **intentional** and is covered
+by the supersession pattern: the
+connect() launched by (A) is in flight
+(`await client.event.subscribe`); (B)
+fires `sse.reconnect()` which aborts
+that in-flight controller and starts
+a new one. The new controller's
+`subscribe` await then succeeds (or
+fails) against the new server.
+
+The `reconnectSSE()` action logs
+"Guardian: reconnecting SSE"
+(`i18n.ts:266`) and the `restartServer`
+body logs "Guardian: server
+restarting" (`App.tsx:651`). Both go
+into the activity log, so the user
+sees the two-step escalation
+explicitly.
+
+#### Path 4 — `restartServer` body (`App.tsx:649-663`)
+
+```ts
+async function restartServer(): Promise<void> {
+  log.health("server", "recovery_restart", { url: server.url() })
+  activityLog.addEvent("error", t("actGuardRestart"))
+  await server.restart()
+  sse.reconnect()
+  const verdict = await reconcileAndAdvance()
+  if (verdict === "working") {
+    watchdog.notifyWake()
+  }
+}
+```
+
+This is the body that all three
+restart triggers (watchdog recovery,
+SSE exhaustion, manual palette) call.
+`server.restart()` tears down the old
+server, launches a new one on the
+same port, and resolves with the new
+URL. `sse.reconnect()` then attaches
+the SSE stream to the new URL (it
+must — the old controller was bound
+to the old process, which is gone).
+`reconcileAndAdvance()` checks
+whether the in-flight session
+survived the restart.
+
+`watchdog.notifyWake()` is called
+**only** on a "working" verdict (line
+660-662). This is the bug-fix from
+the Phase 6.4 audit: without the
+`notifyWake()`, the watchdog's next
+tick would see `dt = monotonicNow() -
+lastHeartbeatAt` measured against the
+**pre-restart** timestamp and trip
+STUCK again on the very next tick,
+collapsing the recovery ladder.
+
+#### Why multiple `sse.reconnect()` is safe — the supersession pattern
+
+`useSSE.ts:489-513` and `useSSE.ts:543-551`:
+
+```ts
+// Per-invocation controller. `reconnect()`/`disconnect()` replace
+// `abortController`; an old connect() detects it's been superseded by
+// comparing its own controller against the current one and bails WITHOUT
+// mutating shared status — otherwise a stale loop's "disconnected" could
+// clobber a fresh connection (the post-restart reconnect wedge).
+const myController = new AbortController()
+abortController = myController
+// ...
+try {
+  const events = await client.event.subscribe({ directory }, { signal: myController.signal })
+  // Superseded while awaiting the subscription? Leave status to the winner.
+  if (abortController !== myController) return
+  // ...
+  setStatus("connected")
+  // ...
+  for await (const event of events.stream) {
+    if (abortController !== myController) return
+    processEvent(event)
+  }
+  // ...
+} catch (err) {
+  // Superseded by a newer connect()/disconnect(), or our own controller was
+  // aborted: stay silent so we don't fight the current connection.
+  if (
+    abortController !== myController ||
+    (err instanceof Error && err.name === "AbortError")
+  ) {
+    return
+  }
+  // ... only NOW: setError, setStatus("error"), scheduleReconnect
+}
+```
+
+The key invariant: **a `connect()`
+that has been superseded (its
+controller is no longer the current
+one) does not write to the shared
+`status` / `error` / `reconnectAttempts`
+signals.** Status writes only happen
+after the supersession check. This is
+explicitly called out in the comment
+as "the post-restart reconnect wedge"
+— the bug this pattern was designed
+to prevent.
+
+Reconnect (re)scheduling is also
+safe. `reconnect()` clears
+`reconnectTimeout` before calling
+`connect()` (`useSSE.ts:627-630`); if
+`scheduleReconnect()` had a pending
+timer from a previous failed
+connection, that timer is canceled
+before the new `connect()` is
+launched. The handler in
+`scheduleReconnect` also nulls
+`reconnectTimeout` synchronously when
+it fires (line 586) — a small
+defensive touch so a
+`reconnect()` arriving in the same
+tick as a fired timer doesn't race a
+stale reference.
+
+The pattern is **load-bearing** for
+the watchdog-recovery double-call:
+without it, the (A) `reconnectSSE`'s
+connect would race with the (B)
+`restartServer`'s connect and could
+clobber the fresh "connected" status
+with a stale "disconnected" or
+"error".
+
+#### `sse.reconnect()` is itself idempotent and safe to call repeatedly
+
+The function body at
+`useSSE.ts:616-639`:
+
+```ts
+function reconnect(): void {
+  setReconnectAttempts(0)
+  shouldReconnect = true
+  if (abortController) {
+    abortController.abort()
+    abortController = null
+  }
+  if (reconnectTimeout) {
+    clearTimeout(reconnectTimeout)
+    reconnectTimeout = null
+  }
+  setStatus("disconnected")
+  connect()
+}
+```
+
+- `setReconnectAttempts(0)` — safe
+  to call repeatedly (just sets the
+  signal to 0).
+- `abortController.abort()` then
+  `abortController = null` — the abort
+  causes the in-flight connect's
+  `client.event.subscribe` to throw
+  `AbortError`, the catch block returns
+  silently (line 547-551), and the
+  aborted controller reference is
+  dropped so the next `connect()` can
+  install a fresh one.
+- `clearTimeout(reconnectTimeout)` —
+  cancels any pending scheduled
+  reconnect from a previous failure.
+- `setStatus("disconnected")` — done
+  synchronously before `connect()` is
+  called, so the next `connect()`'s
+  "already connecting/connected" guard
+  (line 473-475) won't false-positive.
+- `connect()` — creates a new
+  controller, assigns to
+  `abortController`, awaits
+  `client.event.subscribe`. The
+  controller comparison inside
+  `connect()` ensures that even if
+  the previous in-flight connect
+  sneaks a status write in, it will
+  bail before mutating.
+
+JavaScript is single-threaded, so
+the body of `reconnect()` runs
+atomically — the next `reconnect()`
+(however triggered) can only start
+after the current one has set up its
+`connect()` and yielded at the first
+`await`. By that time, the
+supersession check has been set up
+correctly.
+
+#### Finding 7.5.A — HIGH — `server.restart()` has no in-flight guard; concurrent triggers can launch two servers and leak the first
+
+`useServer.ts:194-229`:
+
+```ts
+async function restart(): Promise<void> {
+  const preferredPort = serverPort() ?? port ?? 0
+  log.health("server", "restart_begin", { preferredPort })
+
+  setStatus("starting")
+  setError(undefined)
+  closeCurrent()
+  setUrl(null)
+
+  try {
+    await launch(preferredPort)
+    // ...
+  } catch (errPreferred) {
+    try {
+      await launch(0)  // ephemeral port fallback
+      // ...
+    } catch (err) {
+      // ...
+    }
+  }
+}
+```
+
+There is no "is a restart already in
+flight?" check. The
+`setStatus("starting")` is a no-op for
+two concurrent callers (the value is
+already "starting"). The
+`closeCurrent()` is a no-op for the
+second caller (the first caller
+already nulled `abortController` and
+`serverRef`). But the **`launch()`
+call is NOT a no-op** — both
+callers proceed to `launch()` and try
+to bind a server on the same port.
+
+Three of `restartServer()`'s triggers
+(`watchdog recovery`,
+`SSE-exhaustion effect`,
+`command-palette restart`) can fire
+in close temporal proximity. The
+SSE-exhaustion effect runs in
+SolidJS's reactive update queue
+(`App.tsx:1230-1245`); the watchdog
+fires from a `setInterval` at
+`watchdogTickMs` (default 1000ms —
+`config.ts:117`). A flaky server that
+takes a few seconds to die can trip
+both:
+
+- Watchdog tick at T+1.0s:
+  `probes.isActive()` returns true
+  (still running), `pingServer` fails
+  (server is gone), `recover("server_hung")`
+  starts, calls `reconnectSSE()` (1st
+  sse.reconnect), then `await
+  restartServer()`.
+- Inside that `restartServer()`,
+  `server.restart()` is awaiting
+  `launch()`.
+- Meanwhile the SSE-reconnect
+  counter, which was incremented by
+  the failed SSE connections, hits
+  6. The exhaustion effect fires:
+  `sseRecoveryFired = true`, `void
+  restartServer()`.
+- That second `restartServer()` also
+  enters `server.restart()`, which
+  is **also** awaiting `launch()`.
+- Both `launch()`s proceed in
+  parallel. Each does:
+  `serverRef = await createOpencodeServer(...)`
+  (`useServer.ts:103`). The second
+  `launch()` overwrites the
+  `serverRef` assigned by the first
+  `launch()` once it resolves. The
+  first server's process handle is
+  dropped on the floor — the
+  `serverRef.close()` reference is
+  lost.
+
+Concretely, on Linux/macOS the first
+server to bind the port succeeds and
+the second one will fail with
+`EADDRINUSE` and fall through to the
+ephemeral-port retry at
+`useServer.ts:213-220`. On Windows or
+under races where the port is
+released in time, both could
+succeed — the second one would
+overwrite `serverRef` and the first
+one's process would never be
+explicitly closed (it would die on
+process exit, but until then it's
+holding the port and the URL).
+
+The `setUrl(null)` + `setStatus("starting")`
++ `closeCurrent()` sequence is
+**not** a guard — it's a setup
+operation. There's no early-return
+when `status() === "starting"` and a
+restart is already in flight. (Note
+that `startServer` at
+`useServer.ts:120-122` does have such
+a guard: `if (status() !== "starting" && status() !== "stopped") return` —
+but `restart()` does not.)
+
+**Why this is HIGH and not MEDIUM.**
+The window for the race is small
+(roughly the duration of
+`launch()`, which is sub-second on
+a healthy machine) but the impact
+is severe: a leaked server process
+holding the loop's intended port,
+the loop's URL pointing to the
+second server (not the first), and
+a confusing "why is port 4096 still
+in use after I quit?" after-exit. The
+fix is one line.
+
+**Where.**
+- `useServer.ts:194-229` —
+  `restart()` has no in-flight guard.
+- `App.tsx:649-663` —
+  `restartServer()` is the public
+  surface that three triggers share.
+- `App.tsx:1230-1245` — the
+  SSE-exhaustion effect is the
+  trigger most likely to coincide
+  with the watchdog (both fire when
+  the server is dying).
+- `App.tsx:257-261` — the watchdog's
+  `reconnectSSE` action runs
+  *before* `restartServer`, so it
+  doesn't directly help (but it
+  doesn't make it worse either).
+
+**Proposed fix.** Add a `restarting`
+guard (reusing `status() === "starting"`
+as the in-flight check) at the top
+of `restart()`:
+
+```ts
+async function restart(): Promise<void> {
+  // Don't double-restart. status flips to "starting" on entry and
+  // back to "ready" / "error" on exit; bail if a restart is mid-flight.
+  if (status() === "starting") {
+    log.health("server", "restart_in_flight_noop", { url: url() })
+    return
+  }
+
+  const preferredPort = serverPort() ?? port ?? 0
+  log.health("server", "restart_begin", { preferredPort })
+
+  setStatus("starting")
+  setError(undefined)
+  closeCurrent()
+  setUrl(null)
+  // ... existing body unchanged ...
+}
+```
+
+The guard reuses the same
+`status() === "starting"` check that
+`startServer()` already uses at
+`useServer.ts:120-122`, so it is
+consistent across the two paths and
+doesn't introduce a new state bit
+to keep in sync. The log line
+documents the no-op so a
+`log.health` consumer can tell
+double-fires apart from real
+restarts.
+
+The fix is **purely defensive** and
+**fully backward compatible**:
+under normal (non-racy) operation
+the guard never fires, and under
+racy operation the second caller
+silently no-ops. Concurrent
+`reconcileAndAdvance()` calls
+(described under Path 2 above)
+remain a separate concern — that's a
+Phase 15 (race conditions) audit
+item.
+
+#### INFO — `restartServer()` swallows `server.restart()` rejections silently in some call sites
+
+`App.tsx:653`:
+
+```ts
+sse.reconnect()
+const verdict = await reconcileAndAdvance()
+```
+
+If `server.restart()` (the line
+above) throws — and it can, even
+though the implementation at
+`useServer.ts:206-228` has a
+two-tier try/catch — the throw
+propagates up through `restartServer()`.
+The three triggers handle the
+returned promise differently:
+
+- Watchdog recovery: `await
+  options.actions.restartServer()` at
+  `useWatchdog.ts:205`. The watchdog
+  wraps the call in a try/catch via
+  the `tick()` `.catch()` at
+  `useWatchdog.ts:301-305`, so a
+  throw would be logged and
+  swallowed — but the recovery
+  ladder would not continue to the
+  circuit-breaker check. This is a
+  Phase 6 follow-up; not a
+  Phase 7.5 issue.
+- SSE-exhaustion effect: `void
+  restartServer()` at
+  `App.tsx:1243`. `void` discards
+  the promise, so an unhandled
+  rejection bubbles to the top
+  level. (The `unhandledRejection`
+  handler in `index.tsx` covers
+  this, but the recovery ladder
+  doesn't get to see it.)
+- Command palette: `void
+  restartServer()` at
+  `App.tsx:1515`. Same `void`
+  treatment.
+
+Inconsistent handling of the same
+function. Not a Phase 7.5 finding —
+flagged for the Phase 15 audit
+(uncaught rejections) as a
+related-but-distinct item.
+
+#### INFO — The recovery ladder in `useWatchdog` is intentionally two-step, not because of a bug
+
+`useWatchdog.ts:201-208`:
+```ts
+options.actions.reconnectSSE()
+if (reason === "server_hung" || recoveryAttempts >= 2) {
+  await options.actions.restartServer()
+} else {
+  await options.actions.abortAndRetry()
+}
+```
+
+Some readers find the
+"reconnect-then-restart" two-step
+suspicious. It is **intentional**
+and correct. The first
+`reconnectSSE` call is a cheap probe:
+if the SSE stream is the only thing
+that's wedged (a stale connection
+held open by a TCP keepalive
+forever, a buffered event backlog,
+etc.), a reconnect is enough. The
+full server restart is the heavy
+hammer; the comment at
+`useWatchdog.ts:201-202` makes the
+rationale explicit:
+
+> Always reconnect SSE first
+> (cheap). A hung server (or a wedge
+> that a prior abort+retry didn't
+> clear) escalates to a server
+> restart.
+
+The "abort first, restart on the
+2nd attempt" branch (the
+`recoveryAttempts >= 2` clause) is
+the persistent-wedge path: a session
+that has been aborted+retried once
+and wedged again is judged
+**structurally** stuck, not just
+network-glitched, and the recovery
+escalates to a server restart
+without burning the abort-retry
+budget a second time.
+
+`useWatchdog.test.ts:214-225`
+(Phase 6 audit) covers this
+two-step pattern with a test that
+asserts `restartServer` is called
+on the **2nd** attempt, not the
+1st.
+
+#### Verifier checklist for Task 7.5
+
+- [x] `sse.reconnect()` is called on
+  wake at `App.tsx:207` inside
+  `handleWake()` — verified by
+  direct file read.
+- [x] `sse.reconnect()` is called on
+  watchdog recovery at
+  `App.tsx:260` inside the
+  `reconnectSSE` action, invoked
+  from `useWatchdog.ts:203` — verified.
+- [x] `sse.reconnect()` is called on
+  server restart at `App.tsx:653`
+  inside `restartServer()` — verified.
+- [x] `sse.reconnect()` is also
+  called on the server-ready effect
+  at `App.tsx:1026` — verified
+  (this is a 4th call site beyond
+  the three the PLAN.md task
+  enumerates; it is a first-connect
+  not a true reconnect but uses
+  the same verb for the
+  reason documented in the
+  audit body).
+- [x] The watchdog's recovery ladder
+  at `useWatchdog.ts:201-208`
+  intentionally calls
+  `reconnectSSE` (which calls
+  `sse.reconnect()`) and then
+  `restartServer` (which also
+  calls `sse.reconnect()`) —
+  verified; the 2-call sequence is
+  intentional and the comment at
+  `useWatchdog.ts:201-202` documents
+  the rationale.
+- [x] The supersession pattern in
+  `useSSE.ts:489-513` and
+  `useSSE.ts:543-551` correctly
+  serializes overlapping
+  `connect()` invocations — status
+  writes happen only after the
+  supersession check — verified by
+  direct file read.
+- [x] `reconnect()` at
+  `useSSE.ts:616-639` is itself
+  idempotent: it clears any
+  pending reconnect timer, aborts
+  the current controller, drops
+  the reference, resets
+  `reconnectAttempts` to 0, and
+  forces the status to
+  "disconnected" before calling
+  `connect()` — verified.
+- [x] The third call site of
+  `restartServer()` is the manual
+  command palette at
+  `App.tsx:1507-1517` — verified;
+  this is the only user-initiated
+  trigger (the other two are
+  automatic: watchdog + SSE
+  exhaustion).
+- [x] `server.restart()` at
+  `useServer.ts:194-229` has no
+  in-flight guard — verified by
+  direct file read; this is the
+  basis for Finding 7.5.A.
+- [x] The fix proposal (early-return
+  on `status() === "starting"` at
+  the top of `restart()`) is
+  consistent with the existing
+  guard in `startServer()` at
+  `useServer.ts:120-122` — verified.
+
+#### Test-suite delta for Task 7.5
+
+No new tests added. The four call
+sites and the supersession pattern
+are not covered by `useSSE.test.ts`
+(which only tests `classifySessionError`
+in isolation — the hook itself is
+untestable without an
+`@opentui/solid` mock, see
+`docs/testing.md`) and not covered
+by `useWatchdog.test.ts` (which
+exercises the watchdog's recovery
+ladder, not the SSE layer's
+reconnect behavior).
+
+The HIGH finding (7.5.A) is
+verifiable by direct file read and
+does not require a test to be
+load-bearing for the audit. A future
+test for the `server.restart()`
+in-flight guard would be a
+`useServer.test.ts` unit test (the
+file does not exist yet) that mocks
+`createOpencodeServer` to return a
+slow-resolving handle, then calls
+`restart()` twice in parallel and
+asserts only one `launch()` is
+attempted. This is a deferred
+Phase 18 (test coverage) item.
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.
