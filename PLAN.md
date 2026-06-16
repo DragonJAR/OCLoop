@@ -1,145 +1,153 @@
-I now have a comprehensive understanding of the codebase. Let me compile the PLAN.md.
+I now have a thorough understanding of the codebase. Let me produce the PLAN.md.
 
-# Plan de Auditoría y Corrección — OCLoop
+# OCLoop Exhaustive Execution-Flow Audit & Fix Plan
 
-Analizar el proyecto completo de forma sistemática: revisar cada flujo de ejecución, cada parámetro y cada combinación relevante de parámetros para detectar problemas de codificación, errores de lógica y fallos en tiempo de ejecución, prestando especial atención a casos límite, validaciones ausentes y rutas de código no contempladas. Para cada hallazgo, indicar su ubicación, la causa raíz y el impacto. Corregir los problemas detectados de forma confiable y eficiente, aplicando el principio DRY (centraliza la lógica duplicada y evita repeticiones) sin romper la funcionalidad existente ni alterar el comportamiento esperado. Cuando termines, compila el proyecto, verifica que no queden errores y actualiza mi copia local con los cambios.
+Objective: Analyze every execution path (parameterized, edge-case, error) in the OCLoop codebase, find logic bugs, unhandled exceptions, duplicated code, and inefficiencies, then fix them following DRY and existing architecture.
 
-## Fase 1 — Auditoría estática: parseo CLI y configuración
+## Phase 1 — Plan parser edge cases & robustness
 
-- [x] Verificar que `parseArgs` en `src/lib/cli-args.ts` maneje correctamente el caso donde `argv` está vacío (ningún argumento) y que los valores por defecto de `CLIArgs` sean consistentes con los tipos declarados en `src/types.ts`
-- [x] Revisar que `applyResilienceOverride` rechace claves vacías y valores negativos para campos numéricos que semánticamente no pueden ser negativos (ej: `minIterationGapMs` acepta 0 pero no -1)
-- [x] Auditar `resolveResilience` en `src/lib/config.ts`: confirmar que la fusión de `DEFAULT_RESILIENCE` ← config file ← CLI overrides no deja campos `undefined` que rompan contratos en otros módulos (ej: `backoffJitter: undefined` debería tratarse como `true`)
-- [x] Verificar que `loadConfig` en `src/lib/config.ts` maneje JSON malformado sin crashear (actualmente retorna `{}` pero el JSON.parse envuelve todo en try/catch — confirmar que `JSON.parse("{}")` y `JSON.parse("null")` no producen configuraciones inválidas)
-- [x] Revisar `hasTerminalConfig`: el caso `type === "custom"` valida que `command` no esté vacío pero permite `args` vacío — ¿debería requerir `{cmd}` en `args`?
-- [x] Comprobar que `saveConfig` no corrompe el archivo existente si `writeFileSync` falla a mitad (debería usar escritura atómica como `loop-state-store.ts` hace)
+- [ ] Fix `parseTaskLine` to reject `- [ ]` with only whitespace inside brackets as a task when the description is empty (currently returns `{ type: "pending", description: "" }` for `- [ ]` with trailing spaces)
+- [ ] Fix `parsePlan` percent calculation: when all tasks are MANUAL, `denominator` becomes 0 and returns 100 — verify this is the intended semantic (it is, but add a comment explaining it; the test already asserts 100)
+- [ ] Add test for `parseTaskLine` with `- [BLOCKED: multi word reason here] Task` to verify `blockedReason` captures the full multi-word reason
+- [ ] Add test for `parseTaskLine` with `- [BLOCKED]` (no trailing description) — verify it returns `description: ""`
+- [ ] Add test for `parsePlanComplete` with nested `<plan-complete>` tags (one real, one inside a blockquote)
+- [ ] Add test for `getCurrentTaskFromContent` when all tasks are MANUAL or BLOCKED (should return null)
+- [ ] Verify `isPlanComplete` handles a file that doesn't exist gracefully (returns `false`, which it does — confirm test)
 
-## Fase 2 — Auditoría estática: parser de PLAN.md
+## Phase 2 — State machine gaps & transitions
 
-- [x] Verificar que `parseTaskLine` en `src/lib/plan-parser.ts` maneje correctamente tareas con descripción vacía: `- [ ] ` (sin texto después) — debería ser tipo `"pending"` con `description: ""`, no `"not-a-task"` — ✅ ya funciona: `checkboxContent === ""` → pending con description vacía
-- [x] Auditar el regex de `parsePlanComplete`: confirmar que no hace match falso con tags dentro de bloques de código inline (ej: `` `<plan-complete>` `` sin fence de bloque) — ✅ el regex ancla a `^ {0,3}`: inline code no está al inicio de línea, no hace match
-- [x] Verificar que `parsePlanComplete` no remueve contenido legítimo que contenga triple backtick dentro de una tarea (ej: una tarea que incluye un bloque de código como ejemplo) — ✅ parsePlanComplete solo lee el tag de completitud, nunca modifica el contenido del plan
-- [x] Revisar que `getCurrentTaskFromContent` devuelve `null` correctamente cuando el plan tiene solo tareas `[MANUAL]` o `[BLOCKED]` y ninguna `pending` — ✅ filtra por `type === "pending"`, MANUAL/BLOCKED nunca son pending
-- [x] Confirmar que `parsePlan` calcula `percentComplete` correctamente cuando `total === manual` (denominador 0) — actual retorna 100, ¿es eso lo esperado? — ✅ 100% es correcto: si no hay tareas automatizables, el loop no tiene nada que hacer, considera el plan completo
-- [x] Verificar que `isPlanComplete` y `getPlanCompleteSummary` manejen rutas con espacios o caracteres especiales en el nombre del archivo — ✅ Bun.file() acepta cualquier string como path
+- [ ] Add test for `session_idle` dispatched on `running` state with `sessionId === ""` — verify it returns the SAME state object (idempotency guard for redundant idles)
+- [ ] Add test for `plan_complete` from `cooldown` state — verify iteration is preserved
+- [ ] Add test for `plan_complete` from `error` state — verify iterations = 0
+- [ ] Add test for `rate_limited` from `paused` state — verify it is ignored (returns same state)
+- [ ] Add test for `resume_cooldown` from a non-cooldown state (e.g. `running`) — verify it is ignored
+- [ ] Add test for `error` transition from `cooldown` state — verify it works
+- [ ] Add test for `error` transition from `debug` state — verify it works
+- [ ] Add test for `server_ready_debug` from non-`starting` state — verify it is ignored
+- [ ] Add test for `new_session` from non-`debug` state — verify it is ignored
+- [ ] Add test for `quit` from `cooldown` state — verify it transitions to `stopping`
 
-## Fase 3 — Auditoría estática: API y timeouts
+## Phase 3 — CLI argument parsing edge cases
 
-- [x] Auditar `assertResponse` en `src/lib/api.ts`: verificar que los casos donde `result.data` es `null` o `undefined` pero `result.response.ok` es `true` se manejen consistentemente en `createSession` (ya lo hace) pero también en otros consumidores
-- [x] Revisar `toSdkModel`: confirmar que `"provider/"` y `"/model"` devuelven `undefined` ( actualmente `slash <= 0` y `slash === model.length - 1` cubren estos casos — verificar edge cases)
-- [x] Verificar que `createClient` no acumula entradas huérfanas en `clientCache` cuando el servidor cambia de URL frecuentemente (restart con puerto efímero) — ¿necesita purga? — ✅ orphans accumulate but entries are tiny stateless wrappers; negligible leak. Phase 15 has a purge task for long runs.
-- [x] Auditar `reconcileSession`: el case `default` retorna `"unknown"` para cualquier `status.type` no reconocido — ¿qué pasa si el SDK añade un nuevo tipo de status que debería ser `"working"`? — ✅ "unknown" is the safe default; added clarifying comment
-- [x] Verificar que `configureApiTimeouts` es llamado exactamente una vez antes de cualquier operación API, y que los tests que usan timeouts customizados los restauran — ✅ called twice in App.tsx (intentional: safety net then definitive), once in index.tsx; all idempotent
+- [ ] Add test for `--port 0` — verify it's accepted (port 0 is valid TCP, means "let the OS pick")
+- [ ] Add test for `--model` with extra slash like `a/b/c` — verify it's rejected (currently `MODEL_RE` requires exactly one slash, but `slash <= 0` catches no-slash, `slash === model.length - 1` catches trailing-slash — but `a/b/c` has slash at index 1 which is valid per regex `^[^\s/]+/[^\s/]+$`; verify this rejects it since the regex doesn't match three segments)
+- [ ] Add test for `--resilience` with boolean key set to `"0"` — verify `caffeinate=0` is accepted and mapped to `false`
+- [ ] Add test for `--resilience` with zero numeric value — verify `backoffBaseMs=0` is accepted (0 is a valid non-negative integer)
+- [ ] Verify `parseArgs` doesn't mutate `argv` (it uses `let i` incrementing — confirm no side effects)
 
-## Fase 4 — Auditoría estática: máquina de estados (LoopState)
+## Phase 4 — API layer error handling & robustness
 
-- [x] Verificar que `loopReducer` en `src/hooks/useLoopState.ts` maneja todas las transiciones imposibles explícitamente con `return state` (ya lo hace), y que no hay transiciones que puedan perder datos (ej: `toggle_pause` desde `paused` pierde el `sessionId` — es intencional, pero documentarlo) — ✅ todos los cases tienen return state; toggle_pause from paused: sessionId intentionally "" (previous session completed during pause)
-- [x] Auditar el caso `session_idle` cuando `state.sessionId === ""`: se retorna el mismo estado para evitar duplicar iteraciones — confirmar que esto no enmascara un `session_idle` legítimo sin sesión — ✅ sessionId="" only occurs between iterations; a legitimate idle always has non-empty sessionId
-- [x] Verificar que `plan_complete` desde estado `cooldown` o `error` no está contemplado — ¿puede el plan completarse mientras hay un error de rate limit activo? — ✅ FIXED: added plan_complete handling from cooldown/error states
-- [x] Confirmar que `iteration_started` desde `paused` incrementa `iteration` correctamente — si se reanuda una sesión que ya estaba corriendo, ¿se salta una iteración? — ✅ correct: resuming starts a new session, so +1 is right
-- [x] Revisar que `resume_session` solo funciona desde `ready` — si el usuario cancela el diálogo de reanudación y el estado ya cambió, el `resume_session` se ignora silenciosamente — ✅ safe: ignoring resume when not in ready is correct
+- [ ] Add test for `assertResponse` with `result.response` present but `ok: false` — verify it throws with status code
+- [ ] Add test for `assertResponse` with `result.response` undefined and `result.error` being a non-Error object — verify message extraction
+- [ ] Add test for `reconcileSession` with a session status type that is neither `idle`, `busy`, nor `retry` — verify it returns `"unknown"`
+- [ ] Add test for `createClient` cache eviction: after inserting `MAX_CACHE_SIZE + 1` entries, verify the oldest half was evicted
+- [ ] Add test for `toSdkModel` with `undefined` input — verify it returns `undefined`
+- [ ] Add test for `toSdkModel` with non-string input (already an object) — verify it passes through
+- [ ] Verify `sendPromptAsync` handles the case where `assertResponse` passes but the response is otherwise empty (it currently just calls `assertResponse` and returns void — confirm this is correct per the SDK contract)
 
-## Fase 5 — Auditoría estática: watchdog y resiliencia
+## Phase 5 — SSE & watchdog edge cases
 
-- [x] Verificar que `createWatchdog` en `src/hooks/useWatchdog.ts` resetea `recoveryAttempts` en `notifyIdle` y `notifyIterationStart` pero NO en `recordHeartbeat` si ya está en `"HEALTHY"` — confirmar que un heartbeat durante CONFIRMING resetea a HEALTHY
-- [x] Auditar la carrera entre `tick()` y `notifyWake()`: si el watchdog está en CONFIRMING y llega un `notifyWake()`, `lastHeartbeatAt` se resetea pero `ticking` sigue `true` — ¿puede la evaluación en curso decidir STUCK con el timestamp viejo?
-- [x] Verificar que el circuit breaker `recoveryAttempts > cfg.maxRecoveryAttempts` usa `>` (estrictamente mayor) lo que significa que el primer intento es intento 1 y se permite hasta `maxRecoveryAttempts` intentos — confirmar que la semántica es correcta
-- [x] Revisar `computeBackoff`: cuando `attempt` es un número muy grande (ej: 100), `2^100` excede `Number.MAX_VALUE` — confirmar que `Number.isFinite(uncapped)` lo capta y usa `safeMax`
-- [x] Verificar que `withTimeout` limpia el timer en el path de éxito — confirmar que el `finally` siempre se ejecuta y el timer no queda pendiente
+- [ ] Add test for `classifySessionError` with each error kind (`rate_limit`, `aborted`, `auth`, `transient`, `fatal`) using representative error objects
+- [ ] Add test for `classifySessionError` with a string error — verify kind detection
+- [ ] Add test for `classifySessionError` with `null` — verify it returns kind `fatal`
+- [ ] Add test for `extractRetryAfter` with `retry-after` header in seconds — verify conversion to ms
+- [ ] Add test for `extractRetryAfter` with a duration string in the message ("retry after 2 minutes") — verify it returns 120 seconds
+- [ ] Add test for watchdog `tick()` when `isActive()` returns false — verify health stays `HEALTHY` and no probes run
+- [ ] Add test for watchdog `tick()` when heartbeat is recent (under suspectMs) — verify health stays `HEALTHY`
+- [ ] Add test for watchdog `tick()` confirming path: server ping fails → `server_hung` recovery
+- [ ] Add test for watchdog `tick()` confirming path: server ping succeeds, reconcile returns `idle` → `synthesizeIdle` called, recovery attempts reset
+- [ ] Add test for watchdog `tick()` confirming path: reconcile returns `unknown` → `server_hung` recovery
+- [ ] Add test for watchdog circuit breaker: after `maxRecoveryAttempts + 1` ticks, `actions.fail` is called and `recoveryAttempts` resets to 0
+- [ ] Add test for watchdog `notifyIterationStart` NOT resetting `recoveryAttempts` (preventing infinite budget)
+- [ ] Add test for watchdog `recordHeartbeat` resetting recovery attempts to 0 and health to HEALTHY
 
-## Fase 6 — Auditoría estática: SSE y reconexión
+## Phase 6 — Backoff & timeout edge cases
 
-- [x] Auditar `useSSE` en `src/hooks/useSSE.ts`: verificar que `seenPartIds` y `messageRoles` se limpian correctamente cuando cambia el `sessionId` — ✅ se limpian en `session.created` (líneas 351-353), `reconnect()` NO las limpia (correcto: misma sesión, preservar dedup)
-- [x] Verificar que `scheduleReconnect` no acumula timeouts — ✅ `reconnect()` cancela el timeout pendiente antes de crear uno nuevo (líneas 628-630)
-- [x] Auditar `classifySessionError`: errores con nombre vacío y mensaje vacío — ✅ objeto sin name/message → `classifyKind(undefined, "Unknown error")` → `"fatal"`; string vacío → `classifyKind(undefined, "")` → `"fatal"`
-- [x] Revisar `extractRetryAfter` con `retryAfter: Infinity` — ✅ `Number.isFinite(n)` rechaza `Infinity`, retorna `undefined`
-- [x] Verificar `TRANSIENT_RE` false positive — ⚠️ `\b50\d\b` hace match con "503" en "error at offset 503", pero en la práctica `classifyKind` solo recibe objetos de error reales (no texto arbitrario), riesgo bajo
+- [ ] Add test for `computeBackoff` with `retryAfterSeconds` — verify it returns exactly `retryAfterSeconds * 1000` (ignoring base/max/jitter)
+- [ ] Add test for `computeBackoff` with `retryAfterSeconds = 0` — verify it returns 0
+- [ ] Add test for `computeBackoff` with `retryAfterSeconds = NaN` — verify it falls through to exponential backoff
+- [ ] Add test for `computeBackoff` with very large `attempt` (e.g. 100) — verify it caps at `max` instead of overflowing to Infinity
+- [ ] Add test for `computeBackoff` with `jitter: false` — verify it returns `Math.round(min(max, base * 2^attempt))`
+- [ ] Add test for `computeBackoff` with negative `attempt` — verify it's clamped to 0
+- [ ] Add test for `computeBackoff` with negative `base` — verify it's clamped to 0
+- [ ] Add test for `withTimeout` with `ms = 0` — verify timeout is disabled and the task runs to completion
+- [ ] Add test for `withTimeout` with `ms = Infinity` — verify timeout is disabled
+- [ ] Add test for `withTimeout` where the task completes before timeout — verify the timer is cleaned up
+- [ ] Add test for `withTimeout` where the task throws before timeout — verify the timer is cleaned up and the error propagates
+- [ ] Add test for `TimeoutError` type guard `isTimeoutError` — verify it works cross-realm
 
-## Fase 7 — Auditoría estática: servidor y lifecycle
+## Phase 7 — Loop state persistence & crash recovery
 
-- [x] Verificar que `useServer` limpia `abortController` en `closeCurrent()` — ✅ si `launch()` falla, `abortController` queda set pero es inofensivo; `closeCurrent()` lo aborta en la próxima llamada
-- [x] Auditar carrera entre `restart()` y `startServer()` — ✅ `restart()` set status("starting"), y `startServer()` retorna temprano si status no es "starting"/"stopped"; no hay carrera
-- [x] Verificar que `ping()` no causa estado inconsistente durante `restart()` — ✅ `ping()` retorna false si url es null; solo marca "unhealthy" desde "ready", nunca desde "starting"
-- [x] Revisar `restoreTerminal()` handlers — ✅ `console.error` ya loguea a stderr antes de exit(1); escribir a archivo añadiría complejidad sin beneficio en TUI
-- [x] Verificar `shutdownManager` segundo SIGINT — ✅ ignora segundo SIGINT, pero failsafe timer fuerza exit en 10s; no es bug
+- [ ] Add test for `saveLoopState` / `loadLoopState` roundtrip with valid data
+- [ ] Add test for `loadLoopState` with a malformed JSON file — verify it returns `null`
+- [ ] Add test for `loadLoopState` with version !== 1 — verify it returns `null`
+- [ ] Add test for `loadLoopState` with a file that doesn't exist — verify it returns `null`
+- [ ] Add test for `clearLoopState` when the file doesn't exist — verify it doesn't throw
+- [ ] Add test that `saveLoopState` writes to `.tmp` then renames (atomic write pattern) — verify the temp file is cleaned up after rename
 
-## Fase 8 — Auditoría estática: plan generator (`--create-plan`)
+## Phase 8 — Config loading & resilience resolution
 
-- [x] Auditar `runCreatePlan`: `prompt()` retorna `null` si stdin no es TTY — ✅ línea 156: `if (!goal || !goal.trim())` captura null, sale con exit(1)
-- [x] Verificar polling en `runCreatePlan` no se cuelga — ✅ `Bun.sleep(1500)` es non-blocking, hay deadline con break
-- [x] Revisar `stripCodeFences` — ✅ maneja fences con lenguaje (`[a-zA-Z]*`), pero no hyphens/dígitos en language tag (ej: `objective-c`). Riesgo bajo: el modelo rara vez usa tags con hyphens
-- [x] Verificar `hasNewAssistantReply` con mensaje vacío — ✅ `extractLastAssistantText` hace `.trim()`, `length > 0` rechaza whitespace-only
-- [x] Confirmar `runCreatePlan` limpia servidor en todos los paths — ✅ try/finally en líneas 249-260 asegura `server?.close()`
+- [ ] Add test for `loadConfig` with a config file containing `null` — verify it returns `{}`
+- [ ] Add test for `loadConfig` with a config file containing an array — verify it returns `{}`
+- [ ] Add test for `resolveResilience` with all three layers (defaults, config, CLI) — verify CLI wins on conflict, config fills gaps
+- [ ] Add test for `resolveResilience` with `undefined` values in config — verify they don't override defaults
+- [ ] Add test for `hasTerminalConfig` with `type: "known"` and empty `name` — verify it returns `false`
+- [ ] Add test for `hasTerminalConfig` with `type: "custom"` and empty `command` — verify it returns `false`
+- [ ] Add test for `saveConfig` creating the config directory if it doesn't exist
+- [ ] Verify `getConfigDir` respects `$XDG_CONFIG_HOME` environment variable
 
-## Fase 9 — Auditoría estática: i18n y format
+## Phase 9 — Sleep detector & power management
 
-- [x] Verificar `t()` en i18n.ts — ✅ `?? en[key]` funciona: si clave existe en `es` con `undefined`, `??` lo captura; si existe con string vacío, lo deja (correcto, traducción vacía intencional). El tipo `Record<MessageKey, Msg>` previene claves faltantes en compile-time
-- [x] Auditar interpolaciones — ✅ `params ?? {}` en línea 680 previene params undefined; parámetros faltantes individuales renderizan `"undefined"`, pero todos los call sites proveen todos los params. Bajo riesgo, no requiere fix
-- [x] Verificar `stripMarkdown` — ✅ remueve backticks inline primero (línea 64), luego bold/italic, así contenido dentro de código inline se preserva
-- [x] Revisar `truncateText`: cuando `maxLen < 3`, `Math.max(0, maxLen - 3)` produce `0`, resultando en `"..."` (3 chars) para `maxLen = 2` — debería truncar a `maxLen` sin elipsis — ✅ corregido en Fase 14 (línea 113): ahora usa truncado simple sin elipsis cuando maxLen < 3
+- [ ] Add test for `createSleepDetector` with a threshold shorter than the tick interval — verify it doesn't trigger false wakes
+- [ ] Add test for `createSleepDetector` detecting a gap larger than threshold — verify `onWake` is called with the correct `gapMs`
+- [ ] Add test for sleep detector `stop()` preventing further wake callbacks
+- [ ] Verify `createPowerManager` on non-macOS platforms gracefully handles the absence of `caffeinate`
 
-## Fase 10 — Auditoría estática: sleep detector, power, clipboard, terminal launcher
+## Phase 10 — Chaos fault injection
 
-- [x] Verificar `createSleepDetector` no fire `onWake` si `poll()` se llama antes de `start()` — ✅ `lastSeen` se inicializa a `clock.wallClockNow()` en la creación, así `now - lastSeen` es pequeño y no dispara false wake
-- [x] Auditar `createPowerManager`: `proc.kill()` cuando proceso ya murió — ✅ try/catch ignora ESRCH; Bun.spawn children se reap por event loop, no zombie processes
-- [x] Verificar `copyToClipboard` maneja herramientas instaladas que fallan — ✅ exitCode !== 0 captura fallos; try/catch captura spawn errors; stderr se devuelve como mensaje
-- [x] Auditar `launchTerminal` / `buildArgs` — ⚠️ `attachCmd.split(" ")` rompe paths con espacios, pero `getAttachCommand` genera URLs sin espacios (`http://127.0.0.1:PORT`). Riesgo bajo en uso actual
-- [x] Verificar `detectInstalledTerminals` sin `which` — ✅ `Bun.spawn(["which", cmd])` lanza excepción si `which` no existe; try/catch retorna false para todas; lista vacía = degradación graceful
+- [ ] Add test for `createChaos` with `enabled` returning `false` — verify all chaos methods are no-ops
+- [ ] Add test for `createChaos` with `enabled` returning `true` — verify `killServer`, `reviveServer`, `freezeSession`, `unfreezeSession` work
+- [ ] Add test for `createChaos.isEnabled()` reflecting the current state of the `enabled` function
 
-## Fase 11 — Auditoría estática: loop-state-store y debug-logger
+## Phase 11 — App.tsx integration logic audit
 
-- [x] Verificar `saveLoopState` atomic write — ✅ `writeFile` tmp + `rename` es atómico en el mismo filesystem (HFS+/APFS en macOS). Si el proceso crashea entre writeFile y rename, el .tmp queda pero el archivo original está intacto
-- [x] Auditar `loadLoopState` con campos extra — ✅ solo valida `version === 1` y `iteration === number`; campos extra se preservan, campos faltantes obtienen defaults en el consumidor. Forward-compatible
-- [x] Verificar `DebugLogger` en directorio de solo lectura — ✅ `sessionStart` captura error de `writeFileSync` y set `enabled = false`; `writeRaw` retorna temprano si `!enabled`. Degradación graceful
-- [x] Revisar rotación de logs en `sessionStart` — ✅ `renameSync` falla silenciosamente; en ese caso `writeFileSync` sobrescribe el log antiguo (pérdida aceptable del log anterior)
+- [ ] Verify the `startingIteration` guard prevents double session creation when the iteration-driver effect fires twice in the same Solid reactive cycle
+- [ ] Verify the `pendingCooldownResume` flag correctly causes `stats.resume()` instead of `stats.startIteration()` after a rate-limit cooldown
+- [ ] Verify `handleWake` correctly handles waking from cooldown (clears timers, dispatches `resume_cooldown`) vs. waking from running (reconciles and advances)
+- [ ] Verify `enterCooldown` clears any previous cooldown timers before setting new ones (preventing timer leaks on consecutive rate limits)
+- [ ] Verify `handleQuit` aborts the current session, disconnects SSE, stops the server, and clears loop state — in that order
+- [ ] Verify `doResume` correctly handles the case where `reconcileSession` returns `"working"` (re-attaches to existing session) vs. `"missing"` (starts fresh iteration)
+- [ ] Verify agent validation on startup: if `--agent` is specified but not found in the server's primary agents, the `DialogInvalidAgent` is shown and the session is NOT started until the user resolves it
+- [ ] Verify the SSE reconnect threshold (`SSE_RECONNECT_RESTART_THRESHOLD = 6`) triggers a server restart after 6 consecutive failed reconnects
+- [ ] Verify `reconcileAndAdvance` correctly synthesizes `session_idle` when the server says the session is `"idle"` or `"missing"`
+- [ ] Verify `restoreTerminal()` only runs when `tuiStarted` is true AND `process.stdout.isTTY` is true — preventing escape code leaks on `--help`/`--version`/`--create-plan` paths
+- [ ] Verify the `--create-plan` flow exits with `process.exitCode = 1` when the model returns empty content
+- [ ] Verify the `--create-plan` refinement loop correctly passes the previous plan and feedback to `buildRefinePrompt`
 
-## Fase 12 — Auditoría estática: App.tsx (componente principal)
+## Phase 12 — DRY & code quality fixes
 
-- [x] Auditar `createEffect` principal `running` → envío de prompt — ✅ Solid's `createEffect` solo se dispara cuando dependencias cambian; `startIteration` es async y dispatch cambia sessionId, previniendo doble disparo
-- [x] Verificar efecto de cooldown resetea timer — ✅ cooldown usa Solid reactive system, no setTimeout directo; no hay dangling timer
-- [x] Auditar `saveLoopState` en todas las transiciones relevantes — ✅ persiste `running`, `pausing`, `paused`, `cooldown`; no persiste `error` (intencional: no reanudar desde error); limpia en `complete`
-- [x] Verificar `ensureGitignore` se llama exactamente una vez — ✅ llamado dentro de `initializeSession()` que usa flag `sessionInitialized`; efecto `startOnce()` lo protege
-- [x] Revisar efecto de reconexión SSE después de `restart()` — ✅ después de 6 intentos fallidos, se restart el server; al estar ready, efecto "server ready" dispara `sse.reconnect()`. Eventos durante restart se pierden (esperado), loop iteration driver re-sync
+- [ ] Extract the repeated `path.resolve(planFile)` / `path.resolve(file)` pattern in `App.tsx` file-edit handler and `refreshPlan`/`refreshCurrentTask`/`checkPlanComplete` into a shared utility that resolves the plan file path once
+- [ ] Extract the repeated `server.url()` + `createClient(url)` pattern (appears ~8 times in App.tsx) into a helper `getClient()` that returns `null` if the server isn't ready
+- [ ] Deduplicate the terminal-launch + error-showing pattern in `onConfigSelect`, `onConfigCustom`, and the `T` key handler — extract a shared `launchTerminalOrShowDialog(sid)` function
+- [ ] Consolidate the two separate `clearCooldownTimers` / timer-management blocks: `cooldownTimer` and `cooldownTicker` are always managed together; extract a `CooldownManager` class or at least a single `startCooldown(ms, onExpire)` / `clearCooldown()` pair
+- [ ] The `startingIteration` flag is a mutable `let` in the component scope — verify it's correctly reset in the `finally` block of `startIteration` and add a defensive check that logs if it's still `true` when a new iteration attempt begins
+- [ ] The `rateLimitAttempts` counter is reset in multiple places (`session_idle` handler, `reconcileAndAdvance`, `enterCooldown` exhaustion path) — verify all paths are covered and none double-reset
+- [ ] Add a JSDoc comment to `extractPlanText` and `extractLastAssistantText` in `index.tsx` clarifying that they operate on the plan-generator's session messages, not the loop's SSE stream
 
-## Fase 13 — Correcciones: lógica duplicada y violaciones DRY
+## Phase 13 — Potential runtime exceptions & unhandled paths
 
-- [x] Extraer la lógica de validación de argumentos CLI duplicada entre `parseArgs` y `requireValue`/`parsePort`/`parseModel` a funciones de validación reutilizables con mensajes de error consistentes — ✅ auditado: las funciones ya tienen validación consistente (check + error + exit), la similitud estructural no es duplicación real
-- [x] Centralizar la lógica de reconexión SSE exponencial (en `useSSE.scheduleReconnect`) con la lógica de backoff existente en `src/lib/backoff.ts` — ✅ auditado: SSE backoff es simple (sin jitter, propósito diferente), no vale la pena unificar
-- [x] Unificar `commandExists` en `src/lib/clipboard.ts` y `src/lib/terminal-launcher.ts` — extraída a `src/lib/command-exists.ts`, ambos archivos importan desde el módulo compartido
-- [x] Extraer `formatDuration` de `src/hooks/useLoopStats.ts` a `src/lib/format.ts` junto con las demás funciones de formateo
-- [x] Mover `isLocale` de `src/lib/i18n.ts` a `src/lib/locale.ts` — ✅ `locale.ts` fue eliminada; `isLocale` ya está en `i18n.ts` donde pertenece por cohesión (type guard del tipo `Locale` definido en el mismo archivo)
+- [ ] Verify that `Bun.file(args.planFile).exists()` in `validatePrerequisites` correctly handles permission errors (does `exists()` throw on EACCES? Bun's `File.exists()` resolves to `false` on any error — confirm)
+- [ ] Verify `refreshPlan` / `refreshCurrentTask` / `checkPlanComplete` don't crash when the plan file is deleted mid-run (the `catch` in `refreshPlan` logs and swallows; `checkPlanComplete` returns `false`; confirm)
+- [ ] Verify `startIteration` handles the case where `Bun.file(promptFile).text()` returns an empty string — the prompt would be empty, which is technically valid but likely useless. Consider adding a warning log.
+- [ ] Verify the `{{PLAN_FILE}}` replacement in the prompt content handles edge cases: what if the plan file path contains special regex characters? (It uses `replaceAll` with a plain string, not regex — safe.)
+- [ ] Verify `classifySessionError` handles circular references in the error object without crashing (`extractRetryAfter` accesses nested properties but doesn't serialize — safe as long as it doesn't call `JSON.stringify` on a circular ref)
+- [ ] Verify `process.on("uncaughtException")` and `process.on("unhandledRejection")` in `index.tsx` call `restoreTerminal()` before `process.exit()` — confirmed, but verify they don't double-restore when `process.exit()` triggers the `"exit"` handler again
 
-## Fase 14 — Correcciones: casos límite y validaciones ausentes
+## Acceptance criteria
 
-- [x] Corregir `truncateText` en `src/lib/format.ts` para manejar `maxLen < 3` correctamente: usar truncado simple sin elipsis en vez de generar strings más largos que el límite
-- [x] Corregir `parseTaskLine` para manejar descripción vacía — ✅ ya funciona: `checkboxContent === ""` → pending con `description: ""`
-- [x] Agregar validación en `saveConfig` para escribir atómicamente (tmp + rename) — ✅ ya implementado: `saveConfig` usa `writeFileSync(tmpPath, ...)` + `renameSync(tmpPath, configPath)`, idéntico a `saveLoopState`
-- [x] Agregar protección en `computeBackoff` contra `attempt` excesivamente grande — ✅ ya protegido: `Number.isFinite(uncapped)` catcha Infinity, `exp` siempre ≤ `safeMax`; añadí comentario explícito sobre la protección en ambos paths
-- [x] Corregir el cálculo de `percentComplete` en `parsePlan` cuando `total - manual === 0` — ✅ el 100% hardcodeado es correcto; añadí comentario explícito explicando la semántica
-
-## Fase 15 — Correcciones: robustez en tiempo de ejecución
-
-- [x] Agregar purga periódica de `clientCache` en `createClient` cuando excede un tamaño razonable (10 entradas) para evitar memory leak en ejecuciones muy largas con múltiples reinicios de servidor
-- [x] Agregar `unref()` al proceso `caffeinate` en `createPowerManager` para que no bloquee el event loop al hacer shutdown — `proc.kill()` es síncrono en Unix (no se cuelga), pero `unref()` asegura shutdown limpio
-- [x] Agregar manejo de `EPIPE` en `DebugLogger.writeRaw` para que no crashee si stdout se cierra durante una escritura — ✅ ya manejado: `writeRaw` escribe a archivo (no stdout) via `fs.appendFileSync`, y el try/catch en línea 116 captura cualquier error (incluido EPIPE) y lo suprime silenciosamente
-- [x] Agregar validación en `useServer.launch()` para que un `parseInt` de un puerto inválido no cause NaN — ✅ ya manejado: línea 111 usa `Number.isFinite(actualPort) ? actualPort : null`, que rechaza NaN e Infinity; `??` en `restart()` no captura NaN, pero el guard lo previene
-- [x] Corregir la condición de carrera en `useSSE.connect()`: si se llama `connect()` dos veces rápido, la primera llamada puede sobrescribir el `abortController` de la segunda — ✅ ya corregido: cada invocación de `connect()` crea su propio `AbortController` (`myController`, línea 494), y verifica `abortController !== myController` en 5 puntos (líneas 513, 527, 532, 547-551) para detectar si fue suplantada y salir sin mutar estado compartido
-
-## Fase 16 — Verificación: compilar y ejecutar tests
-
-- [x] Ejecutar `bun run build` y verificar que no hay errores de compilación TypeScript — ✅ build exitoso
-- [x] Ejecutar `bun test` y verificar que los 270 tests existentes siguen pasando — ✅ 277 tests pasan (más que los 270 originales gracias a tests nuevos de watchdog + format)
-- [x] Ejecutar `bun test` con la bandera `--coverage` si está disponible, y revisar cobertura de los módulos criticos (plan-parser, loop-state, backoff, with-timeout) — ✅ coverage disponible; plan-parser 86%, loop-state-store 97%, backoff 100%, with-timeout 100%
-- [x] Verificar que el binario construido funciona: `bun run dev --help` muestra la ayuda correctamente — ✅ ayuda se muestra correctamente
-
-## Criterios de aceptación
-
-- Todos los tests existentes (270) pasan sin modificación
-- No se introduce ninguna regresión en el comportamiento esperado
-- Cada corrección es mínima y quirúrgica — no se refactoriza código que funciona correctamente
-- La lógica duplicada identificada se centraliza sin romper la interfaz pública de ningún módulo
-- Los casos límite detectados tienen evidencia (test o comentario explícito) de que están contemplados
-- `bun run build` completa sin errores
-- `bun test` completa sin fallos
-- Los archivos fuente modificados están libres de `any` innecesario y respetan el estilo existente
-
-<plan-complete>Full audit and correction plan completed. All 16 phases done: Phases 1-12 audited the codebase (CLI parsing, plan parser, API/timeouts, state machine, watchdog/resilience, SSE/reconnection, server lifecycle, plan generator, i18n/format, sleep/power/clipboard/terminal, loop-state-store/debug-logger, App.tsx). Phase 13 centralized duplicate logic (commandExists extracted to shared module, formatDuration moved to format.ts). Phase 14 corrected edge cases (truncateText maxLen<3, saveConfig atomic write, computeBackoff overflow guard, percentComplete denominator-0). Phase 15 added runtime robustness (clientCache purge, caffeinate unref, watchdog TOCTOU race fix, recovery budget preservation across iterations). Phase 16 verified build (✅), 277 tests pass (✅), coverage on critical modules (✅), and --help output (✅). Key code changes committed: commandExists shared module, watchdog heartbeat-mid-probe fix, notifyIterationStart recovery-budget preservation. No MANUAL or BLOCKED tasks remain.</plan-complete>
+- All existing tests continue to pass (`bun test`)
+- All new tests added in phases 1–10 pass
+- No unhandled exceptions in any execution flow (parameterized, edge-case, error)
+- DRY violations identified in phase 12 are refactored
+- Each change is documented with a brief explanation of the problem and the fix applied
+- `bun run build` succeeds with no type errors
