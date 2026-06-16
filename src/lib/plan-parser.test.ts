@@ -333,6 +333,19 @@ End
     ].join("\n")
     expect(parsePlanComplete(content)).toBe("actually done")
   })
+
+  it("ignores a documented tag inside an UNTERMINATED fence (no premature stop)", () => {
+    // Malformed markdown: the fence is never closed. The paired-fence strip
+    // can't match it, so without the trailing-fence strip this example tag would
+    // leak and stop the loop early. A missed completion is far safer here.
+    const content = [
+      "## How it works",
+      "```",
+      "<plan-complete>example summary</plan-complete>",
+      "- [ ] Real task still pending",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBeNull()
+  })
 })
 
 describe("getCurrentTaskFromContent", () => {

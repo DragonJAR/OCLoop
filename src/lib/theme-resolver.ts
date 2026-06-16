@@ -83,9 +83,12 @@ function resolveColor(
  */
 function resolveColorString(
   value: string,
-  defs: Record<string, string>
+  defs: Record<string, string>,
+  depth = 0
 ): string {
-  if (!value) {
+  // Depth cap: a cyclic def (a→b→a) would otherwise recurse forever / overflow.
+  // 8 is far beyond any legitimate def chain; fall back to neutral grey instead.
+  if (!value || depth > 8) {
     return "#808080";
   }
 
@@ -102,7 +105,7 @@ function resolveColorString(
       return defValue;
     }
     // Recursive lookup (shouldn't normally happen, but be safe)
-    return resolveColorString(defValue, defs);
+    return resolveColorString(defValue, defs, depth + 1);
   }
 
   // Fallback if not found

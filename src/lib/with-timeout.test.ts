@@ -39,7 +39,9 @@ describe("withTimeout", () => {
         })
       })
 
-    await expect(withTimeout(task, 15, "abortable")).rejects.toBeDefined()
+    // The task rejects with its own "aborted" error once the timeout fires the
+    // signal (it wins the race against the timeout's own rejection).
+    await expect(withTimeout(task, 15, "abortable")).rejects.toThrow("aborted")
     // Give the microtask/event a tick to land
     await delay(5)
     expect(isTimeoutError(abortedReason)).toBe(true)
@@ -95,7 +97,9 @@ describe("withTimeout", () => {
 
     const p = withTimeout(task, 1000, "external", external.signal)
     external.abort()
-    await expect(p).rejects.toBeDefined()
+    // External abort fires well before the 1000ms timeout → the task's own
+    // rejection is what surfaces (deterministic, no race with the timeout).
+    await expect(p).rejects.toThrow("external-abort")
     expect(observedAbort).toBe(true)
   })
 })

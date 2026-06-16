@@ -12,6 +12,15 @@ describe("locale utilities", () => {
       expect(truncate("hello world", 8)).toBe("hello w…");
       expect(truncate("hello world", 5)).toBe("hell…");
     });
+
+    test("never overflows for len <= 0 (negative slice index bug)", () => {
+      // A naive slice(0, len-1) with len<=0 is a from-end index that returns a
+      // near-full string — longer than the requested width. Must be "".
+      expect(truncate("hello world", 0)).toBe("");
+      expect(truncate("hello world", -3)).toBe("");
+      // len === 1 keeps only the ellipsis, never a negative index.
+      expect(truncate("hello world", 1)).toBe("…");
+    });
   });
 
   describe("titlecase", () => {

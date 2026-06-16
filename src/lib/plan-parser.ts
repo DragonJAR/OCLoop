@@ -162,7 +162,13 @@ export function parsePlanComplete(content: string): string | null {
   // Strip fenced code blocks first: a ```fence``` documenting the mechanism can
   // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
   // premature completion. Real completion tags live at the document's top level.
-  const withoutFences = content.replace(/```[\s\S]*?```/g, "")
+  const withoutFences = content
+    .replace(/```[\s\S]*?```/g, "") // paired fences
+    // An UNTERMINATED trailing fence (malformed markdown) wouldn't match the
+    // paired regex, leaving a documented `<plan-complete>` example inside it to
+    // trigger a premature completion. Strip from the dangling fence to EOF too:
+    // a missed real tag (loop keeps running) is far safer than a false stop.
+    .replace(/```[\s\S]*$/, "")
   const matches = [
     ...withoutFences.matchAll(
       /^ {0,3}<plan-complete>(?:([^\n]*?)<\/plan-complete>|([\s\S]*?)^ {0,3}<\/plan-complete>)/gm,
