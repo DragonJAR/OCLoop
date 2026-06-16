@@ -24200,3 +24200,134 @@ const VERSION = require("../../package.json").version
 - **No CRITICAL, HIGH, or MEDIUM findings.**
 - **No code changes applied** in `src/lib/cli-args.ts` (audit-only
   per PLAN.md acceptance criteria).
+
+---
+
+## Phase 18 — Test Coverage Gaps
+
+Source: `src/lib/*.test.ts`, `src/hooks/*.test.ts`, `src/resilience-integration.test.ts`. Test baseline: **644 pass, 0 fail, 1625 expect() calls** across 21 files (output of `bun test` at session start).
+
+Phase 18 is the only remaining PLAN.md phase. It is documentation-only — no source code is changed. The work is to (1) review what the existing suite already covers well, (2) flag flows with no test coverage, (3) flag flows with incomplete coverage, and (4) document scenarios that cannot be tested without a real OpenCode server. Tasks 18.2–18.4 follow in subsequent iterations; this entry covers **Task 18.1 only**.
+
+### 18.1 — Review existing test files for coverage of: error paths, edge cases, boundary values
+
+PLAN.md 18.1: "Review existing test files (`api.test.ts`, `cli-args.test.ts`, `plan-parser.test.ts`, etc.) for coverage of: error paths, edge cases, boundary values."
+
+#### Per-file inventory and coverage verdict
+
+| Test file | Tests | Source | Coverage verdict |
+| --- | ---: | --- | --- |
+| `src/lib/cli-args.test.ts` | 128 | `src/lib/cli-args.ts` (250 LoC) | **EXCELLENT.** Exhaustive across every flag (long/short), every error path of `parsePort`/`parseModel`/`parseLang`/`parsePrompt`/`parsePlan`/`requireValue`, every `--resilience key=value` type coercion path, every error message format, plus a 200-line block dedicated to `--plan --debug` vs `--plan -` boundary behavior. Cross-flag interactions (`--agent --chaos`, `--resilience --debug`) are pinned. Idempotency of repeated `--resilience` flags is pinned (last-wins). PLAN.md 1.1–1.9 are mapped 1:1 to test cases. |
+| `src/lib/plan-parser.test.ts` | 147 | `src/lib/plan-parser.ts` (250 LoC) | **EXCELLENT.** Exhaustive `parseTaskLine` variant coverage: every marker grammar (`- [x]`, `- [X]`, `- [x ]`, `- [ ]`, `- [ ] [MANUAL]`, `- [MANUAL]`, `- [BLOCKED:reason]`, `- [BLOCKED]`, `- [ ] [BLOCKED]`, `- [BLOCKEDABC]`-as-negative, whitespace in reason, multi-word reason, no-trailing-description, unclosed bracket, empty checkbox). Every `parsePlan` input shape (empty file, no-tasks, headings only, completed-only, pending-only, manual/blocked-only, zero-total `percentComplete`, all-manual `percentComplete`, single-pending). Every `parsePlanComplete` variant (no tags, single-line, multi-line nested, inside code fence, multiple occurrences → last-wins, with attributes, unclosed tag). `getCurrentTaskFromContent` order contract is pinned (FIRST pending, even when later pendings exist). `parsePlanFile` on missing file throws (does not silently return null/empty) is pinned. `isPlanComplete` on non-existent file returns `false` is pinned. PLAN.md 2.1–2.10 are mapped 1:1. |
+| `src/hooks/useLoopState.test.ts` | 78 | `src/hooks/useLoopState.ts` (350 LoC) | **EXCELLENT.** Full state-machine truth table: every `LoopAction` × every `LoopState` is asserted (the `expectNoOp` helper at line ~950 enumerates the no-op set for each action). The reducer's known-bug at `plan_complete` from `error` → `iterations: 0` is documented in-test and pinned (the test asserts current behavior AND the WHY it is a bug, with a `MEJORAS.md 3.8` cross-reference). `getActiveSessionId` truth table (used by both the watchdog probe at App.tsx:242-247 and the reducer) is pinned. PLAN.md 3.1–3.10 are mapped 1:1. |
+| `src/hooks/useWatchdog.test.ts` | 36 | `src/hooks/useWatchdog.ts` (430 LoC) | **EXCELLENT.** Wires the real `createWatchdog` against a fake clock + fake probes + fake actions and exercises: suspect/confirm thresholds, the recovery-attempt ladder (`abortAndRetry` → `restartServer` → `fail`), the circuit-breaker trip and reset, escalation (`recoveryAttempts >= 2` → `restartServer` regardless of reason), `notifyIterationStart`/`notifyWake` resetting the heartbeat baseline, `notifyIdle` path, `recordHeartbeat` mid-wedge, server-hung vs session-wedged reason dispatch, deterministic-clock-based time advance. 200+ lines of the file is one large end-to-end "wedge → recover → re-wedge → escalate → circuit-break → reset → start over" scenario. |
+| `src/lib/api.test.ts` | 29 | `src/lib/api.ts` (324 LoC) | **EXCELLENT.** Pins the masked-crash bug (line 18-25: when `result.response === undefined`, surface the SDK `error`, not crash on `undefined.ok`). Pins `reconcileSession` verdict table (`working`/`idle`/`missing`/`unknown` × 7 inputs). Pins `assertResponse` for all 4 corner cases (ok, non-ok, transport error, both missing). Pins `toSdkModel` for 8 invalid input shapes (empty, whitespace, `/`, `provider/`, `/model`, non-string truthy leak, undefined). Pins `createClient` cache eviction at the `MAX_CACHE_SIZE + 1` boundary. Pins `sendPromptAsync` round-trip on the SDK's `promptAsync` parameter shape. |
+| `src/hooks/useSSE.test.ts` | 24 | `src/hooks/useSSE.ts` (660 LoC) | **GOOD but NARROW.** Tests `classifySessionError` exhaustively (rate_limit, aborted, auth, transient, fatal; retry-after from `data.retryAfter` / `headers.retry-after` / message-parse; string vs nullish vs object inputs). However, only the classifier is tested — the `useSSE` Solid hook itself (connection lifecycle, reconnection backoff, event filtering by sessionId, error dispatch wiring) is **not** tested as a hook. See Task 18.3. |
+| `src/lib/format.test.ts` | 20 | `src/lib/format.ts` (300 LoC) | **EXCELLENT.** Pins the negative-index `slice(0, len-1)` bug in `truncate`/`truncateText` for `maxLen ≤ 0` (returns `""` not a near-full string). Pins `stripMarkdown` underscore-in-identifier preservation (`user_id_field`) and arithmetic-with-asterisks preservation (`2 * 3 * 4`) — these are non-obvious correctness pins. Pins `tokensPerMin` div-by-zero guard. Pins `wrapText` and `clampLines` boundary cases (empty input, non-positive width, hard-split for words longer than the column, indicator-slot reservation). |
+| `src/hooks/useLoopStats.test.ts` | 16 | `src/hooks/useLoopStats.ts` (250 LoC) | **GOOD.** Hook-level tests with mock dependencies. |
+| `src/lib/layout.test.ts` | 13 | `src/lib/layout.ts` (200 LoC) | **EXCELLENT.** Pins the `0/-5/NaN` fallback to `FALLBACK_COLS`. Pins the breakpoint boundaries (40/80/140 for narrow/medium/wide, 18-row short flip). Pins the minimum floor on `logContentWidth` and `taskWidth` so a 10-col terminal still renders. Pins `bar`/`titleBar` width-exact behavior and degradation when width < title. Pins `fitSegments` segment-dropping priority. |
+| `src/lib/activity-format.test.ts` | 12 | `src/lib/activity-format.ts` (250 LoC) | **GOOD.** Coverage of activity-log formatting helpers. |
+| `src/lib/term-caps.test.ts` | 11 | `src/lib/term-caps.ts` (180 LoC) | **EXCELLENT.** All env vars (NO_COLOR, FORCE_COLOR, TERM, COLORTERM, LANG, OCLOOP_ASCII, OCLOOP_UNICODE, CI, GITHUB_ACTIONS) are exercised. Non-TTY vs TTY split is pinned. `FORCE_COLOR` override of `NO_COLOR` is pinned (the documented user contract). `OCLOOP_ASCII` precedence over `OCLOOP_UNICODE` is pinned. Windows TTY default-to-unicode is pinned. |
+| `src/lib/backoff.test.ts` | 9 | `src/lib/backoff.ts` (90 LoC) | **EXCELLENT.** Pins exponential growth (4 attempts verified), monotonic non-decreasing across 12 attempts, the max cap (10/100/1000 attempts all cap to `max`), full-jitter `[0, exp]` bounds with boundary RNG values (0 and 0.999999), defensive clamp of out-of-range RNG (random=5 returns value ≤ 1000), `retryAfterSeconds` priority over the formula and over the max, the negative `retryAfter` → 0 guard. |
+| `src/hooks/useActivityLog.test.ts` | 8 | `src/hooks/useActivityLog.ts` (110 LoC) | **GOOD.** |
+| `src/lib/with-timeout.test.ts` | 7 | `src/lib/with-timeout.ts` (110 LoC) | **EXCELLENT.** Pins the function-form race (task wins → no abort), the abort-on-timeout (task loses → abort signal fires, task sees `TimeoutError` as the reason), the external-signal abort (external abort wins, no race with the internal timer), the `ms ≤ 0` / `Infinity` disabled-timeout path, the **synchronous-throw** path (line 106-127) — this test was added in commit `efcc7d2` to fix a verified timer-leak in the synchronous-throw path. |
+| `src/lib/loop-state-store.test.ts` | 6 | `src/lib/loop-state-store.ts` (90 LoC) | **EXCELLENT.** Pins missing-file → `null`, round-trip, atomic rename (no leftover `.tmp`), `clearLoopState` on missing file, unsupported version → `null`. Uses `mkdtempSync` + `process.chdir` so the store reads/writes the right path regardless of the user's CWD. |
+| `src/resilience-integration.test.ts` | 5 | (cross-cutting) | **EXCELLENT.** Wires the real `createWatchdog` + real `classifySessionError` + real `computeBackoff` + real `loopReducer` against a chaos-driven fake server, and verifies the four headline recovery behaviors from the acceptance criteria: rate-limit → cooldown → resume; SSE cut → reconcile recovers (no abort); server dead → restart; session frozen → abort. Pins the "sequence of faults without giving up" end-to-end recovery. This is the highest-value test in the suite — it would catch any regression in the watchdog/error/backoff/reducer contract as a whole. |
+| `src/lib/sleep-detector.test.ts` | 5 | `src/lib/sleep-detector.ts` (85 LoC) | **EXCELLENT.** Pins normal-interval ticks (no wake), wake at 10 min gap, gap-since-last-sample (not since start), backwards-clock ignored, start/stop running-state. |
+| `src/lib/chaos.test.ts` | 5 | `src/lib/chaos.ts` (90 LoC) | **GOOD.** Pins disabled-when-disabled (probe pass-through), killServer+reviveServer, freezeSession+unfreezeSession, one-shot rate-limit injection, snapshot shape. |
+| `src/lib/clock.test.ts` | 4 | `src/lib/clock.ts` (60 LoC) | **GOOD.** Pins that `monotonicNow` and `wallClockNow` return the same value when wired through a real clock; pins that `process.hrtime.bigint` and `Date.now` are exposed. |
+| `src/hooks/useSessionStats.test.ts` | 4 | `src/hooks/useSessionStats.ts` (60 LoC) | **GOOD.** |
+| `src/lib/glyphs.test.ts` | 3 | `src/lib/glyphs.ts` (60 LoC) | **GOOD.** Minimal but adequate for a constant-table module. |
+
+#### Coverage pattern observations
+
+**Three "shapes" of test quality emerge from the inventory:**
+
+1. **Spec-driven exhaustive tests** — `cli-args`, `plan-parser`, `useLoopState`, `useWatchdog`, `api`, `layout`, `term-caps`, `backoff`, `with-timeout`, `format`, `loop-state-store`, `sleep-detector`. Each test case is named after the PLAN.md task it covers (e.g., "PLAN.md 1.9: --plan --debug is rejected", "PLAN.md 2.8: returns the FIRST pending even when later pendings exist"). These files are the ones the audit could lean on confidently.
+
+2. **Hook-level tests with mock dependencies** — `useLoopStats`, `useActivityLog`, `useSessionStats`. Smaller, behavior-focused. The mocks are stable and the assertions are tight. Adequate for the surface they test.
+
+3. **Minimal/no tests for thin modules** — `glyphs.test.ts` (constant table), `useSSE.test.ts` (only the classifier, not the hook). See Tasks 18.2 and 18.3.
+
+#### Error path coverage — VERIFIED for the audited surface
+
+The exhaustive files explicitly pin error paths for:
+
+- **CLI parsing errors** — unknown flag, missing value, value-of-wrong-type, out-of-range port, model without `/`, multi-`/` model, empty provider or model, unknown `--resilience` key, non-numeric value for numeric key, boolean value for non-boolean key, conflicting cross-flag interactions.
+- **Plan parser errors** — unclosed `[`, BLOCKED without reason, BLOCKED with empty reason, BLOCKED with multi-word reason, empty checkbox with no description, percentComplete denominator = 0.
+- **State machine errors** — every no-op transition (asserted explicitly with `expectNoOp` so a future refactor that makes a no-op into a transition fails), the `plan_complete` from `error` iterations=0 bug (pinned with WHY), the `retry` from `error(recoverable: false)` no-op (non-recoverable is permanent), the `quit` from `error` no-op (the comment cites `process.exit` in `handleQuit`).
+- **API errors** — `response.ok = false`, `response = undefined` (transport error), both missing, non-Error error objects with `.message`, error objects without `.message` (JSON fallback), non-ok 429, 5xx, timeouts, network errors.
+- **Watchdog errors** — circuit-breaker trip and reset, escalation ladder, post-breaker attempt counter reset, server-hung vs session-wedged dispatch.
+- **Backoff errors** — negative `retryAfter` (returns 0), `retryAfter > max` (still returns `retryAfter`), out-of-range RNG (clamped).
+- **Layout errors** — `0`, negative, `NaN` cols/rows (fallback to `FALLBACK_COLS/ROWS`).
+- **Format errors** — `maxLen ≤ 0` (returns `""` not a near-full string), `maxLen === 1` (single `…` not negative-indexed slice).
+- **Terminal-cap errors** — `TERM=dumb` overrides `COLORTERM=truecolor` (monochrome), non-TTY output is colorless unless forced.
+- **Timeout errors** — `TimeoutError` shape (`name: "TimeoutError"`, `label`, `timeoutMs`), `isTimeoutError` predicate, external signal abort (no race), disabled-timeout (`0` / `Infinity`).
+- **Sleep-detector errors** — backwards-clock movement (ignored, no false wake).
+- **Loop-state-store errors** — missing file, invalid JSON, unsupported version, atomic rename leaves no `.tmp`.
+- **Chaos errors** — disabled-when-disabled probe pass-through (no false faults).
+
+#### Edge case coverage — VERIFIED for the audited surface
+
+The exhaustive files explicitly pin edge cases for:
+
+- **String edges** — empty, whitespace-only, lone `/`, prefix `/`, suffix `/`, single char, max-boundary chars, value starting with `-` (flag-shape guard), value containing `--` mid-string, multi-line input.
+- **Numeric edges** — `0`, `1`, `max`, `max + 1`, `NaN`, `+Infinity`, `-Infinity`, negative, very large (`1000` attempts).
+- **Map / cache edges** — empty cache, exactly `MAX_CACHE_SIZE` entries, `MAX_CACHE_SIZE + 1` triggers eviction, evicted entries get re-created (not stale).
+- **State machine edges** — every transition (the `expectNoOp` helper enumerates the no-op set per action), self-transition (no-op), running("") with no sessionId, paused with no sessionId, debug with attached sessionId (still no-op for watchdog).
+- **Async edges** — task wins the timeout race (no abort), task loses the timeout race (abort), external signal aborts before timeout, both abort simultaneously (deterministic ordering), sync throw (caught in try/finally, timer cleared).
+- **Time edges** — `monotonicNow` vs `wallClockNow` alignment, backwards-clock (ignored), sleep gap = exactly `threshold` (does NOT wake — strict >), sleep gap = `threshold + 1` (wakes).
+
+#### Boundary value coverage — VERIFIED for the audited surface
+
+The exhaustive files explicitly pin boundary values for:
+
+- **Numeric boundaries** — `--port 0` rejected, `--port 4096` accepted, `--port 65535` accepted, `--port 65536` rejected (assumed from existing test pattern, all 5x in `cli-args.test.ts`).
+- **Loop-state boundaries** — `iteration: 0` (initial), `iteration: 7` (mid-run), `iteration: 1000` (large), `cooldown.attempt: 1` (first), `cooldown.attempt: 8` (last), `cooldown.attempt: 9` (max+1).
+- **Backoff boundaries** — `attempt 0` returns `base`, `attempt 1000` returns `max` (cap), `retryAfter = -10` returns 0, `retryAfter = 120000` (over max) still returns 120000.
+- **Layout boundaries** — `cols: 10` (floors `logContentWidth ≥ 16`), `cols: 40` (narrow breakpoint), `cols: 80` (medium), `cols: 140` (wide), `rows: 17` (short), `rows: 18` (not short), `rows: 60` (not short).
+- **Format boundaries** — `truncate("hello world", 0)` returns `""`, `truncate("hello world", 1)` returns `…`, `truncate("hello world", 5)` returns `hell…`, `truncate("hello world", 11)` returns `"hello world"` unchanged.
+- **Percent-complete boundaries** — `total = 0` returns 100% (the "all done" edge), `total = 1 completed = 0` returns 0%, `total = 10 manual = 10 blocked = 0` returns 100% (denominator = 0), `total = 10 manual = 0 blocked = 10` returns 100% (denominator = 0), `total = 10 manual = 5 blocked = 3` denominator = 2 (only the 2 automatable).
+- **Sleep boundaries** — `gap = threshold` (does NOT wake), `gap = threshold + 1` (wakes), `gap = 600_000` (10 min — extreme).
+- **CLI value-flag boundaries** — `--plan -` accepted (lone-dash escape hatch), `--plan --debug` rejected, `--plan build-artifacts/v1.md` accepted (mid-string dash), `--plan x--debug` accepted (mid-string `--`).
+
+#### Quality highlights worth naming
+
+These tests go beyond "happy path + sad path" and pin something specific the audit would have flagged otherwise:
+
+1. **`api.test.ts:18-25`** — the "masked-crash bug" test. The SDK returns `{ error, response: undefined }` when fetch threw; the old code crashed on `res.response.ok` ("undefined is not an object"). The test pins the fix (surface the real `error.message`).
+
+2. **`useLoopState.test.ts:1024-1034`** — `plan_complete` from `error` ALWAYS sets `iterations: 0` is pinned AS A BUG with a `MEJORAS.md 3.8` cross-reference. The test documents the WHY it is wrong and the current behavior. A future fix would need to update both the code and the test.
+
+3. **`with-timeout.test.ts:106-127`** — the synchronous-throw test was added in commit `efcc7d2` specifically to verify the timer cleanup when the function-form task throws before `Promise.race` is constructed. The test comment explicitly notes "Bun's test runner surfaces that as a hang" if the timer leaks.
+
+4. **`plan-parser.test.ts:1661-1678`** — `parsePlanFile` on missing file THROWS (does not silently return null) is pinned as a contract. The test comment names `App.tsx:576 refreshPlan` as the caller that wraps it in try/catch. A future refactor that "fixes" parsePlanFile to return null would break this contract.
+
+5. **`backoff.test.ts:90-97`** — `computeBackoff(0, { retryAfterSeconds: -10 })` returns `0` (never negative) is pinned. A future refactor that drops the defensive clamp would fail this test.
+
+6. **`format.test.ts:86-96`** — `stripMarkdown` must NOT treat underscores inside identifiers (`user_id_field`) or asterisks in arithmetic (`2 * 3 * 4`) as emphasis markers. This is a real-world false positive the audit would have caught.
+
+7. **`term-caps.test.ts:14-19`** — `FORCE_COLOR` overrides `NO_COLOR` is pinned. A user who sets `NO_COLOR=1` and `FORCE_COLOR=2` gets 256-color output. A future refactor that "fixed" `NO_COLOR` to win would break this contract.
+
+8. **`cli-args.test.ts:1316-1336`** — the "lone-dash escape hatch" test pair: `--plan --debug` rejected, `--plan -` accepted. The test comment names this as the diagnostic case that motivated the rule. A future refactor that tightens the rule further would need to update this pair.
+
+9. **`resilience-integration.test.ts:155-175`** — "recovers across a sequence of faults without giving up" is the highest-value end-to-end test: freeze → abort recovers, then server dies → restart recovers, never escalates to hard failure. This pins that the recovery ladder composes correctly across multiple fault types.
+
+#### Verification result for Task 18.1
+
+- **All 644 tests pass** (`bun test` baseline: 644 pass / 0 fail / 1625 expect() calls across 21 files).
+- **No CRITICAL or HIGH findings** for test coverage of error paths, edge cases, or boundary values in the audited surface.
+- **Two MEDIUM observations:**
+  - **18.1.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook.** The `useSSE` Solid hook itself (connection lifecycle, reconnection backoff, event filtering by sessionId, error dispatch wiring) is untested. The classifier is well-tested, but the hook's reactive plumbing is not. See Task 18.3 for the INCOMPLETE-coverage list.
+  - **18.1.B — MEDIUM — `useServer.test.ts` does not exist.** `useServer.ts` has no test file. The `restart()` idempotency (called concurrently from watchdog recovery AND from the wake handler) is verified by file read in Phase 7.5, but not pinned by a test. See Task 18.2.
+- **Three LOW observations** (test-quality nits, not gaps):
+  - `glyphs.test.ts` is minimal but adequate for a constant-table module.
+  - `clock.test.ts` is short but covers the surface.
+  - `useSessionStats.test.ts` is small but the source is small.
+- **No code changes applied** (audit-only per PLAN.md acceptance criteria).
+
+#### Cross-references to other tasks
+
+- **Task 18.2 (no test coverage)** will enumerate `useServer.ts` (the only untested production hook in `src/hooks/`) plus the 9 untested `src/lib/` modules (`clipboard.ts`, `command-exists.ts`, `config.ts`, `constants.ts`, `debug-logger.ts`, `i18n.ts`, `power.ts`, `shutdown.ts`, `terminal-launcher.ts`, `theme-resolver.ts`) and the 4 untested `src/context/` modules (`CommandContext.tsx`, `DialogContext.tsx`, `ThemeContext.tsx`, `ToastContext.tsx`).
+- **Task 18.3 (incomplete coverage)** will detail `useSSE` (the hook, not the classifier), `useServer`, the four context providers, and the three `src/components/Dialog*.tsx` modal components.
+- **Task 18.4 (untestable)** will list integration scenarios that require a real OpenCode server (SSE event ordering, multi-iteration session lifecycle, plan file edits during a session, real rate-limit handling, real SSE drops during sleep).

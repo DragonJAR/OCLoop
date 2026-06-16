@@ -188,7 +188,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 18 — Test Coverage Gaps
 
-- [ ] Review existing test files (api.test.ts, cli-args.test.ts, plan-parser.test.ts, etc.) for coverage of: error paths, edge cases, boundary values
+- [x] Review existing test files (api.test.ts, cli-args.test.ts, plan-parser.test.ts, etc.) for coverage of: error paths, edge cases, boundary values
 - [ ] Identify flows with NO test coverage: sleep-detector (has test), backoff (has test), loop-state-store (has test), layout (has test)
 - [ ] Identify flows with INCOMPLETE test coverage: useLoopState (state machine transitions), useSSE (reconnection, error classification)
 - [ ] Document which integration scenarios are untestable without a real OpenCode server mock
