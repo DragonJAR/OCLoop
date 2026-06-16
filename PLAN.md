@@ -575,10 +575,39 @@ expect() calls, 321 ms — sin cambio en el conteo. Commit
 
 ### Mejora 20 — Finding 5.1.E — LOW — `log.health` for the exhausted branch omits `retryAfter`
 
-- [ ] Evaluar la mejora 20 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 20 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 20 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 20 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 20 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 20 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 20 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 20 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es de simetría: la rama
+non-exhausted en `App.tsx:732-737` ya incluía
+`retryAfterSeconds: retryAfterSeconds ?? null` en su payload
+de `log.health`, pero la rama exhaustión en `App.tsx:705`
+omitía ese campo. El resultado era asimétrico: los operadores
+que comparan ambos eventos post-mortem veían el último
+`Retry-After` conocido en el cooldown normal, pero el campo
+desaparecía en el evento de exhaustión (que es justamente
+el evento que dispara la acción humana: reintentar mañana,
+cambiar de plan, abrir ticket). La opción del fix propuesta
+en `MEJORAS.md:3784-3786` (añadir el campo al payload de la
+exhaustión, mismo `?? null` para reflejar "no nos llegó
+`Retry-After`" de forma distinguible de "Retry-After era 0")
+es estrictamente la mínima útil: un campo extra, cero cambio
+de forma, cero impacto en el reducer, cero impacto en la
+TUI, cero impacto en la lógica de circuit-breaker
+(`rateLimitAttempts` ya se resetea a 0 en la línea 719, antes
+del return). Cero impacto en tests — el audit
+(`MEJORAS.md:3812-3831`) ya justificó que el contrato de
+`enterCooldown` exhaust-vs-cooldown es integration-territory
+y que añadir un mock-heavy `enterCooldown.test.ts` re-estataría
+la fuente. La asimetría queda cerrada: ambas ramas del
+`switch` interno a `enterCooldown` ahora reportan el mismo
+set de campos, con la única diferencia de que la exhaustión
+reporta `attempts` (el contador del breaker) y el cooldown
+normal reporta `attempt`/`delayMs` (la fase activa del backoff).
+`bun test` verde: 680 pass / 0 fail, 1680 expect() calls, 23
+files — sin cambio en el conteo. Commit `39e7cac`.
 
 ### Mejora 21 — Finding 5.2.A — LOW — `error` dispatched from `cooldown` does not clear cooldown timers
 
