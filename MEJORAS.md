@@ -657,14 +657,154 @@ section. They are listed here as a roadmap for the next iteration so the
 report stays ordered as additional sections are appended in order.
 
 - [x] **Task 1.5** — Verify `--resilience key=value` edge cases. ✅ COMPLETE — see section 1.5 above.
-- [ ] **Task 1.6** — Verify `--create-plan` flag combinations. (Tests at lines 162-188.)
-- [ ] **Task 1.7** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone.
-- [ ] **Task 1.8** — Document `requireValue` accepting a lone `-`. (Covered by tests at lines 211-218.)
-- [ ] **Task 1.9** — Verify `parseArgs` is idempotent. (Test at lines 238-244.)
+- [x] **Task 1.6** — Verify `--prompt` and `--plan` path handling. ✅ COMPLETE — see section 1.6 below.
+- [ ] **Task 1.7** — Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags. (Tests at lines 161-188.)
+- [ ] **Task 1.8** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior.
+- [ ] **Task 1.9** — Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename). (Covered by tests at lines 211-218; cross-pinned for --prompt and --plan paths in section 1.6.)
+- [ ] **Task 1.10** — Check if `parseArgs` is idempotent — calling it twice should produce the same result. (Test at lines 238-244.)
 
 ---
 
-### 1.6 — Other observations on the file
+### 1.6 — Audit `--prompt` and `--plan` path handling (relative vs absolute, non-existent, directories, empty)
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. One MEDIUM cross-reference (1.1.A, whitespace-only) and three INFO observations.**
+
+The `--prompt` and `--plan` cases in `parseArgs` (lines 200-206 of
+`src/lib/cli-args.ts`) are intentionally thin:
+
+```ts
+case "--prompt":
+  args.promptFile = requireValue(argv[++i], "--prompt")
+  break
+
+case "--plan":
+  args.planFile = requireValue(argv[++i], "--plan")
+  break
+```
+
+`parseArgs` only enforces the **value-grammar** of the next token (via
+`requireValue`): present, non-empty, not flag-shaped. It does **not** touch
+the filesystem, normalize the path, or distinguish a file from a directory.
+All path-level validation lives in `validatePrerequisites()`
+(`src/index.tsx:28-57`), which calls `Bun.file(args.planFile).exists()` /
+`Bun.file(args.promptFile).exists()` and prints a localized error before the
+TUI starts.
+
+#### Mapping each required case to a test
+
+| Required case (PLAN.md 1.6)                     | Test (this iteration)                                            | Behavior                                                                 | Status   |
+| ----------------------------------------------- | ---------------------------------------------------------------- | ------------------------------------------------------------------------ | -------- |
+| Non-existent path                               | `--prompt` / `--plan` accept a non-existent path (2 cases)       | parseArgs does not check existence; `validatePrerequisites` does, later. | OK       |
+| Directory                                       | `--prompt` / `--plan` accept a directory path (2 cases)          | parseArgs does not check kind.                                           | OK       |
+| Empty filename                                  | `rejects --prompt ''` / `rejects --plan ''`                      | `requireValue`'s `!value` short-circuit → exit 1.                        | OK       |
+| Relative path                                   | `--prompt` accepts a relative path; `--plan` accepts a relative path | Stored verbatim, no normalization.                                       | OK       |
+| Absolute path                                   | `--prompt` accepts an absolute path; `--plan` accepts an absolute path | Stored verbatim, no normalization.                                       | OK       |
+
+The audit added 22 new test cases in a dedicated `describe` block at
+`src/lib/cli-args.test.ts` (`parseArgs — --prompt / --plan path handling
+(Phase 1 Task 1.6)`).
+
+#### What `parseArgs` actually does for each input
+
+| Input                                | Mechanism                                | Exit | Outcome                                  |
+| ------------------------------------ | ---------------------------------------- | ---- | ---------------------------------------- |
+| `my-prompts/loop.md` (relative)      | `requireValue` passes; stored verbatim   | 0    | `args.promptFile === "my-prompts/loop.md"` |
+| `/tmp/absolute-prompt.md` (absolute) | `requireValue` passes; stored verbatim   | 0    | `args.promptFile === "/tmp/absolute-prompt.md"` |
+| `definitely-does-not-exist-12345.md` | `requireValue` passes; no fs check       | 0    | `args.promptFile === "definitely-does-not-exist-12345.md"` |
+| `/tmp` (directory)                   | `requireValue` passes; no kind check     | 0    | `args.promptFile === "/tmp"`             |
+| `../../../etc/passwd` (traversal)    | `requireValue` passes; no resolve        | 0    | `args.promptFile === "../../../etc/passwd"` |
+| `my prompts/loop prompt.md` (spaces) | `requireValue` passes; no trim           | 0    | `args.promptFile === "my prompts/loop prompt.md"` |
+| `-` (lone dash)                      | `requireValue` explicit guard            | 0    | `args.promptFile === "-"` (valid Unix filename) |
+| `"   "` (whitespace only)            | `requireValue` truthy → no reject        | 0    | `args.promptFile === "   "` — see Finding 1.1.A (cross-reference) |
+| (missing arg)                        | `argv[++i]` is `undefined`               | 1    | "Error: --prompt requires a value"       |
+| `""`                                 | `!value` short-circuit                   | 1    | "Error: --prompt requires a value"       |
+| `--debug` (flag-shaped)              | `(value.startsWith("-") && value !== "-")` | 1 | "Error: --prompt requires a value"     |
+
+The same matrix holds for `--plan` (verified by parallel tests).
+
+#### Where the path-level errors actually surface
+
+`src/index.tsx:28-57` is the only place the program reads the filesystem to
+validate the user-supplied paths:
+
+```ts
+async function validatePrerequisites(args: CLIArgs): Promise<void> {
+  if (args.debug) return                    // <-- bypass in debug mode
+
+  const planFile = Bun.file(args.planFile)
+  const planExists = await planFile.exists()
+  if (!planExists) {
+    console.error(t("errPlanNotFound", { path: args.planFile }))
+    process.exit(1)
+  }
+  // ... --prompt validation follows
+}
+```
+
+`Bun.file(path).exists()` returns `false` for both non-existent paths and
+for directories (POSIX kind distinction). A user who passes `--plan /tmp`
+hits the "PLAN.md not found" error, not a "PLAN.md is a directory" error —
+the validation does not distinguish them. **No change needed**: the message
+is the same in both cases and the user almost certainly intended a file.
+
+#### Finding 1.6.A — INFO — `parseArgs` is a pure tokenizer; path validation is a separate layer
+
+The split between `parseArgs` (string-grammar only) and
+`validatePrerequisites` (filesystem only) is deliberate. It keeps
+`parseArgs` testable without touching the disk and lets `--create-plan`
+short-circuit *before* validation runs — `runCreatePlan` writes the plan
+file, not reads it, so requiring it to exist would be wrong. Pinning the
+separation here so a future refactor that fuses the two layers (e.g. moves
+the `Bun.file(...).exists()` check into `parseArgs`) is visible as a
+behavioral change.
+
+#### Finding 1.6.B — INFO — Relative and absolute paths are stored verbatim
+
+`parseArgs` does not call `path.resolve`, `path.normalize`, or any other
+path helper. `--prompt ./my.md` and `--prompt my.md` are both stored as-is,
+and the eventual `Bun.file(path)` call resolves them relative to
+`process.cwd()`. This is consistent with how `git`, `npm`, and `node`
+treat CLI paths — the user owns the working directory, the tool does not
+rewrite it. **No change needed.**
+
+#### Finding 1.6.C — INFO — Lone `-` is accepted as a literal filename (deliberate)
+
+`requireValue`'s `value !== "-"` carve-out was originally added to make
+`--agent -` work (a user with a folder literally named `-` could reference
+it). The same carve-out applies to `--prompt` and `--plan`. The tests
+`accepts --prompt -` and `accepts --plan -` pin this so a future tightening
+of `requireValue` (e.g. rejecting lone `-` for some flags but not others)
+would be a visible per-flag decision. **No change needed.**
+
+#### Finding 1.6.D — MEDIUM (cross-reference) — Whitespace-only value accepted (Finding 1.1.A)
+
+`requireValue(" ", "--prompt")` returns `" "` (truthy), so
+`--prompt " "` silently sets `args.promptFile` to a whitespace-only
+filename. Same applies to `--plan`. The root cause is documented as
+Finding 1.1.A at `src/lib/cli-args.ts:137-143`. The path-handling test
+block re-pins the symptom at the surface where the user would observe it
+(`accepts a whitespace-only value as a path`). See Finding 1.1.A for the
+proposed `value.trim() === ""` fix. **Not fixed** — same rationale as
+1.1.A (no user-facing harm in practice; `Bun.file(" ").exists()` returns
+false and `validatePrerequisites` surfaces a clear error message).
+
+#### Summary
+
+| Severity | Count | Notes                                                                       |
+| -------- | ----- | --------------------------------------------------------------------------- |
+| CRITICAL | 0     |                                                                             |
+| HIGH     | 0     |                                                                             |
+| MEDIUM   | 1     | 1.6.D — whitespace-only value accepted (cross-reference to 1.1.A, not fixed) |
+| LOW      | 0     |                                                                             |
+| INFO     | 3     | 1.6.A (parseArgs is a tokenizer only), 1.6.B (relative/absolute verbatim), 1.6.C (lone `-` accepted) |
+
+`bun test src/lib/cli-args.test.ts` → **118 pass, 0 fail, 264 expect() calls**
+(was 96/0/219 before this iteration). New describe block:
+- `parseArgs — --prompt / --plan path handling (Phase 1 Task 1.6)` — 22 cases.
+
+---
+
+### 1.10 — Other observations on the file (cross-cutting, audit-wide)
 
 - **`require("../../package.json").version` at `src/lib/cli-args.ts:16`** — uses
   CommonJS `require` from an ESM module (the rest of the file is ESM). Bun

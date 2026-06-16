@@ -397,6 +397,181 @@ describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)", () => {
   })
 })
 
+describe("parseArgs — --prompt / --plan path handling (Phase 1 Task 1.6)", () => {
+  // parseArgs does NOT validate that the path exists, is a file (not a
+  // directory), or has a sensible shape. It just stores the raw string into
+  // args.promptFile / args.planFile and lets validatePrerequisites() in
+  // src/index.tsx surface the error to the user. The tests below pin the
+  // parseArgs contract: any non-empty, non-flag-shaped string is accepted.
+
+  // --- --prompt ---------------------------------------------------------
+
+  it("--prompt accepts a relative path verbatim (no path normalization)", () => {
+    const { args, exitCode } = runParse(["--prompt", "my-prompts/loop.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("my-prompts/loop.md")
+  })
+
+  it("--prompt accepts an absolute path verbatim (no path normalization)", () => {
+    const { args, exitCode } = runParse(["--prompt", "/tmp/absolute-prompt.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("/tmp/absolute-prompt.md")
+  })
+
+  it("--prompt accepts a non-existent path (parseArgs does not check existence)", () => {
+    // Existence checking is the job of validatePrerequisites(), not parseArgs.
+    // Pin the contract so a future refactor that adds an early fs.existsSync
+    // check here (duplicating the validation in index.tsx) is visible.
+    const { args, exitCode } = runParse(["--prompt", "definitely-does-not-exist-12345.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("definitely-does-not-exist-12345.md")
+  })
+
+  it("--prompt accepts a path that happens to be a directory (parseArgs does not check kind)", () => {
+    // /tmp exists and is a directory on every Unix-like dev machine, including
+    // macOS. parseArgs stores it as-is; validatePrerequisites() will surface
+    // the error via Bun.file().exists() which returns false for directories
+    // (Bun follows the POSIX file-vs-directory distinction).
+    const { args, exitCode } = runParse(["--prompt", "/tmp"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("/tmp")
+  })
+
+  it("--prompt accepts a path with a directory-traversal segment (..)", () => {
+    // parseArgs does not resolve `..`. Resolving is the OS's job at file-open
+    // time. Document the current contract.
+    const { args, exitCode } = runParse(["--prompt", "../../../etc/passwd"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("../../../etc/passwd")
+  })
+
+  it("--prompt accepts a path containing whitespace in the middle", () => {
+    // parseArgs is the only place in the CLI that allows whitespace in a
+    // value, because the path is the LAST positional token on the line and
+    // the shell has already split on the surrounding spaces. requireValue
+    // only rejects leading-flag-shaped tokens, not embedded spaces.
+    const { args, exitCode } = runParse(["--prompt", "my prompts/loop prompt.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("my prompts/loop prompt.md")
+  })
+
+  // --- --plan -----------------------------------------------------------
+
+  it("--plan accepts a relative path verbatim", () => {
+    const { args, exitCode } = runParse(["--plan", "plans/weekly.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("plans/weekly.md")
+  })
+
+  it("--plan accepts an absolute path verbatim", () => {
+    const { args, exitCode } = runParse(["--plan", "/var/folders/plan.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("/var/folders/plan.md")
+  })
+
+  it("--plan accepts a non-existent path (parseArgs does not check existence)", () => {
+    const { args, exitCode } = runParse(["--plan", "no-such-plan-67890.md"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("no-such-plan-67890.md")
+  })
+
+  it("--plan accepts a directory path (parseArgs does not check kind)", () => {
+    const { args, exitCode } = runParse(["--plan", "/var/folders"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("/var/folders")
+  })
+
+  // --- rejections: only the value-grammar guards fire in parseArgs -------
+
+  it("rejects --prompt with no following arg (requireValue: undefined)", () => {
+    const r = runParse(["--prompt"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --plan with no following arg (requireValue: undefined)", () => {
+    const r = runParse(["--plan"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --prompt '' (requireValue: empty string)", () => {
+    const r = runParse(["--prompt", ""])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --plan '' (requireValue: empty string)", () => {
+    const r = runParse(["--plan", ""])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --prompt --debug (requireValue: value looks like a flag)", () => {
+    const r = runParse(["--prompt", "--debug"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --plan --create-plan (requireValue: value looks like a flag)", () => {
+    const r = runParse(["--plan", "--create-plan"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  // --- accepted edge values (deliberate) --------------------------------
+
+  it("accepts --prompt - (lone dash is a valid filename per requireValue)", () => {
+    // The lone-dash escape hatch was added so a user with a file literally
+    // named `-` (legal on Unix) can reference it. Pin that --prompt honors
+    // the same convention as --agent.
+    const { args, exitCode } = runParse(["--prompt", "-"])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("-")
+  })
+
+  it("accepts --plan - (lone dash is a valid filename per requireValue)", () => {
+    const { args, exitCode } = runParse(["--plan", "-"])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("-")
+  })
+
+  // FINDING 1.1.A — MEDIUM (cross-reference). requireValue treats " " (a
+  // single space) as truthy, so --prompt " " silently stores " " as the
+  // path. Re-pinned here in the path-handling describe block so the path
+  // surface area is fully covered in one place.
+  it("accepts a whitespace-only value as a path (Finding 1.1.A — silent acceptance)", () => {
+    const { args, exitCode } = runParse(["--prompt", " "])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe(" ")
+  })
+
+  it("accepts a whitespace-only value for --plan (Finding 1.1.A — silent acceptance)", () => {
+    const { args, exitCode } = runParse(["--plan", "   "])
+    expect(exitCode).toBeNull()
+    expect(args?.planFile).toBe("   ")
+  })
+
+  // --- interaction with other flags -------------------------------------
+
+  it("--prompt and --plan with absolute paths override defaults independently", () => {
+    const { args, exitCode } = runParse([
+      "--prompt", "/etc/loop-prompt.md",
+      "--plan", "/etc/PLAN.md",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.promptFile).toBe("/etc/loop-prompt.md")
+    expect(args?.planFile).toBe("/etc/PLAN.md")
+  })
+
+  it("--prompt does not affect --plan and vice versa (no cross-contamination)", () => {
+    const a = runParse(["--prompt", "p.md"]).args
+    expect(a?.planFile).toBe(DEFAULTS.PLAN_FILE)
+    const b = runParse(["--plan", "x.md"]).args
+    expect(b?.promptFile).toBe(DEFAULTS.PROMPT_FILE)
+  })
+})
+
 describe("parseArgs — --resilience key=value edge cases (Phase 1 Task 1.5)", () => {
   // The 5 required cases from PLAN.md 1.5 plus 4 additional edge cases
   // (empty key, just-equals, space-around-equals, multi-= for boolean).
