@@ -184,7 +184,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: `Bun.write()` in `validatePrerequisites` handles permission errors
 - [x] Verify: `withTimeout` always cleans up its timer even if the task throws synchronously
 - [x] Verify: `shutdownManager` handles the case where `handler` throws AND the failsafe timer fires simultaneously
-- [ ] Verify: The `require("../../package.json").version` in cli-args.ts works correctly in the built output (Bun bundling)
+- [x] Verify: The `require("../../package.json").version` in cli-args.ts works correctly in the built output (Bun bundling)
 
 ## Phase 18 — Test Coverage Gaps
 
