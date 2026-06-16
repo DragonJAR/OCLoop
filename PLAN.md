@@ -168,7 +168,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 ## Phase 16 — Code Duplication & Inefficiency
 
 - [x] Identify and document duplicated error handling patterns in `handleIterationError` and SSE `onSessionError`
-- [ ] Identify and document duplicated client creation pattern (`createClient(url)` called in many places)
+- [x] Identify and document duplicated client creation pattern (`createClient(url)` called in many places)
 - [ ] Identify and document duplicated plan file path resolution (`props.planFile || DEFAULTS.PLAN_FILE` appears multiple times)
 - [ ] Identify and document duplicated session ID resolution (`sessionId() || lastSessionId()`)
 - [ ] Identify and document any unnecessary re-renders caused by signal reads in effects that don't depend on those signals

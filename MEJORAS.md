@@ -20829,3 +20829,150 @@ These four tests cover the four branches (rate_limit, transient, auth/fatal, abo
 The two MEDIUM findings are both **one-line fixes** once the asymmetry is recognized. The LOW refactor (16.1.D) is the most impactful: a single `src/lib/error-router.ts` with the four test cases above would make all three behavior questions (auth recoverability, transient policy, and the future addition of new `SessionErrorKind` values) a one-file change.
 
 The duplication is **bounded and well-documented** — both functions have clear docstrings explaining the "why" of their kind-switch. The audit value here is mostly the **policy visibility** (16.1.A and 16.1.B) and the **testability** of the proposed helper (16.1.D).
+
+### 16.2 — Duplicated `createClient(url)` call pattern across `App.tsx`
+
+Source: `src/App.tsx` (10 call sites) and `src/lib/api.ts:33-48` (`createClient` definition + cache).
+Tests: `src/lib/api.test.ts:196-208` (cache eviction) — covers the cache, not the call-site pattern. No test exercises the call-site consistency.
+
+PLAN.md 16.2: "Identify and document duplicated client creation pattern (`createClient(url)` called in many places)."
+
+#### Inventory — VERIFIED, 10 call sites in App.tsx
+
+| # | Line | Form | URL source | Null-check | Usage |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 254 | inline | `server.url()` (line 251) | `if (!url \|\| !sid) return "unknown"` | `reconcileSession(client, sid)` |
+| 2 | 273 | inline | `server.url()` (line 269) | `if (url && sid) {` | `abortSession(client, sid)` |
+| 3 | 630 | variable | `server.url()` (line 626) | `if (!url \|\| !sid) return "unknown"` | `reconcileSession(client, sid)` |
+| 4 | 815 | variable | `server.url()` (line 782) | already inside `if (!url) return` | `createSession` + `sendPromptAsync` |
+| 5 | 890 | variable | `server.url()` (line 881) | `if (!url) { log + return }` | `createSession` |
+| 6 | 932 | variable | `server.url()` (line 920) | `if (!url \|\| !sid) { toast + return }` | `sendPromptAsync` |
+| 7 | 990 | variable | `server.url()` (line 988) | `if (url) {` | `abortSession` |
+| 8 | 1032 | variable | `server.url()` (line 1030) | `if (url) {` (inside `if (!activeModel())`) | `client.config.get(...)` |
+| 9 | 1059 | variable | `server.url()` (line 1057, named `agentUrl`) | `if (props.agent && agentUrl) {` | `client.app.agents(...)` |
+| 10 | 1169 | inline | `server.url()` (line 1166) | `if (url && p.sessionId) {` | `reconcileSession(client, p.sessionId)` |
+
+The pattern is **uniform at the call site** (10/10 follow `server.url()` → null-check → `createClient(url)` → SDK call) but **inconsistent in form** (7/10 assign to `const client`, 3/10 inline into the next function call).
+
+#### Boilerplate per call site — VERIFIED
+
+The minimum boilerplate around `createClient(url)` is **3 lines**:
+
+```ts
+const url = server.url()
+if (!url) return /* or throw */
+const client = createClient(url)
+```
+
+Three of the ten call sites (#1, #3, #10) pair the URL null-check with a session-ID null-check (`if (!url || !sid)`) — they share the same dual-gate pattern but duplicate the gate logic at each site. The remaining seven have a single-gate (`if (!url)`) or no gate at all (call site #4 is inside a function whose top has already gated on `url`).
+
+The `createClient` function itself is **already the abstraction** — it memoizes per URL, evicts stale entries, and hides the `Map` (api.ts:31-48). The 10 call sites are correctly using that abstraction. The "duplication" here is not at the function level; it's at the **URL-extraction + null-check** level that surrounds every call.
+
+#### Finding 16.2.A — LOW — `server.url()` + null-check pattern repeated at every call site
+
+**Problem.** The sequence:
+
+```ts
+const url = server.url()
+if (!url) {
+  /* bail with a default */
+}
+const client = createClient(url)
+```
+
+appears in 10 places. Each call site is 3 lines (or 2 if inlined). The call sites are correct individually — the cache hides any cost of `createClient` — but the boilerplate is noisy. A reader has to scan past 2-3 lines of "get a client" to find the actual SDK call (e.g. `client.session.create(...)`).
+
+**Where.** `src/App.tsx` lines 251-254, 269-273, 626-630, 782, 881-890, 920-932, 988-990, 1030-1032, 1057-1059, 1166-1169.
+
+**Proposed fix.** Add a small helper next to `createClient` in `src/lib/api.ts` that combines the two operations:
+
+```ts
+/**
+ * Resolve the current server URL and return a cached SDK client, or `null`
+ * if the server URL is not yet available. Replaces the repeated
+ * `const url = server.url(); if (!url) ...; const client = createClient(url)`
+ * boilerplate at every API call site.
+ */
+export function tryGetClient(getUrl: () => string | undefined): OpencodeClient | null {
+  const url = getUrl()
+  return url ? createClient(url) : null
+}
+```
+
+Call sites collapse from 3 lines to 1:
+
+```ts
+// before
+const url = server.url()
+if (!url) return
+const client = createClient(url)
+await createSession(client)
+
+// after
+const client = tryGetClient(server.url)
+if (!client) return
+await createSession(client)
+```
+
+The double-gate sites (`!url || !sid`) get a similar `tryGetClientAndSession` helper, or the caller can do `if (!client || !sid) return` in one line.
+
+**Why this is a real, not-stylistic, improvement.**
+
+1. **Readability.** The 3-line prelude is pure scaffolding; collapsing it lets the eye land on the actual SDK call.
+2. **Future-proofing.** If `createClient` ever needs server-side state (e.g. auth headers, request-scoped middleware), changing the helper changes 1 file instead of 10.
+3. **Testability.** A `tryGetClient(null)` returns `null` and can be unit-tested; the current "10 inline patterns" cannot.
+
+**Severity: LOW.** Not a bug. The duplication is shallow (3 lines × 10 sites = 30 lines) and every call site is correct. The refactor is for readability and centralization, not for line count.
+
+**Counter-argument.** Some readers prefer the explicit `const url = server.url(); if (!url) ...` because it makes the "what if the server isn't ready?" question visible at the call site. The proposed helper hides that check inside a `null` return. Mitigation: keep the URL null-check visible at sites that need a custom bail-out (e.g. `handleQuit`'s "ignore errors when aborting" path) and use the helper at sites that just `return`.
+
+#### Finding 16.2.B — LOW — Inconsistent inline vs variable form across call sites
+
+**Problem.** Of the 10 call sites, 7 assign `createClient(url)` to `const client` and 3 inline it (`reconcileSession(createClient(url), sid)`, `abortSession(createClient(url), sid)`, `reconcileSession(createClient(url), p.sessionId)`). The choice is purely a function of "is the client used once or multiple times":
+
+- Single-use: `reconcileSession(createClient(url), sid)` (line 254), `abortSession(createClient(url), sid)` (line 273), `reconcileSession(createClient(url), p.sessionId)` (line 1169).
+- Multi-use: lines 630, 815, 890, 932, 990, 1032, 1059.
+
+The pattern is consistent with the actual usage — not a real bug. But it's worth noting that the inline form **re-evaluates `createClient(url)` on every read** if the same call is later changed to "call twice" (e.g. a future maintainer adds a second call after the inlined one). The variable form is more refactor-safe.
+
+**Where.** `src/App.tsx:254, 273, 1169` (inline).
+
+**Proposed fix.** None required. The inline form is correct today. If the helper from 16.2.A is adopted, the call sites can uniformly do:
+
+```ts
+const client = tryGetClient(server.url)
+if (!client) return
+await reconcileSession(client, sid)
+```
+
+— which forces the variable form everywhere and removes the inline-vs-variable question.
+
+**Severity: LOW.** Stylistic; behavior is identical.
+
+#### Finding 16.2.C — INFO — `createClient` cache is module-level state
+
+**Problem.** `clientCache` (api.ts:32) is a module-level `Map<string, OpencodeClient>`. It is **not reset between tests**. The existing eviction test (api.test.ts:196-208) inserts URLs `http://localhost:10000` through `http://localhost:10011` and assumes the cache was empty before. If any other test in the same Bun process ever called `createClient` first (e.g. a future test that exercises `startIteration`), the eviction math would differ and the test could fail or pass for the wrong reason.
+
+**Where.** `src/lib/api.ts:32` (module-level state), `src/lib/api.test.ts:196-208` (eviction test).
+
+**Proposed fix.** Either:
+
+1. Expose a `__resetClientCacheForTesting()` export and call it in `beforeEach` of the eviction test, or
+2. Re-key the test to use a unique URL prefix that no other test could collide with (the current test uses `:10000+`, which is fine for `localhost` but does not guard against a test that might insert the same URL).
+
+**Severity: INFO.** No current bug — the eviction test is the only test that touches `createClient` and it runs in isolation. The risk is forward-looking: adding a new test that calls `createClient` could make the eviction test non-deterministic.
+
+#### Cache interaction with the 10 call sites (forward reference to 16.6)
+
+The 10 call sites **all benefit from the cache automatically** — every `createClient(url)` for the same URL returns the same `OpencodeClient` instance. A long OCLoop run that restarts the server 5 times (e.g. via watchdog recovery) would, with the current `MAX_CACHE_SIZE = 10`, never trigger eviction (5 URLs < 10). 11+ restarts would evict the oldest half — 6 entries — leaving the cache at 5 entries. The cache is **bounded but generous** for the realistic worst case (a flapping server over a 24h unattended run, typically ≤3 restarts).
+
+The full cache-audit (eviction policy correctness, size tuning, thread-safety) is deferred to Phase 16.6 per PLAN.md task order.
+
+#### Verification result
+
+- **One LOW finding** (16.2.A — extract a `tryGetClient` helper to collapse the `server.url()` + null-check + `createClient(url)` boilerplate into a single line).
+- **One LOW finding** (16.2.B — inconsistent inline vs variable form; resolved as a side-effect of 16.2.A).
+- **One INFO-level test-isolation note** (16.2.C — module-level `clientCache` is not reset between tests).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+
+The duplication is **shallow and well-bounded** — `createClient` is already the right abstraction; the call sites only repeat the URL-extraction + null-check scaffolding. The audit value here is mostly **documenting the pattern** (so future contributors know why the 3-line prelude is repeated) and pointing at the optional `tryGetClient` helper as a readability win, not a correctness fix.
