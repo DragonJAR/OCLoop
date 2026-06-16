@@ -161,7 +161,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: Double `session_idle` events (from watchdog reconcile AND from SSE) don't create duplicate iterations — the `running("")` check prevents this
 - [x] Verify: `handleQuit` is idempotent — called from both SIGINT handler and Q key; confirm it doesn't double-abort or double-disconnect
 - [x] Verify: Plan file edits by OpenCode trigger `refreshPlan()` — what if the edit is in-progress (partial file)?
-- [ ] Verify: `sse.reconnect()` called from multiple places (wake, watchdog, SSE exhaustion) — no double-connection
+- [x] Verify: `sse.reconnect()` called from multiple places (wake, watchdog, SSE exhaustion) — no double-connection
 - [ ] Verify: `server.restart()` called during an ongoing restart — is it idempotent?
 - [ ] Verify: `onMount` vs `createEffect` ordering — server ready effect fires before session initialization completes
 
