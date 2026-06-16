@@ -1442,10 +1442,54 @@ cuando llegue su turno, mismo argumento que Mejoras 33-35).
 
 ### Mejora 37 — Finding 11.3.A — LOW — Empty `url` produces a malformed `opencode attach` string (double space)
 
-- [ ] Evaluar la mejora 37 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 37 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 37 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 37 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 37 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 37 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 37 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 37 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13690-13718`): `getAttachCommand`
+(`terminal-launcher.ts:93-95`) no defiende su precondición — un
+`url = ""` produce `` `opencode attach ${url} --session ${sessionId}` ``
+= `"opencode attach  --session <sid>"` (doble espacio literal).
+`buildArgs` (`terminal-launcher.ts:104`) splitea y filtra
+(`cmdParts.filter((p) => p.length > 0)`), así que el token URL vacío
+se descarta silenciosamente y `Bun.spawn` corre
+`opencode attach --session <sid>` sin argumento de URL — el usuario
+obtiene un confuso `opencode: error: missing URL argument` surfaced
+a través del `try/catch` exterior en `launchTerminal` (línea 229).
+Las 5 call sites ya pre-validan url: `App.tsx:1356-1357`
+(`launchConfiguredTerminal`), `App.tsx:1425-1426, 1436-1437`
+(copy handlers), `App.tsx:1526-1527` (copy_attach command),
+`App.tsx:1462-1464` (`showTerminalError`). El throw es estrictamente
+defensivo — atrapa cualquier futuro call site, hand-edited config,
+o test path que pase `""` directamente. La opción del fix
+propuesta en `MEJORAS.md:13704-13714` (defensive guard al top de
+`getAttachCommand` con `throw`) es estrictamente la mínima útil y
+es la única opción correcta (vs. devolver `""`, que el call site
+no puede distinguir de un happy path sin re-validar; vs. un check
+en cada call site, que duplica la dependencia del trust boundary
+del caller — exactamente el antipatrón que el `buildArgs` guard de
+Mejora 36 evitó). Implementación mínima: 19 líneas de comentario
+que nombran el source `MEJORAS.md Finding 11.3.A`, el patrón
+homólogo de Mejoras 33-36 (defense-in-depth via App-level
+pre-validación + launcher backstop), y el racional defensivo
+del `throw` (cualquier call site que bypase el App-level guard
+queda atrapado en el outer `try/catch` de `launchTerminal` y
+surface un error claro en vez de un spawn argv corrupto) + 3
+líneas de guard. Cero cambios a la firma de `getAttachCommand`
+(`(string, string) => string` intacta), cero cambios a las 5
+call sites en `App.tsx` (sus guards pre-existentes siguen
+protegiendo el path actual), cero cambios a `buildArgs` o
+`launchTerminal` (el `try/catch` exterior ya convierte el `throw`
+en `{ success: false, error: "getAttachCommand: url is required" }`
+sin intervención), cero impacto en el camino feliz (un url
+truthy sigue fluyendo al `return` exactamente como antes). Cero
+impacto en tests (`terminal-launcher.test.ts` no existe, Mejora 92
+lo cubrirá cuando llegue su turno, mismo argumento que Mejoras
+33-36). `bun test` verde: 694 pass / 0 fail, 1714 expect() calls,
+23 files, 308 ms — sin cambio en el conteo (era 694 antes del
+guard). Commit `1e1b874`.
 
 ### Mejora 38 — Finding 11.3.B — LOW — Empty `sessionId` produces a malformed `opencode attach` string (trailing space)
 
