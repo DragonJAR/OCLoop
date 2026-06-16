@@ -2048,10 +2048,49 @@ sin cambio en el conteo (era 730 antes del fix).
 
 ### Mejora 49 — Finding 12.2.D — LOW — `existsSync(configDir)` is redundant; `mkdirSync({ recursive: true })` is idempotent
 
-- [ ] Evaluar la mejora 49 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 49 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 49 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 49 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 49 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 49 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 49 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 49 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14604-14634`): el guard
+`if (!existsSync(configDir)) { mkdirSync(configDir, { recursive: true }) }`
+en `config.ts:338-340` es un anti-patrón de "check-then-do" sobre una
+operación que ya es idempotente — `mkdirSync` con `recursive: true` es
+un no-op cuando el directorio existe. El guard agrega un syscall
+desperdiciado en cada save (el 99.9% de los casos el dir ya existe
+porque OCLoop ya corrió antes) y abre una ventana TOCTOU: entre
+`existsSync` retornando `false` y `mkdirSync` ejecutándose, otro
+proceso puede crear el dir; `mkdirSync` igual tiene éxito (la
+semántica idempotente cubre eso) pero el syscall es trabajo puro
+desperdiciado. La propuesta del audit es estrictamente la mínima útil
+y la única correcta (vs. un guard "exists OR create" via `try/catch`
+del `mkdirSync` sin `recursive: true` — eso es lo que el `recursive:
+true` ya hace explícitamente; vs. un wrapper `mkdirpSync` — overhead
+desproporcionado para un solo call site). Implementación: 3 líneas
+sustituidas por 1 (`mkdirSync(configDir, { recursive: true })`
+directo, sin el `if`), más 5 líneas de comentario que nombran el
+source `MEJORAS.md Finding 12.2.D`, la racionalidad de la
+idempotencia, y la ventana TOCTOU. El docstring de `saveConfig` se
+extiende para añadir el cross-reference a 12.2.D y para eliminar la
+línea engañosa "EEXIST race on `mkdirSync`" del header (el
+`recursive: true` hace que EEXIST sea imposible — el comentario
+estaba mal desde Mejora 46 y este es un buen momento para corregirlo
+siguiendo el principio "document the invariant, not the wishful
+exception"). Cero impacto en la firma de `saveConfig` (`(OcloopConfig)
+=> void` intacta), cero impacto en `loadConfig`, cero impacto en
+`validateConfigShape` / `resolveResilience` / `getConfigDir` /
+`getConfigPath` / `hasTerminalConfig`, cero impacto en los 4 call
+sites de `App.tsx` (siguen llamando `await saveConfig(...)` con la
+misma shape de retorno). El import de `existsSync` se preserva porque
+sigue usándose en línea 360 (`if (existsSync(tmpPath)) unlinkSync(tmpPath)`,
+el cleanup del tmp huérfano que Mejora 46 introdujo). Cero impacto
+en el camino feliz (el `mkdirSync({ recursive: true })` directo es
+observable-equivalente a la versión guarded — el test
+"overwrites an existing config atomically" en `config.test.ts:245-257`
+sigue verde). Cero impacto en tests (730 pass / 1 skip / 0 fail, sin
+cambio en el conteo, era 730 antes del fix). Commit `d9a4628`.
 
 ### Mejora 50 — Finding 12.2.E — LOW — `saveConfig` returns `void` but all four callers `await` it
 
