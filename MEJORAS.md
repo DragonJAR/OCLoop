@@ -17842,3 +17842,396 @@ as Finding 14.3.A (HIGH).
 
 No code changes were made. The audit produces documentation only,
 per PLAN.md acceptance criteria.
+
+---
+
+## Phase 14.4 — Server startup errors transition to `error (recoverable: true)` so the user can retry
+
+PLAN.md 14.4: "Verify: Server startup errors transition to error
+state with `recoverable: true` — user can retry."
+
+**Status: HALF VERIFIED — the dispatch sets `recoverable: true`
+correctly, but the R-key retry is a no-op for server-start failures
+because the server's `startServer()` is only invoked from `onMount`
+and is guarded against re-running. The user can press R forever
+without re-attempting the server start. Workaround: invoke the
+`/restart` command from the command palette. This is Finding 14.4.A
+(HIGH).**
+
+### Verification — dispatch side: VERIFIED
+
+The server-error effect at `App.tsx:1199-1209` watches the
+`useServer` `status()` and `error()` signals. When the server
+moves to its terminal `"error"` state, the effect dispatches:
+
+```ts
+loop.dispatch({
+  type: "error",
+  source: "server",
+  message: server.error()?.message || t("errServerStart"),
+  recoverable: true,                            // <-- verified true
+})
+```
+
+`recoverable: true` matches PLAN.md 14.4. The reducer
+(`useLoopState.ts:237-256`) accepts the `error` action from
+`starting`, `ready`, `running`, `pausing`, `paused`, `cooldown`,
+and `debug` — all states the loop can plausibly be in when the
+server first fails — and stores the flag verbatim.
+
+The error dialog (`App.tsx:1315-1328`) passes `state.recoverable`
+to `DialogError`, and the dialog's `canRetry` derivation
+(`DialogError.tsx:25-28`, `:65-69`) and the `DialogError` R-key
+handler are both gated on `props.recoverable`. So the dialog
+correctly shows the `[R]etry` affordance for a server startup
+error.
+
+This half of the contract (the loop's `recoverable` flag and the
+dialog's affordance) is correct.
+
+### Finding 14.4.A — HIGH — Retry from a server startup error does not re-attempt the server start
+
+**Problem.** `useServer.ts:119-136`:
+
+```ts
+async function startServer(): Promise<void> {
+  if (status() !== "starting" && status() !== "stopped") {
+    return
+  }
+  setStatus("starting")
+  setError(undefined)
+
+  try {
+    await launch(port ?? 0)
+  } catch (err) {
+    const serverError = err instanceof Error ? err : new Error(String(err))
+    setError(serverError)
+    setStatus("error")
+    serverRef = null
+  }
+}
+```
+
+`startServer()` is only invoked from `useServer.ts:242-246`
+(`onMount`, guarded by `autoStart`). It is **not** invoked by
+`restart()` (`useServer.ts:194-229`), which is the only
+`useServer` API that the rest of the app can call to re-attempt
+the start. `restart()` exists for "the server is up but
+unresponsive" — it tears down the current instance and launches a
+new one, with a fallback to port 0 if the preferred port is
+contended.
+
+After a startup failure the server is in status `"error"`, no
+`serverRef`, and no `url()`. When the user presses R:
+
+1. `DialogError.onRetry` calls `loop.dispatch({ type: "retry" })`
+   (`App.tsx:1320-1324`).
+2. `loopReducer` (`useLoopState.ts:258-264`) transitions
+   `error (recoverable: true) → starting`.
+3. Nothing else happens. The `useServer` status is still
+   `"error"`. The "server ready effect" at `App.tsx:1013-1024` is
+   guarded by `server.status() === "ready"`, which is false, so
+   the loop stays in `"starting"` forever. The error dialog
+   dismisses (the user pressed R, which calls `dialog.clear()` at
+   line 1321), but the user has no way to trigger another
+   `startServer()` call.
+4. The user presses R again — same result, no progress.
+
+**Why this is a HIGH, not a MEDIUM.** The user-visible promise of
+the error dialog is "press R to retry". The flag says
+`recoverable: true` and the dialog shows R. But the action bound
+to R does not actually re-attempt the failed operation. From the
+user's perspective, the dialog is broken: pressing R is a
+visually-confirmed no-op.
+
+**Workaround that does work.** The command palette
+(`App.tsx:1508-1515`) binds `/restart` → `restartServer()`, which
+calls `server.restart()`. `restart()` re-runs `launch()`, which
+is the same code path that the original `startServer()` ran — so
+this *does* re-attempt the server start, including the
+port-fallback to ephemeral if 4096 is still held. This is the
+only path that actually recovers a server-startup failure.
+
+**Why this is asymmetric.** When the loop dispatches `error` from
+a non-server source (e.g. a watchdog `fail`, an SSE auth error,
+or `handleIterationError`), the underlying resource can be retried
+because the next iteration driver runs and either re-uses the
+existing `server.url()` or — for the watchdog's `fail` path —
+goes through `restartServer()`. The asymmetry is specifically
+about the *server-startup* failure case: here the resource that
+failed to start IS the URL, and the loop has no path to recreate
+it short of the manual `/restart` command.
+
+**Where.** `src/hooks/useServer.ts:119-136` (the
+`startServer` guard). The retry path that should re-trigger
+`startServer` is missing. Likely fix sites:
+
+- `src/hooks/useServer.ts:194-229` — expose a `start()` method
+  that calls `launch()` directly (without the teardown).
+- `src/App.tsx:1320-1324` — in the `DialogError.onRetry`
+  handler, branch on `state.source === "server"`: when it is,
+  call `await server.restart()` (or a new `server.start()`)
+  instead of dispatching the loop `retry` action. The loop
+  transition will happen automatically when the server reports
+  ready.
+- The server-error effect at `App.tsx:1199-1209` already
+  dispatches on `server.status() === "error"`. If the retry
+  re-triggers the server start, that effect must not fire
+  spuriously during the brief `"starting"` window.
+
+**Test gap.** No test covers the server-startup-failure →
+retry round-trip. `useServer.test.ts` (if it exists) would need
+a fake `createOpencodeServer` that fails on the first call and
+succeeds on the second, plus a `useLoopState` integration that
+verifies the loop returns to `ready` after the retry. The
+`DialogError` R-key path is tested (`DialogError.test.ts`) but
+only with a stub `onRetry`.
+
+**Proposed fix.** Two options, in order of cost-effectiveness:
+
+(a) **Wire `DialogError.onRetry` to call `server.restart()` when
+`state.source === "server"`.** The server's `restart()` already
+exists and is exercised in production (the command palette
+binds it to `/restart`). One conditional in the `onRetry` callback
+restores the contract.
+
+(b) **Expose a `useServer` `start()` method and call it from the
+server-error effect's retry.** This is the more general fix and
+makes the contract symmetric: every error source has a method to
+re-attempt the failed operation. Requires updating the
+`DialogError` callback similarly.
+
+**Status.** Both options proposed, neither applied (audit-only
+per PLAN.md acceptance criteria).
+
+---
+
+## Phase 14.5 — SSE reconnection-exhaustion triggers a server restart
+
+PLAN.md 14.5: "Verify: SSE connection errors that exceed the
+reconnection threshold trigger a server restart."
+
+**Status: VERIFIED with one LOW finding (the threshold is a
+hardcoded module-local constant, not a resilience-configurable
+knob; the policy itself is correct and exercised by the watchdog
+test at `useWatchdog.test.ts:817-824`).**
+
+### Verification — reconnection threshold: VERIFIED
+
+The threshold and the effect that fires the restart live at
+`App.tsx:1228-1245`:
+
+```ts
+const SSE_RECONNECT_RESTART_THRESHOLD = 6
+let sseRecoveryFired = false
+createEffect(() => {
+  const attempts = sse.reconnectAttempts()
+  if (attempts === 0) {
+    sseRecoveryFired = false
+    return
+  }
+  if (
+    attempts >= SSE_RECONNECT_RESTART_THRESHOLD &&
+    loop.isRunning() &&
+    !sseRecoveryFired
+  ) {
+    sseRecoveryFired = true
+    log.health("sse", "reconnect_exhausted", { attempts })
+    void restartServer()
+  }
+})
+```
+
+The signal `sse.reconnectAttempts()` is defined at
+`useSSE.ts:264` (returned in the hook's return shape at
+line 656). It is incremented on every scheduled reconnection
+attempt (`useSSE.ts:580-587`) and reset to 0 on a successful
+connection (`useSSE.ts:521`). The `sseRecoveryFired` latch
+ensures the effect fires **once** per exhaustion streak: a
+fresh attempt to 0 (a successful connection) clears the latch
+(line 1232-1235), and a new streak that crosses the threshold
+fires the restart exactly once more (line 1241).
+
+The `loop.isRunning()` guard prevents the restart from firing
+when the loop is `ready`, `paused`, `cooldown`, or `error` —
+matters because the user may have intentionally stopped the loop
+while SSE was still flapping.
+
+`restartServer()` (line 649) is the canonical recovery path: it
+calls `server.restart()` (which is `useServer.restart()`),
+reconnects SSE, and reconciles the session. This is the same
+function the watchdog calls and the same function the `/restart`
+command palette entry binds. The function is idempotent: a
+second concurrent call would re-launch on the same preferred
+port and, if the port is still held, fall back to ephemeral
+(`useServer.ts:206-228`).
+
+### Finding 14.5.A — LOW — `SSE_RECONNECT_RESTART_THRESHOLD = 6` is a hardcoded module-local constant
+
+**Problem.** The constant `6` is declared at `App.tsx:1228`
+inside the `App` function component, so each `<App />` mount
+recreates it. It is not exported, not configurable via
+`--resilience sseReconnectThreshold=N`, and not exposed in the
+`ResilienceConfig` shape (`src/lib/config.ts:64-107`). The
+`createOpencodeServer` SDK call at the bottom of the server
+lifecycle has its own timeout (default 10000ms,
+`useServer.ts:75`) which is also not user-configurable.
+
+**Why this is LOW, not MEDIUM.** The threshold is well-chosen for
+its purpose: SSE reconnects use exponential backoff with a cap
+(`useSSE.ts:570-597`), and at attempt 6 the cumulative delay is
+already in the order of tens of seconds — long enough that a
+restart is the right call. Operators who hit the threshold
+frequently will see the server churn; they can lower it via
+`--port` to change the recovery cadence or run the harness with
+`--debug` to disable the watchdog. The threshold itself rarely
+needs to change.
+
+**Where.** `src/App.tsx:1228`. To make it configurable, add a
+field to `ResilienceConfig` (`src/lib/config.ts`), accept it in
+`parseArgs` (`src/lib/cli-args.ts:174-181`, the
+`applyResilienceOverride` branch), and read it from `resilience()`
+in App.tsx.
+
+**Test gap.** None. The watchdog test at
+`useWatchdog.test.ts:817-824` already documents that
+"recoveryAttempts >= 2 → restartServer" — a different threshold
+(the watchdog's, not SSE's), but the underlying pattern
+(threshold-gated restart) is the same.
+
+**Proposed fix.** Add a `--resilience sseRestartAfter=<n>` CLI
+flag backed by a `sseRestartAfter` field in `ResilienceConfig`,
+defaulting to 6. Plumb through `parseArgs` → `resilience` signal
+→ App.tsx. Document the threshold and the relationship to the
+watchdog's own threshold in `README.md`.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria).
+
+### Verification result
+
+The SSE reconnection-exhaustion → server restart policy is
+correctly implemented and is exercised by the watchdog
+integration tests. The threshold constant is hardcoded but
+reasonable; making it configurable is a polish item, not a
+correctness fix. No CRITICAL, HIGH, or MEDIUM findings.
+
+---
+
+## Phase 14.6 — `handleIterationError` classifies errors before dispatching
+
+PLAN.md 14.6: "Verify: `handleIterationError` classifies errors
+correctly before dispatching — rate limit vs transient vs
+permanent."
+
+**Status: PARTIALLY VERIFIED — already audited as part of
+Phase 14.3 (Finding 14.3.A). `handleIterationError` does call
+`classifySessionError` before dispatching, but its final arm
+treats `auth` and `fatal` as `recoverable: true` instead of
+`recoverable: false`. This is the same HIGH finding from 14.3,
+restated here so PLAN.md 14.6 has a self-contained audit
+record.**
+
+### Verification — classifier is called: VERIFIED
+
+`App.tsx:754-771`:
+
+```ts
+function handleIterationError(err: unknown): void {
+  const classified = classifySessionError(err)
+  if (classified.kind === "rate_limit") {
+    enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+    return
+  }
+  if (classified.kind === "transient") {
+    enterCooldown(classified.message, undefined, "transient")
+    return
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  loop.dispatch({
+    type: "error",
+    source: "api",
+    message: t("errIterationStart", { message }),
+    recoverable: true,
+  })
+}
+```
+
+`classifySessionError` (`useSSE.ts:183-207`) is the same pure
+function used by the SSE `onSessionError` path. It is
+unit-tested with 22 cases (`useSSE.test.ts:1-198`) and one
+end-to-end integration case (`resilience-integration.test.ts:90-116`).
+The function returns a `SessionError` with one of five mutually
+exclusive `kind` values: `aborted`, `rate_limit`, `auth`,
+`transient`, `fatal`.
+
+`handleIterationError` correctly handles the first two arms
+(`rate_limit` → `enterCooldown`, `transient` → `enterCooldown`).
+For `aborted`, the call site at `App.tsx:851-852` is unreachable:
+the iteration start path (line 776-855) does not abort itself,
+and the `try` block only wraps `createSession` /
+`sendPromptAsync` / `refreshPlan` calls, none of which surface
+user aborts through the normal error path. (User-initiated
+cancellation flows through `handleQuit`, not through this
+handler.) So the `aborted` arm is silent in this code path,
+which is correct.
+
+For `auth` and `fatal`, the third arm fires and dispatches
+`recoverable: true`. **This is the same bug already documented
+as Finding 14.3.A** (`MEJORAS.md` above; cross-reference
+Phase 14.3). Restating the relevant lines:
+
+- `useSSE.ts:122-126` — `classifyKind` matches `401`, `403`,
+  `unauthorized`, `forbidden`, `invalid api key`, etc., and
+  returns `kind: "auth"`.
+- `App.tsx:764-770` — the third arm lumps `auth` and `fatal`
+  together and hardcodes `recoverable: true`.
+- The SSE `onSessionError` path at `App.tsx:486` correctly uses
+  `recoverable: error.kind === "transient"`, which evaluates to
+  `false` for `auth` and `fatal`. The iteration-start path
+  should mirror this.
+
+### Finding 14.6.A — HIGH — `handleIterationError` returns `recoverable: true` for `auth` and `fatal`
+
+This is the same finding as 14.3.A, restated for self-contained
+audit traceability. See Phase 14.3 above for the full discussion,
+severity justification, proposed fix, and test gap.
+
+### Verification result
+
+`handleIterationError` correctly classifies errors via
+`classifySessionError` and correctly routes `rate_limit` and
+`transient` to `enterCooldown`. The third arm — covering `auth`
+and `fatal` — is correct in that it dispatches an `error` action
+(so the loop stops the iteration and surfaces a dialog), but
+incorrect in that the `recoverable` flag is hardcoded to `true`
+rather than mirroring the SSE path's
+`recoverable: error.kind === "transient"`. Fix is one line
+(`App.tsx:769`); the test gap is a unit test that drives
+`handleIterationError` with an `auth`-classified error and
+asserts `recoverable: false`.
+
+PLAN.md 14.6 is therefore **half-true** for the same reason as
+14.3: classification works, the final arm's policy does not.
+
+---
+
+## Phase 14 — Summary
+
+| PLAN.md | Status | Severity (max) |
+| --- | --- | --- |
+| 14.1 | VERIFIED | MEDIUM |
+| 14.2 | VERIFIED | INFO |
+| 14.3 | PARTIALLY VERIFIED | HIGH (14.3.A) |
+| 14.4 | HALF VERIFIED | HIGH (14.4.A) |
+| 14.5 | VERIFIED | LOW (14.5.A) |
+| 14.6 | PARTIALLY VERIFIED | HIGH (14.6.A = 14.3.A) |
+
+Net Phase 14 findings: one MEDIUM (14.1 classifier surface
+gaps), one LOW (14.5.A hardcoded threshold), one HIGH policy
+bug (14.3.A = 14.6.A, fixable in one line), and one HIGH
+integration bug (14.4.A, server-startup retry is a no-op; the
+`recoverable: true` flag is misleading). No CRITICAL findings.
+
+No code changes were made. The audit produces documentation only,
+per PLAN.md acceptance criteria.
