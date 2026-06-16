@@ -740,47 +740,65 @@ describe("parseArgs — --resilience key=value edge cases (Phase 1 Task 1.5)", (
   })
 })
 
-describe("parseArgs — --resilience numeric coercion strictness (Phase 1 Task 1.5, finding 1.5.A)", () => {
+describe("parseArgs — --resilience numeric coercion strictness (Finding 1.5.A)", () => {
   // FINDING 1.5.A — MEDIUM. The numeric branch of applyResilienceOverride
-  // coerces via `Number(raw)`, which is permissive: it accepts scientific
-  // notation (1e3), hex literals (0x10), decimal-as-integer (1.0), and
-  // values with a leading sign (+5). The corresponding --port gate uses a
-  // strict regex (^\d+$) and rejects all of these. This is a divergence
-  // from the project's own convention; the tests below pin the current
-  // (permissive) behavior so a future tightening is visible.
+  // used to coerce via `Number(raw)`, which is permissive: it accepted
+  // scientific notation (1e3), hex literals (0x10), decimal-as-integer (1.0),
+  // and values with a leading sign (+5). The corresponding --port gate uses
+  // a strict regex (^\d+$) and rejects all of these — a divergence from the
+  // project's own convention. The fix adds NUM_RE = /^\d+$/ as the primary
+  // gate (mirroring PORT_RE), turning the existing isInteger/isFinite checks
+  // into defense-in-depth. The tests below pin the new (strict) behavior.
   //
-  // Pin the permissive behavior with a single acceptance test per shape:
-  it("accepts scientific notation `1e3` and coerces to 1000", () => {
-    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=1e3"])
-    expect(exitCode).toBeNull()
-    expect(args?.resilience?.backoffBaseMs).toBe(1000)
+  // Reject the permissive shapes with the new "decimal only" diagnostic:
+  it("rejects scientific notation `1e3` (decimal only)", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=1e3"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("decimal only")
+    expect(r.errors.join("\n")).toContain("1e3")
   })
 
-  it("accepts hex literal `0x10` and coerces to 16", () => {
-    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=0x10"])
-    expect(exitCode).toBeNull()
-    expect(args?.resilience?.backoffBaseMs).toBe(16)
+  it("rejects hex literal `0x10` (decimal only)", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=0x10"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("decimal only")
+    expect(r.errors.join("\n")).toContain("0x10")
   })
 
-  it("accepts decimal-as-integer `1.0` and coerces to 1", () => {
-    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=1.0"])
-    expect(exitCode).toBeNull()
-    expect(args?.resilience?.backoffBaseMs).toBe(1)
+  it("rejects decimal-as-integer `1.0` (decimal only)", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=1.0"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("decimal only")
+    expect(r.errors.join("\n")).toContain("1.0")
   })
 
-  it("accepts a leading `+` and coerces to the magnitude", () => {
-    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=+5"])
-    expect(exitCode).toBeNull()
-    expect(args?.resilience?.backoffBaseMs).toBe(5)
+  it("rejects a leading `+` (decimal only)", () => {
+    const r = runParse(["--resilience", "backoffBaseMs=+5"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("decimal only")
+    expect(r.errors.join("\n")).toContain("+5")
   })
 
-  // The decimal guard at `1.5` (existing test line 141) still fires for
-  // non-integer decimals — pin it here so the asymmetry with `1.0` is
-  // visible in the test file.
-  it("rejects non-integer decimals (`1.5`) consistently with the integer guard", () => {
+  // Plain decimal still works after the gate.
+  it("accepts a plain decimal `500` (the canonical shape)", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=500"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(500)
+  })
+
+  // Zero is a valid non-negative integer; pin that the new regex doesn't
+  // accidentally reject it.
+  it("accepts zero as a valid non-negative integer", () => {
+    const { args, exitCode } = runParse(["--resilience", "backoffBaseMs=0"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.backoffBaseMs).toBe(0)
+  })
+
+  // The non-integer decimal guard still fires — just with the new wording.
+  it("rejects non-integer decimals (`1.5`) with the decimal-only diagnostic", () => {
     const r = runParse(["--resilience", "maxRateLimitRetries=1.5"])
     expect(r.exitCode).toBe(1)
-    expect(r.errors.join("\n")).toContain("non-negative integer")
+    expect(r.errors.join("\n")).toContain("decimal only")
   })
 })
 

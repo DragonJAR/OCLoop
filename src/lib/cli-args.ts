@@ -15,6 +15,10 @@ import { isLocale } from "./i18n"
 // Read version from package.json (repo root, two levels up from src/lib).
 const VERSION = require("../../package.json").version
 const PORT_RE = /^\d+$/
+// ponytail: decimal-only strictness mirrors PORT_RE; Number(raw) alone accepts
+// scientific (1e3), hex (0x10), decimal-as-integer (1.0), and leading sign (+5)
+// which diverges from --port and silently misreads copied-pasted values.
+const NUM_RE = /^\d+$/
 const MODEL_RE = /^[^\s/]+\/[^\s/]+$/
 
 /**
@@ -107,6 +111,12 @@ export function applyResilienceOverride(
     }
     ;(target as Record<string, unknown>)[key] = raw === "true" || raw === "1"
   } else {
+    if (!NUM_RE.test(raw)) {
+      console.error(
+        `Error: --resilience ${key} expects a non-negative integer (decimal only), got "${raw}"`,
+      )
+      process.exit(1)
+    }
     const num = Number(raw)
     if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
       console.error(`Error: --resilience ${key} expects a non-negative integer, got "${raw}"`)
