@@ -88,9 +88,30 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
 }
 
 /**
- * Generate the opencode attach command for a session
+ * Generate the opencode attach command for a session.
+ *
+ * Defensive guard: an empty `url` produces
+ * `"opencode attach  --session <sid>"` (literal double space), which
+ * `buildArgs` then splits and filters, silently dropping the empty URL
+ * token. `Bun.spawn` then runs `opencode attach --session <sid>` with
+ * no URL argument at all, and the user sees a confusing
+ * "opencode: error: missing URL argument" surfaced through the outer
+ * `try/catch` in `launchTerminal` — the terminal opened, but the
+ * attach command failed for an invisible reason.
+ *
+ * The App-level guards in App.tsx:1356-1357 (`launchConfiguredTerminal`),
+ * App.tsx:1425-1426, 1436-1437, 1526-1527, 1462-1464 all short-circuit
+ * on falsy `url` before reaching this function, so the throw is
+ * strictly defensive: it catches any future call site, hand-edited
+ * config, or test path that passes `""` directly. The throw is caught
+ * by the outer `try/catch` in `launchTerminal` (line 229) and
+ * surfaces as a clear `LaunchResult.error` instead of a malformed
+ * spawn argv. Source: MEJORAS.md Finding 11.3.A.
  */
 export function getAttachCommand(url: string, sessionId: string): string {
+  if (!url) {
+    throw new Error("getAttachCommand: url is required")
+  }
   return `opencode attach ${url} --session ${sessionId}`
 }
 
