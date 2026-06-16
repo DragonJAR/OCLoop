@@ -21,8 +21,8 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Audit `parseTaskLine` for every task marker variant: `- [x]`, `- [X]`, `- [x ]` (trailing space), `- [ ]`, `- [ ] [MANUAL]`, `- [MANUAL]`, `- [BLOCKED:reason]`, `- [ BLOCKED ]`, `- [blocked]` (case)
 - [x] Verify `- [MANUAL]` without description is classified correctly (manual vs not-a-task)
-- [ ] Verify `- [BLOCKED:]` with empty reason vs `- [BLOCKED]` without colon
-- [ ] Verify `- [BLOCKED: some reason ]` with spaces in reason
+- [x] Verify `- [BLOCKED:]` with empty reason vs `- [BLOCKED]` without colon
+- [x] Verify `- [BLOCKED: some reason ]` with spaces in reason
 - [ ] Verify lines that start with `- [` but have no closing bracket
 - [ ] Verify lines like `- [ ] ` (checkbox with trailing spaces but no description) — currently returns `not-a-task`; confirm this is intentional
 - [ ] Verify `parsePlan` with an empty file, file with no tasks, file with only headings, file with only completed/blocked/manual tasks

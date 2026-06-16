@@ -350,6 +350,93 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("- [ ]   ")).toEqual({ type: "not-a-task", description: "" })
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.3 — BLOCKED reason extraction: empty-reason contrast and
+  // spaces-in-reason handling. Pinned as a single block because the same
+  // regex (`/^BLOCKED[:\s]*/i` in the checkbox form, `/^\[BLOCKED[:\s]*...
+  // ([^\]]*)\]/i` in the tag form) handles both surfaces.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.3 — BLOCKED reason extraction (empty-reason + spaces)", () => {
+    it("returns identical blockedReason='' for - [BLOCKED] vs - [BLOCKED:] vs - [BLOCKED: ] (empty-reason contrast)", () => {
+      // All three forms are the same from the parser's perspective: the colon
+      // and any whitespace are stripped by `^BLOCKED[:\s]*`, leaving an empty
+      // reason. The user can write whichever form reads more naturally; the
+      // semantic result is identical.
+      const a = parseTaskLine("- [BLOCKED]")
+      const b = parseTaskLine("- [BLOCKED:]")
+      const c = parseTaskLine("- [BLOCKED: ]")
+      expect(a).toEqual({ type: "blocked", description: "", blockedReason: "" })
+      expect(b).toEqual({ type: "blocked", description: "", blockedReason: "" })
+      expect(c).toEqual({ type: "blocked", description: "", blockedReason: "" })
+    })
+
+    it("captures single-space reason in the checkbox form (- [BLOCKED: some reason])", () => {
+      // Colon + single space + reason: `^BLOCKED[:\s]*` strips "BLOCKED:"
+      // (colon only, since `*` is greedy but `[:\s]*` prefers the colon first
+      // then any leading spaces). The reason is the rest of checkboxContent.
+      expect(parseTaskLine("- [BLOCKED: some reason]")).toEqual({
+        type: "blocked",
+        description: "",
+        blockedReason: "some reason",
+      })
+    })
+
+    it("captures single-space reason in the tag form (- [ ] [BLOCKED: some reason ])", () => {
+      // Tag form: the regex /^\[BLOCKED[:\s]*([^\]]*)\]\s*(.*)$/i captures
+      // the inner `[^]]*` (any non-`]` chars, spaces included) and trims it
+      // for blockedReason. Internal spaces in the reason are preserved.
+      expect(parseTaskLine("- [ ] [BLOCKED: some reason ]")).toEqual({
+        type: "blocked",
+        description: "",
+        blockedReason: "some reason",
+      })
+    })
+
+    it("preserves multiple internal spaces in the reason (- [BLOCKED:  word  word ])", () => {
+      // The strip regex is `[:\s]*` after BLOCKED, which consumes the colon
+      // and the spaces IMMEDIATELY after it. Any further spaces in the reason
+      // are NOT touched — they belong to the reason text. This is the rule
+      // the task description asks us to pin: "spaces in reason" survive.
+      expect(parseTaskLine("- [BLOCKED:  word  word ]")).toEqual({
+        type: "blocked",
+        description: "",
+        blockedReason: "word  word",
+      })
+    })
+
+    it("preserves multiple internal spaces in the tag-form reason", () => {
+      // Same rule, applied to the tag form regex. match[1] is trimmed only at
+      // the edges; the interior keeps its whitespace.
+      expect(parseTaskLine("- [ ] [BLOCKED:  word  word ]")).toEqual({
+        type: "blocked",
+        description: "",
+        blockedReason: "word  word",
+      })
+    })
+
+    it("preserves colons inside the reason text (- [BLOCKED: needs foo:bar baz])", () => {
+      // The colon is only consumed when it directly follows BLOCKED. A colon
+      // appearing later in the reason is part of the reason text and is
+      // preserved verbatim.
+      expect(parseTaskLine("- [BLOCKED: needs foo:bar baz]")).toEqual({
+        type: "blocked",
+        description: "",
+        blockedReason: "needs foo:bar baz",
+      })
+    })
+
+    it("keeps a trailing description when the checkbox-form reason contains spaces", () => {
+      // Mirrors the line-265 test (space-separated reason), but with the
+      // colon variant that the task asks about.
+      expect(parseTaskLine("- [BLOCKED: some reason here] Real desc")).toEqual({
+        type: "blocked",
+        description: "Real desc",
+        blockedReason: "some reason here",
+      })
+    })
+  })
 })
 
 describe("parsePlan", () => {

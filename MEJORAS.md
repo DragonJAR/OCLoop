@@ -1880,3 +1880,100 @@ green.
 
 Full suite: `bun test` → **544 pass, 0 fail, 1216 expect() calls** across
 21 files. No regressions.
+
+---
+
+## Phase 2 — Plan File Parsing & Progress Tracking (continued)
+
+### 2.3 — Verify `- [BLOCKED:]` with empty reason vs `- [BLOCKED]` without colon, and `- [BLOCKED: some reason ]` with spaces in reason
+
+**Status: COMPLETE — VERIFIED. Both surfaces behave correctly. No
+HIGH/CRITICAL/MEDIUM/LOW findings. Three INFO observations.**
+
+The `parseTaskLine` function (`src/lib/plan-parser.ts:20-89`) handles the
+`BLOCKED` keyword in two places:
+
+1. **Checkbox form** (lines 56-63): the regex `/^BLOCKED(?=$|[:\s])/i`
+   anchors the keyword so `BLOCKEDABC` is not misread, and the strip regex
+   `replace(/^BLOCKED[:\s]*/i, "")` removes the keyword plus any leading
+   colon or whitespace from the reason.
+2. **Tag form** (lines 66-75): the regex
+   `/^\[BLOCKED[:\s]*([^\]]*)\]\s*(.*)$/i` captures the inner reason
+   (`[^]]*` accepts any non-`]` characters, spaces included) and trims
+   edges via `match[1]?.trim() || ""`.
+
+Both surfaces produce the same semantic results. The behavior is
+correct, well-anchored, and now pinned by 7 new contrast assertions.
+
+#### 2.3.A — INFO — Empty-reason contrast: `- [BLOCKED]` and `- [BLOCKED:]` are equivalent
+
+| Input            | `type`     | `description` | `blockedReason` | Notes                            |
+| ---------------- | ---------- | ------------- | --------------- | -------------------------------- |
+| `- [BLOCKED]`    | `blocked`  | `""`          | `""`            | No colon, no whitespace inside   |
+| `- [BLOCKED:]`   | `blocked`  | `""`          | `""`            | Colon present, nothing after     |
+| `- [BLOCKED: ]`  | `blocked`  | `""`          | `""`            | Colon + space, nothing after     |
+
+The lookahead `(?=$|[:\s])` accepts all three forms; the strip
+`^BLOCKED[:\s]*` removes the keyword plus optional colon and any
+**leading** spaces. The trailing trim of `checkboxContent` (line 35)
+collapses internal whitespace, so `- [ BLOCKED ]` and `- [BLOCKED   ]`
+also resolve to `blockedReason = ""`. The user can write whichever form
+reads most naturally; the parser collapses all of them to the same
+output.
+
+**No code change needed; behavior pinned by 3-input contrast test.**
+
+#### 2.3.B — INFO — Spaces inside the reason survive the strip step
+
+The strip regex `^BLOCKED[:\s]*` only consumes whitespace **immediately
+after** the colon (or the keyword when no colon is present). Spaces
+deeper inside the reason are part of the reason text and are preserved:
+
+| Input                                          | `blockedReason`              |
+| ---------------------------------------------- | ---------------------------- |
+| `- [BLOCKED: some reason]`                     | `"some reason"`              |
+| `- [BLOCKED:  word  word ]`                    | `"word  word"`               |
+| `- [BLOCKED: needs foo:bar baz]`               | `"needs foo:bar baz"`        |
+| `- [ ] [BLOCKED: some reason ]` (tag form)     | `"some reason"`              |
+| `- [ ] [BLOCKED:  word  word ]` (tag form)     | `"word  word"`               |
+
+The tag form matches via `([^\]]*)` (any non-`]` chars, spaces
+included), then `match[1]?.trim()` removes only the **leading and
+trailing** whitespace from the capture group. Internal whitespace is
+preserved. This is the documented and pinned rule: "spaces in reason"
+are the user's text, not delimiters.
+
+**No code change needed; behavior pinned by 5 spacing-variant tests.**
+
+#### 2.3.C — INFO — Trailing description after a spaced reason still works
+
+The full line `- [BLOCKED: some reason here] Real desc` produces
+`description = "Real desc"` and `blockedReason = "some reason here"`.
+The `]` closes the brackets; everything after it becomes the
+description (with `.trim()` applied at line 36). This is the natural
+extension of the line 254 test (space-separated reason, no colon) to
+the colon variant that PLAN.md 2.3 line 25 asks about.
+
+**No code change needed; behavior pinned by 1 combined assertion.**
+
+#### Test-suite delta for Task 2.3
+
+New `describe` block `PLAN.md 2.3 — BLOCKED reason extraction
+(empty-reason + spaces)` added inside `parseTaskLine` with **7 cases /
+9 expect() calls**:
+
+1. 3-input empty-reason contrast (the line 24 task).
+2. Single-space reason in checkbox form.
+3. Single-space reason in tag form.
+4. Multi-space internal reason in checkbox form.
+5. Multi-space internal reason in tag form.
+6. Colon preserved when it appears later in the reason.
+7. Combined reason + trailing description (the line 25 task's natural
+   extension).
+
+`bun test src/lib/plan-parser.test.ts` → **100 pass, 0 fail, 169
+expect() calls** (was 93/0/160 before this iteration). +7 tests,
++9 expects, all green.
+
+Full suite: `bun test` → **551 pass, 0 fail, 1225 expect() calls**
+across 21 files. No regressions.
