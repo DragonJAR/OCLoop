@@ -50,6 +50,9 @@ export function computeBackoff(attempt: number, opts: BackoffOptions): number {
   // and we use safeMax instead. Both the jitter and non-jitter paths are
   // protected: the jitter path clamps to [0, exp] where exp ≤ safeMax, and the
   // non-jitter path returns exp directly (also ≤ safeMax).
+  // ponytail: safeAttempt clamps negative/fractional attempts to 0, safeMax
+  // caps the exponential, and Number.isFinite(uncapped) handles Infinity — no
+  // path can produce a delay > safeMax regardless of input.
   const uncapped = safeBase * Math.pow(2, safeAttempt)
   const exp = Math.min(safeMax, Number.isFinite(uncapped) ? uncapped : safeMax)
 
