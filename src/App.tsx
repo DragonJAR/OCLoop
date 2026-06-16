@@ -309,6 +309,10 @@ function AppContent(props: AppProps) {
 
   // Track previous state for detecting transitions
   let prevState: LoopState | null = null
+  // True between entering a rate-limit cooldown and the retry that resumes the
+  // SAME iteration, so stats resume (preserving the timer) instead of restarting
+  // it and discarding the pre-cooldown active time.
+  let pendingCooldownResume = false
 
   // Wire stats hook to loop state transitions
   createEffect(() => {
@@ -330,7 +334,15 @@ function AppContent(props: AppProps) {
         prev.type === "paused" ||
         prev.type === "ready")
     ) {
-      stats.startIteration()
+      if (pendingCooldownResume) {
+        // Retry of the same iteration after a rate-limit cooldown: resume the
+        // (paused) timer instead of restarting it, so the pre-cooldown active
+        // time isn't discarded and the wait itself stays excluded.
+        stats.resume()
+        pendingCooldownResume = false
+      } else {
+        stats.startIteration()
+      }
       log.iterationStart(state.iteration)
       log.debug("state", "Iteration started", { sessionId: state.sessionId, iteration: state.iteration })
       // Refresh current task from plan file as fallback for SSE todo updates
@@ -340,6 +352,13 @@ function AppContent(props: AppProps) {
     // Detect pause: transitioning from running to pausing
     if (state.type === "pausing" && prev.type === "running") {
       stats.pause()
+    }
+
+    // Detect rate-limit cooldown: pause the active timer so the wait isn't
+    // counted, and mark the next iteration-start as a resume (see above).
+    if (state.type === "cooldown" && (prev.type === "running" || prev.type === "pausing")) {
+      stats.pause()
+      pendingCooldownResume = true
     }
 
     // Detect resume: transitioning from paused to running
@@ -420,8 +439,17 @@ function AppContent(props: AppProps) {
         setLastSessionId(id)
         sessionStats.reset()
       },
-      onSessionError: (_id, error) => {
-        const st = loop.state().type
+      onSessionError: (eventSessionId, error) => {
+        const state = loop.state()
+        // Ignore errors for a session that is no longer the active one. A stale
+        // aborted error from a just-replaced session (arriving in the brief
+        // running("") window) would otherwise toggle_pause and wedge the loop in
+        // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
+        const debugSid = state.type === "debug" ? state.sessionId : undefined
+        if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
+          return
+        }
+        const st = state.type
         if (error.isAborted) {
           activityLog.addEvent("task", t("actSessionAborted"))
           if (st === "running") {
@@ -622,7 +650,15 @@ function AppContent(props: AppProps) {
     activityLog.addEvent("error", t("actGuardRestart"))
     await server.restart()
     sse.reconnect()
-    await reconcileAndAdvance()
+    const verdict = await reconcileAndAdvance()
+    // If the session survived the restart and is still working, grant it a fresh
+    // heartbeat window. Otherwise the watchdog would re-measure silence from the
+    // now-stale pre-restart timestamp and trip STUCK again on the very next tick,
+    // collapsing the recovery ladder into a near-instant circuit-breaker fail.
+    // (recoveryAttempts is NOT reset, so the breaker still bounds total attempts.)
+    if (verdict === "working") {
+      watchdog.notifyWake()
+    }
   }
 
   /**

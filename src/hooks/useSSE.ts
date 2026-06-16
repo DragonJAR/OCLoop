@@ -1,6 +1,6 @@
 import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
-import type { Event, Todo, SessionStatus } from "@opencode-ai/sdk/v2"
+import type { Event, Todo } from "@opencode-ai/sdk/v2"
 import { log } from "../lib/debug-logger"
 
 /** Maximum length for individual string values in logged event data */
@@ -57,12 +57,6 @@ export interface StepFinishPart {
     reasoning: number
     cache: { read: number; write: number }
   }
-}
-
-export interface SessionSummary {
-  additions: number
-  deletions: number
-  files: number
 }
 
 export interface FileDiff {
@@ -224,8 +218,6 @@ export interface SSEEventHandlers {
   onTodoUpdated?: (sessionId: string, todos: Todo[]) => void
   /** Called when a file is edited */
   onFileEdited?: (file: string) => void
-  /** Called when session status changes */
-  onSessionStatus?: (sessionId: string, status: SessionStatus) => void
   /** Called when a session error occurs */
   onSessionError?: (sessionId: string | undefined, error: SessionError) => void
   /** Called for any event (useful for debugging) */
@@ -238,8 +230,6 @@ export interface SSEEventHandlers {
   onReasoning?: (part: ReasoningPart) => void
   /** Called when a step finishes */
   onStepFinish?: (part: StepFinishPart) => void
-  /** Called when session summary is updated */
-  onSessionSummary?: (summary: SessionSummary) => void
   /** Called when session diff is updated */
   onSessionDiff?: (diffs: FileDiff[]) => void
 }
@@ -356,6 +346,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
           if (filterSessionId && eventSessionId !== filterSessionId) {
             return
           }
+          // Part/message ids are unique per session and never need cross-session
+          // dedup, so reset the dedup maps here. Without this they grow unbounded
+          // over a long multi-iteration run (the loop's whole use case).
+          seenPartIds.clear()
+          messageRoles.clear()
           handlers.onSessionCreated?.(eventSessionId)
         }
         break
@@ -405,16 +400,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         break
       }
 
-      case "session.status": {
-        const eventSessionId = event.properties.sessionID
-        // Filter by session if a filter is set
-        if (filterSessionId && eventSessionId !== filterSessionId) {
-          return
-        }
-        handlers.onSessionStatus?.(eventSessionId, event.properties.status)
-        break
-      }
-
       case "message.updated": {
         const props = event.properties as any
         const message = props.info || props.message
@@ -460,21 +445,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
             seenPartIds.add(part.id)
             handlers.onStepFinish?.(part as StepFinishPart)
           }
-        }
-        break
-      }
-
-      case "session.updated": {
-        const props = event.properties as any
-        const eventSessionId = props.sessionID || props.id
-
-        // Filter by session if a filter is set
-        if (filterSessionId && eventSessionId && eventSessionId !== filterSessionId) {
-          return
-        }
-
-        if (props.summary) {
-          handlers.onSessionSummary?.(props.summary as SessionSummary)
         }
         break
       }
@@ -613,6 +583,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     log.health("sse", "reconnect_scheduled", { attempt: attempt + 1, delayMs: delay })
 
     reconnectTimeout = setTimeout(() => {
+      reconnectTimeout = null // clear the fired handle so disconnect/reconnect don't race a stale ref
       if (shouldReconnect) {
         connect()
       }
