@@ -1344,10 +1344,54 @@ que Mejora 33). Commit `c8398c5`.
 
 ### Mejora 35 — Finding 11.2.C — LOW — Missing `{cmd}` placeholder in custom args silently launches without the attach command
 
-- [ ] Evaluar la mejora 35 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 35 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 35 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 35 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 35 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 35 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 35 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 35 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13513-13531`): un `config.args` no-vacío pero sin
+`{cmd}` (e.g. `"-e bash"`) produce `argsPattern = ["-e", "bash"]`
+que `buildArgs` pasa intacto, y `Bun.spawn` lanza la terminal con
+los args literales — el usuario obtiene un shell `bash` y el
+attach command nunca corre. La opción del fix propuesta en
+`MEJORAS.md:13519-13526` (defensa en dos capas: dialog rechaza
+en save + launcher como backstop) es estrictamente la mínima útil
+y reusa el patrón ya establecido por Mejora 34 (Finding 11.2.B)
+en el mismo archivo: 9 líneas en `terminal-launcher.ts` y el
+mismo string de error. La diferencia de comportamiento entre
+11.2.B (empty) y 11.2.C (no placeholder) es nula desde la
+perspectiva del usuario — ambos producen un launch mudo, y el
+error "Custom terminal args must include the {cmd} placeholder"
+cubre los dos casos porque "args vacío" es estrictamente
+"args sin `{cmd}`" cuando el conjunto de tokens parseados es
+`[]`. Implementación: 12 líneas añadidas a
+`src/lib/terminal-launcher.ts:160-176` (1 `if` con 1 `return` + 10
+líneas de comentario que nombran el source `MEJORAS.md Finding
+11.2.C`, el paralelo con Mejora 34, y el contrato "el
+placeholder debe estar presente en CUALQUIER args de terminal
+custom") + 9 líneas modificadas en
+`src/components/DialogTerminalConfig.tsx:62-81` (extender el `if`
+existente `cmd && args` a `cmd && args && args.includes("{cmd}")`,
+un solo check, mismo patrón "silent no-op on Enter" que el check
+original del command). Cero cambios a la firma de `launchTerminal`
+(`Promise<LaunchResult>` intacta), cero cambios a `KNOWN_TERMINALS`
+(todos los 12 entries ya tienen `{cmd}` por construcción,
+verificado por grep), cero cambios a `getAttachCommand` /
+`buildArgs` / `detectInstalledTerminals`, cero impacto en la ruta
+`known` (sus entries siempre tienen `{cmd}` por construcción,
+verificado por grep en la fase de audit `MEJORAS.md:13529`), cero
+impacto en los call sites existentes (`App.tsx:1353-1376` ya
+pre-valida `if (!url) return`, así que la única ruta donde
+`args` sin `{cmd}` puede entrar es la rama custom desde el
+dialog — exactamente el caso que este fix cierra). El error del
+launcher es user-facing (idéntico al de Mejora 34) y surface el
+mismo string — ambos fixes comparten la misma copy porque
+comparten la misma condición de fallo desde la perspectiva del
+usuario. Cero impacto en tests (694 pass / 0 fail, sin cambio
+en el conteo — `terminal-launcher.test.ts` no existe, Mejora 92
+lo cubrirá cuando llegue su turno, mismo argumento que Mejoras
+33-34). Commit `6da2f66`.
 
 ### Mejora 36 — Finding 11.2.D — LOW — Empty `attachCmd` produces a corrupted spawn argv
 
