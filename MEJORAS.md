@@ -7838,3 +7838,517 @@ classifier in isolation.
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+### 7.3 — Verify `onSessionIdle` ignores idle events from stale sessions; confirm it matches `onSessionError`
+
+PLAN.md 7.3: "Verify: SSE
+`onSessionIdle` ignores idle events from
+stale sessions — confirm this matches the
+behavior in `onSessionError`."
+
+**Status: COMPLETE — VERIFIED. The
+`onSessionIdle` stale-session guard is
+correct, but its polarity is **inverted**
+relative to `onSessionError` (positive
+match vs negative skip), and the hook-layer
+filter has the **opposite** asymmetry
+behavior for un-attributed events. Both
+differences are dormant in practice (the
+SDK always populates `sessionID`) and both
+handlers correctly drop stale events.
+Two INFO observations, one LOW finding.
+No CRITICAL or HIGH findings.**
+
+#### The two filters — same logical content, opposite polarity
+
+The `onSessionIdle` path has the same
+two-layer structure as `onSessionError`
+(hook filter + consumer filter), but the
+consumer filter is written in the
+**positive** form (process if matches)
+rather than the **negative** form (skip
+if does not match). Both forms encode the
+same rule: events for sessions other than
+the active one are ignored.
+
+#### Layer 1: Hook filter at `useSSE.ts:359-367`
+
+The `session.idle` case in the switch:
+
+```ts
+case "session.idle": {
+  const eventSessionId = event.properties.sessionID
+  // Filter by session if a filter is set
+  if (filterSessionId && eventSessionId !== filterSessionId) {
+    return
+  }
+  handlers.onSessionIdle?.(eventSessionId)
+  break
+}
+```
+
+The skip is triggered when BOTH hold:
+
+1. `filterSessionId` is truthy (the SSE
+   hook was given a filter — true whenever
+   the Solid accessor at
+   `App.tsx:402-414` returns a non-empty
+   session).
+2. `eventSessionId !== filterSessionId`
+   (the event is for a different session).
+
+**No `eventSessionId &&` truthy guard.**
+If `eventSessionId` is undefined and
+`filterSessionId` is truthy, the comparison
+`undefined !== "abc"` is `true` → the
+event IS filtered out (the early `return`
+fires). This is the **opposite** of the
+`session.error` hook filter, which has the
+extra `eventSessionId &&` short-circuit
+and therefore passes un-attributed errors
+through. See Finding 7.3.A.
+
+In practice the asymmetry is dormant: the
+SDK type at
+`node_modules/@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts`
+declares `sessionID` on `SessionIdleEvent`
+as a required branded string. Both
+un-attributed cases are unobservable.
+
+#### Layer 2: Consumer filter at `App.tsx:491-507`
+
+The App-side handler:
+
+```ts
+onSessionIdle: (eventSessionId) => {
+  // Only handle if it's our current session
+  const currentSession = sessionId()
+  const state = loop.state()
+  // Also check debug state's sessionId
+  const debugSessionId = state.type === "debug" ? state.sessionId : undefined
+
+  if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
+    rateLimitAttempts = 0
+    watchdog.notifyIdle()
+    loop.dispatch({ type: "session_idle" })
+    activityLog.addEvent("session_idle", t("actSessionIdle"))
+  }
+},
+```
+
+The dispatch fires when **either** holds:
+
+1. `eventSessionId === currentSession` —
+   `currentSession` is the Solid accessor
+   `sessionId()` (defined at
+   `App.tsx:402-414`); it returns the
+   state's `sessionId` for `running` /
+   `pausing` / `debug` states with a
+   non-empty `sessionId`, else `undefined`.
+2. `eventSessionId === debugSessionId` —
+   `debugSessionId` is `state.sessionId`
+   when the state is `debug`, else
+   `undefined`. The two checks are not
+   mutually exclusive: if the state is
+   `debug("xyz")`, the Solid accessor
+   returns `"xyz"` and the
+   `debugSessionId` is also `"xyz"`, so
+   both branches of the `||` would match
+   an event with `eventSessionId === "xyz"`.
+
+**The idle filter uses the Solid
+accessor** for the "current session"
+check. This differs from the error
+handler, which uses `getActiveSessionId`
+(a function that returns `""` for
+non-running/pausing states). The two
+sources can diverge:
+
+- `sessionId()` returns `undefined` for
+  `running("")` (the
+  `state.sessionId &&` short-circuit at
+  `App.tsx:404`).
+- `getActiveSessionId(state)` returns
+  `""` for `running("")` (the explicit
+  ternary at `useLoopState.ts:35-37`).
+
+In practice both `undefined` and `""`
+are non-equal to a real session ID, so
+the divergence is invisible to the
+comparison.
+
+#### Comparison with `onSessionError` — VERIFIED
+
+| Aspect | `onSessionIdle` | `onSessionError` |
+| --- | --- | --- |
+| Hook filter shape | `filterSessionId && eventSessionId !== filterSessionId` | `filterSessionId && eventSessionId && eventSessionId !== filterSessionId` |
+| Hook filter on un-attributed event (`eventSessionId` undefined) | **Skipped** (filtered out) | **Passes through** |
+| Consumer filter polarity | **Positive**: `eventSessionId === currentSession \|\| eventSessionId === debugSessionId` → process | **Negative**: `eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid` → skip |
+| Consumer filter on un-attributed event | Skipped (the `===` is false) | Passes through (the `eventSessionId &&` short-circuits) |
+| Consumer filter source for "active session" | Solid accessor `sessionId()` | `getActiveSessionId(state)` (returns `""` for non-running/pausing) |
+| Debug-mode branch | `eventSessionId === debugSessionId` (positive) | `eventSessionId === debugSid` (via the `!==` negation) |
+| Wedge coverage for `running("")` window | Hook: passes through (filter is undefined); Consumer: drops (no match) | Hook: passes through (filter is undefined); Consumer: drops (no match, see Phase 7.2 walkthrough) |
+
+**The two handlers agree on the
+end-to-end behavior** for every
+realistic case. They differ only in
+**polarity** (positive vs negative
+form) and in **how they handle
+un-attributed events** at the hook
+level. The un-attributed behavior is
+opposite, but the SDK guarantees
+`sessionID` is always set, so the gap
+is dormant.
+
+#### The `running("")` wedge scenario for idle
+
+Same scenario as Phase 7.2, but for
+idle events:
+
+1. Loop is in `running("old-session-id")`,
+   processing iteration N.
+2. Iteration N completes; the old session
+   emits `session.idle` with
+   `sessionID: "old-session-id"`. The
+   driver dispatches `session_idle`, the
+   reducer transitions to `pausing`, the
+   next iteration starts; `startIteration`
+   dispatches `running("")` (empty session
+   ID, awaiting the new session).
+
+   — If the OLD session's idle event
+   arrives **before** the dispatch to
+   `running("")`, the hook filter fires
+   (filter is `"old-session-id"`, event is
+   `"old-session-id"`, no skip). The
+   consumer also fires (Solid accessor is
+   `"old-session-id"`). The handler resets
+   the rate-limit streak and dispatches
+   `session_idle`. This is the **normal
+   case** — the loop already intended to
+   handle this idle.
+
+   — If the OLD session's idle event is
+   **delayed** (arrives after the dispatch
+   to `running("")`):
+   - `filterSessionId = sessionId() =
+     undefined` (Solid accessor
+     short-circuits on empty sessionId at
+     `App.tsx:404`).
+   - Hook filter: `filterSessionId &&
+     ...` short-circuits to false → **no
+     skip, event passes through**.
+   - Consumer: `currentSession =
+     undefined`, `debugSessionId =
+     undefined`. `eventSessionId ===
+     undefined` is `false` →
+     `eventSessionId === undefined` is
+     `false` → **no match, no dispatch**.
+   - Result: the stale idle event is
+     silently dropped at the consumer
+     layer. The loop is in `running("")`
+     (transitioning to a new session); the
+     NEW session will emit its own
+     `session.idle` when it finishes, which
+     the consumer filter will then match.
+     **Safe** — no double dispatch, no
+     premature `session_idle` for a session
+     the loop has just left.
+
+The wedge scenario for idle is
+**correctly handled by the positive
+polarity**: the consumer requires an
+exact match to dispatch, and a stale
+session's ID can never match
+`undefined` (the Solid accessor value in
+`running("")`).
+
+#### Comparison correctness — VERIFIED
+
+The `onSessionIdle` sessionId comparison
+is **correct** for the cases that matter:
+
+1. **Stale session (old ID, loop has
+   moved on)** → consumer filter
+   requires an exact match against
+   `currentSession` (Solid accessor) or
+   `debugSessionId`; a stale ID can never
+   match either. **Dropped at consumer
+   layer.** ✓
+2. **Active session (ID matches Solid
+   accessor)** → both filters pass,
+   handler processes (resets rate-limit
+   streak, calls `watchdog.notifyIdle`,
+   dispatches `session_idle`,
+   logs the idle). ✓
+3. **Debug session (state.type ===
+   "debug", `debugSessionId` matches)** →
+   consumer filter passes via the
+   `|| debugSessionId` branch. ✓
+4. **Un-attributed event
+   (`eventSessionId` undefined)** → hook
+   filter drops it (the `!==` comparison
+   is true when one side is undefined and
+   the other is a real string); consumer
+   would also drop it (the `===` is
+   false). The OpenCode SDK guarantees
+   this is never observed in practice.
+5. **`running("")` window with a
+   delayed idle from the previous
+   session** → hook passes through
+   (filter is undefined), consumer
+   drops (no match). The loop continues
+   waiting for the NEW session's idle.
+   ✓
+
+#### INFO — Positive polarity is the more defensive default for dispatch
+
+`onSessionIdle` is a **dispatch**
+handler (it triggers state changes
+and side effects). A positive polarity
+("dispatch only if matches") is
+inherently safer than a negative
+polarity ("dispatch unless doesn't
+match") because the negative form
+requires a complete enumeration of
+"what counts as a mismatch" — and any
+enumeration gap (e.g., a `undefined`
+check missed) becomes a phantom
+dispatch. The positive form has the
+opposite failure mode (a missed match
+silently drops an event), which is the
+safer direction for this code path.
+
+The `onSessionError` handler's negative
+polarity is justified because errors
+have additional **state-aware**
+filtering downstream (lines 464-489)
+that further narrows which errors
+dispatch: only errors in `running`,
+`pausing`, or `debug` states dispatch
+an `error` action. The
+`state.type`-aware branch is the
+load-bearing safety net for errors;
+the consumer session-ID guard is a
+first-pass filter only. For idle, the
+session-ID match is the **only** guard
+before dispatch, so a positive form is
+the right call.
+
+#### INFO — Solid accessor vs `getActiveSessionId` for the active-session check
+
+`onSessionIdle` uses the Solid accessor
+`sessionId()`; `onSessionError` uses
+`getActiveSessionId(state)`. The two
+sources can diverge in the
+`running("")` window:
+
+- `sessionId()` returns `undefined`
+  (the `state.sessionId &&` short-circuit
+  in the `createMemo` at
+  `App.tsx:402-414`).
+- `getActiveSessionId(state)` returns
+  `""` (the explicit ternary at
+  `useLoopState.ts:35-37`).
+
+In practice both `undefined` and `""`
+are non-equal to any real session ID,
+so the divergence is invisible to the
+comparison. But the two sources
+**describe slightly different
+semantics**: the Solid accessor
+"captures the moment of the
+sessionId", while `getActiveSessionId`
+"captures the state machine's
+definition of active". For idle, the
+moment-of-sessionId semantic is the
+right choice (we want the idle for
+the session we just started, not the
+session the state machine still
+considers active). For error, the
+state-machine semantic is the right
+choice (we want errors for the session
+the loop is responsible for, even if
+the Solid accessor hasn't updated
+yet — see the Phase 7.2 wedge
+discussion). The semantic split is
+deliberate, not an oversight.
+
+#### Finding 7.3.A — LOW — Hook-layer filter for `session.idle` is **opposite** to `session.error` for un-attributed events
+
+The hook filter for `session.idle` at
+`useSSE.ts:362-364`:
+
+```ts
+if (filterSessionId && eventSessionId !== filterSessionId) {
+  return
+}
+```
+
+The hook filter for `session.error` at
+`useSSE.ts:377-383`:
+
+```ts
+if (
+  filterSessionId &&
+  eventSessionId &&
+  eventSessionId !== filterSessionId
+) {
+  return
+}
+```
+
+The two shapes differ in one conjunct:
+the `eventSessionId &&` short-circuit
+in the error path. The behavioral
+consequence:
+
+- Un-attributed `session.idle` event
+  (no `sessionID`): **filtered out**
+  (`undefined !== "abc"` is `true` →
+  early return).
+- Un-attributed `session.error` event
+  (no `sessionID`): **passed through**
+  (the `eventSessionId &&` short-circuits
+  the check → falls through to the
+  handler).
+
+The OpenCode SDK always populates
+`sessionID` for both event types
+(verified by the SDK's `.d.ts` —
+`SessionIdleEvent` and
+`SessionErrorEvent` both declare
+`sessionID: SessionID` as a required
+branded string). So this gap is
+dormant. But the polarity is
+**reversed** between the two
+handlers, which is a footgun: a
+future maintainer reading the two
+filters will not see them as
+"symmetric" and may infer the wrong
+policy from one when porting the
+other.
+
+**Where.** `useSSE.ts:362-364`
+(`session.idle`); `useSSE.ts:377-383`
+(`session.error`); the parallel at
+`useSSE.ts:391-393` (`todo.updated`,
+same shape as `session.idle`); the
+parallel at `useSSE.ts:419-421`
+(`message.part.updated`, same shape as
+`session.error`).
+
+**Proposed fix.** Pick one shape and
+apply it uniformly. The conservative
+read: every event with no `sessionID`
+is dropped at the hook layer (the
+handler can't make a session-aware
+decision without one). The permissive
+read: every event is passed through,
+the consumer filter is the
+authoritative gate. The conservative
+read is the safer default because
+un-attributed events are an
+anomalous case (the SDK doesn't
+emit them) and a silent drop is
+easier to debug than a silent
+dispatch.
+
+A minimal change is to add the
+`eventSessionId &&` short-circuit to
+the idle and todo paths and remove it
+from the error and message-part
+paths, then document the policy in
+one place:
+
+```ts
+// useSSE.ts:336 — single policy comment
+// Per-session filter shape:
+//   filterSessionId && eventSessionId &&
+//     eventSessionId !== filterSessionId
+// All per-session events (session.idle,
+// session.error, todo.updated,
+// message.part.updated, session.diff)
+// use this same shape. Un-attributed
+// events are dropped — the consumer
+// filter has nothing to compare against.
+```
+
+Fix proposed, not applied (audit-only
+per PLAN.md acceptance criteria).
+Severity is LOW because the gap is
+dormant and the consumer filter is
+the load-bearing guard for the
+`running("")` wedge case in both
+handlers.
+
+#### Verifier checklist for Task 7.3
+
+- [x] Hook filter at `useSSE.ts:362-364`
+  triggers a skip when `filterSessionId`
+  is truthy and differs from
+  `eventSessionId` — verified by direct
+  file read.
+- [x] Hook filter for `session.idle` has
+  **no** `eventSessionId &&` truthy
+  guard (opposite of `session.error` at
+  line 377-383) — verified by direct
+  file read.
+- [x] Consumer filter at `App.tsx:498`
+  uses **positive** polarity
+  (`eventSessionId === currentSession ||
+  eventSessionId === debugSessionId`) —
+  verified by direct file read.
+- [x] Consumer filter's `currentSession`
+  is the Solid accessor `sessionId()`
+  (returns `undefined` for
+  `running("")`) — verified at
+  `App.tsx:402-414`.
+- [x] Consumer filter's `debugSessionId`
+  is `state.sessionId` when
+  `state.type === "debug"`, else
+  `undefined` — verified at
+  `App.tsx:496`.
+- [x] The Solid accessor vs
+  `getActiveSessionId` divergence in the
+  `running("")` window is invisible to
+  the comparison (both `undefined` and
+  `""` are non-equal to a real ID) —
+  verified.
+- [x] The `running("")` wedge scenario
+  for a delayed idle from the previous
+  session is correctly handled (hook
+  passes through, consumer drops) —
+  verified by the walk-through above.
+- [x] Debug-mode branch on the consumer
+  side matches the same coverage as
+  `onSessionError` — verified.
+- [x] The OpenCode SDK always populates
+  `sessionID` on `SessionIdleEvent` —
+  verified by the SDK type
+  declaration.
+
+#### Test-suite delta for Task 7.3
+
+No new tests added. The 21-case
+`classifySessionError` test suite at
+`src/hooks/useSSE.test.ts:1-199` does
+not cover the hook or consumer
+stale-session filters (those tests
+would require a Solid render context
+and a fake SSE stream; both are out
+of scope for unit tests per
+`docs/testing.md`). The hook filter
+is the simpler shape (no SDK
+interaction), and the consumer filter
+is the only piece that
+`useLoopState`'s
+`getActiveSessionId`-focused tests
+could approximate, but doing so
+would couple the two hooks' test
+suites in a way that has no
+end-to-end value.
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.
