@@ -804,6 +804,11 @@ function AppContent(props: AppProps) {
       return
     }
     startingIteration = true
+    // Hoisted so the catch below can abort the session if sendPromptAsync
+    // (or any later step) throws — otherwise the server keeps a session
+    // that no client is reading from, and the next iteration orphans it
+    // by creating a new one. See Finding 4.1.C.
+    let newSessionId: string | undefined
 
     try {
       // Check for plan completion first
@@ -835,7 +840,7 @@ function AppContent(props: AppProps) {
 
       // Create a new session
       const session = await createSession(client)
-      const newSessionId = session.id
+      newSessionId = session.id
 
       // Dispatch iteration started
       loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
@@ -876,6 +881,18 @@ function AppContent(props: AppProps) {
       // Refresh plan progress
       await refreshPlan()
     } catch (err) {
+      // Best-effort: abort the session we just created so a failure after
+      // createSession (e.g. sendPromptAsync) doesn't leave it running on
+      // the server. If createSession itself failed, newSessionId is still
+      // undefined and we skip. Mirrors the abortAndRetry cleanup at line
+      // ~274. Finding 4.1.C.
+      if (newSessionId) {
+        try {
+          await abortSession(createClient(url), newSessionId)
+        } catch {
+          // Best effort — the session may already be gone.
+        }
+      }
       // Rate limits → cooldown + retry; anything else → recoverable error.
       handleIterationError(err)
     } finally {
