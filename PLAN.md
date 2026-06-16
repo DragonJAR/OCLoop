@@ -611,10 +611,56 @@ files — sin cambio en el conteo. Commit `39e7cac`.
 
 ### Mejora 21 — Finding 5.2.A — LOW — `error` dispatched from `cooldown` does not clear cooldown timers
 
-- [ ] Evaluar la mejora 21 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 21 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 21 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 21 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 21 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 21 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 21 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 21 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural y el fix es
+estrictamente el "cheap fix" del audit (`MEJORAS.md:3932-3937`):
+`if (state.type === "cooldown") clearCooldownTimers()` dentro del
+server-error effect, ANTES del `loop.dispatch({ type: "error" })`.
+Razones para preferir el cheap sobre el `createEffect`
+(que sería la opción "proper fix" del audit):
+
+1. **Consistencia con el patrón del codebase** — la mejora
+   anterior (Mejora 17, Finding 5.1.B) estableció el orden
+   "clear-then-dispatch" en `enterCooldown` regular path
+   (línea 760) y en `handleWake` (línea 220). El cheap fix
+   sigue ese mismo patrón: clear-then-dispatch dentro del
+   mismo bloque. Un `createEffect` separado con su propio
+   `prevState` duplica el tracking que ya existe en el
+   transition-detector effect (líneas 325-397) y rompe la
+   consistencia.
+2. **No hay new error dispatch sites en el horizonte** — la
+   tabla del audit (MEJORAS.md:3860-3869) confirma que los
+   5 sitios restantes están state-gated; el server-error es
+   el ÚNICO que puede disparar desde `cooldown`. La
+   justificación de "future-proof" del `createEffect` es
+   YAGNI: añadir infraestructura especulativa para
+   "chaos faults que aún no existen" es exactamente lo que
+   la casa de Mejoras 6-20 ha rechazado.
+3. **Coste cero en el camino feliz** — cuando el
+   server-error effect dispara desde un estado distinto
+   de `cooldown` (el 99.9% de los casos), el `if` es un
+   no-op observable: una lectura reactiva de `loop.state()`
+   + una comparación de string. Sin rama nueva, sin
+   función nueva, sin tipo nuevo.
+
+Implementación mínima: 10 líneas añadidas en
+`src/App.tsx:1284-1304` (1 `if` con 1 `clearCooldownTimers()`
++ 7 líneas de comentario explicando la racionalidad
+defensiva y nombrando los call sites homólogos). Cero
+cambios al reducer, cero cambios al Dashboard, cero
+cambios al `cooldownRemainingMs` signal, cero impacto en
+los 5 sitios state-gated. Sin nuevos tests — la transición
+`cooldown → error` del reducer ya está pineada en
+`useLoopState.test.ts:748` ("error transition from
+cooldown state works") y el contract de
+`clearCooldownTimers` (closure-bound) no es unit-testable
+sin mock-heavy harness. `bun test` verde: 680 pass / 0
+fail, 1680 expect() calls, 23 files, 317 ms — sin cambio
+en el conteo (era 680 antes del clear). Commit `cac737d`.
 
 ### Mejora 22 — Finding 5.3.A — LOW — `cooldownTicker` is not explicitly cleared on the regular resume path
 
