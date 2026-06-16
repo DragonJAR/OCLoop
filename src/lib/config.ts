@@ -156,17 +156,26 @@ export interface OcloopConfig {
 /**
  * Merge resilience config from defaults, the config file, and CLI overrides.
  *
- * `undefined` values in either override layer are ignored so a partially
- * specified file or a flagless run inherits the lower layer.
+ * `undefined` and `null` values in either override layer are ignored so a
+ * partially specified file (or a flagless run) inherits the lower layer. A
+ * hand-edited `ocloop.json` with a `null` field (e.g. `"createTimeoutMs":
+ * null`) is therefore treated as "use the default" instead of silently
+ * overwriting it with `null` — which would coerce to `0` in
+ * `setTimeout`/`setInterval` and burn through retries in milliseconds. An
+ * array passed as either layer is rejected for the same reason
+ * (`Object.entries` would yield numeric keys and corrupt the first three
+ * default slots).
+ *
+ * Source: MEJORAS.md Finding 12.3.A.
  */
 export function resolveResilience(
   fileConfig?: Partial<ResilienceConfig>,
   cliOverrides?: Partial<ResilienceConfig>,
 ): ResilienceConfig {
   const pickDefined = <T extends object>(obj?: T): Partial<T> => {
-    if (!obj) return {}
+    if (!obj || Array.isArray(obj)) return {}
     return Object.fromEntries(
-      Object.entries(obj).filter(([, v]) => v !== undefined),
+      Object.entries(obj).filter(([, v]) => v !== undefined && v !== null),
     ) as Partial<T>
   }
   return {

@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { loadConfig, saveConfig, getConfigPath } from "./config"
+import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath } from "./config"
 
 // `loadConfig` reads from `${XDG_CONFIG_HOME}/ocloop/ocloop.json` (or
 // `~/.config/ocloop/ocloop.json` when the env var is unset). Redirect
@@ -233,6 +233,79 @@ describe("getConfigPath", () => {
     // so getConfigPath should resolve under it.
     const path = getConfigPath()
     expect(path).toBe(join(dir, "ocloop", "ocloop.json"))
+  })
+})
+
+describe("resolveResilience — null skip (Finding 12.3.A)", () => {
+  it("returns the defaults when both layers are undefined", () => {
+    expect(resolveResilience()).toEqual(DEFAULT_RESILIENCE)
+  })
+
+  it("skips null per-field values and falls back to the default (the audit's central case)", () => {
+    // Without the fix, `createTimeoutMs: null` would spread over the default
+    // and reach `setTimeout(null, …)` → immediate timeout on every
+    // `session.create`. With the fix, the null is skipped and the default
+    // (15_000ms) survives.
+    const result = resolveResilience({ createTimeoutMs: null })
+    expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+  })
+
+  it("skips null in the CLI override layer too", () => {
+    // The CLI path is gated by `applyResilienceOverride` and never produces
+    // a null, but `resolveResilience` defends itself in case a future
+    // call site or a hand-rolled test path passes one.
+    const result = resolveResilience(undefined, { promptTimeoutMs: null })
+    expect(result.promptTimeoutMs).toBe(DEFAULT_RESILIENCE.promptTimeoutMs)
+  })
+
+  it("keeps non-null values mixed in alongside nulls in the same layer", () => {
+    const result = resolveResilience({
+      createTimeoutMs: 42_000,
+      promptTimeoutMs: null,
+    })
+    expect(result.createTimeoutMs).toBe(42_000)
+    expect(result.promptTimeoutMs).toBe(DEFAULT_RESILIENCE.promptTimeoutMs)
+  })
+
+  it("still skips undefined values (the pre-existing behavior)", () => {
+    const result = resolveResilience({ createTimeoutMs: undefined })
+    expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+  })
+
+  it("lets a non-null CLI override win over a null file value", () => {
+    // File says null (skipped → default), CLI says 99_000 → 99_000 wins.
+    const result = resolveResilience(
+      { createTimeoutMs: null },
+      { createTimeoutMs: 99_000 },
+    )
+    expect(result.createTimeoutMs).toBe(99_000)
+  })
+
+  it("treats a null boolean field the same way (uses default)", () => {
+    // `caffeinate: null` would short-circuit every `if (caffeinate)` to
+    // false; after the fix, the default (`true` on macOS) survives.
+    const result = resolveResilience({ caffeinate: null })
+    expect(result.caffeinate).toBe(DEFAULT_RESILIENCE.caffeinate)
+  })
+})
+
+describe("resolveResilience — non-object layers (Finding 12.3.A)", () => {
+  it("treats an array in the file layer as no override (array rejection)", () => {
+    // `Object.entries([100, 200, 300])` returns `[["0", 100], …]`; without
+    // the guard, the first three default slots get overwritten with array
+    // indices. With the guard, the whole layer is dropped.
+    const result = resolveResilience(
+      [100, 200, 300] as unknown as Partial<typeof DEFAULT_RESILIENCE>,
+    )
+    expect(result).toEqual(DEFAULT_RESILIENCE)
+  })
+
+  it("treats an array in the CLI layer the same way", () => {
+    const result = resolveResilience(
+      undefined,
+      [42] as unknown as Partial<typeof DEFAULT_RESILIENCE>,
+    )
+    expect(result).toEqual(DEFAULT_RESILIENCE)
   })
 })
 
