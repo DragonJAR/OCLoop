@@ -20515,3 +20515,317 @@ flag) and the server is faster than the config read.
 The fix is ~3 lines (one signal, one setter, one guard)
 and matches the existing reactive style of the
 component.
+
+## Phase 16 — Code Duplication & Inefficiency
+
+### 16.1 — Duplicated error-handling patterns in `handleIterationError` and SSE `onSessionError`
+
+Source: `src/App.tsx:454-490` (SSE `onSessionError` handler), `src/App.tsx:754-771` (`handleIterationError`), `src/hooks/useSSE.ts:183-207` (`classifySessionError`).
+Tests: `src/hooks/useSSE.test.ts` (covers `classifySessionError` in isolation), `src/resilience-integration.test.ts` (covers the rate-limit path end-to-end). **No test exercises both call sites together.**
+
+PLAN.md 16.1: "Identify and document duplicated error handling patterns in `handleIterationError` and SSE `onSessionError`."
+
+#### Side-by-side comparison — VERIFIED duplication
+
+The two functions both implement the same conceptual pipeline: **classify the error → switch on `kind` → either `enterCooldown(...)` or `loop.dispatch({ type: "error", ... })`**. The switch structure is duplicated; only the per-branch details differ.
+
+**`handleIterationError` — `src/App.tsx:754-771`:**
+
+```ts
+function handleIterationError(err: unknown): void {
+  const classified = classifySessionError(err)
+  if (classified.kind === "rate_limit") {
+    enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+    return
+  }
+  if (classified.kind === "transient") {
+    enterCooldown(classified.message, undefined, "transient")
+    return
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  loop.dispatch({
+    type: "error",
+    source: "api",
+    message: t("errIterationStart", { message }),
+    recoverable: true,
+  })
+}
+```
+
+**SSE `onSessionError` — `src/App.tsx:454-490`:**
+
+```ts
+onSessionError: (eventSessionId, error) => {
+  const state = loop.state()
+  // ...session-id stale-guard (lines 456-463)...
+  const st = state.type
+  if (error.isAborted) {
+    activityLog.addEvent("task", t("actSessionAborted"))
+    if (st === "running") {
+      loop.dispatch({ type: "toggle_pause" })
+    }
+  } else if (error.kind === "rate_limit") {
+    activityLog.addEvent("error", t("actRateLimit", { message: error.message }), { level: "warn" })
+    if (st === "running" || st === "pausing") {
+      enterCooldown(error.message, error.retryAfter)
+    }
+  } else {
+    activityLog.addEvent("error", t("actSessionError", { message: error.message }))
+    if (st === "running" || st === "pausing" || st === "debug") {
+      loop.dispatch({
+        type: "error",
+        source: "sse",
+        message: t("actSessionError", { message: error.message }),
+        recoverable: error.kind === "transient",
+      })
+    }
+  }
+}
+```
+
+#### Duplication map — VERIFIED
+
+| Concept | `handleIterationError` | SSE `onSessionError` |
+| --- | --- | --- |
+| `kind === "rate_limit"` → `enterCooldown(...)` | line 756-759 (passes `retryAfter`) | line 470-478 (also passes `retryAfter`, omits `kind` arg → defaults to `"rate_limit"`) |
+| `kind === "transient"` → `enterCooldown(..., "transient")` | line 760-763 | **absent — transient goes through the fallback `loop.dispatch({...recoverable: true})` branch instead (line 486)** |
+| `kind` is `auth` / `fatal` → `loop.dispatch({ type: "error", recoverable: ??? })` | line 764-770 (**always `recoverable: true`**, regardless of kind) | line 480-489 (`recoverable: error.kind === "transient"`) |
+| `isAborted` → `loop.dispatch({ type: "toggle_pause" })` | **absent** | line 465-469 |
+| State guard before dispatching | none (assumes iteration is in flight) | `st === "running" || st === "pausing" || st === "debug"` |
+| Activity log entry before dispatch | none (delegated to `enterCooldown`) | `activityLog.addEvent(...)` per branch |
+
+The duplicated parts are:
+
+1. **The "is this a rate limit? → `enterCooldown`" branch** is identical in both functions, modulo the optional `kind` arg default.
+2. **The "fall back to a loop error" branch** is structurally identical, but with different `source`, `message` (different i18n keys), and `recoverable` logic.
+3. **The `kind` switch + dispatch** itself is duplicated; the only thing that varies per site is the per-branch polish (state guard, activity log, source label, i18n key, recoverability rule).
+
+The "non-duplicated" parts — abort handling, state guards, activity-log entries — are all **legitimate variation** between an iteration-start failure (always during `running`, never aborted) and a mid-iteration SSE error (any state, may be aborted, must respect the stale-session guard, must log to the activity feed).
+
+#### Finding 16.1.A — MEDIUM — `handleIterationError` dispatches a recoverable error for `auth` and `fatal` kinds
+
+**Problem.** The third branch of `handleIterationError` (line 764-770) is:
+
+```ts
+const message = err instanceof Error ? err.message : String(err)
+loop.dispatch({
+  type: "error",
+  source: "api",
+  message: t("errIterationStart", { message }),
+  recoverable: true,
+})
+```
+
+The `recoverable: true` is hardcoded — it does NOT check `classified.kind`. Per the Phase 14.3 finding (`src/MEJORAS.md:17543-17847`), auth errors (401/403) are NOT recoverable: a bad API key won't fix itself on retry, so the user must intervene. SSE `onSessionError` already honors this — its fallback branch sets `recoverable: error.kind === "transient"`, so an auth error arriving via SSE is dispatched as a non-recoverable error.
+
+If a 401 fires from the iteration-start path (e.g. `createSession` rejects with `AuthError`), `handleIterationError` will dispatch `recoverable: true`. The user sees a "Retry" button in the error dialog that, when clicked, will re-run the same code path and re-hit the same 401. The Retry button is functionally equivalent to "Dismiss + restart the whole loop".
+
+**Where.** `src/App.tsx:764-770`.
+
+**Proposed fix.** Make the recoverability consistent with SSE `onSessionError`:
+
+```ts
+const classified = classifySessionError(err)
+if (classified.kind === "rate_limit") {
+  enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+  return
+}
+if (classified.kind === "transient") {
+  enterCooldown(classified.message, undefined, "transient")
+  return
+}
+const message = err instanceof Error ? err.message : String(err)
+loop.dispatch({
+  type: "error",
+  source: "api",
+  message: t("errIterationStart", { message }),
+  recoverable: classified.kind === "transient", // honour the kind
+})
+```
+
+This is a one-line change but it closes the asymmetry. Note that even with `recoverable: false`, the user can still manually recover by changing the key and clicking Retry — but the dialog should not advertise Retry as a one-click fix for a fatal auth problem.
+
+**Severity: MEDIUM.** No crash, no data loss; the bug is that the Retry button lies about what it can do. Surface area: 1 of N error kinds, fires only when the API call path (not SSE) returns 401/403/fatal.
+
+#### Finding 16.1.B — MEDIUM — `kind === "transient"` takes different paths in the two call sites
+
+**Problem.** In `handleIterationError`, a transient error triggers `enterCooldown(..., "transient")` — the iteration is retried automatically after a backoff. In SSE `onSessionError`, a transient error falls through to the `else` branch and triggers `loop.dispatch({ type: "error", recoverable: true })` — the iteration surfaces to the user as a recoverable error, NOT auto-retried.
+
+This means a transient 502 from the API (call path) is handled with auto-retry, but a transient 502 from SSE (event path) is escalated to the user. The two paths disagree on what "transient" means in terms of recovery strategy.
+
+The Phase 14.6 audit (`src/MEJORAS.md:18121-18218`) verified that `handleIterationError` correctly classifies, but it didn't verify that the **two classification consumers agree** on the recovery strategy.
+
+**Where.** `src/App.tsx:760-763` (auto-retry) vs `src/App.tsx:480-489` (escalate to user).
+
+**Proposed fix.** Pick one policy and apply it in both places. The cleaner policy is **"transient = auto-retry, fatal = escalate"** (matches the existing `enterCooldown` overload and the "an unattended harness shouldn't stop on a flaky network" comment in `handleIterationError`'s docstring at line 748-752). Apply it in SSE `onSessionError`:
+
+```ts
+} else if (error.kind === "transient") {
+  activityLog.addEvent("error", t("actSessionError", { message: error.message }), { level: "warn" })
+  if (st === "running" || st === "pausing") {
+    enterCooldown(error.message, undefined, "transient")
+    return
+  }
+}
+```
+
+This makes the SSE path auto-retry on transient blips (matching the API path) and escalate only on auth/fatal (which is the dangerous category). Note: this widens the auto-retry surface — confirm via integration test that watchdog re-tries (15.3) and the per-iteration guard (15.1) still cover the failure modes the existing surface handles.
+
+**Alternative.** Keep the asymmetry intentionally and document it: "transient from API = retry; transient from SSE = escalate (the SSE event already lost its context, the iteration's mid-flight, no safe auto-retry)". This requires a comment in both files. The current code has no such comment, so the divergence reads as accidental.
+
+**Severity: MEDIUM.** Behavior divergence on a plausible input (transient 502 during iteration). The user's experience differs depending on which subsystem first observes the failure.
+
+#### Finding 16.1.C — LOW — `enterCooldown` call sites differ only in the optional `kind` argument
+
+**Problem.** Both `handleIterationError` (line 757) and SSE `onSessionError` (line 477) call `enterCooldown` for the rate-limit case. The calls differ in:
+
+- `handleIterationError`: `enterCooldown(classified.message, classified.retryAfter, "rate_limit")` — explicit `kind: "rate_limit"`.
+- SSE `onSessionError`: `enterCooldown(error.message, error.retryAfter)` — omits `kind` → defaults to `"rate_limit"` (`src/App.tsx:674`).
+
+The default value is correct, but the explicit vs implicit forms are a code-smell. The default exists because SSE is the older call site; the API path was added later and "fixed" the implicit default to be explicit. Both are correct today; the divergence is purely stylistic.
+
+**Where.** `src/App.tsx:757` vs `src/App.tsx:477`.
+
+**Proposed fix.** None required; pick one form and stick with it. The default-omitting form is shorter and reads better. Optional: drop the explicit `"rate_limit"` from the API call site.
+
+**Severity: LOW.** Cosmetic. Not a bug.
+
+#### Finding 16.1.D — LOW — `handleIterationError` and SSE `onSessionError` could share a "kind → action" helper
+
+**Problem.** The two functions both implement a `kind → (enterCooldown | error | toggle_pause)` switch, with the same `classifySessionError` front-end. A helper would:
+
+1. Centralize the "which `kind` triggers which side effect" policy.
+2. Make the asymmetry (16.1.B) visible at the call site (or remove it if the policy is unified).
+3. Make adding a new error kind a single-file change instead of a two-file change.
+
+**Where.** `src/App.tsx:754-771` and `src/App.tsx:454-490`.
+
+**Proposed fix.** Extract a helper into `src/lib/error-router.ts` (new file, matches the `lib/api.ts` / `lib/chaos.ts` pattern of pure, injectable modules):
+
+```ts
+// src/lib/error-router.ts
+import type { SessionError } from "../hooks/useSSE"
+import type { Accessor } from "solid-js"
+
+export type ErrorSource = "api" | "sse"
+
+export interface ErrorRouterContext {
+  source: ErrorSource
+  stateType: string
+  loop: {
+    dispatch: (action: { type: "error"; source: ErrorSource; message: string; recoverable: boolean } | { type: "rate_limited"; reason: string; resumeAt: number; attempt: number } | { type: "toggle_pause" }) => void
+  }
+  enterCooldown: (reason: string, retryAfterSeconds?: number, kind?: "rate_limit" | "transient") => void
+  t: (key: string, params?: Record<string, any>) => string
+  log: (msg: string) => void
+}
+
+/**
+ * Apply a classified session error to the loop, choosing between
+ * cooldown-and-retry, recoverable error, and pause based on `kind`
+ * and the loop's current state. Replaces the duplicated kind-switch
+ * in handleIterationError (App.tsx:754) and SSE onSessionError
+ * (App.tsx:454).
+ *
+ * Policy: rate_limit and transient both auto-retry; auth and fatal
+ * escalate as recoverable errors; aborted toggles pause.
+ */
+export function routeSessionError(
+  classified: SessionError,
+  ctx: ErrorRouterContext,
+): void {
+  if (classified.isAborted) {
+    if (ctx.stateType === "running" || ctx.stateType === "pausing") {
+      ctx.loop.dispatch({ type: "toggle_pause" })
+    }
+    return
+  }
+  if (classified.kind === "rate_limit") {
+    if (ctx.stateType === "running" || ctx.stateType === "pausing") {
+      ctx.enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+    }
+    return
+  }
+  if (classified.kind === "transient") {
+    if (ctx.stateType === "running" || ctx.stateType === "pausing") {
+      ctx.enterCooldown(classified.message, undefined, "transient")
+    }
+    return
+  }
+  // auth / fatal
+  if (ctx.stateType === "running" || ctx.stateType === "pausing" || ctx.stateType === "debug") {
+    ctx.loop.dispatch({
+      type: "error",
+      source: ctx.source,
+      message: ctx.t(ctx.source === "api" ? "errIterationStart" : "actSessionError", { message: classified.message }),
+      recoverable: false,
+    })
+  }
+}
+```
+
+The helper makes 16.1.A and 16.1.B a single-file fix: change the policy in one place, both call sites benefit. The helper is pure (no side effects on import) and unit-testable without a full Solid render harness (matches the `resilience-integration.test.ts` pattern: pass in mocks for `dispatch`, `enterCooldown`, `t`).
+
+**Severity: LOW.** Not a bug; the duplication is bounded (~30 lines) and the asymmetry is real but small. The refactor is worth doing for testability and policy centralization, not for line count.
+
+#### Test coverage gap — INFO
+
+There is no test that exercises both `handleIterationError` and SSE `onSessionError` together, so the asymmetry from 16.1.A and 16.1.B is invisible to the test suite. Adding the `routeSessionError` helper from 16.1.D would make it unit-testable:
+
+```ts
+// src/lib/error-router.test.ts
+import { describe, expect, it } from "bun:test"
+import { routeSessionError } from "./error-router"
+import type { SessionError } from "../hooks/useSSE"
+
+describe("routeSessionError", () => {
+  it("rate_limit from API auto-retries via enterCooldown", () => {
+    let enterCooldownCalls: Array<[string, number?, "rate_limit" | "transient"]> = []
+    routeSessionError(
+      { kind: "rate_limit", message: "429", isAborted: false, retryAfter: 30 },
+      { source: "api", stateType: "running", enterCooldown: (msg, ra, k) => enterCooldownCalls.push([msg, ra, k]), /* ... */ }
+    )
+    expect(enterCooldownCalls).toEqual([["429", 30, "rate_limit"]])
+  })
+
+  it("auth from API escalates as non-recoverable error", () => {
+    let dispatch: any[] = []
+    routeSessionError(
+      { kind: "auth", message: "401", isAborted: false },
+      { source: "api", stateType: "running", loop: { dispatch: a => dispatch.push(a) }, /* ... */ }
+    )
+    expect(dispatch).toEqual([{ type: "error", source: "api", message: expect.stringContaining("401"), recoverable: false }])
+  })
+
+  it("transient from SSE auto-retries via enterCooldown (per 16.1.B fix)", () => {
+    let enterCooldownCalls: Array<[string, number?, "rate_limit" | "transient"]> = []
+    routeSessionError(
+      { kind: "transient", message: "502", isAborted: false },
+      { source: "sse", stateType: "running", enterCooldown: (msg, ra, k) => enterCooldownCalls.push([msg, ra, k]), /* ... */ }
+    )
+    expect(enterCooldownCalls).toEqual([["502", undefined, "transient"]])
+  })
+
+  it("aborted from SSE in running state dispatches toggle_pause", () => {
+    let dispatch: any[] = []
+    routeSessionError(
+      { kind: "aborted", message: "stopped", isAborted: true },
+      { source: "sse", stateType: "running", loop: { dispatch: a => dispatch.push(a) }, /* ... */ }
+    )
+    expect(dispatch).toEqual([{ type: "toggle_pause" }])
+  })
+})
+```
+
+These four tests cover the four branches (rate_limit, transient, auth/fatal, aborted) and pin down the policy. The asymmetry from 16.1.B becomes a one-line test diff after the fix.
+
+#### Verification result
+
+- **Two MEDIUM findings** (16.1.A — auth/fatal misclassified as recoverable in the API path; 16.1.B — transient recovery policy diverges between API and SSE paths).
+- **Two LOW findings** (16.1.C — cosmetic `kind` arg; 16.1.D — extract a shared `routeSessionError` helper for policy centralization and testability).
+- **One INFO-level test-coverage note.**
+- **No CRITICAL or HIGH findings.**
+
+The two MEDIUM findings are both **one-line fixes** once the asymmetry is recognized. The LOW refactor (16.1.D) is the most impactful: a single `src/lib/error-router.ts` with the four test cases above would make all three behavior questions (auth recoverability, transient policy, and the future addition of new `SessionErrorKind` values) a one-file change.
+
+The duplication is **bounded and well-documented** — both functions have clear docstrings explaining the "why" of their kind-switch. The audit value here is mostly the **policy visibility** (16.1.A and 16.1.B) and the **testability** of the proposed helper (16.1.D).
