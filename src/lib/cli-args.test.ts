@@ -596,20 +596,32 @@ describe("parseArgs — --prompt / --plan path handling (Phase 1 Task 1.6)", () 
     expect(args?.planFile).toBe("-")
   })
 
-  // FINDING 1.1.A — MEDIUM (cross-reference). requireValue treats " " (a
-  // single space) as truthy, so --prompt " " silently stores " " as the
-  // path. Re-pinned here in the path-handling describe block so the path
-  // surface area is fully covered in one place.
-  it("accepts a whitespace-only value as a path (Finding 1.1.A — silent acceptance)", () => {
-    const { args, exitCode } = runParse(["--prompt", " "])
-    expect(exitCode).toBeNull()
-    expect(args?.promptFile).toBe(" ")
+  // FINDING 1.1.A — MEDIUM. requireValue now treats a whitespace-only
+  // string (e.g. " ", "\t", "   ") as missing, because trimming-then-empty
+  // catches every shell-quoting mistake the user is likely to make without
+  // rejecting the embedded-whitespace path that a real filename needs
+  // (tested at the "--prompt accepts a path containing whitespace in the
+  // middle" block above). Reject with the same "requires a value" error
+  // used for the empty-string case so the failure mode is uniform.
+  it("rejects --prompt with a single space (Finding 1.1.A — whitespace-only)", () => {
+    const r = runParse(["--prompt", " "])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
   })
 
-  it("accepts a whitespace-only value for --plan (Finding 1.1.A — silent acceptance)", () => {
-    const { args, exitCode } = runParse(["--plan", "   "])
-    expect(exitCode).toBeNull()
-    expect(args?.planFile).toBe("   ")
+  it("rejects --plan with multiple spaces (Finding 1.1.A — whitespace-only)", () => {
+    const r = runParse(["--plan", "   "])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("requires a value")
+  })
+
+  it("rejects --agent with a tab (Finding 1.1.A — whitespace-only, --agent parity)", () => {
+    // requireValue is shared by --prompt / --plan / --agent; pin the third
+    // caller's behavior so a future refactor that re-orders the rejection
+    // condition is visible.
+    const r = runParse(["--agent", "\t"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("--agent requires a value")
   })
 
   // --- interaction with other flags -------------------------------------

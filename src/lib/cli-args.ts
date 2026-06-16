@@ -135,7 +135,11 @@ function parsePort(portStr: string | undefined): number {
  * loudly instead of setting promptFile to "--debug" and silently dropping --debug.
  */
 function requireValue(value: string | undefined, flag: string): string {
-  if (!value || (value.startsWith("-") && value !== "-")) {
+  if (
+    !value ||
+    value.trim() === "" ||
+    (value.startsWith("-") && value !== "-")
+  ) {
     console.error(`Error: ${flag} requires a value`)
     process.exit(1)
   }
