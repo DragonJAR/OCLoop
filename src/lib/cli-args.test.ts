@@ -208,6 +208,22 @@ describe("parseArgs — pairwise combinations of interacting params", () => {
   })
 })
 
+// Finding 1.1.B (LOW) — non-resilience duplicate flag behavior was only
+// implicitly covered. Pin the contract explicitly so a switch fall-through
+// regression (e.g. an accidental `break` outside the case) is caught for
+// value flags (last-wins) and boolean flags (idempotent).
+describe("parseArgs — duplicate flag behavior (Finding 1.1.B)", () => {
+  it("duplicate --port flags: last wins", () => {
+    const { args } = runParse(["--port", "8080", "--port", "9090"])
+    expect(args?.port).toBe(9090)
+  })
+
+  it("duplicate --debug flags: idempotent", () => {
+    const { args } = runParse(["--debug", "--debug"])
+    expect(args?.debug).toBe(true)
+  })
+})
+
 describe("parseArgs — value flags reject a following flag as their value", () => {
   for (const flag of ["--prompt", "--plan", "--agent"]) {
     it(`${flag} --debug errors instead of swallowing the flag`, () => {
