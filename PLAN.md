@@ -122,10 +122,10 @@ Lista numerada de 97 mejoras accionables (no-INFO) detectadas en `MEJORAS.md`, e
 
 ### Mejora 2 — Finding 1.1.B — LOW — Duplicate value-flag behavior is not explicitly tested
 
-- [ ] Evaluar la mejora 2 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 2 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 2 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 2 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 2 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 2 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 2 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 2 y corregir cualquier regresión causada por el cambio.
 
 ### Mejora 3 — Finding 1.3.A — LOW — Whitespace not explicitly tested (closed by this audit)
 
