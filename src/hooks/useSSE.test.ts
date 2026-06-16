@@ -133,5 +133,67 @@ describe("classifySessionError", () => {
       const e = classifySessionError({ data: { message: "429 rate limit" } })
       expect(e.kind).toBe("rate_limit")
     })
+
+    it("each error kind with a representative error object", () => {
+      const cases: Array<[string, unknown, string]> = [
+        ["rate_limit", { message: "429 Too Many Requests" }, "rate_limit"],
+        ["aborted", { name: "MessageAbortedError", message: "aborted" }, "aborted"],
+        ["auth", { message: "401 Unauthorized" }, "auth"],
+        ["transient", { message: "502 Bad Gateway" }, "transient"],
+        ["fatal", { message: "something completely unexpected" }, "fatal"],
+      ]
+      for (const [, input, expected] of cases) {
+        expect(classifySessionError(input).kind).toBe(expected)
+      }
+    })
+
+    it("classifySessionError with a string input detects rate_limit", () => {
+      expect(classifySessionError("rate limit exceeded").kind).toBe("rate_limit")
+    })
+
+    it("classifySessionError with null returns kind fatal and message 'Unknown error'", () => {
+      const e = classifySessionError(null)
+      expect(e.kind).toBe("fatal")
+      expect(e.message).toBe("Unknown error")
+    })
+  })
+
+  describe("extractRetryAfter edge cases", () => {
+    it("parses retry-after header value in seconds (string number)", () => {
+      const e = classifySessionError({
+        message: "429 rate limit",
+        headers: { "retry-after": "120" },
+      })
+      expect(e.retryAfter).toBe(120)
+    })
+
+    it("parses retry-after header value from a Headers-like object with .get()", () => {
+      const headers = new Map([["retry-after", "60"]])
+      const e = classifySessionError({
+        message: "rate limit",
+        headers: { get: (k: string) => headers.get(k) },
+      })
+      expect(e.retryAfter).toBe(60)
+    })
+
+    it("extracts retryAfter from message duration with minutes", () => {
+      const e = classifySessionError({ message: "overloaded, try again in 2 minutes" })
+      expect(e.retryAfter).toBe(120)
+    })
+
+    it("extracts retryAfter from message with seconds unit", () => {
+      // "retry after" only surfaces retryAfter when the kind is rate_limit,
+      // so the message must also trigger rate_limit classification.
+      const e = classifySessionError({ message: "rate limit, retry after 30 seconds" })
+      expect(e.retryAfter).toBe(30)
+    })
+
+    it("extracts retryAfter from data.retryAfter nested field", () => {
+      const e = classifySessionError({
+        message: "429",
+        data: { retryAfter: 45 },
+      })
+      expect(e.retryAfter).toBe(45)
+    })
   })
 })

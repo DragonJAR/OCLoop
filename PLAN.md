@@ -16,42 +16,42 @@ Objective: Analyze every execution path (parameterized, edge-case, error) in the
 
 ## Phase 2 — State machine gaps & transitions
 
-- [ ] Add test for `session_idle` dispatched on `running` state with `sessionId === ""` — verify it returns the SAME state object (idempotency guard for redundant idles)
-- [ ] Add test for `plan_complete` from `cooldown` state — verify iteration is preserved
-- [ ] Add test for `plan_complete` from `error` state — verify iterations = 0
-- [ ] Add test for `rate_limited` from `paused` state — verify it is ignored (returns same state)
-- [ ] Add test for `resume_cooldown` from a non-cooldown state (e.g. `running`) — verify it is ignored
-- [ ] Add test for `error` transition from `cooldown` state — verify it works
-- [ ] Add test for `error` transition from `debug` state — verify it works
-- [ ] Add test for `server_ready_debug` from non-`starting` state — verify it is ignored
-- [ ] Add test for `new_session` from non-`debug` state — verify it is ignored
-- [ ] Add test for `quit` from `cooldown` state — verify it transitions to `stopping`
+- [x] Add test for `session_idle` dispatched on `running` state with `sessionId === ""` — verify it returns the SAME state object (idempotency guard for redundant idles)
+- [x] Add test for `plan_complete` from `cooldown` state — verify iteration is preserved
+- [x] Add test for `plan_complete` from `error` state — verify iterations = 0
+- [x] Add test for `rate_limited` from `paused` state — verify it is ignored (returns same state)
+- [x] Add test for `resume_cooldown` from a non-cooldown state (e.g. `running`) — verify it is ignored
+- [x] Add test for `error` transition from `cooldown` state — verify it works
+- [x] Add test for `error` transition from `debug` state — verify it works
+- [x] Add test for `server_ready_debug` from non-`starting` state — verify it is ignored
+- [x] Add test for `new_session` from non-`debug` state — verify it is ignored
+- [x] Add test for `quit` from `cooldown` state — verify it transitions to `stopping`
 
 ## Phase 3 — CLI argument parsing edge cases
 
-- [ ] Add test for `--port 0` — verify it's accepted (port 0 is valid TCP, means "let the OS pick")
-- [ ] Add test for `--model` with extra slash like `a/b/c` — verify it's rejected (currently `MODEL_RE` requires exactly one slash, but `slash <= 0` catches no-slash, `slash === model.length - 1` catches trailing-slash — but `a/b/c` has slash at index 1 which is valid per regex `^[^\s/]+/[^\s/]+$`; verify this rejects it since the regex doesn't match three segments)
-- [ ] Add test for `--resilience` with boolean key set to `"0"` — verify `caffeinate=0` is accepted and mapped to `false`
-- [ ] Add test for `--resilience` with zero numeric value — verify `backoffBaseMs=0` is accepted (0 is a valid non-negative integer)
-- [ ] Verify `parseArgs` doesn't mutate `argv` (it uses `let i` incrementing — confirm no side effects)
+- [x] Add test for `--port 0` — verify it's accepted (port 0 is valid TCP, means "let the OS pick")
+- [x] Add test for `--model` with extra slash like `a/b/c` — verify it's rejected (currently `MODEL_RE` requires exactly one slash, but `slash <= 0` catches no-slash, `slash === model.length - 1` catches trailing-slash — but `a/b/c` has slash at index 1 which is valid per regex `^[^\s/]+/[^\s/]+$`; verify this rejects it since the regex doesn't match three segments)
+- [x] Add test for `--resilience` with boolean key set to `"0"` — verify `caffeinate=0` is accepted and mapped to `false`
+- [x] Add test for `--resilience` with zero numeric value — verify `backoffBaseMs=0` is accepted (0 is a valid non-negative integer)
+- [x] Verify `parseArgs` doesn't mutate `argv` (it uses `let i` incrementing — confirm no side effects)
 
 ## Phase 4 — API layer error handling & robustness
 
-- [ ] Add test for `assertResponse` with `result.response` present but `ok: false` — verify it throws with status code
-- [ ] Add test for `assertResponse` with `result.response` undefined and `result.error` being a non-Error object — verify message extraction
-- [ ] Add test for `reconcileSession` with a session status type that is neither `idle`, `busy`, nor `retry` — verify it returns `"unknown"`
-- [ ] Add test for `createClient` cache eviction: after inserting `MAX_CACHE_SIZE + 1` entries, verify the oldest half was evicted
-- [ ] Add test for `toSdkModel` with `undefined` input — verify it returns `undefined`
-- [ ] Add test for `toSdkModel` with non-string input (already an object) — verify it passes through
-- [ ] Verify `sendPromptAsync` handles the case where `assertResponse` passes but the response is otherwise empty (it currently just calls `assertResponse` and returns void — confirm this is correct per the SDK contract)
+- [x] Add test for `assertResponse` with `result.response` present but `ok: false` — verify it throws with status code
+- [x] Add test for `assertResponse` with `result.response` undefined and `result.error` being a non-Error object — verify message extraction
+- [x] Add test for `reconcileSession` with a session status type that is neither `idle`, `busy`, nor `retry` — verify it returns `"unknown"`
+- [x] Add test for `createClient` cache eviction: after inserting `MAX_CACHE_SIZE + 1` entries, verify the oldest half was evicted
+- [x] Add test for `toSdkModel` with `undefined` input — verify it returns `undefined`
+- [x] Add test for `toSdkModel` with non-string input (already an object) — verify it passes through
+- [x] Verify `sendPromptAsync` handles the case where `assertResponse` passes but the response is otherwise empty (it currently just calls `assertResponse` and returns void — confirm this is correct per the SDK contract)
 
 ## Phase 5 — SSE & watchdog edge cases
 
-- [ ] Add test for `classifySessionError` with each error kind (`rate_limit`, `aborted`, `auth`, `transient`, `fatal`) using representative error objects
-- [ ] Add test for `classifySessionError` with a string error — verify kind detection
-- [ ] Add test for `classifySessionError` with `null` — verify it returns kind `fatal`
-- [ ] Add test for `extractRetryAfter` with `retry-after` header in seconds — verify conversion to ms
-- [ ] Add test for `extractRetryAfter` with a duration string in the message ("retry after 2 minutes") — verify it returns 120 seconds
+- [x] Add test for `classifySessionError` with each error kind (`rate_limit`, `aborted`, `auth`, `transient`, `fatal`) using representative error objects
+- [x] Add test for `classifySessionError` with a string error — verify kind detection
+- [x] Add test for `classifySessionError` with `null` — verify it returns kind `fatal`
+- [x] Add test for `extractRetryAfter` with `retry-after` header in seconds — verify conversion to ms
+- [x] Add test for `extractRetryAfter` with a duration string in the message ("retry after 2 minutes") — verify it returns 120 seconds
 - [ ] Add test for watchdog `tick()` when `isActive()` returns false — verify health stays `HEALTHY` and no probes run
 - [ ] Add test for watchdog `tick()` when heartbeat is recent (under suspectMs) — verify health stays `HEALTHY`
 - [ ] Add test for watchdog `tick()` confirming path: server ping fails → `server_hung` recovery
