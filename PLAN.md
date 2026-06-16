@@ -2171,10 +2171,60 @@ cambio en el conteo, era 730 antes del fix). Commit `9b5b4d8`.
 
 ### Mejora 51 — Finding 12.3.A — MEDIUM — `pickDefined` skips `undefined` but NOT `null`
 
-- [ ] Evaluar la mejora 51 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 51 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 51 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 51 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 51 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 51 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 51 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 51 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14792-14861`): `pickDefined` filtraba solo
+`undefined`, así que `null` se treated como defined y se escribía
+encima del default. La opción (b) del fix propuesto
+(`MEJORAS.md:14840-14850`, 2 cambios que se componen bien) es
+estrictamente la mínima útil y reusa el mismo guard `Array.isArray`
+que `validateConfigShape` ya usa para el top-level (línea 230):
+
+1. **Tighten the filter** a `v !== undefined && v !== null` —
+   cierra la corrupción `setTimeout(null, …)` →
+   timeout inmediato, y la corrupción booleana
+   `null` → falsy para `caffeinate`/`resume`/`backoffJitter`.
+2. **Reject arrays at the layer boundary** —
+   `Object.entries([100, 200, 300])` retornaría
+   `[["0", 100], ["1", 200], ["2", 300]]` y spread
+   corrompería los primeros 3 default slots.
+
+Implementación mínima: 2 líneas modificadas
+(`src/lib/config.ts:174-180`) — el guard `!obj || Array.isArray(obj)`
+y el filtro `v !== undefined && v !== null` — más 9 líneas de
+comentario que renombran el docstring de `resolveResilience` para
+nombrar la nueva invariante, el hazard de `setTimeout(null, …)` con
+un ejemplo concreto, y el source `MEJORAS.md Finding 12.3.A`.
+Cero cambios a la firma de `resolveResilience`
+(`(Partial<ResilienceConfig>?, Partial<ResilienceConfig>?) => ResilienceConfig`
+intacta), cero cambios a `DEFAULT_RESILIENCE`, cero cambios a
+`validateConfigShape`/`loadConfig`/`saveConfig`, cero cambios a los 2
+call sites de `App.tsx:161, 430` y al call site de `index.tsx:146`.
+Cero impacto en el camino feliz (un `undefined`/`null` per-field se
+saltan como antes; un valor real se spread igual que antes; los 21
+campos de `DEFAULT_RESILIENCE` llegan todos al objeto final sin
+modificación cuando ninguna override está presente).
+
+Cubierto por 9 tests nuevos en `src/lib/config.test.ts:240-311`:
+- 1 baseline (`resolveResilience()` → defaults).
+- 1 caso central del audit
+  (`createTimeoutMs: null` → default).
+- 1 CLI layer null skip
+  (`promptTimeoutMs: null` → default).
+- 1 mixed layer (non-null gana, null cae al default).
+- 1 pre-existing behavior preservado (undefined sigue skippeando).
+- 1 precedence (CLI non-null sobre file null).
+- 1 null boolean (`caffeinate: null` → default).
+- 2 array rejection (file y CLI layers).
+
+`bun test` verde: 739 pass / 1 skip / 0 fail (era 730), 1768
+expect() calls (era 1758), 25 files (era 24 — el nuevo
+`config.test.ts` ya existía, +9 tests, +10 expects, +0 files).
+Commit `5fbddbb`.
 
 ### Mejora 52 — Finding 12.3.B — LOW — `pickDefined` does not validate per-field types
 
