@@ -268,10 +268,38 @@ helper. `bun test` verde: 672 pass / 0 fail (era 667). Commit `0053f9d`.
 
 ### Mejora 11 — Finding 3.1.A — MEDIUM — `plan_complete` from `error` ALWAYS resets iterations to 0
 
-- [ ] Evaluar la mejora 11 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 11 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 11 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 11 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 11 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 11 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 11 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 11 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural — la variante `error` de
+`LoopState` no tenía campo de iteración, así que la rama
+`plan_complete → error → complete` en `useLoopState.ts:231-233` no
+tenía forma de saber cuántas iteraciones se habían ejecutado antes del
+fallo. La opción (a) del fix propuesto en `MEJORAS.md:2773-2778`
+(carry a través de la transición a error) es claramente superior a la
+opción (b) (empujar al dispatcher): la primera mantiene la state
+machine como única fuente de verdad y es consistente con el patrón
+existente de `cooldown` (que ya carga `iteration`). Implementación
+mínima: añadir `lastIteration?: number` opcional a la variante `error`
+en `src/types.ts`, en el reducer `error` propagar `state.iteration`
+cuando el source es `running/pausing/paused/cooldown`, y en la rama
+`plan_complete` desde `error` usar `state.lastIteration ?? 0`. La rama
+con `?? 0` preserva la regresión para llamantes (tests, mocks) que
+construyan un `error` sin `lastIteration`. Cero cambios a los call
+sites de `App.tsx`, cero cambios a la action shape, cero impacto en
+las transiciones que no son error. Cubierto por 7 tests nuevos en
+`useLoopState.test.ts` (1 Phase 2, 6 Phase 3.1) que pinean: el carry
+desde `running(7)`, `paused(3)` y `cooldown(5)`, la omisión de
+`lastIteration` cuando el source no lo tiene, la preservación en
+`plan_complete` cuando `lastIteration` está presente, y la regresión
+del default 0 cuando no lo está. El test "KNOWN BUG" antiguo (Phase
+3.1:1024) se reescribió como el test de la fix (preserva
+`lastIteration: 9` → `iterations: 9`) y se pineó un test hermano con
+el default 0 para que un cambio futuro que quite el `?? 0` rompa
+explícitamente. `bun test` verde: 678 pass / 0 fail (era 672). Commit
+`1c197cb`.
 
 ### Mejora 12 — Finding 4.1.A — LOW — `console.error` used in TUI flow where `log.error` is the project convention
 
