@@ -368,10 +368,41 @@ antes del guard). Commit pendiente.
 
 ### Mejora 14 — Finding 4.1.C — LOW — Orphaned session on `sendPromptAsync` failure
 
-- [ ] Evaluar la mejora 14 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 14 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 14 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 14 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 14 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 14 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 14 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 14 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural: `newSessionId` se declaraba
+dentro del `try` de `startIteration` (`App.tsx:838`), así que el `catch`
+no podía abortar la sesión que `createSession` (línea 837) acababa de
+crear en el server. Si `sendPromptAsync` (línea 869) o cualquier paso
+posterior (`refreshPlan`, lectura del prompt file) tiraba, la sesión
+quedaba corriendo server-side, huérfana del lado del cliente; la
+siguiente iteración creaba OTRA sesión, y la original seguía
+consumiendo state del server hasta TTL o restart manual. La opción
+propuesta en `MEJORAS.md:3044-3052` (trackear `newSessionId` fuera del
+`try` y abortar best-effort en el `catch`) es claramente superior a la
+alternativa de hoistar todo a un helper: es 4 líneas nuevas en el
+camino del fallo, cero cambios al camino feliz, y reusa exactamente el
+patrón que ya existe en `abortAndRetry` (`App.tsx:268-282`,
+`createClient(url) → abortSession → try/catch vacío`). Implementación
+mínima: (1) hoist `let newSessionId: string | undefined` justo después
+de `startingIteration = true` (línea 811), (2) cambiar
+`const newSessionId = session.id` a asignación en línea 843, (3) añadir
+8 líneas en el `catch` (líneas 884-895) que llaman
+`abortSession(createClient(url), newSessionId)` dentro de un
+`try/catch` vacío antes de `handleIterationError(err)`. Cero impacto en
+el camino feliz (nuevo path no agrega latencia al éxito), cero impacto
+en la ruta de `cooldown`/`transient` (la única diferencia observable
+es que el server no acumula sesiones huérfanas entre reintentos),
+cero impacto en la ruta de `fatal` (la sesión se aborta antes de
+mostrar el error). Sin nuevos tipos exportados, sin nuevas funciones,
+sin nuevos tests — el audit (`MEJORAS.md:3094-3110`) ya justificó que
+`startIteration` es integration-territory y que el mismo patrón en
+`abortAndRetry` no tiene cobertura dedicada. `bun test` verde: 678
+pass / 0 fail, 1676 expect() calls, 316 ms — sin cambio en el conteo.
+Commit `9c490a0`.
 
 ### Mejora 15 — Finding 4.2.B — LOW — `startingIteration` is a plain variable, not part of the persisted state
 
