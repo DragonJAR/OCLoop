@@ -113,7 +113,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 ## Phase 10 — Plan Generator (`--create-plan`)
 
 - [x] Audit `runCreatePlan` for: server startup failure, session creation failure, prompt send failure, timeout handling
-- [ ] Verify: `stripCodeFences` correctly strips ````markdown\n...\n`````, ````\n...\n````, and non-fenced content
+- [x] Verify: `stripCodeFences` correctly strips ````markdown\n...\n`````, ````\n...\n````, and non-fenced content
 - [ ] Verify: `extractLastAssistantText` returns empty string for: no messages, no assistant messages, messages with empty parts
 - [ ] Verify: `hasNewAssistantReply` correctly distinguishes new replies from pre-existing ones using `assistantCountBefore`
 - [ ] Verify: The plan generator polling loop exits on: timeout, user cancel, user approve, and all error paths
