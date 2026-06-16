@@ -659,7 +659,7 @@ report stays ordered as additional sections are appended in order.
 - [x] **Task 1.5** — Verify `--resilience key=value` edge cases. ✅ COMPLETE — see section 1.5 above.
 - [x] **Task 1.6** — Verify `--prompt` and `--plan` path handling. ✅ COMPLETE — see section 1.6 below.
 - [x] **Task 1.7** — Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags. ✅ COMPLETE — see section 1.7 below.
-- [ ] **Task 1.8** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior.
+- [x] **Task 1.8** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior. ✅ COMPLETE — see section 1.8 below.
 - [ ] **Task 1.9** — Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename). (Covered by tests at lines 211-218; cross-pinned for --prompt and --plan paths in section 1.6.)
 - [ ] **Task 1.10** — Check if `parseArgs` is idempotent — calling it twice should produce the same result. (Test at lines 238-244.)
 
@@ -1050,6 +1050,234 @@ meaning "create a plan called foo.md"; the user must use
 `bun test src/lib/cli-args.test.ts` → **134 pass, 0 fail, 305 expect() calls**
 (was 118/0/264 before this iteration). New describe block:
 - `parseArgs — --create-plan + other flag combinations (Phase 1 Task 1.7)` — 16 cases.
+
+---
+
+### 1.8 — Audit `--resume` combined with `--run`, `--create-plan`, and standalone behavior
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. Two MEDIUM cross-references (1.7.A and the new 1.8.A), one LOW, and five INFO observations.**
+
+`--resume` is a pure boolean flag handled at `src/lib/cli-args.ts:237-239`:
+
+```ts
+case "--resume":
+  resilience.resume = true
+  break
+```
+
+No token is consumed; no other field on `args` is touched. The only
+runtime reader is `App.tsx:1119` inside the TUI's `onMount` effect:
+
+```ts
+if (resilience().resume) {
+  await doResume(persisted)
+}
+```
+
+…and only after `loadLoopState()` (line 1112) returns a non-null
+`PersistedLoopState` with `iteration > 0`. In other words, `--resume`
+*alone* does nothing at startup if no `.loop-state.json` exists — the
+flag is conditional on prior persisted state.
+
+#### Standalone behavior
+
+`--resume` sets exactly one field:
+
+```ts
+{ promptFile: DEFAULTS.PROMPT_FILE, planFile: DEFAULTS.PLAN_FILE, resilience: { resume: true } }
+```
+
+It does not consume the next token (it is not a value flag), it does
+not cause a server restart, it does not block on persisted state, and
+it does not exit early. The "resume" is a *TUI onMount decision* — the
+flag is read once at startup, the persistence file is loaded, and the
+loop either auto-resumes (if `--resume` was passed and state exists) or
+shows a confirmation dialog (if state exists but `--resume` was not
+passed). The new test `--resume alone: sets only resilience.resume = true`
+pins the full args shape so a future refactor that adds a side-effect
+to the `--resume` case is visible as a behavioral change.
+
+#### Cross-flag combinations — where `--resume` is read vs ignored
+
+The two layers that matter:
+
+| Layer | What it does with `args.resilience.resume`                                |
+| ----- | ------------------------------------------------------------------------- |
+| `parseArgs` (cli-args.ts:237-239) | Stores `resilience.resume = true` unconditionally. |
+| TUI onMount (App.tsx:1112-1119) | Reads it once, *only* if `loadLoopState()` returned a non-null state with `iteration > 0`. |
+| `runCreatePlan` (index.tsx:136-261) | Never reads it. |
+
+The matrix of combinations:
+
+| Combination                                  | parseArgs | TUI onMount reads it?             | Effective behavior                               |
+| -------------------------------------------- | --------- | --------------------------------- | ------------------------------------------------ |
+| `--resume` alone (no state file)             | stored    | skipped (no persisted state)      | Flag is a no-op. TUI starts normally.            |
+| `--resume` alone (with state file)           | stored    | yes — `doResume(persisted)`        | Auto-resumes the in-flight iteration.            |
+| `--resume --run` (with state file)           | stored    | yes — resume runs                  | Resume *and* `dispatch({ type: "start" })` both fire (App.tsx:1135). |
+| `--resume --run` (no state file)            | stored    | skipped (no persisted state)      | `--run` is the only effective flag.              |
+| `--resume --create-plan`                     | stored    | unreachable (TUI never renders)   | `--resume` is silently ignored (Finding 1.7.A's class). |
+| `--resume --debug`                           | stored    | yes — debug mode but resume still fires | Both run; debug also skips plan validation (App.tsx:980). |
+| `--resume --chaos`                           | stored    | yes — but `chaos && debug` gate at App.tsx:225 must be true | `createChaos` constructed only if `--debug` is also set. |
+
+#### Mapping each required case to a test (26 new cases)
+
+| Required case (PLAN.md 1.8)                                              | Test (this iteration)                                              | Behavior                                                                                  | Status   |
+| ----------------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------------------------------------- | -------- |
+| `--resume` alone                                                        | `--resume alone: sets only resilience.resume = true`               | Stores the boolean, no other fields touched.                                              | OK       |
+| `--resume` does not consume the next token                              | `--resume does not consume the next token (it's a pure boolean)`  | `--resume --debug` stores both correctly; `typeof resume === "boolean"`.                  | OK       |
+| `--resume` is the last token (no following value)                       | `--resume as the last token (no following value) does not error`  | The case body has no `argv[++i]`; safe at the boundary.                                   | OK       |
+| `--resume + --run` (TUI: start iterating AND auto-resume)               | `--resume + --run: both flags stored, no conflict in parseArgs`    | Both stored; both read at runtime.                                                        | OK ↓     |
+| `--run --resume` ↔ `--resume --run` (order independence)                | `--run --resume order matches --resume --run`                     | Deep-equal args.                                                                          | OK       |
+| `--resume + --run + --debug` (all three together)                       | `--resume + --run + --debug: all three flags stored independently` | All three stored; debug also disables plan validation.                                    | OK       |
+| Short/long equivalence: `-r -d --resume`                                | `--resume + short forms -r -d: same shape as long forms`           | `-r`/`-d`/`--resume` match their long forms.                                              | OK       |
+| `--resume + --create-plan` (create-plan swallows --resume)              | `--resume + --create-plan: both parsed, --resume is silently ignored` | Both stored; --resume is silently ignored (1.7.A class).                                  | OK ↓     |
+| `--create-plan --resume` order vs `--resume --create-plan`              | `--create-plan --resume order: same args as --resume --create-plan` | Deep-equal.                                                                               | OK       |
+| `--create-plan -c --resume` (short create-plan)                         | `--create-plan -c --resume: short form -c, long form --resume`     | `--create-plan --create-plan` is also a no-op (last-wins on the same value).              | OK       |
+| `--resume + --chaos` (resilience keys merge)                            | `--resume + --chaos: both keys coexist on resilience object`       | `{ resume: true, chaos: true }`.                                                          | OK       |
+| `--resume + --no-caffeinate` (caffeinate=false merges)                 | `--resume + --no-caffeinate: caffeinate=false and resume=true coexist` | `{ resume: true, caffeinate: false }`.                                                    | OK       |
+| `--resume + --chaos + --no-caffeinate` (all three resilience flags)     | `--resume + --chaos + --no-caffeinate: all three merge on resilience` | All three stored on the same object.                                                      | OK       |
+| `--resume + --resilience resume=false` (explicit override)              | `--resume + --resilience resume=false: explicit override flips the boolean` | Last-wins: explicit false clears the implicit true.                                       | OK       |
+| `--resilience resume=true + --resume` (same value, last-wins)           | `--resilience resume=true + --resume: same value, no observable change` | No-op; deep-equal to `--resume` alone.                                                    | OK       |
+| `--port --resume` (port's value not stolen by --resume)                 | `--port --resume: --port's value is not stolen by --resume`        | `--port` is a value flag, errors when its value is `--resume`.                            | OK       |
+| `--resume --port 4096` (no interaction)                                 | `--resume --port 4096: --resume stores true, --port gets 4096`     | Both stored correctly.                                                                    | OK       |
+| `--resume --prompt X --plan Y`                                           | `--resume --prompt X --plan Y: all three stored independently`      | All three stored; no stealing.                                                            | OK       |
+| `--resume --model --agent`                                              | `--resume --model --agent: both value flags get their values`       | All three stored.                                                                         | OK       |
+| `--resume --lang es`                                                    | `--resume --lang es: --resume stored, --lang stored, no interaction` | Both stored.                                                                              | OK       |
+| Idempotent `--resume --resume`                                          | `--resume --resume is idempotent (last-wins on same value)`         | Same value, no observable change.                                                         | OK       |
+| `--resume --resilience resume=true` is identical to `--resume`          | `--resume + --resilience resume=true: same value, no observable change` | Deep-equal.                                                                               | OK       |
+| `--resume` + every other flag (kitchen sink)                            | `--resume with every other flag combined: stores all of them`       | Stores all 12 fields exactly. The case that would fail loudest if --resume ever consumed a token. | OK       |
+| `--help` wins over `--resume`                                           | `--help wins over --resume (exits 0, prints usage)`                 | parseArgs hits the help case on the second iteration.                                     | OK       |
+| `--version` wins over `--resume`                                        | `--version wins over --resume (exits 0, prints version)`            | parseArgs hits the version case on the second iteration.                                  | OK       |
+| argv is not mutated when `--resume` is present                          | `parseArgs does not mutate argv when --resume is present`           | The new boolean case body has no `argv[++i]`.                                             | OK       |
+
+#### Finding 1.8.A — MEDIUM — Cross-reference to 1.7.A: `--resume` is silently swallowed by `--create-plan`
+
+This is a *new instance* of Finding 1.7.A (--create-plan silently
+swallows TUI-only flags). `args.resilience.resume` is read only at
+`App.tsx:1119` (TUI onMount); in `--create-plan` mode, `main()`
+short-circuits into `runCreatePlan()` at `src/index.tsx:320-323` and
+calls `process.exit()` before the TUI mounts. The flag is parsed
+and stored, but the user gets no diagnostic.
+
+The new test `--resume + --create-plan: both parsed, --resume is
+silently ignored` pins this. The proposed fix is the same as
+1.7.A's: a non-fatal warning in `main()` listing the TUI-only
+flags detected in `args` when `args.createPlan` is set. `--resume`
+would be added to the ignored list (alongside `--run`, `--debug`,
+`--verbose`, `--chaos`, `--no-caffeinate`, `--prompt`).
+
+**Where.** Same files as 1.7.A (`src/lib/cli-args.ts:162-269`,
+`src/index.tsx:320-323`).
+
+**Status.** **NOT FIXED** — documented only.
+
+#### Finding 1.8.B — LOW — `--resume` with no persisted state is a silent no-op (not a no-op in parseArgs, but in the TUI)
+
+`--resume` parses fine and stores `resilience.resume = true`. At
+runtime, `App.tsx:1112` calls `loadLoopState()` and the `if
+(resilience().resume)` branch at line 1119 is *only* reached when
+`persisted && persisted.iteration > 0`. If no `.loop-state.json`
+exists (clean run, fresh clone, etc.), `--resume` is parsed and
+stored, but produces zero observable effect.
+
+This is **intentional** (the resume path must not auto-resume a
+non-existent session) and the user *does* get a normal TUI startup,
+so the cost is small. But the flag is "lossy" in the same sense as
+Finding 1.7.A: the user has no way to know that `--resume` was a
+no-op because the only signal is "the loop started normally" — the
+same outcome as if they had not passed `--resume` at all.
+
+A user who pastes `ocloop --resume` from a shell history (perhaps
+expecting a "check the last run" feature) will see the loop start
+clean and may not realize that the flag was parsed-and-ignored.
+
+**Where.** `src/App.tsx:1112-1119` (the TUI onMount effect).
+
+**Proposed fix.** Add a log.info line *before* the `if
+(resilience().resume)` check that records whether `--resume` was
+seen and whether persisted state exists, so the loop's startup log
+makes the no-op visible to anyone reading `.loop.log`. (e.g.
+`log.health("startup", "--resume requested", { hasPersisted: !!persisted })`).
+This is a non-functional improvement; no behavior change.
+
+**Status.** **NOT FIXED** — documented only. The new tests
+`--resume alone: sets only resilience.resume = true` and the
+matrix above pin the parseArgs-level contract; the runtime-level
+no-op is described here.
+
+#### Finding 1.8.C — INFO — `--resume` does not validate that the persisted state's `sessionId` is alive
+
+`loadLoopState()` (loop-state-store.ts:62-79) returns a
+`PersistedLoopState` object on disk without checking whether the
+`sessionId` it references is still in a usable state on the
+OpenCode server. The reconcile-and-continue logic in `doResume`
+(used at App.tsx:1120) is responsible for that check. This is a
+downstream concern from `parseArgs` and out of scope for the
+Phase 1 CLI audit, but the chain is worth noting for the
+crash-recovery audit in Phase 8. **No change needed here.**
+
+#### Finding 1.8.D — INFO — `--resume` and `--no-caffeinate` target the same `resilience` object but have no semantic conflict
+
+`--resume` writes `resilience.resume = true` and `--no-caffeinate`
+writes `resilience.caffeinate = false`. Both keys live on the
+same partial config object, but they target orthogonal runtime
+behaviors (resume path vs. power manager). The new test
+`--resume + --no-caffeinate: caffeinate=false and resume=true coexist`
+pins this. **No change needed.**
+
+#### Finding 1.8.E — INFO — `--resume` is one of the very few flags where order matters at the parseArgs level
+
+`--port --resume` fails (port consumes `--resume` as its value and
+errors), but `--resume --port 4096` succeeds. This is a
+general value-flag-after-boolean-flag property (the same applies
+to `--port --debug`, `--port --run`, etc.) and is pinned by the
+existing line-213 test pattern (`${flag} --debug errors...`) for
+`--plan`/`--prompt`/`--agent`. The new test
+`--port --resume: --port's value is not stolen by --resume`
+extends this coverage to the `--resume` case. **No change needed.**
+
+#### Finding 1.8.F — INFO — `--resume` is consumed by `parseArgs` only once (the case body has no `argv[++i]`)
+
+This is the structural reason `--resume` is a true boolean: the
+case body is `resilience.resume = true` with no `argv[++i]`.
+If a future refactor accidentally added a value consumer (e.g.
+`args.resumePath = requireValue(argv[++i], "--resume")`), every
+existing test in the new describe block (and every test in
+section 1.1's existing tests that combine `--resume` with other
+flags) would fail because the next token would be consumed.
+This is the kind of invariant that is best protected by tests
+— which is why the new describe block is large. **No change
+needed.**
+
+#### Finding 1.8.G — INFO — `--resume` and `--resilience resume=...` interact via last-wins
+
+Explicit `--resilience resume=...` overrides the implicit `true`
+from `--resume` (and vice versa), same as the `--no-caffeinate`
++ `--resilience caffeinate=true` interaction pinned at
+line 198. This is the documented behavior of the partial
+`ResilienceConfig` merge in `applyResilienceOverride`. The
+new tests
+`--resume + --resilience resume=false: explicit override flips the boolean`
+and
+`--resilience resume=true + --resume: same value, no observable change`
+document the two directions. **No change needed.**
+
+#### Summary
+
+| Severity | Count | Notes                                                              |
+| -------- | ----- | ------------------------------------------------------------------ |
+| CRITICAL | 0     |                                                                    |
+| HIGH     | 0     |                                                                    |
+| MEDIUM   | 1     | 1.8.A — `--create-plan --resume` silently ignored (cross-ref 1.7.A, not fixed, documented) |
+| LOW      | 1     | 1.8.B — `--resume` with no persisted state is a silent runtime no-op (not fixed, documented) |
+| INFO     | 5     | 1.8.C (no sessionId aliveness check in loadLoopState), 1.8.D (no conflict with --no-caffeinate), 1.8.E (order matters for value flags after bool), 1.8.F (case body is value-free), 1.8.G (last-wins with --resilience resume=) |
+
+`bun test src/lib/cli-args.test.ts` → **160 pass, 0 fail, 365 expect() calls**
+(was 134/0/305 before this iteration). New describe block:
+- `parseArgs — --resume combined with --run, --create-plan, standalone (Phase 1 Task 1.8)` — 26 cases.
+
+`bun test` (full suite) → **455 pass, 0 fail, 1066 expect() calls**
+(was 429/0/1001 before this iteration). +26 tests, +60 expects, all green.
 
 ---
 

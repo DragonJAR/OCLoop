@@ -872,3 +872,287 @@ describe("parseArgs — --create-plan + other flag combinations (Phase 1 Task 1.
     expect(r.logs.join("\n")).toContain("ocloop ")
   })
 })
+
+describe("parseArgs — --resume combined with --run, --create-plan, standalone (Phase 1 Task 1.8)", () => {
+  // --resume is a boolean flag: cli-args.ts:237-239 sets resilience.resume = true
+  // with no value consumption. The only consumer of args.resilience.resume is
+  // App.tsx:1119 (TUI onMount, after loadLoopState()). The cross-flag
+  // combinations below exercise the parseArgs contract and pin the silent
+  // behaviors that would otherwise hide in the runtime.
+
+  // --- standalone ---------------------------------------------------------
+
+  it("--resume alone: sets only resilience.resume = true", () => {
+    const { args, exitCode } = runParse(["--resume"])
+    expect(exitCode).toBeNull()
+    expect(args).toEqual({
+      promptFile: DEFAULTS.PROMPT_FILE,
+      planFile: DEFAULTS.PLAN_FILE,
+      resilience: { resume: true },
+    })
+  })
+
+  it("--resume does not consume the next token (it's a pure boolean)", () => {
+    // parseArgs must NOT do `args.someValue = argv[++i]` for --resume.
+    // If it did, the value-less flag would steal the next token and either
+    // set resume to "--debug" (a string) or crash on undefined at the end.
+    // The pattern below proves --resume stores a boolean and the next flag
+    // is still parsed as a separate switch.
+    const { args, exitCode } = runParse(["--resume", "--debug"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.debug).toBe(true)
+    expect(typeof args?.resilience?.resume).toBe("boolean")
+  })
+
+  it("--resume as the last token (no following value) does not error", () => {
+    // Edge case: --resume is the final token in argv. There is no next
+    // token to consume. parseArgs must not try to read argv[++i] and
+    // crash on undefined. The existing flag's case body has no argv[++i],
+    // so this is a true no-op — but the test pins it.
+    const { args, exitCode } = runParse(["--run", "--resume"])
+    expect(exitCode).toBeNull()
+    expect(args?.run).toBe(true)
+    expect(args?.resilience?.resume).toBe(true)
+  })
+
+  // --- --resume + --run (TUI: start iterating AND auto-resume) ------------
+
+  it("--resume + --run: both flags stored, no conflict in parseArgs", () => {
+    // App.tsx:1119 reads resilience().resume; App.tsx:1135 reads props.run
+    // and dispatches { type: "start" }. Both effects run in the TUI when
+    // the onMount branch is reached. parseArgs has no way to know that
+    // these two flags interact at runtime — it just stores both.
+    const { args, exitCode } = runParse(["--resume", "--run"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.run).toBe(true)
+  })
+
+  it("--run --resume order matches --resume --run (order independence)", () => {
+    // No flag consumes the next token in either case, so both orderings
+    // produce deep-equal args.
+    const a = runParse(["--run", "--resume"]).args
+    const b = runParse(["--resume", "--run"]).args
+    expect(a).toEqual(b)
+  })
+
+  it("--resume + --run + --debug: all three flags stored independently", () => {
+    // The TUI runs in debug mode (props.debug), starts immediately
+    // (props.run), and auto-resumes (resilience().resume). parseArgs
+    // stores all three.
+    const { args, exitCode } = runParse(["--resume", "--run", "--debug"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.run).toBe(true)
+    expect(args?.debug).toBe(true)
+  })
+
+  it("--resume + short forms -r -d: same shape as long forms", () => {
+    const short = runParse(["--resume", "-r", "-d"]).args
+    const long = runParse(["--resume", "--run", "--debug"]).args
+    expect(short).toEqual(long)
+  })
+
+  // --- --resume + --create-plan (create-plan short-circuit swallows --resume) ---
+
+  it("--resume + --create-plan: both parsed, --resume is silently ignored", () => {
+    // src/index.tsx:320-323 short-circuits into runCreatePlan() when
+    // args.createPlan is true and process.exit()s. The TUI onMount that
+    // would have read resilience().resume (App.tsx:1119) never runs.
+    // parseArgs stores both — the silent swallow is the same class of
+    // issue as Finding 1.7.A. This test pins the parseArgs contract.
+    const { args, exitCode } = runParse(["--resume", "--create-plan"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.createPlan).toBe(true)
+  })
+
+  it("--create-plan --resume order: same args as --resume --create-plan", () => {
+    const a = runParse(["--create-plan", "--resume"]).args
+    const b = runParse(["--resume", "--create-plan"]).args
+    expect(a).toEqual(b)
+  })
+
+  it("--create-plan -c --resume: short form -c, long form --resume, same as long/long", () => {
+    const short = runParse(["--create-plan", "-c", "--resume"]).args
+    const long = runParse(["--create-plan", "--create-plan", "--resume"]).args
+    // parseArgs has no way to enforce "max one --create-plan" — the second
+    // --create-plan just overwrites the first with the same value. The
+    // result is the same shape either way. (If a future refactor added
+    // a duplicate-flag warning, this test would need updating.)
+    expect(short).toEqual(long)
+  })
+
+  // --- --resume + other resilience flags (all merge into resilience) ------
+
+  it("--resume + --chaos: both keys coexist on resilience object", () => {
+    const { args, exitCode } = runParse(["--resume", "--chaos"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience).toEqual({ resume: true, chaos: true })
+  })
+
+  it("--resume + --no-caffeinate: caffeinate=false and resume=true coexist", () => {
+    const { args, exitCode } = runParse(["--resume", "--no-caffeinate"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience).toEqual({ resume: true, caffeinate: false })
+  })
+
+  it("--resume + --chaos + --no-caffeinate: all three merge on resilience", () => {
+    const { args, exitCode } = runParse([
+      "--resume", "--chaos", "--no-caffeinate",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience).toEqual({
+      resume: true,
+      chaos: true,
+      caffeinate: false,
+    })
+  })
+
+  it("--resume + --resilience resume=false: explicit override flips the boolean", () => {
+    // Last-wins on the same key, same as --no-caffeinate + --resilience
+    // caffeinate=true (test at line 198). Explicit false clears the
+    // implicit true from --resume.
+    const { args, exitCode } = runParse([
+      "--resume", "--resilience", "resume=false",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(false)
+  })
+
+  it("--resilience resume=true + --resume: explicit true first, --resume is also true", () => {
+    // Same value, last-wins, no observable change.
+    const { args, exitCode } = runParse([
+      "--resilience", "resume=true", "--resume",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+  })
+
+  // --- --resume + value flags (must not steal each other) -----------------
+
+  it("--port --resume: --port's value is not stolen by --resume", () => {
+    // --port is a value flag (consumes argv[++i]). --resume is a boolean
+    // (consumes nothing). When --port comes first, parseArgs reads
+    // argv[++i] = "--resume" and passes it to parsePort, which exits 1
+    // because "--resume" is not a numeric token. This is the intended
+    // requireValue-style failure for --port.
+    const r = runParse(["--port", "--resume"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("--port")
+  })
+
+  it("--resume --port 4096: --resume stores true, --port gets 4096", () => {
+    const { args, exitCode } = runParse(["--resume", "--port", "4096"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.port).toBe(4096)
+  })
+
+  it("--resume --prompt X --plan Y: all three stored independently", () => {
+    const { args, exitCode } = runParse([
+      "--resume", "--prompt", "my.md", "--plan", "tasks.md",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.promptFile).toBe("my.md")
+    expect(args?.planFile).toBe("tasks.md")
+  })
+
+  it("--resume --model --agent: both value flags get their values", () => {
+    const { args, exitCode } = runParse([
+      "--resume", "--model", "anthropic/claude", "--agent", "build",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.model).toBe("anthropic/claude")
+    expect(args?.agent).toBe("build")
+  })
+
+  it("--resume --lang es: --resume stored, --lang stored, no interaction", () => {
+    const { args, exitCode } = runParse(["--resume", "--lang", "es"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+    expect(args?.lang).toBe("es")
+  })
+
+  // --- idempotency and the last-wins rule ---------------------------------
+
+  it("--resume --resume is idempotent (last-wins on same value)", () => {
+    const { args, exitCode } = runParse(["--resume", "--resume"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.resume).toBe(true)
+  })
+
+  it("--resume + --resilience resume=true: same value, no observable change", () => {
+    // The redundant form must not produce a different shape — same key,
+    // same boolean, same resilience object.
+    const a = runParse(["--resume", "--resilience", "resume=true"]).args
+    const b = runParse(["--resume"]).args
+    expect(a).toEqual(b)
+  })
+
+  it("--resume with every other flag combined: stores all of them", () => {
+    // The "kitchen sink" case: combine --resume with every other flag the
+    // parseArgs contract documents. This is the test that would fail loudest
+    // if a future refactor ever made --resume accidentally consume a token
+    // or rejected one of these combinations.
+    const { args, exitCode } = runParse([
+      "--resume",
+      "--run",
+      "--debug",
+      "--chaos",
+      "--no-caffeinate",
+      "--port", "4096",
+      "--model", "anthropic/claude",
+      "--agent", "build",
+      "--prompt", "my.md",
+      "--plan", "tasks.md",
+      "--lang", "en",
+      "--verbose",
+      "--resilience", "maxRateLimitRetries=7",
+    ])
+    expect(exitCode).toBeNull()
+    expect(args).toEqual({
+      promptFile: "my.md",
+      planFile: "tasks.md",
+      port: 4096,
+      model: "anthropic/claude",
+      agent: "build",
+      run: true,
+      debug: true,
+      verbose: true,
+      lang: "en",
+      resilience: {
+        resume: true,
+        chaos: true,
+        caffeinate: false,
+        maxRateLimitRetries: 7,
+      },
+    })
+  })
+
+  it("--help wins over --resume (exits 0, prints usage)", () => {
+    const r = runParse(["--resume", "--help"])
+    expect(r.exitCode).toBe(0)
+    expect(r.logs.join("\n")).toContain("Usage: ocloop")
+  })
+
+  it("--version wins over --resume (exits 0, prints version)", () => {
+    const r = runParse(["--resume", "--version"])
+    expect(r.exitCode).toBe(0)
+    expect(r.logs.join("\n")).toContain("ocloop ")
+  })
+
+  it("parseArgs does not mutate argv when --resume is present", () => {
+    // Extends the existing line-238 invariant to a --resume-containing argv.
+    // parseArgs is a pure function of its input — adding a new boolean
+    // case body must not introduce any write to argv.
+    const argv = ["--resume", "--run", "--port", "4096"]
+    const argvCopy = [...argv]
+    runParse(argv)
+    expect(argv).toEqual(argvCopy)
+    expect(argv.length).toBe(argvCopy.length)
+  })
+})
