@@ -245,12 +245,10 @@ function AppContent(props: AppProps) {
       }
     },
     probes: {
-      isActive: () => {
-        const s = loop.state()
-        return (
-          (s.type === "running" || s.type === "pausing") && s.sessionId !== ""
-        )
-      },
+      // Source: MEJORAS.md Finding 6.2.A — derived from the canonical helper
+      // (same as the 5 other getActiveSessionId call sites in this file) so a
+      // future extension of getActiveSessionId auto-extends the watchdog.
+      isActive: () => getActiveSessionId(loop.state()) !== "",
       pingServer: () => chaos.ping(() => server.ping()),
       reconcile: () =>
         chaos.reconcile(async () => {
