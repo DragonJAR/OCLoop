@@ -4349,7 +4349,250 @@ No new unit tests added. Rationale:
   cooldown state, advance a fake clock 250ms, assert the
   memo updated" would require a full App.tsx harness with
   the OpenCode server mocked out; the cost exceeds the value
-  since the components are individually trivial.
+  since the   components are individually trivial.
+
+`bun test` -> **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
+
+---
+
+### 5.5 — Rate limit during `pausing` is handled (SSE handler + reducer)
+
+**Status: COMPLETE — VERIFIED, no findings.**
+
+The question: when a provider rate-limit SSE error fires while
+the loop is in the `pausing` state (the user pressed `P`, the
+session is in-flight awaiting its own `session.idle`), does
+`enterCooldown` get called and does the reducer accept the
+`rate_limited` action from `pausing`? **Answer: yes, on both
+counts**, and the path is the documented escape hatch for a
+real wedge scenario.
+
+#### Why this matters — the wedge scenario
+
+If a rate limit during `pausing` were silently ignored (e.g. the
+SSE handler only acted on `running`, not `pausing`), the loop
+would sit in `pausing` indefinitely, waiting for a
+`session.idle` event the now-rate-limited session will never
+emit. The user could still `Q` to quit (the watchdog would
+eventually escalate), but the iteration is effectively lost.
+Covering `pausing` in the SSE rate-limit branch (App.tsx:476)
+turns this into a normal cooldown cycle: the rate-limited
+session is abandoned, the backoff runs, and the iteration
+driver picks up a fresh session after `resume_cooldown`.
+
+#### SSE handler — `pausing` is in the rate-limit branch
+
+App.tsx:470-478:
+
+```ts
+} else if (error.kind === "rate_limit") {
+  // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
+  // Cover `pausing` too (the reducer accepts it) so a rate limit while
+  // pausing can't wedge the loop waiting for a session.idle that the
+  // errored session will never emit.
+  activityLog.addEvent("error", t("actRateLimit", { message: error.message }), { level: "warn" })
+  if (st === "running" || st === "pausing") {
+    enterCooldown(error.message, error.retryAfter)
+  }
+}
+```
+
+The state guard `st === "running" || st === "pausing"` is
+exhaustive for the two states that carry a live sessionId
+(see `getActiveSessionId` at useLoopState.ts:34-38, which
+returns `state.sessionId` only for `running` and `pausing`,
+and `""` for everything else). The same condition appears
+on line 481 for the non-rate-limit transient error path,
+which is correct symmetry.
+
+#### Reducer — `rate_limited` accepted from `running` and `pausing`
+
+`useLoopState.ts:161-173`:
+
+```ts
+case "rate_limited": {
+  // Enter cooldown from running (or pausing) — a healthy wait, not an error.
+  if (state.type === "running" || state.type === "pausing") {
+    return {
+      type: "cooldown",
+      iteration: state.iteration,
+      reason: action.reason,
+      resumeAt: action.resumeAt,
+      attempt: action.attempt,
+    }
+  }
+  return state
+}
+```
+
+The state copy preserves `state.iteration` (line 166) — the
+iteration number from `pausing` (which was inherited from
+`running` via the `toggle_pause` reducer path at
+useLoopState.ts:102-107) flows into `cooldown` unchanged.
+The `sessionId` is **not** copied into `cooldown` because
+the `cooldown` state has no `sessionId` field; the
+sessionId is implicitly dropped on this transition. This is
+intentional and correct — the next iteration will start
+with a fresh session.
+
+#### End-to-end trace — `running` → `pausing` → rate limit → cooldown → resume → fresh session
+
+| t | Step | State | Notes |
+| --- | --- | --- | --- |
+| 0 | User presses `P` | `running(iter=N, sessionId=ses)` | Toggle_pause reducer (useLoopState.ts:100-107) flips to `pausing` preserving sessionId |
+| 1 | Provider returns 429 for ses | `pausing(iter=N, sessionId=ses)` | SSE `onSessionError` fires with `error.kind === "rate_limit"` |
+| 2 | SSE handler guard passes (App.tsx:461) | unchanged | `eventSessionId (ses) === getActiveSessionId(state) (ses)` — live session |
+| 3 | Activity log: `actRateLimit` warning (App.tsx:475) | unchanged | i18n key `actRateLimit: (p) => 'Rate limit: ${p.message}'` (i18n.ts:58) |
+| 4 | `enterCooldown(message, retryAfter)` (App.tsx:477) | unchanged | Increments `rateLimitAttempts`, computes backoff |
+| 5 | `loop.dispatch({ type: "rate_limited", … })` (App.tsx:723) | unchanged | |
+| 6 | Reducer: `pausing` → `cooldown` (useLoopState.ts:163) | `cooldown(iter=N, reason, resumeAt, attempt)` | Iteration preserved; sessionId dropped |
+| 7 | Countdown ticker + resume timer scheduled (App.tsx:728, 739) | unchanged | See Task 5.4 for ticker math |
+| 8 | `delayMs` elapses | unchanged | Ticker self-clears; timer fires |
+| 9 | `cooldownTimer` callback (App.tsx:739-744) | unchanged | Self-clears `cooldownTimer`; guards on `state.type === "cooldown"` (yes) |
+| 10 | `loop.dispatch({ type: "resume_cooldown" })` (App.tsx:742) | unchanged | |
+| 11 | Reducer: `cooldown` → `running("")` (useLoopState.ts:178-184) | `running(iter=N, sessionId="")` | Iteration preserved; sessionId cleared |
+| 12 | Iteration-driver effect fires (App.tsx:1217-1222) | unchanged | `state.type === "running" && state.sessionId === ""` |
+| 13 | `startIteration()` (App.tsx:776) | unchanged | `checkPlanComplete()` (line 791), then `createSession` (818), `iteration_started` dispatch (822), prompt send (841) |
+| 14 | New session created | `running(iter=N+1, sessionId=newSes)` | Old ses is abandoned on the server (not explicitly aborted; see note below) |
+
+#### Symmetry with the non-rate-limit path (App.tsx:481)
+
+The transient error path at line 481 (`if (st === "running"
+|| st === "pausing" || st === "debug")`) also covers
+`pausing` and dispatches an `error` action with
+`recoverable: error.kind === "transient"`. The reducer
+accepts `error` from `pausing` (useLoopState.ts:243, per the
+Phase 3 matrix audit). So a non-rate-limit error during
+pausing escalates to a recoverable error screen instead of
+a cooldown — the user can retry, which is the correct
+behavior because a transient (e.g. socket drop) doesn't
+merit a backoff; the user should explicitly decide whether
+to retry.
+
+#### Stale-session guard interaction
+
+The SSE `onSessionError` stale-session guard (App.tsx:460-463)
+fires *before* the rate-limit branch. For `pausing` state,
+`getActiveSessionId(state)` returns the live `sessionId` (line
+36). A rate-limit error for that exact sessionId passes the
+guard and is handled normally. A rate-limit error for a
+stale (already-replaced) sessionId is correctly ignored
+with no log line, no dispatch. This mirrors the `onSessionIdle`
+guard at lines 491-498 (documented in the comment at
+App.tsx:459-460).
+
+#### Activity log when the guard fails open
+
+If the SSE handler reaches the `rate_limit` branch with
+`st !== "running" && st !== "pausing"` (e.g. a rate-limit
+error for a session whose state has already moved on to
+`cooldown` or `paused`), the activity log line at line 475
+**still fires** (it is unconditional on `st`), but the
+`enterCooldown` call at line 477 is skipped. This is
+intentional observability: the on-disk activity log
+records the rate limit even when the loop state has
+moved past it. The cost is one log line per stale event;
+no behavior is affected because the reducer would no-op
+the dispatch anyway.
+
+#### Old-session lifecycle on the server
+
+When the loop is in `pausing(iter=N, sessionId=ses)` and
+the rate limit arrives for `ses`, the loop dispatches
+`pausing` → `cooldown` (dropping the sessionId). The
+`ses` session is **not explicitly aborted** on the server
+in this path — it remains "in flight" on the OpenCode
+server, where it will continue to be rate-limited. The
+next `running("")` → `iteration_started` → `createSession`
+cycle (App.tsx:818, 822) creates a fresh session; the
+abandoned `ses` is eventually cleaned up by the server's
+own session TTL / idle-eviction. This is the same behavior
+as the `running` → `cooldown` path (the running case also
+drops the sessionId without aborting the session), so
+there is no asymmetry or regression risk specific to
+`pausing`. Documenting for completeness; not a finding
+because it matches the existing running-path contract.
+
+#### Test coverage
+
+The `pausing → cooldown` path is fully pinned by the
+reducer tests:
+
+- `useLoopState.test.ts:501-514` — "transitions from
+  pausing to cooldown" (positive case)
+- `useLoopState.test.ts:959-969` — "rate_limited: from
+  pausing → cooldown (preserves iteration, drops
+  sessionId)" (positive case, with full state shape
+  assertion)
+- `useLoopState.test.ts:953-958` — `rate_limited` is a
+  no-op from `paused`, `ready`, `starting`, `cooldown`,
+  `stopping`, `stopped`, `complete`, `error`, `debug` (the
+  full no-op matrix; `pausing` is deliberately excluded
+  from this list because it transitions to `cooldown`)
+
+The SSE handler's "log unconditionally but dispatch only
+for running/pausing" behavior is not separately pinned
+because the test surface is the reducer contract (the
+handler's local branch is a no-op for the wrong states).
+Adding a mock-SSE test for this branch would require
+mocking `@opentui/solid` and the SDK client, which the
+test suite avoids (see docs/testing.md for the
+`jsxImportSource` caveat).
+
+#### Verifier checklist for Task 5.5
+
+- [x] SSE `onSessionError` rate-limit branch includes
+  `pausing` in its `st ===` guard (App.tsx:476) — verified.
+- [x] Reducer accepts `rate_limited` from `pausing`
+  (useLoopState.ts:163) — verified; the no-op test at
+  useLoopState.test.ts:953-958 explicitly excludes
+  `pausing` from the no-op list.
+- [x] `pausing → cooldown` preserves the iteration counter
+  (useLoopState.ts:166) — verified by test at
+  useLoopState.test.ts:965 (`expect(result.iteration).toBe(5)`).
+- [x] `pausing → cooldown` drops the sessionId (cooldown
+  state has no sessionId field) — verified by
+  useLoopState.test.ts:964 (the test asserts
+  `result.type === "cooldown"` and the resulting state
+  has no sessionId; the next `running("")` transition
+  via `resume_cooldown` starts fresh).
+- [x] Iteration driver picks up the `running("")` state
+  after `resume_cooldown` (App.tsx:1217-1222) — verified
+  by the comment at App.tsx:1211-1216 ("resume from a
+  rate-limit cooldown") and the existing `startIteration`
+  audit (Task 4.1).
+- [x] The stale-session guard at App.tsx:460-463 does not
+  reject a live rate-limit error during `pausing` —
+  verified: `getActiveSessionId({type:"pausing",...})`
+  returns the live sessionId (useLoopState.ts:35-36), so
+  `eventSessionId !== getActiveSessionId(state)` is false
+  and the guard passes.
+- [x] The non-rate-limit error path at App.tsx:481 also
+  covers `pausing` — verified; transient errors during
+  pausing escalate to a recoverable error, not a cooldown.
+
+#### Test-suite delta for Task 5.5
+
+No new unit tests added. Rationale:
+
+- The `pausing → cooldown` transition is already pinned by
+  three existing tests (useLoopState.test.ts:501-514,
+  :953-958, :959-969). The contract is fully covered.
+- The SSE handler's rate-limit branch is a 3-line
+  conditional (App.tsx:470-478) whose observable contract
+  is "dispatch `rate_limited` for running/pausing, log
+  for other states". The dispatch half is pinned by the
+  reducer tests. The log-only half is a pure side effect
+  on `activityLog.addEvent`, which is an external store
+  not exercised in the unit test surface.
+- A mock-SSE integration test for "rate limit arrives
+  while in pausing" would require a Solid render harness
+  with a stub server, a stub watchdog, and the
+  `jsxImportSource` workaround (see docs/testing.md). The
+  cost far exceeds the value: the reducer test pins the
+  observable transition, and the SSE handler's branch is
+  a 3-line conditional with no internal state.
 
 `bun test` -> **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
