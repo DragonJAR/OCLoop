@@ -280,6 +280,38 @@ End
     expect(parsePlanComplete(content)).toBe("Done")
   })
 
+  it("should allow zero to three leading spaces before completion tags", () => {
+    for (const spaces of ["", " ", "  ", "   "]) {
+      const content = [
+        "Tasks...",
+        `${spaces}<plan-complete>`,
+        `Done with ${spaces.length} leading spaces`,
+        `${spaces}</plan-complete>`,
+      ].join("\n")
+      expect(parsePlanComplete(content)).toBe(`Done with ${spaces.length} leading spaces`)
+    }
+  })
+
+  it("should ignore completion tags indented as Markdown code blocks", () => {
+    const content = [
+      "Tasks...",
+      "    <plan-complete>",
+      "Indented code block, not completion",
+      "    </plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
+  it("should ignore completion tags indented with tabs", () => {
+    const content = [
+      "Tasks...",
+      "\t<plan-complete>",
+      "Tabbed code block, not completion",
+      "\t</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBeNull()
+  })
+
   it("should ignore a tag documented inside a fenced code block", () => {
     const content = [
       "## How it works",

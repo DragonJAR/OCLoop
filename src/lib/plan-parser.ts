@@ -153,7 +153,7 @@ export function parsePlan(content: string): PlanProgress {
 export function parsePlanComplete(content: string): string | null {
   // Use matchAll to find all occurrences
   // Regex explanation:
-  // ^<plan-complete> : Match start tag at the beginning of a line (ignoring leading whitespace handled by code structure if needed, but here we enforce strict start)
+  // ^ {0,3}<plan-complete> : Match a top-level start tag with Markdown-safe indentation
   // ([\s\S]*?)       : Capture content non-greedily
   // <\/plan-complete>: Match end tag
   // m                : Multiline flag to allow ^ to match start of lines
@@ -163,12 +163,17 @@ export function parsePlanComplete(content: string): string | null {
   // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
   // premature completion. Real completion tags live at the document's top level.
   const withoutFences = content.replace(/```[\s\S]*?```/g, "")
-  const matches = [...withoutFences.matchAll(/^<plan-complete>([\s\S]*?)<\/plan-complete>/gm)]
+  const matches = [
+    ...withoutFences.matchAll(
+      /^ {0,3}<plan-complete>(?:([^\n]*?)<\/plan-complete>|([\s\S]*?)^ {0,3}<\/plan-complete>)/gm,
+    ),
+  ]
 
   if (matches.length === 0) return null
   
   // Return the last match found
-  return matches[matches.length - 1][1].trim()
+  const last = matches[matches.length - 1]
+  return (last[1] ?? last[2] ?? "").trim()
 }
 
 /**
