@@ -2228,10 +2228,112 @@ Commit `5fbddbb`.
 
 ### Mejora 52 — Finding 12.3.B — LOW — `pickDefined` does not validate per-field types
 
-- [ ] Evaluar la mejora 52 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 52 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 52 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 52 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 52 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 52 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 52 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 52 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14863-14915`): el loader file path
+(`validateConfigShape` en `config.ts:212`) solo hacía una
+verificación superficial del campo `resilience` (non-null,
+non-array, object), y `pickDefined` confiaba en el resultado
+sin verificar el tipo per-field. Un archivo hand-edited con
+`{"createTimeoutMs": "fast"}` fluye a través de `pickDefined`
+(el string es defined), se spread sobre `DEFAULT_RESILIENCE`, y
+eventualmente llega a `setTimeout("fast", …)` que coerce a `NaN`
+y dispara timeouts inmediatos sin diagnóstico. La CLI path en
+`applyResilienceOverride` (`cli-args.ts:85-127`) ya enforce el
+contrato (unknown key → exit 1, wrong-typed → exit 1,
+non-integer o negativo → exit 1). La propuesta del audit —
+extraer la type-check a un helper `isValidResilienceValue`
+compartido y rechazar el whole `resilience` block con un warn
+si cualquier field falla — es estrictamente la mínima útil y
+mantiene la paridad de strictness entre las dos layers:
+
+1. **`isValidResilienceValue(key, v): boolean`** en
+   `config.ts:223-237` (15 líneas, una decisión por branch):
+   unknown key → false, boolean default → `typeof v ===
+   "boolean"`, number default → `typeof v === "number" &&
+   Number.isFinite(v) && Number.isInteger(v) && v >= 0`. La
+   strictness (incluyendo `Number.isInteger`) mirrora
+   exactamente el check post-parse de `applyResilienceOverride`,
+   así que las dos layers no pueden divergir.
+2. **`validateConfigShape` resilience branch** ahora corre el
+   helper per-field: si `invalid.length > 0`, log un warn
+   listando los pares `{key, value}` y descarta el whole block;
+   si todos los fields son válidos, conserva el block
+   `as-is`. Esto es estrictamente la política "all-or-nothing"
+   que ya aplicaba a `terminal`/`language`/`theme`/`scrollbar_visible`
+   (cada uno de los 4 anteriores acepta o descarta el field
+   completo; el audit confirma que el bloque de
+   `resilience` debe seguir la misma policy para consistencia
+   con el resto del loader).
+
+Implementación: 22 líneas añadidas al helper + 11 líneas
+sustituyendo el `if` anterior en `validateConfigShape` + 6
+líneas reescribiendo la docstring de `validateConfigShape`
+para reflejar la nueva política ("resilience is deep-validated
+via `isValidResilienceValue`") + 1 línea de source attribution
+en el helper. Cero cambios a la firma de `loadConfig`,
+`saveConfig`, `validateConfigShape`, `getConfigPath`,
+`getConfigDir`, `hasTerminalConfig`, o `resolveResilience`.
+Cero cambios a la `DEFAULT_RESILIENCE` shape, a
+`ALLOWED_CONFIG_KEYS`, ni a los 4 call sites de `App.tsx`
+(la deep validation corre en el loader, no en el
+consumer; el `OcloopConfig.resilience` sigue siendo
+`Partial<ResilienceConfig>` con la misma shape de retorno).
+Cero cambios al `applyResilienceOverride` del CLI path —
+el audit sugería refactorizarlo para que el helper fuera
+"single source of truth", pero el string → boolean|number
+coercion que hace el CLI es una concern diferente al
+type-check (el helper opera sobre valores tipados, el CLI
+recibe strings). La capa de strictness es idéntica (CLI
+rechaza exactamente los mismos valores que el helper
+rechazaría post-parse); un refactor a una pipeline
+unificada sería cosmetic-only y agregaría imports
+cruzados entre `cli-args.ts` y `config.ts` para una
+ganancia de cero líneas de runtime. Decisión ponytail:
+NO refactorizar el CLI, mantener el helper como el
+backstop del file path.
+
+Cubierto por 8 tests nuevos en `config.test.ts`:
+- central case (string en numeric field) →
+  whole block dropped
+- wrong-typed boolean (number en boolean field) →
+  whole block dropped
+- negative number →
+  whole block dropped
+- non-integer (1.5) → whole block dropped
+- null per-field → whole block dropped
+  (defense-in-depth sobre 12.3.A)
+- unknown key en mix con valid fields →
+  whole block dropped (all-or-nothing)
+- mixed valid + invalid fields →
+  whole block dropped
+- all-valid mix de numeric + boolean → block kept
+
+El test preexistente "keeps a valid resilience sub-object
+as-is (deep validation deferred to 12.3.B)" se renombró a
+"keeps a valid resilience sub-object with all-valid fields"
+(la nota "deferred" ya no es precisa), y la suite per-field
+validation se movió a su propio describe block con el source
+"Finding 12.3.B" pineado en el nombre.
+
+Cero impacto en los otros 41 tests del file
+(schema robustness, per-field validation de los 4 otros
+campos, unknown-key drop, `resolveResilience` null/array
+skip, `saveConfig` round-trip + error swallowing). Cero
+cambio en el `OcloopConfig` interface, en la `ResilienceConfig`
+interface, en la `DEFAULT_RESILIENCE` const, ni en
+`resolveResilience` (el helper corre upstream del merge;
+un `resilience: undefined` en el output del loader
+se mergea con defaults como Mejora 51 ya pineaba).
+
+`bun test` verde: 747 pass / 1 skip / 0 fail (era 739 / 1 /
+0), 1776 expect() calls (era 1768), 25 files, 336 ms — +8
+tests, +8 expects, sin cambio en el conteo de archivos. `bun
+run build` verde. Commit `a20f4fb`.
 
 ### Mejora 53 — Finding 12.3.C — LOW — `pickDefined` does not reject unknown keys
 
