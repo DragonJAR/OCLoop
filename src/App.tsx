@@ -169,7 +169,12 @@ function AppContent(props: AppProps) {
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
   // Monotonic timestamp of the last iteration kickoff, for minIterationGap.
   let lastIterationStartAt = 0
-  // Guards startIteration against re-entry while createSession is in flight.
+  // Process-scoped in-flight guard. Guards startIteration against re-entry
+  // while createSession is in flight. Intentionally NOT persisted: a fresh
+  // process always starts with no in-flight iteration, even if
+  // `.loop-state.json` says the previous process was mid-start. The
+  // reducer's `iteration_started` dispatch is the source of truth for
+  // "we have a session".
   let startingIteration = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
