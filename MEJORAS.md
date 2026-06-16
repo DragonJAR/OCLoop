@@ -20206,3 +20206,312 @@ guard.
 The fix is one boolean (15.7.A) plus optionally another
 (15.7.B); both are ~5 lines and match the existing
 `startingIteration` pattern at `App.tsx:171-172`.
+
+### 15.8 — `onMount` vs `createEffect` ordering — server ready effect fires before session initialization completes
+
+PLAN.md 15.8: "Verify: `onMount` vs `createEffect` ordering
+— server ready effect fires before session initialization
+completes".
+
+**Status: COMPLETE — REAL race condition. ONE MEDIUM finding
+(15.8.A — `initializeSession` can read default `resilience`
+before `onMount` resolves the on-disk config). One LOW
+finding (15.8.B — `setActiveModel` in the same effect can
+clobber an explicit `--model` if it resolves after the
+config fetch).**
+
+In Solid.js, `onMount(fn)` is a thin wrapper around
+`createEffect` with a one-shot guard. Both are scheduled
+as part of the reactive system and run **after the initial
+render**, in the order they were registered within the same
+component scope. Both support async functions, and Solid
+does **not** await the returned promise — any
+`await` inside yields control to the microtask queue, and
+subsequent registered effects can run before the awaited
+work resumes.
+
+This audit item targets the interplay between three
+mount-time effects in `App.tsx`:
+
+| # | Site | File:line | Body |
+| - | --- | --- | --- |
+| 1 | `useServer` hook's `onMount` | `src/hooks/useServer.ts:242-246` | `startServer()` (async; sets `status="ready"` after `await launch(...)`) |
+| 2 | App's main `onMount` | `src/App.tsx:421-441` | `await loadConfig()`, `setResilience(resolved)`, start sleep detector, `await detectInstalledTerminals()` |
+| 3 | Server-ready `createEffect` | `src/App.tsx:1013-1090` | Dispatches `server_ready`, `sse.reconnect()`, fetches config model, `startOnce()` → `initializeSession()` |
+
+Hooks #1, #2, and #3 are registered in that order, so on
+the initial flush they execute in that order — but the
+async yields inside #1 and #2 open a window in which #3
+can re-fire on its own reactive schedule.
+
+#### Lifecycle trace — when does the race actually fire?
+
+Let me assume a worst-case (but plausible) path: the
+OpenCode server starts quickly (e.g., it was already
+running on a previous invocation and the SDK re-attaches
+in <50ms), and the disk read of `~/.ocloop/config.json`
+is slow (cold cache, network mount, etc.).
+
+| t | useServer `onMount` | App `onMount` | server-ready effect |
+| - | ------------------- | ------------- | ------------------- |
+| t0 (mount) | scheduled | scheduled | scheduled |
+| t0+1µs | runs: `startServer()` → `setStatus("starting")` (sync) | runs: `setOcloopConfig({})` (default) | runs: `server.status() === "starting"` → no-op |
+| t0+1µs | `await launch(port ?? 0)` yields | `await loadConfig()` yields | (reactive) subscribes to `server.status()` |
+| t0+5ms | `launch()` resolves; `setStatus("ready")` (sync) | (still yielding on `loadConfig`) | reactive scheduler queues re-run |
+| t0+5ms+1µs | (returns) | (still yielding) | **runs: `server.status() === "ready"` is true**; dispatches `server_ready`, calls `startOnce()` → `initializeSession()` |
+| t0+5ms+1µs | | | `initializeSession` calls `loadLoopState()`; **reads `resilience().resume`** — but `resilience` is still the default from `App.tsx:159-161` because `setResilience(resolved)` (line 427) has not run yet |
+| t0+30ms | | `loadConfig()` resolves; `setResilience(resolved)` | (already past the read) |
+| t0+30ms+1µs | | `configureApiTimeouts(resolved)` | (already past) |
+| t0+30ms+2µs | | sleep detector starts; `await detectInstalledTerminals()` yields | |
+| t0+200ms | | `setAvailableTerminals(...)`; `onMount` returns | |
+
+The critical window is between `t0+5ms` (server ready) and
+`t0+30ms` (resilience resolved). During this window, the
+createEffect at line 1013 fires with a stale `resilience`
+signal. The `startOnce()` guard at line 1046 ensures
+`initializeSession` runs **exactly once**, so the stale
+read is sticky — the subsequent `setResilience(resolved)`
+at line 427 does not retroactively fix the decision the
+effect made at `t0+5ms+1µs`.
+
+#### What `initializeSession` does with stale `resilience`
+
+`src/App.tsx:1098-1157`. In normal (non-debug) mode, the
+function:
+
+1. Awaits `ensureGitignore()`.
+2. Awaits `loadLoopState()`.
+3. **If** a persisted state is found:
+   - **If** `resilience().resume` → `await doResume(persisted)`.
+   - **Else** → show the resume-confirm dialog.
+4. **Else if** `props.run` → `loop.dispatch({ type: "start" })`.
+
+`resilience` at line 159-161 is initialized with
+`resolveResilience(undefined, props.resilience)` — only
+**CLI overrides** are applied. The on-disk config layer
+(which `resolveResilience` would merge on line 426) is
+**not** in the default.
+
+Concretely, this means a user who has
+`{ "resilience": { "resume": true } }` in their
+`~/.ocloop/config.json` (no `--resume` CLI flag) will see
+the **resume-confirm dialog** instead of the auto-resume
+they configured, whenever the server starts faster than
+the config read. The dialog is dismissed with a keypress,
+and the user is taken to a fresh run rather than the
+auto-resume they expected.
+
+A second, related issue: the same race affects the
+**cooldown** behavior. `resilience().caffeinate`,
+`resilience().sleepTickMs`, `resilience().sleepThresholdMs`,
+`resilience().watchdog*Ms` are all consumed by effects
+that may run before `onMount` finishes. The
+`createPowerManager` at line 190 reads `resilience().caffeinate`
+in a closure, but the **first** tick of the sleep
+detector (created in `onMount` at line 432-436) uses
+`resolved.sleepTickMs` — so the sleep detector itself is
+correct (it is built in `onMount` from the resolved value).
+The risk is downstream: if a wake event triggers the
+watchdog during the race window, the watchdog reads
+`resilience().watchdogSuspectMs` from the **default**, not
+the user's config.
+
+#### Finding 15.8.A — MEDIUM — `initializeSession` can read default `resilience` before `onMount` resolves the on-disk config
+
+**Problem.** The server-ready `createEffect` at
+`src/App.tsx:1013-1090` fires as soon as
+`server.status() === "ready"`. The App's main `onMount` at
+`src/App.tsx:421-441` is the only place where the on-disk
+config is read and `setResilience(resolved)` is called. If
+the server becomes "ready" before the onMount's
+`await loadConfig()` resolves, the createEffect runs with
+`resilience` still at the default
+(`resolveResilience(undefined, props.resilience)` —
+**CLI-only**, no config-file layer).
+
+The most visible user impact is the resume-after-crash
+flow: a user who set `resume: true` in their config gets
+the **resume-confirm dialog** instead of the auto-resume
+they configured. The dialog is dismissable, so the bug is
+recoverable, but the configured behavior is silently
+overridden for one startup window.
+
+A secondary, lower-impact path: the same `resilience()`
+read in `initializeSession` controls `resilience().caffeinate`
+indirectly via the sleep detector created in `onMount`.
+Since the sleep detector is built in `onMount` from the
+**resolved** value (line 433-436), it is correct. The
+remaining downstream consumers (`useWatchdog`, `useSSE`)
+read `resilience()` lazily and will pick up the resolved
+value once `setResilience` runs — except the
+`initializeSession` flow, which reads it **once** and
+acts.
+
+**Where.** `src/App.tsx:1013-1090` (the server-ready
+`createEffect` body) and `src/App.tsx:1098-1157`
+(`initializeSession`). The race window is bounded by
+`useServer`'s startup time on one side and
+`loadConfig()`'s I/O latency on the other.
+
+**Proposed fix.** Two valid approaches, in order of
+intrusiveness:
+
+**(a) Gate `startOnce()` on `resilience` being resolved.**
+The signal is initialized with defaults (line 159-161)
+and updated in `onMount` (line 427). Introduce a
+companion boolean signal `resilienceReady` set to `true`
+at the end of `onMount`, and add it to the createEffect's
+dependency list:
+
+```ts
+// In AppContent, near line 161:
+const [resilienceReady, setResilienceReady] = createSignal(false)
+
+// At the end of the onMount (line 441), before resolving:
+setResilienceReady(true)
+
+// In the server-ready createEffect (line 1013):
+createEffect(() => {
+  if (server.status() !== "ready") return
+  if (loop.state().type !== "starting") return
+  if (!resilienceReady()) return  // <-- gate
+  // ... existing body ...
+})
+```
+
+This is the minimum fix. It is reactive (a second
+re-trigger after `setResilienceReady(true)` will
+re-evaluate the effect) and adds one signal.
+
+**(b) Move config resolution into a top-level
+`createEffect`.** Replace the onMount's
+`loadConfig → setResilience` sequence with a
+`createEffect` that runs first and gates the rest. This
+is more invasive and requires re-ordering the body to
+keep the rest of the onMount (sleep detector, terminal
+detection) working.
+
+**Recommended.** (a) — one signal, one line in the
+createEffect, no body changes.
+
+**Severity: MEDIUM.** The bug is a wrong-decision race,
+not a crash. The user can recover by dismissing the
+dialog. The probability of the race firing in practice
+depends on disk speed and server startup latency; on a
+warm cache with a fast server, the gap is microseconds
+and the createEffect almost always runs after
+`setResilience`. On a cold cache with a fast server (or
+a re-attach to a pre-existing server), the race is
+reproducible.
+
+#### Finding 15.8.B — LOW — `setActiveModel` in the server-ready effect can clobber an explicit `--model`
+
+**Problem.** The same createEffect at
+`src/App.tsx:1013-1090` has this block at line 1028-1043:
+
+```ts
+// Fetch active model from config if not already set via CLI
+if (!activeModel()) {
+  const url = server.url()
+  if (url) {
+    const client = createClient(url)
+    withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
+      .then(res => {
+        if (res.data?.model) {
+          setActiveModel(res.data.model)
+        }
+      })
+      .catch(err => {
+        log.error("config", "Failed to fetch model from config", err)
+      })
+  }
+}
+```
+
+The `if (!activeModel())` guard prevents clobbering an
+explicit `--model` from the CLI. `activeModel` is
+initialized at `App.tsx:303` with `props.model`, so the
+guard correctly returns `false` (skipping the fetch) when
+`--model` was passed.
+
+**However**, in the race window from 15.8.A, the
+`createClient(url)` call here runs even though
+`initializeSession` (called from the same effect) hasn't
+been informed about the resolved `resilience`. The fetch
+itself is a separate async path that does not consume
+`resilience` — but it **does** depend on
+`createOpencodeClient` being responsive. If the SDK
+throws, the `.catch` only logs; no `resilience`-aware
+retry is attempted. This is independent of 15.8.A and
+informational.
+
+The real concern is the `if (!activeModel())` guard: it
+reads the signal at the moment the effect body runs, but
+`activeModel` is set synchronously from `props.model` in
+the component body. There is **no** async window during
+which `activeModel` would transition from `undefined` to
+`props.model` — so the guard is correct under the current
+code shape.
+
+The LOW severity comes from a **future-proofing**
+perspective: if `activeModel` ever becomes async-derived
+(e.g., "read the project-local opencode.json first, then
+fall back to `--model`"), the guard would race.
+
+**Where.** `src/App.tsx:1028-1043`.
+
+**Proposed fix.** None needed today. If the project
+introduces an async `activeModel` resolution, switch the
+guard to a derived signal that tracks the resolved value
+explicitly, e.g.:
+
+```ts
+const activeModelSource = createMemo(() => props.model ?? resolvedModelFromConfig())
+```
+
+**Severity: LOW.** No current bug; defensive note for
+future refactors.
+
+#### Test coverage gap — INFO
+
+There is no test for the `onMount`-vs-`createEffect`
+ordering race. The existing test suite
+(`useLoopState.test.ts`, `useSSE.test.ts`, etc.) does
+not exercise `App.tsx` end-to-end — `App.tsx` is the TUI
+shell and is not unit-tested (it would require a full
+Solid render harness and mocked `useServer` /
+`useSSE`).
+
+A targeted test would:
+
+1. Render `<AppContent>` in a Solid test harness
+   (e.g., `solid-js`'s `renderToString` plus a manual
+   `createRoot`).
+2. Mock `useServer` to return `status: "ready"` synchronously
+   **before** the App's `onMount` has resolved
+   `loadConfig`.
+3. Assert that `initializeSession` is **not** called until
+   `setResilience(resolved)` has run.
+
+Adding this test is non-trivial (requires a full
+component-level harness) and is not in scope for the
+audit. Worth tracking in a future coverage pass.
+
+#### Verification result
+
+The race is **real but narrow**. The fix is one signal
+plus one line in the createEffect. The user-visible
+impact is a one-time wrong-decision on startup when
+`resume: true` is set in the config (no `--resume` CLI
+flag) and the server is faster than the config read.
+
+- One MEDIUM finding (15.8.A — `initializeSession` reads
+  default `resilience` before `onMount` resolves).
+- One LOW finding (15.8.B — `setActiveModel` guard is
+  correct today but fragile to future refactors).
+- One INFO-level test-coverage note.
+- No CRITICAL or HIGH findings.
+
+The fix is ~3 lines (one signal, one setter, one guard)
+and matches the existing reactive style of the
+component.
