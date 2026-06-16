@@ -756,8 +756,12 @@ function AppContent(props: AppProps) {
 
     loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
-    // Countdown for the dashboard, driven by the monotonic clock.
-    setCooldownRemainingMs(delayMs)
+    // Countdown for the dashboard, driven by the monotonic clock. Seed
+    // with `resumeAt - monotonicNow()` (same formula the ticker uses at
+    // line 762) so the dashboard doesn't briefly show the full `delayMs`
+    // if the renderer stalls between this set and the first 250ms tick.
+    // Source: MEJORAS.md Finding 5.1.C.
+    setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
     cooldownTicker = setInterval(() => {
       const remaining = Math.max(0, resumeAt - monotonicNow())
       setCooldownRemainingMs(remaining)
