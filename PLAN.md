@@ -37,19 +37,19 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 ## Phase 3 — State Machine (useLoopState)
 
 - [x] Audit every state transition in `loopReducer` for every possible current state + action combination
-- [ ] Verify: `server_ready` from non-starting states is a no-op (correct)
-- [ ] Verify: `start` from `running`/`paused`/`cooldown`/`debug` states is a no-op (correct)
-- [ ] Verify: `toggle_pause` from `cooldown`, `error`, `stopped`, `starting`, `complete` states is a no-op
-- [ ] Verify: `session_idle` from `cooldown`, `stopped`, `error` states is a no-op
-- [ ] Verify: `rate_limited` from `paused`, `cooldown`, `error`, `debug` states is a no-op
-- [ ] Verify: `resume_cooldown` from non-cooldown states is a no-op
-- [ ] Verify: `iteration_started` increments iteration correctly from both `running("")` and `paused` states
-- [ ] Verify: `plan_complete` from `cooldown` preserves iteration count
-- [ ] Verify: `plan_complete` from `error` always sets iterations to 0 — is this correct? The plan might have been running for many iterations before erroring
-- [ ] Verify: `quit` from `stopping`/`complete`/`error` (non-recoverable) is a no-op — user must be able to quit from error state via the quit dialog
-- [ ] Verify: `retry` only works from `error` with `recoverable=true` — non-recoverable errors are permanent
-- [ ] Document: `error` action from `cooldown` state transitions to error — does this lose the cooldown timer? The `clearCooldownTimers` is called in `enterCooldown` exhaustion path but NOT when an `error` dispatch comes from an external source while in cooldown
-- [ ] Verify: `iteration_started` from `paused` state — the paused state has no `sessionId`, so `state.iteration + 1` uses the paused iteration number; confirm this matches `startIteration`'s dispatch
+- [x] Verify: `server_ready` from non-starting states is a no-op (correct)
+- [x] Verify: `start` from `running`/`paused`/`cooldown`/`debug` states is a no-op (correct)
+- [x] Verify: `toggle_pause` from `cooldown`, `error`, `stopped`, `starting`, `complete` states is a no-op
+- [x] Verify: `session_idle` from `cooldown`, `stopped`, `error` states is a no-op
+- [x] Verify: `rate_limited` from `paused`, `cooldown`, `error`, `debug` states is a no-op
+- [x] Verify: `resume_cooldown` from non-cooldown states is a no-op
+- [x] Verify: `iteration_started` increments iteration correctly from both `running("")` and `paused` states
+- [x] Verify: `plan_complete` from `cooldown` preserves iteration count
+- [x] Verify: `plan_complete` from `error` always sets iterations to 0 — is this correct? The plan might have been running for many iterations before erroring
+- [x] Verify: `quit` from `stopping`/`complete`/`error` (non-recoverable) is a no-op — user must be able to quit from error state via the quit dialog
+- [x] Verify: `retry` only works from `error` with `recoverable=true` — non-recoverable errors are permanent
+- [x] Document: `error` action from `cooldown` state transitions to error — does this lose the cooldown timer? The `clearCooldownTimers` is called in `enterCooldown` exhaustion path but NOT when an `error` dispatch comes from an external source while in cooldown
+- [x] Verify: `iteration_started` from `paused` state — the paused state has no `sessionId`, so `state.iteration + 1` uses the paused iteration number; confirm this matches `startIteration`'s dispatch
 
 ## Phase 4 — Session Lifecycle & Iteration Driver
 

@@ -2850,3 +2850,44 @@ covered). Coverage breakdown:
 
 Full suite: `bun test` → **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
+
+### 3.2–3.14 — Per-action no-op verification (PLAN.md tasks 3.2 through 3.14)
+
+**Status: COMPLETE — all 13 remaining Phase 3 verification tasks
+confirmed against the 3.1 matrix tests.**
+
+The full state-machine matrix audit (3.1) already pinned every
+no-op combination with `expectNoOp(...)` reference-state assertions.
+The remaining PLAN.md tasks (3.2 through 3.14) are simply the
+narrative version of those test contracts. Below is a one-line
+verification per task, all cross-referenced to the 3.1 test file
+(`src/hooks/useLoopState.test.ts:833-1056`).
+
+| PLAN task | Verified by | Result |
+| --- | --- | --- |
+| 3.2 — `server_ready` from non-starting is a no-op | line 866: `expectNoOp("server_ready", 10 states)` | OK (INFO: deliberate, server lifecycle is `starting → ready` only) |
+| 3.3 — `start` from non-ready is a no-op | line 900: `expectNoOp("start", 10 states)` | OK (INFO: only `ready → running`; `toggle_pause` is the path from paused) |
+| 3.4 — `toggle_pause` from non-running/pausing/paused is a no-op | line 932: `expectNoOp("toggle_pause", 8 states)` | OK (INFO: cancel-pending-pause from `pausing` is a real transition, line 145-159) |
+| 3.5 — `session_idle` from non-running/pausing/debug is a no-op | line 940: `expectNoOp("session_idle", 8 states)` | OK (INFO: `running("")` SAME-state guard at line 616-624) |
+| 3.6 — `rate_limited` from non-running/pausing is a no-op | line 953: `expectNoOp("rate_limited", 9 states)` | OK (INFO: rate limits only fire when there's a session) |
+| 3.7 — `resume_cooldown` from non-cooldown is a no-op | line 972: `expectNoOp("resume_cooldown", 10 states)` | OK (INFO: no timer to resume from other states) |
+| 3.8 — `iteration_started` from `running("")` and `paused` increments | lines 914-920 + 921-929 | OK — `state.iteration + 1` contract pinned (matches `startIteration()` dispatch) |
+| 3.9 — `plan_complete` from `cooldown` preserves iteration | lines 1016-1023 | OK — `cooldown(4) → complete(4)`, NOT reset to 0 |
+| 3.10 — `plan_complete` from `error` always sets iterations to 0 | lines 1024-1034 (KNOWN BUG) | **MEDIUM** (Finding 3.1.A): error state has no `iteration` field; carries last-known iteration through. Fix proposed, not applied. |
+| 3.11 — `quit` from `stopping`/`stopped`/`complete`/`error` is a no-op | lines 988-998: `expectNoOp("quit", 5 states)` + dedicated `error` no-op test | OK (INFO: `canQuit()=true` from error is decoupled from reducer; actual quit happens in `handleQuit()` via `process.exit`) |
+| 3.12 — `retry` only works from `error(recoverable=true)` | lines 1045-1055: `expectNoOp("retry", 10 states)` + `error(recoverable=false)` dedicated test | OK (INFO: non-recoverable errors are permanent by design) |
+| 3.13 — `error` from `cooldown` loses the cooldown timer? | design note 3.1.D + line 562-578 in old `Phase 2` block | OK (INFO): the reducer accepts the transition (line 562 test); the **cooldown timer cleanup** is in App.tsx `enterCooldown` exhaustion path and `handleQuit()`, NOT in the reducer. If an external `error` dispatch arrives while in `cooldown` (e.g. SSE `onSessionError` firing concurrently), the `setTimeout` from `enterCooldown` may still fire AFTER the reducer moved to `error`, calling `resume_cooldown` on an `error` state — but `resume_cooldown` from `error` is a no-op (line 972), so the stray timer is harmless. No bug, but worth a one-liner in `handleIterationError` to call `clearCooldownTimers()` defensively. |
+| 3.14 — `iteration_started` from `paused` uses `state.iteration` (not 0) | lines 921-929 | OK — `paused(3) → running(4, "ses-4")`; the `+1` is the standard increment, not a reset. Matches `startIteration()` in App.tsx which dispatches `iteration_started` with the new sessionId, never with 0. |
+
+**Summary.** 12 of 13 tasks are clean INFO observations of the
+no-op contract already pinned by 3.1. Task 3.10 is the one
+MEDIUM finding (3.1.A) and was already documented in the 3.1
+section. Task 3.13 is a defensive cleanup opportunity for
+`handleIterationError` (call `clearCooldownTimers()` when the
+reducer transitions from `cooldown` to `error` to silence the
+stray-timer window), LOW severity, fix proposed but not applied.
+
+No new tests required for this batch — all 13 behaviors are
+covered by the existing 3.1 suite. `bun test
+src/hooks/useLoopState.test.ts` → **74 pass, 0 fail, 253 expect()
+calls**, no regressions.
