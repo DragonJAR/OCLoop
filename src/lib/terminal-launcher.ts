@@ -103,6 +103,23 @@ function buildArgs(argsPattern: string[], attachCmd: string): string[] {
   // Drop empty tokens so a stray/extra space never yields a blank argv entry.
   const cmdParts = attachCmd.split(" ").filter((p) => p.length > 0)
 
+  // Defensive guard: an empty `attachCmd` produces `cmdParts = []`, so the
+  // `{cmd}` placeholder expands to no tokens and `flatMap` returns the
+  // literal pattern — for alacritty, `["-e"]` — and `Bun.spawn` launches
+  // the terminal with no command, so the user gets an empty shell rather
+  // than a clear error. The App-level `if (!url) return` at
+  // App.tsx:1356-1357 prevents this in the current call flow, but
+  // `buildArgs` does not defend itself: any future caller that bypasses
+  // the guard (or any test that passes `""` directly) gets a silent
+  // failure. Throwing here surfaces a clear error through the outer
+  // `try/catch` in `launchTerminal` (line 212). The known-terminal path
+  // is safe: every entry in `KNOWN_TERMINALS` carries a `{cmd}` token,
+  // so an empty `cmdParts` would always reach this throw on either call
+  // site. Source: MEJORAS.md Finding 11.2.D.
+  if (cmdParts.length === 0) {
+    throw new Error("attachCmd is empty; cannot construct terminal command")
+  }
+
   return argsPattern.flatMap((arg) => {
     if (arg === "{cmd}") {
       // Replace placeholder with command parts
