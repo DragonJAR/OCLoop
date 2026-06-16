@@ -67,4 +67,33 @@ describe("loop-state-store", () => {
     await saveLoopState({ ...sample, version: 99 as unknown as 1 })
     expect(await loadLoopState()).toBeNull()
   })
+
+  it("returns null when sessionId is a non-string non-null value", async () => {
+    await saveLoopState({ ...sample, sessionId: 42 as unknown as string | null })
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("accepts null sessionId (between iterations is valid)", async () => {
+    await saveLoopState({ ...sample, sessionId: null })
+    const loaded = await loadLoopState()
+    expect(loaded?.sessionId).toBeNull()
+  })
+
+  it("returns null when stateType is not a string", async () => {
+    await saveLoopState({ ...sample, stateType: 42 as unknown as string })
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("returns null when rateLimitAttempts is not a number", async () => {
+    await saveLoopState({
+      ...sample,
+      rateLimitAttempts: "x" as unknown as number,
+    })
+    expect(await loadLoopState()).toBeNull()
+  })
+
+  it("returns null when updatedAt is not a string", async () => {
+    await saveLoopState({ ...sample, updatedAt: 42 as unknown as string })
+    expect(await loadLoopState()).toBeNull()
+  })
 })

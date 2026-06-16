@@ -72,21 +72,35 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
 }
 
 /**
+ * Per-field type guard for `PersistedLoopState`. Validates every field so a
+ * hand-edited or partially-written file with a wrong-typed `sessionId`,
+ * `stateType`, `rateLimitAttempts`, or `updatedAt` is rejected at the trust
+ * boundary, rather than slipping through and being serialized into a server
+ * URL by the consumer in `App.tsx`.
+ *
+ * Source: MEJORAS.md Finding 8.2.A.
+ */
+function isPersistedLoopState(p: unknown): p is PersistedLoopState {
+  if (!p || typeof p !== "object") return false
+  const s = p as Record<string, unknown>
+  return (
+    s.version === 1 &&
+    typeof s.iteration === "number" &&
+    (s.sessionId === null || typeof s.sessionId === "string") &&
+    typeof s.stateType === "string" &&
+    typeof s.rateLimitAttempts === "number" &&
+    typeof s.updatedAt === "string"
+  )
+}
+
+/**
  * Load the persisted loop state, or null if absent/invalid/unsupported version.
  */
 export async function loadLoopState(): Promise<PersistedLoopState | null> {
   try {
     const content = await readFile(statePath(), "utf-8")
-    const parsed = JSON.parse(content) as unknown
-    if (
-      parsed &&
-      typeof parsed === "object" &&
-      (parsed as PersistedLoopState).version === 1 &&
-      typeof (parsed as PersistedLoopState).iteration === "number"
-    ) {
-      return parsed as PersistedLoopState
-    }
-    return null
+    const parsed: unknown = JSON.parse(content)
+    return isPersistedLoopState(parsed) ? parsed : null
   } catch {
     // Missing file or invalid JSON — nothing to resume.
     return null
