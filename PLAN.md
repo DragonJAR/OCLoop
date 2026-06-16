@@ -55,11 +55,11 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Audit `startIteration` for: server not ready, createSession failure, sendPromptAsync failure, prompt file missing, prompt file empty
 - [x] Verify: `startingIteration` guard prevents double-creation on rapid state transitions — what if the guard is true but the effect fires again before it's cleared?
-- [ ] Verify: `checkPlanComplete` is called before creating a session — if plan is already complete, does it dispatch `plan_complete` and return without creating a session?
-- [ ] Verify: `minIterationGapMs` uses monotonic clock — confirm `lastIterationStartAt` is set with `monotonicNow()` and gap calculation uses `monotonicNow()`
-- [ ] Verify: `sendPromptAsync` failure path calls `handleIterationError` — does this cover rate limits, timeouts, and network errors?
-- [ ] Verify: `refreshPlan()` is called after prompt is sent — what if the plan file is being written by OpenCode at the same time (partial read)?
-- [ ] Document: `startIteration` reads the prompt file but does NOT read the plan file for the prompt content — only the `{{PLAN_FILE}}` placeholder is replaced. Verify the default `.loop-prompt.md` references this placeholder
+- [x] Verify: `checkPlanComplete` is called before creating a session — if plan is already complete, does it dispatch `plan_complete` and return without creating a session?
+- [x] Verify: `minIterationGapMs` uses monotonic clock — confirm `lastIterationStartAt` is set with `monotonicNow()` and gap calculation uses `monotonicNow()`
+- [x] Verify: `sendPromptAsync` failure path calls `handleIterationError` — does this cover rate limits, timeouts, and network errors?
+- [x] Verify: `refreshPlan()` is called after prompt is sent — what if the plan file is being written by OpenCode at the same time (partial read)?
+- [x] Document: `startIteration` reads the prompt file but does NOT read the plan file for the prompt content — only the `{{PLAN_FILE}}` placeholder is replaced. Verify the default `.loop-prompt.md` references this placeholder
 
 ## Phase 5 — Rate Limit & Cooldown Handling
 

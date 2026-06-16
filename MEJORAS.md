@@ -3305,3 +3305,237 @@ across 21 files. No regressions.
 
 
 21 files. No regressions.
+
+
+### 4.3–4.7 — Verify `startIteration` driver invariants (coupled batch)
+
+**Status: COMPLETE — VERIFIED, all five sub-tasks are INFO-level
+findings (behavior is correct, no fix required).**
+
+PLAN.md left five sub-bullets under Phase 4 open after the
+4.1/4.2 audit completed. They are all located inside the
+single `startIteration` function (App.tsx:776-856), so per the
+PLAN.md "coupled batch" rule for a single phase they are
+covered together here. Each sub-task reads as a contract
+question; the implementation is verified line-by-line against
+the source.
+
+#### 4.3 — `checkPlanComplete` is called BEFORE creating a session
+
+The guard is the **first** statement inside the `try` block
+(App.tsx:789), before the `minIterationGapMs` sleep, the
+`createClient` call, the `createSession` call, the prompt
+file read, the `sendPromptAsync` call, and the `refreshPlan`
+call:
+
+```ts
+try {
+  // Check for plan completion first
+  if (await checkPlanComplete()) {
+    const planPath = props.planFile || DEFAULTS.PLAN_FILE
+    const summaryContent = await getPlanCompleteSummary(planPath)
+
+    loop.dispatch({
+      type: "plan_complete",
+      summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
+    })
+    return
+  }
+  // ... gap / createClient / createSession / prompt read /
+  //     sendPromptAsync / refreshPlan
+} catch (err) { ... }
+finally { startingIteration = false }
+```
+
+On a complete plan, the function dispatches `plan_complete`
+and returns immediately. No session is created, no prompt is
+read, no client is allocated. The `finally` block still
+releases `startingIteration`, so the iteration driver is
+unblocked the next time the user runs the loop. **Verdict:
+correct.**
+
+#### 4.3.A — INFO — Plan-completion guard placement is correct
+
+No fix needed. The early-return also means the session
+count, the prompt-file existence check, and the network
+round-trip to OpenCode are all skipped when the plan is
+already done, which is the desired UX. The reducer's
+`plan_complete` action is verified in 3.1 (state machine
+matrix).
+
+#### 4.4 — `minIterationGapMs` uses the monotonic clock
+
+`startIteration` reads `minIterationGapMs` from the resilience
+signal (App.tsx:805) and, if non-zero, sleeps the gap
+between the last iteration and the next. The two relevant
+readings are:
+
+- App.tsx:807 — `const since = monotonicNow() - lastIterationStartAt`
+- App.tsx:812 — `lastIterationStartAt = monotonicNow()`
+
+Both call `monotonicNow` (imported at App.tsx:54 from
+`lib/clock.ts`). The implementation there prefers
+`Bun.nanoseconds() / 1_000_000` and falls back to
+`performance.now()` outside Bun; both are monotonic and
+immune to wall-clock jumps (clock.ts:1-19 documents the
+contract). The fallback is in the correct order (Bun check
+first, then `performance.now()`), and the
+`Bun.nanoseconds() / 1e6` conversion is the canonical
+millisecond projection. **Verdict: correct.**
+
+#### 4.4.A — INFO — `monotonicNow` is the right clock for gap math
+
+No fix needed. This matches the project's documented
+convention (`lib/clock.ts` header: "Use this for ALL
+interval / timeout / watchdog / backoff math"). The pairing
+of `monotonicNow` at both read sites means a wall-clock
+jump (NTP correction, manual `date` change, DST) cannot
+cause the gap to elapse prematurely or to be skipped
+entirely. The Phase 9.1 audit of the sleep detector
+already pinned this contract; this verification is the
+symmetric side of the same clock.
+
+#### 4.5 — `sendPromptAsync` failure path calls `handleIterationError`
+
+`sendPromptAsync` is the second-to-last `await` in the
+`try` block (App.tsx:841-846). The top-level `catch`
+(App.tsx:850-852) routes every rejection to
+`handleIterationError`, which classifies the error via
+`classifySessionError` (App.tsx:755) and dispatches one of
+three actions:
+
+| Classification | Branch | Effect |
+| --- | --- | --- |
+| `rate_limit` | `enterCooldown(... , "rate_limit")` (App.tsx:756-758) | Backoff + retry the same iteration; circuit-breaks to recoverable `error` after `maxRateLimitRetries` attempts. |
+| `transient` | `enterCooldown(... , "transient")` (App.tsx:760-762) | Same backoff/retry as rate_limit, with the `transient` reason string and the "cooldownRetryText" UI label. |
+| fatal / auth / unknown | dispatches recoverable `error` (App.tsx:764-770) | User is shown a recoverable error and must retry. |
+
+The `transient` branch is what the PLAN.md task asks about:
+"does this cover rate limits, timeouts, and network errors?".
+By design, rate limits go through the dedicated
+`rate_limit` branch (which `classifySessionError` returns
+for 429 responses with a `retryAfter`), and timeouts / 5xx
+/ network blips go through the `transient` branch. Both
+feed `enterCooldown`, so both retry automatically. The
+correctness of the *classification* (i.e. that 429
+actually maps to `rate_limit` and ECONNRESET to
+`transient`) is the subject of the Phase 14 audit
+(`classifySessionError`), which is being tracked there.
+**Verdict: correct routing; classification correctness is
+owned by Phase 14.**
+
+#### 4.5.A — INFO — Error routing covers all retry-worthy failures
+
+No fix needed. The only failure class that is NOT
+auto-retried is `fatal` (auth errors, 4xx other than 429,
+and any other server rejection), which correctly surfaces
+as a recoverable `error` requiring the user. The circuit
+breaker in `enterCooldown` (App.tsx:679-697) ensures
+auto-retry cannot loop forever against a downed provider.
+
+#### 4.6 — `refreshPlan()` is called after the prompt is sent
+
+After the awaited `sendPromptAsync` returns, `startIteration`
+calls `await refreshPlan()` (App.tsx:849) before the `try`
+block exits. `refreshPlan` (App.tsx:570-581) reads the plan
+file via `parsePlanFile(planPath)` and calls
+`setPlanProgress(progress)`. This keeps the dashboard
+progress display in sync with the work the model just did
+(it was expected to check off tasks in `PLAN.md` between
+its own `startIteration` invocation and the next one).
+
+The PLAN.md task asks: "what if the plan file is being
+written by OpenCode at the same time (partial read)?".
+Three observations:
+
+1. `parsePlanFile` (plan-parser.ts) reads the file once
+   with `Bun.file().text()` and parses the snapshot. If
+   OpenCode is mid-write, the snapshot may be a half-
+   flushed version of the file.
+2. `parsePlan` is a line-by-line regex over
+   `parseTaskLine`. A partial line (e.g. truncated
+   mid-marker, like `- [x` with no closing bracket) returns
+   `"not-a-task"`; the parser does not throw, and the
+   truncated line is simply not counted. No crash, no
+   malformed state.
+3. `parsePlanComplete` (plan-parser.ts:161) is a regex
+   anchored to the last occurrence of a complete
+   `<plan-complete>...</plan-complete>` block. An unclosed
+   tag (half-written) is ignored, returning `null` — so a
+   partial-write cannot spuriously mark the plan complete.
+
+**Verdict: tolerant of partial reads; behavior is correct.**
+
+#### 4.6.A — INFO — Partial-write safety is inherited from the parser
+
+No fix needed. The defense is structural, not specific to
+this call site: `parseTaskLine` is line-by-line and
+`parsePlanComplete` is anchored. The only theoretical
+hazard is a write that lands BETWEEN two existing tasks
+(i.e. a brand-new task line is half-flushed), and the
+worst-case outcome is that line being dropped from the
+next refresh — which the model would have to re-add to
+get credit. That is a non-issue for the harness.
+
+#### 4.7 — `startIteration` reads the prompt file (not the plan file)
+
+`startIteration` reads exactly one file for content: the
+prompt file at `props.promptFile || DEFAULTS.PROMPT_FILE`
+(App.tsx:827: `Bun.file(props.promptFile || DEFAULTS.PROMPT_FILE)`,
+App.tsx:836: `promptFile.text()`). The plan file path is
+used **only** as a string for the `{{PLAN_FILE}}`
+placeholder substitution (App.tsx:838):
+
+```ts
+const prompt = promptContent.replaceAll(
+  "{{PLAN_FILE}}",
+  props.planFile || DEFAULTS.PLAN_FILE,
+)
+```
+
+The plan file is NOT read by `startIteration`. The
+default prompt file (`.loop-prompt.md:7`) does reference
+`{{PLAN_FILE}}` ("Read `{{PLAN_FILE}}` fully"), so the
+placeholder substitution has effect. **Verdict: correct.**
+
+#### 4.7.A — INFO — Plan file is referenced as a path, not as content
+
+No fix needed. This matches the documented role split
+between the prompt file (instructions to the model) and
+the plan file (work tracker the model edits). Having
+`startIteration` also read the plan file would create
+two sources of truth for plan state, and the
+`refreshPlan` call at line 849 (see 4.6) is the canonical
+read site.
+
+#### Test-suite delta for Tasks 4.3–4.7
+
+No new unit tests added. Rationale:
+
+- All five tasks are *verifications* of code that already
+  has dependent tests: `isPlanComplete` /
+  `getPlanCompleteSummary` / `parsePlanComplete` are
+  pinned in `lib/plan-parser.test.ts`; `monotonicNow` is
+  pinned in `lib/clock.test.ts`; the
+  `classifySessionError` branching that 4.5 depends on
+  is pinned in `hooks/useSSE.test.ts` (Phase 14 audit
+  will own that contract); `Bun.file` partial-read
+  tolerance is structural, not a unit-testable behavior
+  (would require a flaky FS layer).
+- The placement / ordering claims (4.3, 4.6, 4.7) are
+  source-read observations: the code is a fixed sequence
+  of `await` calls inside one function, and a unit test
+  that mocks all of `createClient` / `createSession` /
+  `sendPromptAsync` / `Bun.file` / `parsePlanFile` /
+  `isPlanComplete` / `getPlanCompleteSummary` /
+  `refreshPlan` would just re-state the source.
+- The correctness claims (4.4, 4.5) are about the
+  *implementation* of the calls themselves, which is
+  tested elsewhere — `monotonicNow` in
+  `lib/clock.test.ts`, and `classifySessionError` (the
+  gate for 4.5) in `hooks/useSSE.test.ts`.
+
+`bun test` → **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
+
+---
