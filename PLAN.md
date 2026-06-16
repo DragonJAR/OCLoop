@@ -1,213 +1,824 @@
-Now I have a thorough understanding of the codebase. Let me compile the PLAN.md.
+# PLAN.md — Validación e implementación incremental de MEJORAS.md
+Validar cada mejora propuesta en `MEJORAS.md` contra el estado real del proyecto, expandir este plan con tareas explícitas para cubrirlas todas y aplicar solo las que aporten valor, sean seguras, eficientes y mantenibles.
 
-# OCLoop — Exhaustive Execution-Flow Audit & Fix Plan
+## Fase 1 — Preparación
 
-Audit all execution flows (with/without parameters, edge cases, invalid inputs, error scenarios), validate expected behavior, and document all logic bugs, coding errors, unhandled exceptions, code duplication, and inefficiencies. Fixes are documented in MEJORAS.md — not applied.
+- [x] Leer `MEJORAS.md` completo e identificar cada mejora accionable como una unidad independiente.
+- [x] Crear una lista numerada de mejoras candidatas manteniendo el orden original de `MEJORAS.md`.
+- [x] Actualizar este `PLAN.md` agregando al final de la Fase 2 un bloque explícito de tareas para cada mejora identificada en `MEJORAS.md`.
+- [x] Confirmar que cada mejora identificada tiene sus propias tareas de evaluación, decisión, implementación o descarte y verificación.
+- [ ] Revisar la estructura general del proyecto para entender stack, arquitectura, comandos disponibles y convenciones existentes.
+- [ ] Identificar los comandos mínimos de verificación del proyecto, como lint, typecheck, tests o build, sin modificar configuración.
+- [ ] Registrar el estado inicial relevante: archivos principales, comandos de validación y riesgos conocidos antes de aplicar mejoras.
 
-## Phase 1 — CLI Argument Parsing & Validation
+## Fase 2 — Evaluación individual de mejoras
 
-- [x] Audit `parseArgs` for every flag combination: long/short forms, missing required values, empty strings, duplicate flags, unknown flags
-- [x] Verify `--port` rejects non-numeric, negative, zero, float, and >65535 values
-- [x] Verify `--model` rejects strings without `/`, with multiple `/`, empty provider/model, and whitespace
-- [x] Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string)
-- [x] Verify `--resilience key=value` with: unknown key, non-numeric value for numeric keys, empty value, value with `=` signs, boolean keys with non-boolean values
-- [x] Verify `--prompt` and `--plan` with: non-existent paths, directories, empty filenames, relative vs absolute paths
-- [x] Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags
-- [x] Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior
-- [x] Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename)
-- [x] Check if `parseArgs` is idempotent — calling it twice should produce the same result
+Lista numerada de 97 mejoras accionables (no-INFO) detectadas en `MEJORAS.md`, en el orden original del documento fuente:
 
-## Phase 2 — Plan File Parsing & Progress Tracking
+1. Finding 1.1.A — MEDIUM — Empty string accepted by `requireValue` for whitespace-only input
+2. Finding 1.1.B — LOW — Duplicate value-flag behavior is not explicitly tested
+3. Finding 1.3.A — LOW — Whitespace not explicitly tested (closed by this audit)
+4. Finding 1.4.A — LOW — `--lang` does not use `requireValue`, so `--lang --debug` blames the locale
+5. Finding 1.5.A — MEDIUM — Numeric coercion accepts non-decimal strings (diverges from `--port`)
+6. Finding 1.6.D — MEDIUM (cross-reference) — Whitespace-only value accepted (Finding 1.1.A)
+7. Finding 1.7.A — MEDIUM — `--create-plan` silently swallows TUI-only flags; no diagnostic
+8. Finding 1.7.B — LOW — `--create-plan --prompt X` skips the prompt-file validation
+9. Finding 1.8.A — MEDIUM — Cross-reference to 1.7.A: `--resume` is silently swallowed by `--create-plan`
+10. Finding 1.8.B — LOW — `--resume` with no persisted state is a silent no-op (not a no-op in parseArgs, but in the TUI)
+11. Finding 3.1.A — MEDIUM — `plan_complete` from `error` ALWAYS resets iterations to 0
+12. Finding 4.1.A — LOW — `console.error` used in TUI flow where `log.error` is the project convention
+13. Finding 4.1.B — MEDIUM — Empty / whitespace-only prompt file is sent verbatim
+14. Finding 4.1.C — LOW — Orphaned session on `sendPromptAsync` failure
+15. Finding 4.2.B — LOW — `startingIteration` is a plain variable, not part of the persisted state
+16. Finding 5.1.A — MEDIUM — `transient` kind dispatched as `rate_limited` to the reducer
+17. Finding 5.1.B — MEDIUM — `clearCooldownTimers` is called *after* the dispatch, not before, on the regular path
+18. Finding 5.1.C — LOW — `setCooldownRemainingMs(delayMs)` briefly shows the *full* delay, not `delayMs - elapsed`
+19. Finding 5.1.D — LOW — `clearInterval` inside the ticker relies on closure-captured `cooldownTicker`
+20. Finding 5.1.E — LOW — `log.health` for the exhausted branch omits `retryAfter`
+21. Finding 5.2.A — LOW — `error` dispatched from `cooldown` by the server-error effect does not clear cooldown timers
+22. Finding 5.3.A — LOW — `cooldownTicker` is not explicitly cleared on the regular resume path
+23. Finding 5.6.A — MEDIUM — Dashboard `cooldownText` always shows "Rate limited" even for transient cooldowns
+24. Finding 6.2.A — LOW — Duplicated predicate in `App.tsx` invites drift
+25. Finding 7.2.A — MEDIUM — Consumer filter and hook filter share an asymmetric shape that could be made symmetric with no behavioral change
+26. Finding 7.3.A — LOW — Hook-layer filter for `session.idle` is **opposite** to `session.error` for un-attributed events
+27. Finding 7.5.A — HIGH — `server.restart()` has no in-flight guard; concurrent triggers can launch two servers and leak the first
+28. Finding 8.1.A — LOW — Orphan `.tmp` file on `rename` failure
+29. Finding 8.2.A — MEDIUM — `loadLoopState` only validates `version` and `iteration`; corrupted `sessionId`, `stateType`, `rateLimitAttempts`, or `updatedAt` slip through
+30. Finding 8.3.A — LOW — No test for the `EACCES` / `EPERM` branch of `clearLoopState`
+31. Finding 8.4.A — LOW — `void saveLoopState(snapshot)` is fire-and-forget; a crash within the same tick as the dispatch loses the snapshot
+32. Finding 8.5.A — MEDIUM — `verdict === "idle"` discards the in-flight iteration's result and may over-count work
+33. Finding 11.2.A — MEDIUM — `Bun.spawn` is missing `detached: true`, so the launched terminal can receive SIGHUP when OCLoop exits
+34. Finding 11.2.B — LOW — Empty `config.args` for a custom terminal silently launches without the attach command
+35. Finding 11.2.C — LOW — Missing `{cmd}` placeholder in custom args silently launches without the attach command
+36. Finding 11.2.D — LOW — Empty `attachCmd` produces a corrupted spawn argv (terminal opens empty shell)
+37. Finding 11.3.A — LOW — Empty `url` produces a malformed `opencode attach  --session ...` string (double space)
+38. Finding 11.3.B — LOW — Empty `sessionId` produces a malformed `opencode attach <url> --session ` string (trailing space)
+39. Finding 11.4.A — MEDIUM — macOS `pbcopy` is not detected; copy silently fails on every stock macOS install
+40. Finding 11.4.B — MEDIUM — Windows `clip.exe` is not detected; copy silently fails on every stock Windows install
+41. Finding 11.4.C — LOW — Call sites do not check the `ClipboardResult`; success toast is shown even on failure
+42. Finding 11.4.D — LOW — `clipboard.ts` has no test coverage
+43. Finding 12.1.A — MEDIUM — `loadConfig` does not validate per-field types; a wrong-type value in any field is silently passed to the consumer
+44. Finding 12.1.B — LOW — Unknown top-level keys are silently kept; a typo like `languaje: "es"` falls back to English with no diagnostic
+45. Finding 12.1.C — LOW — No test coverage for `loadConfig`; all six required cases are unverified
+46. Finding 12.2.A — MEDIUM — `saveConfig` does not catch I/O errors; a disk-full or permission-denied crash propagates to all four `App.tsx` call sites, none of which have a `try/catch`
+47. Finding 12.2.B — LOW — `tmpPath` is a fixed suffix `.tmp`; two simultaneous writes would clobber each other's tmp file
+48. Finding 12.2.C — LOW — Stale `.tmp` files are not cleaned up after a write that succeeded `writeFileSync` but failed `renameSync`
+49. Finding 12.2.D — LOW — `existsSync(configDir)` check is redundant; `mkdirSync({ recursive: true })` is already idempotent
+50. Finding 12.2.E — LOW — `saveConfig` returns `void` but all four callers `await` it — the `await` is misleading
+51. Finding 12.3.A — MEDIUM — `pickDefined` skips `undefined` but NOT `null`; a `null` value in either layer silently corrupts the merged config
+52. Finding 12.3.B — LOW — `pickDefined` does not validate per-field types; `applyResilienceOverride` does it for CLI input but `loadConfig` does not for the file input
+53. Finding 12.3.C — LOW — `pickDefined` does not reject unknown keys; extra fields in either layer propagate to the result object
+54. Finding 12.5.E — LOW — `logDiff` is defined but never referenced
+55. Finding 15.4.A — LOW — `handleQuit` lacks a module-level `isShuttingDown` guard; SIGINT-during-Q can cause a wasted `abortSession` HTTP call
+56. Finding 15.5.A — LOW — No debounce on rapid-fire `file.edited` events for PLAN.md
+57. Finding 15.7.A — HIGH — `server.restart()` aborts in-flight launches and leaks server processes
+58. Finding 15.7.B — MEDIUM — App-level `restartServer()` has no re-entry guard
+59. Finding 15.8.A — MEDIUM — `initializeSession` can read default `resilience` before `onMount` resolves the on-disk config
+60. Finding 15.8.B — LOW — `setActiveModel` in the server-ready effect can clobber an explicit `--model`
+61. Finding 16.1.A — MEDIUM — `handleIterationError` dispatches a recoverable error for `auth` and `fatal` kinds
+62. Finding 16.1.B — MEDIUM — `kind === "transient"` takes different paths in the two call sites
+63. Finding 16.1.C — LOW — `enterCooldown` call sites differ only in the optional `kind` argument
+64. Finding 16.1.D — LOW — `handleIterationError` and SSE `onSessionError` could share a "kind → action" helper
+65. Finding 16.2.A — LOW — `server.url()` + null-check pattern repeated at every call site
+66. Finding 16.2.B — LOW — Inconsistent inline vs variable form across call sites
+67. Finding 16.3.A — LOW — `props.planFile || DEFAULTS.PLAN_FILE` repeated at 8 sites
+68. Finding 16.3.B — LOW — `AppProps extends CLIArgs` makes the `||` type-unjustified
+69. Finding 16.4.A — LOW — `sessionId() || lastSessionId()` repeated at 11 sites
+70. Finding 16.4.B — LOW — Site #2 + #3 evaluate the same expression twice
+71. Finding 16.5.A — HIGH — Completion effect re-runs every second, pushing a new dialog onto the stack each time
+72. Finding 16.5.B — MEDIUM — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each
+73. Finding 16.5.C — LOW — `ActivityLog.displayEvents` is a no-op memo
+74. Finding 16.5.D — LOW — `BottomPanel.rate()` and `compactLine()` re-evaluate on every tick (1-second cadence)
+75. Finding 16.5.E — LOW — `App.tsx` persistence effect reads `loop.state()` and `loop.iteration()` — double subscription
+76. Finding 16.6.B — MEDIUM — Test at `api.test.ts:196-209` is fragile due to module-level cache state
+77. Finding 16.6.C — LOW — `clientCache` could grow across `bun test` runs in the same process
+78. Finding 17.1.B — LOW — `main().catch()` does not call `restoreTerminal()` directly
+79. Finding 17.2.B — LOW (carryover) — `main().catch()` lacks an explicit `restoreTerminal()` call
+80. Finding 17.3.A — MEDIUM — `onMount` (line 421) awaits `detectInstalledTerminals()` without a try/catch
+81. Finding 17.3.B — MEDIUM — `await saveConfig(newConfig)` in four command `onSelect` callbacks is unguarded
+82. Finding 17.3.C — LOW — `handleQuit` (line 968) calls `renderer.setTerminalTitle` and `renderer.destroy` without a try/catch
+83. Finding 17.4.A — MEDIUM — `getPlanCompleteSummary` failure in `startIteration` is misclassified as an iteration error
+84. Finding 17.4.B — LOW — `validatePrerequisites` propagates `exists()` exceptions to `main().catch()`
+85. Finding 17.4.C — LOW — TOCTOU window between `exists()` and `text()` in `isPlanComplete` / `getPlanCompleteSummary`
+86. Finding 17.5.A — LOW — `Bun.write()` auto-create in `validatePrerequisites` propagates errors to `main().catch()`
+87. Finding 17.7.B — LOW — `finally { clearTimeout(failsafe) }` is unreachable from the catch-exit path
+88. Finding 17.8.B — LOW — `require()` is a CommonJS primitive in an ESM-first project
+89. Finding 18.2.A — HIGH — `useServer.ts` has no test (carried from 18.1.B with rationale)
+90. Finding 18.2.B — HIGH — `shutdown.ts` has no test (failsafe race is verified by file read only)
+91. Finding 18.2.C — MEDIUM — `config.ts` has no test
+92. Finding 18.2.D — MEDIUM — `terminal-launcher.ts`, `clipboard.ts`, `power.ts` have no test
+93. Finding 18.2.E — LOW — `theme-resolver.ts`, `i18n.ts`, `project.ts`, `command-exists.ts` have no test
+94. Finding 18.2.F — LOW — `context/*.tsx` and `components/*.tsx` have no test
+95. Finding 18.3.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook (carried from 18.1.A with full hook-behavior inventory)
+96. Finding 18.3.B — MEDIUM — `useServer.test.ts` does not exist (same as 18.2.A, listed for cross-reference)
+97. Finding 18.3.C — LOW — `DialogContext.tsx` top-only render contract is not pinned
 
-- [x] Audit `parseTaskLine` for every task marker variant: `- [x]`, `- [X]`, `- [x ]` (trailing space), `- [ ]`, `- [ ] [MANUAL]`, `- [MANUAL]`, `- [BLOCKED:reason]`, `- [ BLOCKED ]`, `- [blocked]` (case)
-- [x] Verify `- [MANUAL]` without description is classified correctly (manual vs not-a-task)
-- [x] Verify `- [BLOCKED:]` with empty reason vs `- [BLOCKED]` without colon
-- [x] Verify `- [BLOCKED: some reason ]` with spaces in reason
-- [x] Verify lines that start with `- [` but have no closing bracket
-- [x] Verify lines like `- [ ] ` (checkbox with trailing spaces but no description) — currently returns `not-a-task`; confirm this is intentional
-- [x] Verify `parsePlan` with an empty file, file with no tasks, file with only headings, file with only completed/blocked/manual tasks
-- [x] Verify `percentComplete` math: denominator = total - manual - blocked; what if total = 0? (returns 100% — confirm this is correct)
-- [x] Verify `percentComplete` when all tasks are manual/blocked (denominator = 0, returns 100%)
-- [x] Verify `percentComplete` with only one pending task (0 completed / 1 automatable = 0%)
-- [x] Audit `parsePlanComplete` for: no tags, single-line `<plan-complete>text</plan-complete>`, multi-line with nested content, tags inside code fences, multiple occurrences (should use last), tags with attributes, unclosed `<plan-complete>` tag
-- [x] Verify `getCurrentTaskFromContent` returns the FIRST pending task even if tasks are not in order
-- [x] Verify `parsePlanFile` with a file that doesn't exist (throws vs returns null)
-- [x] Verify `refreshPlan` in App.tsx silently ignores errors — is this correct behavior for all error types?
+### Mejora 1 — Finding 1.1.A — MEDIUM — Empty string accepted by `requireValue` for whitespace-only input
 
-## Phase 3 — State Machine (useLoopState)
+- [ ] Evaluar la mejora 1 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 1 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 1 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 1 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit every state transition in `loopReducer` for every possible current state + action combination
-- [x] Verify: `server_ready` from non-starting states is a no-op (correct)
-- [x] Verify: `start` from `running`/`paused`/`cooldown`/`debug` states is a no-op (correct)
-- [x] Verify: `toggle_pause` from `cooldown`, `error`, `stopped`, `starting`, `complete` states is a no-op
-- [x] Verify: `session_idle` from `cooldown`, `stopped`, `error` states is a no-op
-- [x] Verify: `rate_limited` from `paused`, `cooldown`, `error`, `debug` states is a no-op
-- [x] Verify: `resume_cooldown` from non-cooldown states is a no-op
-- [x] Verify: `iteration_started` increments iteration correctly from both `running("")` and `paused` states
-- [x] Verify: `plan_complete` from `cooldown` preserves iteration count
-- [x] Verify: `plan_complete` from `error` always sets iterations to 0 — is this correct? The plan might have been running for many iterations before erroring
-- [x] Verify: `quit` from `stopping`/`complete`/`error` (non-recoverable) is a no-op — user must be able to quit from error state via the quit dialog
-- [x] Verify: `retry` only works from `error` with `recoverable=true` — non-recoverable errors are permanent
-- [x] Document: `error` action from `cooldown` state transitions to error — does this lose the cooldown timer? The `clearCooldownTimers` is called in `enterCooldown` exhaustion path but NOT when an `error` dispatch comes from an external source while in cooldown
-- [x] Verify: `iteration_started` from `paused` state — the paused state has no `sessionId`, so `state.iteration + 1` uses the paused iteration number; confirm this matches `startIteration`'s dispatch
+### Mejora 2 — Finding 1.1.B — LOW — Duplicate value-flag behavior is not explicitly tested
 
-## Phase 4 — Session Lifecycle & Iteration Driver
+- [ ] Evaluar la mejora 2 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 2 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 2 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 2 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `startIteration` for: server not ready, createSession failure, sendPromptAsync failure, prompt file missing, prompt file empty
-- [x] Verify: `startingIteration` guard prevents double-creation on rapid state transitions — what if the guard is true but the effect fires again before it's cleared?
-- [x] Verify: `checkPlanComplete` is called before creating a session — if plan is already complete, does it dispatch `plan_complete` and return without creating a session?
-- [x] Verify: `minIterationGapMs` uses monotonic clock — confirm `lastIterationStartAt` is set with `monotonicNow()` and gap calculation uses `monotonicNow()`
-- [x] Verify: `sendPromptAsync` failure path calls `handleIterationError` — does this cover rate limits, timeouts, and network errors?
-- [x] Verify: `refreshPlan()` is called after prompt is sent — what if the plan file is being written by OpenCode at the same time (partial read)?
-- [x] Document: `startIteration` reads the prompt file but does NOT read the plan file for the prompt content — only the `{{PLAN_FILE}}` placeholder is replaced. Verify the default `.loop-prompt.md` references this placeholder
+### Mejora 3 — Finding 1.3.A — LOW — Whitespace not explicitly tested (closed by this audit)
 
-## Phase 5 — Rate Limit & Cooldown Handling
+- [ ] Evaluar la mejora 3 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 3 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 3 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 3 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `enterCooldown` for: `rateLimitAttempts` counter increment and reset, `computeBackoff` with various attempt numbers, `Retry-After` header handling
-- [x] Verify: `clearCooldownTimers` is called in `handleQuit` and in the exhaustion path — is it also called when a cooldown is interrupted by an `error` dispatch?
-- [x] Verify: `cooldownTicker` interval is cleaned up on cooldown resume — what if `resume_cooldown` dispatch happens before the `setTimeout(cooldownTimer)` fires? Both are cleared in `clearCooldownTimers`
-- [x] Verify: `cooldownRemainingMs` signal updates every 250ms — confirm the countdown displays correctly when `monotonicNow()` is used
-- [x] Verify: rate limit that arrives during pausing state is handled — `enterCooldown` is called for `pausing` state in SSE handler, and the reducer accepts `rate_limited` from `pausing`
-- [x] Verify: transient errors (not rate limits) also enter cooldown via `handleIterationError` — confirm the cooldown state display shows "retry" instead of "rate limit"
-- [x] Verify: `maxRateLimitRetries` exhaustion resets `rateLimitAttempts` to 0 after dispatching error — is this correct? The error state is recoverable, so retry would start fresh
+### Mejora 4 — Finding 1.4.A — LOW — `--lang` does not use `requireValue`, so `--lang --debug` blames the locale
 
-## Phase 6 — Watchdog & Health Probes
+- [ ] Evaluar la mejora 4 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 4 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 4 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 4 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `useWatchdog` hook for: tick interval, suspect/confirm thresholds, recovery actions, max recovery attempts
-- [x] Verify: watchdog `isActive` probe returns true only for `running`/`pausing` states with a non-empty sessionId — confirm this matches `getActiveSessionId`
-- [x] Verify: watchdog stops and starts correctly based on `loop.isRunning()` — paused and cooldown states should NOT have the watchdog running
-- [x] Verify: `notifyWake` resets the heartbeat baseline — confirm this prevents immediate re-triggering after a server restart
-- [x] Verify: `notifyIdle` resets the watchdog — called on `session_idle` and on `reconcileAndAdvance` returning `idle`/`missing`
-- [x] Verify: `abortAndRetry` in watchdog actions dispatches `session_idle` — this re-enters the iteration driver; confirm there's no infinite loop if the session keeps failing
-- [x] Verify: `restartServer` in watchdog actions — if the server fails to restart, does the watchdog escalate to `fail`?
+### Mejora 5 — Finding 1.5.A — MEDIUM — Numeric coercion accepts non-decimal strings (diverges from `--port`)
 
-## Phase 7 — SSE Event Handling
+- [ ] Evaluar la mejora 5 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 5 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 5 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 5 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `useSSE` for: connection lifecycle, reconnection logic, event filtering by sessionId, error classification
-- [x] Verify: `classifySessionError` correctly categorizes rate limits (429), transient errors (5xx, timeouts), auth errors, and fatal errors
-- [x] Verify: SSE `onSessionError` ignores errors from stale sessions — confirm the sessionId comparison is correct
-- [x] Verify: SSE `onSessionIdle` ignores idle events from stale sessions — confirm this matches the behavior in `onSessionError`
-- [x] Verify: SSE reconnection threshold (6 attempts) triggers a server restart — is this configurable?
-- [x] Verify: `sse.reconnect()` is called on wake, on watchdog recovery, and on server restart — no double-reconnection issues?
-- [x] Verify: heartbeat is recorded on every SSE event type (todo_updated, file_edited, step_finish, tool_use, message_text, reasoning) — confirm no events are missed
+### Mejora 6 — Finding 1.6.D — MEDIUM — Whitespace-only value accepted (cross-reference a Finding 1.1.A)
 
-## Phase 8 — Crash Recovery & Persistence
+- [ ] Evaluar la mejora 6 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 6 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 6 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 6 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `saveLoopState` for: atomic write (tmp + rename), data completeness, error handling
-- [x] Verify: `loadLoopState` returns null for: missing file, invalid JSON, wrong version, missing fields
-- [x] Verify: `clearLoopState` never throws — even on permission errors or missing files
-- [x] Verify: persistence happens on every state transition to `running`/`pausing`/`paused`/`cooldown` — confirm this is frequent enough for crash recovery
-- [x] Verify: `doResume` correctly handles: session still working, session idle, session missing, session rate-limiting
-- [x] Verify: `doResume` restores `rateLimitAttempts` from persisted state — confirm the circuit breaker continues from where it left off
-- [x] Verify: `--resume` flag sets `resilience.resume = true` which triggers auto-resume in `initializeSession` — what if there's no persisted state?
-- [x] Document: `clearLoopState` is called on clean quit AND on plan completion — verify this is intentional (prevents accidental re-resume after a successful run)
+### Mejora 7 — Finding 1.7.A — MEDIUM — `--create-plan` silently swallows TUI-only flags; no diagnostic
 
-## Phase 9 — Sleep Detection & Power Management
+- [ ] Evaluar la mejora 7 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 7 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 7 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 7 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `createSleepDetector` for: threshold detection accuracy, negative gap handling, timer cleanup
-- [x] Verify: `handleWake` correctly reconnects SSE, reconciles session, and handles cooldown state
-- [x] Verify: sleep detector stops on cleanup — `onCleanup` calls `sleepDetector?.stop()`
-- [x] Verify: `caffeinate` starts/stops based on `loop.isRunning() || loop.isCooldown()` — confirm this covers all active states
-- [x] Verify: power manager (`createPowerManager`) correctly calls `caffeinate` on macOS and is a no-op on other platforms
+### Mejora 8 — Finding 1.7.B — LOW — `--create-plan --prompt X` skips the prompt-file validation
 
-## Phase 10 — Plan Generator (`--create-plan`)
+- [ ] Evaluar la mejora 8 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 8 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 8 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 8 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `runCreatePlan` for: server startup failure, session creation failure, prompt send failure, timeout handling
-- [x] Verify: `stripCodeFences` correctly strips ````markdown\n...\n`````, ````\n...\n````, and non-fenced content
-- [x] Verify: `extractLastAssistantText` returns empty string for: no messages, no assistant messages, messages with empty parts
-- [x] Verify: `hasNewAssistantReply` correctly distinguishes new replies from pre-existing ones using `assistantCountBefore`
-- [x] Verify: The plan generator polling loop exits on: timeout, user cancel, user approve, and all error paths
-- [x] Verify: `planTimeoutMs` is configurable via `--resilience planTimeoutMs=<ms>` — confirm this overrides the default 10 minutes
-- [x] Verify: The generator correctly closes the server in the `finally` block — even on timeout or error
-- [x] Verify: Empty goal (`prompt()` returns empty string) exits with code 1 and shows an error
+### Mejora 9 — Finding 1.8.A — MEDIUM — Cross-reference a 1.7.A: `--resume` is silently swallowed by `--create-plan`
 
-## Phase 11 — Terminal Launcher & Clipboard
+- [ ] Evaluar la mejora 9 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 9 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 9 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 9 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `detectInstalledTerminals` for: platform differences (macOS/Linux/Windows), PATH detection, terminal name matching
-- [x] Verify: `launchTerminal` correctly constructs commands for each terminal type and handles launch failures
-- [x] Verify: `getAttachCommand` produces valid commands for different server URLs (localhost, 127.0.0.1, custom ports)
-- [x] Verify: `copyToClipboard` works on macOS, Linux, and Windows — falls back gracefully if no clipboard utility is available
+### Mejora 10 — Finding 1.8.B — LOW — `--resume` with no persisted state is a silent no-op
 
-## Phase 12 — Configuration & i18n
+- [ ] Evaluar la mejora 10 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 10 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 10 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 10 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `loadConfig` for: missing file, invalid JSON, null JSON, array JSON, partial config, unknown keys
-- [x] Verify: `saveConfig` writes atomically (tmp + rename) and creates directory if needed
-- [x] Verify: `resolveResilience` merges correctly: defaults < file config < CLI overrides — undefined values in any layer are skipped
-- [x] Verify: `isLocale` accepts only `en` and `es` — confirm case sensitivity
-- [x] Audit i18n strings for: missing keys, mismatched interpolation variables between en and es, empty strings
-- [x] Verify: `setLocale` persists to config file on toggle — confirm the config is saved and reloaded correctly
+### Mejora 11 — Finding 3.1.A — MEDIUM — `plan_complete` from `error` ALWAYS resets iterations to 0
 
-## Phase 13 — Chaos Module & Debug Mode
+- [ ] Evaluar la mejora 11 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 11 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 11 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 11 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `createChaos` for: enable/disable conditions (`--chaos` flag AND `--debug` flag required)
-- [x] Verify: Chaos fault injection (`killServer`, `reviveServer`, `freezeSession`, `unfreezeSession`, injected 429) only activates when both flags are set
-- [x] Verify: Debug mode (`--debug`) skips plan file validation, creates sessions without prompts, and allows manual interaction
-- [x] Verify: Debug keybindings (N, P, I, Q, T) work correctly in debug state
-- [x] Verify: Debug mode does NOT persist loop state (`if (props.debug) return` in persistence effect)
+### Mejora 12 — Finding 4.1.A — LOW — `console.error` used in TUI flow where `log.error` is the project convention
 
-## Phase 14 — Error Classification & Recovery
+- [ ] Evaluar la mejora 12 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 12 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 12 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 12 y corregir cualquier regresión causada por el cambio.
 
-- [x] Audit `classifySessionError` (in `useSSE`) for all error types: rate limit (429), transient (5xx, timeout, network), auth (401/403), fatal (other)
-- [x] Verify: Rate limit errors during pausing state are handled — `enterCooldown` is called, not just for running state
-- [x] Verify: Auth errors (401/403) are NOT recoverable — they surface as permanent errors requiring user intervention
-- [x] Verify: Server startup errors transition to error state with `recoverable: true` — user can retry
-- [x] Verify: SSE connection errors that exceed the reconnection threshold trigger a server restart
-- [x] Verify: `handleIterationError` classifies errors correctly before dispatching — rate limit vs transient vs permanent
+### Mejora 13 — Finding 4.1.B — MEDIUM — Empty / whitespace-only prompt file is sent verbatim
 
-## Phase 15 — Edge Cases & Race Conditions
+- [ ] Evaluar la mejora 13 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 13 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 13 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 13 y corregir cualquier regresión causada por el cambio.
 
-- [x] Verify: No race between `startIteration` guard and effect re-trigger — `startingIteration` is set before async work and cleared in `finally`
-- [x] Verify: No race between `session_idle` SSE event and `reconcileAndAdvance` — both can trigger the same dispatch
-- [x] Verify: Double `session_idle` events (from watchdog reconcile AND from SSE) don't create duplicate iterations — the `running("")` check prevents this
-- [x] Verify: `handleQuit` is idempotent — called from both SIGINT handler and Q key; confirm it doesn't double-abort or double-disconnect
-- [x] Verify: Plan file edits by OpenCode trigger `refreshPlan()` — what if the edit is in-progress (partial file)?
-- [x] Verify: `sse.reconnect()` called from multiple places (wake, watchdog, SSE exhaustion) — no double-connection
-- [x] Verify: `server.restart()` called during an ongoing restart — is it idempotent?
-- [x] Verify: `onMount` vs `createEffect` ordering — server ready effect fires before session initialization completes
+### Mejora 14 — Finding 4.1.C — LOW — Orphaned session on `sendPromptAsync` failure
 
-## Phase 16 — Code Duplication & Inefficiency
+- [ ] Evaluar la mejora 14 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 14 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 14 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 14 y corregir cualquier regresión causada por el cambio.
 
-- [x] Identify and document duplicated error handling patterns in `handleIterationError` and SSE `onSessionError`
-- [x] Identify and document duplicated client creation pattern (`createClient(url)` called in many places)
-- [x] Identify and document duplicated plan file path resolution (`props.planFile || DEFAULTS.PLAN_FILE` appears multiple times)
-- [x] Identify and document duplicated session ID resolution (`sessionId() || lastSessionId()`)
-- [x] Identify and document any unnecessary re-renders caused by signal reads in effects that don't depend on those signals
-- [x] Audit `createClient` cache: verify the eviction policy (oldest half) is correct and the cache doesn't grow unbounded in long sessions with many server restarts
-- [x] Document any `console.log`/`console.error` calls that should use `log` instead for consistency
+### Mejora 15 — Finding 4.2.B — LOW — `startingIteration` is a plain variable, not part of the persisted state
 
-## Phase 17 — Unhandled Exceptions & Missing Guards
+- [ ] Evaluar la mejora 15 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 15 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 15 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 15 y corregir cualquier regresión causada por el cambio.
 
-- [x] Verify: `main().catch()` handles all unhandled promise rejections — confirm the `unhandledRejection` handler in index.tsx covers TUI mode
-- [x] Verify: `restoreTerminal()` is called on every exit path including `process.exit(1)` in error handlers
-- [x] Verify: No unguarded `await` calls that could reject without a try/catch in App.tsx effect handlers
-- [x] Verify: `Bun.file().exists()` and `Bun.file().text()` calls are properly awaited and error-handled
-- [x] Verify: `Bun.write()` in `validatePrerequisites` handles permission errors
-- [x] Verify: `withTimeout` always cleans up its timer even if the task throws synchronously
-- [x] Verify: `shutdownManager` handles the case where `handler` throws AND the failsafe timer fires simultaneously
-- [x] Verify: The `require("../../package.json").version` in cli-args.ts works correctly in the built output (Bun bundling)
+### Mejora 16 — Finding 5.1.A — MEDIUM — `transient` kind dispatched as `rate_limited` to the reducer
 
-## Phase 18 — Test Coverage Gaps
+- [ ] Evaluar la mejora 16 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 16 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 16 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 16 y corregir cualquier regresión causada por el cambio.
 
-- [x] Review existing test files (api.test.ts, cli-args.test.ts, plan-parser.test.ts, etc.) for coverage of: error paths, edge cases, boundary values
-- [x] Identify flows with NO test coverage: sleep-detector (has test), backoff (has test), loop-state-store (has test), layout (has test)
-- [x] Identify flows with INCOMPLETE test coverage: useLoopState (state machine transitions), useSSE (reconnection, error classification)
-- [x] Document which integration scenarios are untestable without a real OpenCode server mock
+### Mejora 17 — Finding 5.1.B — MEDIUM — `clearCooldownTimers` is called *after* the dispatch, not before
 
-## Acceptance Criteria
+- [ ] Evaluar la mejora 17 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 17 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 17 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 17 y corregir cualquier regresión causada por el cambio.
 
-- Every execution flow (normal, error, edge case) has been traced through the code and documented
-- All logic bugs, coding errors, and potential unhandled exceptions are listed with file:line references
-- All code duplication and inefficiency patterns are identified
-- All fixes are documented in MEJORAS.md with: problem description, affected files/lines, proposed solution, and severity
-- No code changes are applied — this is audit-only with documentation output
+### Mejora 18 — Finding 5.1.C — LOW — `setCooldownRemainingMs(delayMs)` briefly shows the *full* delay
 
-<plan-complete>All 18 phases of the OCLoop execution-flow audit are complete (202 tasks total). Phases 1–18 each have every task marked [x]; no [MANUAL] or [BLOCKED] tasks remain.
+- [ ] Evaluar la mejora 18 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 18 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 18 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 18 y corregir cualquier regresión causada por el cambio.
 
-Summary of work done:
-- 18 phases audited across CLI parsing, plan parsing, state machine, session lifecycle, rate-limit handling, watchdog, SSE, persistence, sleep detection, plan generator, terminal launcher, config/i18n, chaos module, error classification, race conditions, code duplication, unhandled exceptions, and test coverage.
-- 24,333-line MEJORAS.md produced: per-phase finding tables, severity ratings, file:line references, proposed fixes (no code applied — audit-only per acceptance criteria).
-- Source fixes applied in 5 commits that the audit surfaced (rebalances, scrollbar, sync-throw timer, etc.), each pinned by a new test.
-- 644 tests pass / 0 fail / 1,625 expect() calls across 21 test files (baseline at completion).
-- Test coverage audit (Phase 18) inventoried 26 source files, flagged 13 testable production-logic modules without tests (1 CRITICAL `useServer.ts`, 3 HIGH: shutdown/config/terminal-launcher, 5 MEDIUM, 4 LOW), 14 untested hook behaviors in `useSSE`, and 14 integration scenarios untestable without a real OpenCode server.
+### Mejora 19 — Finding 5.1.D — LOW — `clearInterval` inside the ticker relies on closure-captured `cooldownTicker`
 
-Remaining manual tasks: none. No tasks were deferred as [MANUAL] or marked [BLOCKED] in this audit.</plan-complete>
+- [ ] Evaluar la mejora 19 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 19 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 19 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 19 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 20 — Finding 5.1.E — LOW — `log.health` for the exhausted branch omits `retryAfter`
+
+- [ ] Evaluar la mejora 20 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 20 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 20 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 20 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 21 — Finding 5.2.A — LOW — `error` dispatched from `cooldown` does not clear cooldown timers
+
+- [ ] Evaluar la mejora 21 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 21 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 21 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 21 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 22 — Finding 5.3.A — LOW — `cooldownTicker` is not explicitly cleared on the regular resume path
+
+- [ ] Evaluar la mejora 22 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 22 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 22 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 22 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 23 — Finding 5.6.A — MEDIUM — Dashboard `cooldownText` always shows "Rate limited" even for transient cooldowns
+
+- [ ] Evaluar la mejora 23 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 23 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 23 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 23 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 24 — Finding 6.2.A — LOW — Duplicated predicate in `App.tsx` invites drift
+
+- [ ] Evaluar la mejora 24 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 24 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 24 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 24 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 25 — Finding 7.2.A — MEDIUM — Consumer/hook filter share an asymmetric shape
+
+- [ ] Evaluar la mejora 25 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 25 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 25 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 25 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 26 — Finding 7.3.A — LOW — Hook-layer filter for `session.idle` is **opposite** to `session.error`
+
+- [ ] Evaluar la mejora 26 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 26 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 26 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 26 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 27 — Finding 7.5.A — HIGH — `server.restart()` has no in-flight guard; can leak the first server
+
+- [ ] Evaluar la mejora 27 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 27 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 27 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 27 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 28 — Finding 8.1.A — LOW — Orphan `.tmp` file on `rename` failure
+
+- [ ] Evaluar la mejora 28 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 28 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 28 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 28 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 29 — Finding 8.2.A — MEDIUM — `loadLoopState` only validates `version` and `iteration`; other fields slip through
+
+- [ ] Evaluar la mejora 29 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 29 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 29 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 29 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 30 — Finding 8.3.A — LOW — No test for the `EACCES` / `EPERM` branch of `clearLoopState`
+
+- [ ] Evaluar la mejora 30 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 30 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 30 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 30 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 31 — Finding 8.4.A — LOW — `void saveLoopState(snapshot)` is fire-and-forget
+
+- [ ] Evaluar la mejora 31 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 31 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 31 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 31 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 32 — Finding 8.5.A — MEDIUM — `verdict === "idle"` discards the in-flight iteration's result and may over-count work
+
+- [ ] Evaluar la mejora 32 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 32 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 32 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 32 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 33 — Finding 11.2.A — MEDIUM — `Bun.spawn` is missing `detached: true`
+
+- [ ] Evaluar la mejora 33 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 33 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 33 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 33 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 34 — Finding 11.2.B — LOW — Empty `config.args` for a custom terminal silently launches without the attach command
+
+- [ ] Evaluar la mejora 34 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 34 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 34 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 34 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 35 — Finding 11.2.C — LOW — Missing `{cmd}` placeholder in custom args silently launches without the attach command
+
+- [ ] Evaluar la mejora 35 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 35 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 35 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 35 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 36 — Finding 11.2.D — LOW — Empty `attachCmd` produces a corrupted spawn argv
+
+- [ ] Evaluar la mejora 36 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 36 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 36 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 36 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 37 — Finding 11.3.A — LOW — Empty `url` produces a malformed `opencode attach` string (double space)
+
+- [ ] Evaluar la mejora 37 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 37 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 37 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 37 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 38 — Finding 11.3.B — LOW — Empty `sessionId` produces a malformed `opencode attach` string (trailing space)
+
+- [ ] Evaluar la mejora 38 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 38 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 38 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 38 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 39 — Finding 11.4.A — MEDIUM — macOS `pbcopy` is not detected; copy silently fails on stock macOS
+
+- [ ] Evaluar la mejora 39 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 39 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 39 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 39 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 40 — Finding 11.4.B — MEDIUM — Windows `clip.exe` is not detected; copy silently fails on stock Windows
+
+- [ ] Evaluar la mejora 40 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 40 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 40 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 40 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 41 — Finding 11.4.C — LOW — Call sites do not check `ClipboardResult`; success toast shown on failure
+
+- [ ] Evaluar la mejora 41 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 41 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 41 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 41 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 42 — Finding 11.4.D — LOW — `clipboard.ts` has no test coverage
+
+- [ ] Evaluar la mejora 42 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 42 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 42 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 42 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 43 — Finding 12.1.A — MEDIUM — `loadConfig` does not validate per-field types
+
+- [ ] Evaluar la mejora 43 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 43 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 43 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 43 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 44 — Finding 12.1.B — LOW — Unknown top-level keys silently kept; typo like `languaje` falls back to English silently
+
+- [ ] Evaluar la mejora 44 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 44 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 44 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 44 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 45 — Finding 12.1.C — LOW — No test coverage for `loadConfig`; six required cases unverified
+
+- [ ] Evaluar la mejora 45 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 45 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 45 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 45 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 46 — Finding 12.2.A — MEDIUM — `saveConfig` does not catch I/O errors
+
+- [ ] Evaluar la mejora 46 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 46 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 46 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 46 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 47 — Finding 12.2.B — LOW — `tmpPath` is a fixed suffix `.tmp`; simultaneous writes clobber each other
+
+- [ ] Evaluar la mejora 47 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 47 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 47 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 47 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 48 — Finding 12.2.C — LOW — Stale `.tmp` files not cleaned up after `writeFileSync` ok but `renameSync` failed
+
+- [ ] Evaluar la mejora 48 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 48 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 48 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 48 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 49 — Finding 12.2.D — LOW — `existsSync(configDir)` is redundant; `mkdirSync({ recursive: true })` is idempotent
+
+- [ ] Evaluar la mejora 49 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 49 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 49 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 49 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 50 — Finding 12.2.E — LOW — `saveConfig` returns `void` but all four callers `await` it
+
+- [ ] Evaluar la mejora 50 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 50 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 50 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 50 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 51 — Finding 12.3.A — MEDIUM — `pickDefined` skips `undefined` but NOT `null`
+
+- [ ] Evaluar la mejora 51 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 51 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 51 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 51 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 52 — Finding 12.3.B — LOW — `pickDefined` does not validate per-field types
+
+- [ ] Evaluar la mejora 52 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 52 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 52 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 52 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 53 — Finding 12.3.C — LOW — `pickDefined` does not reject unknown keys
+
+- [ ] Evaluar la mejora 53 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 53 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 53 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 53 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 54 — Finding 12.5.E — LOW — `logDiff` is defined but never referenced
+
+- [ ] Evaluar la mejora 54 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 54 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 54 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 54 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 55 — Finding 15.4.A — LOW — `handleQuit` lacks a module-level `isShuttingDown` guard
+
+- [ ] Evaluar la mejora 55 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 55 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 55 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 55 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 56 — Finding 15.5.A — LOW — No debounce on rapid-fire `file.edited` events for PLAN.md
+
+- [ ] Evaluar la mejora 56 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 56 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 56 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 56 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 57 — Finding 15.7.A — HIGH — `server.restart()` aborts in-flight launches and leaks server processes
+
+- [ ] Evaluar la mejora 57 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 57 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 57 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 57 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 58 — Finding 15.7.B — MEDIUM — App-level `restartServer()` has no re-entry guard
+
+- [ ] Evaluar la mejora 58 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 58 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 58 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 58 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 59 — Finding 15.8.A — MEDIUM — `initializeSession` can read default `resilience` before `onMount` resolves on-disk config
+
+- [ ] Evaluar la mejora 59 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 59 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 59 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 59 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 60 — Finding 15.8.B — LOW — `setActiveModel` in the server-ready effect can clobber an explicit `--model`
+
+- [ ] Evaluar la mejora 60 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 60 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 60 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 60 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 61 — Finding 16.1.A — MEDIUM — `handleIterationError` dispatches a recoverable error for `auth` and `fatal` kinds
+
+- [ ] Evaluar la mejora 61 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 61 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 61 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 61 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 62 — Finding 16.1.B — MEDIUM — `kind === "transient"` takes different paths in the two call sites
+
+- [ ] Evaluar la mejora 62 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 62 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 62 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 62 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 63 — Finding 16.1.C — LOW — `enterCooldown` call sites differ only in the optional `kind` argument
+
+- [ ] Evaluar la mejora 63 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 63 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 63 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 63 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 64 — Finding 16.1.D — LOW — `handleIterationError` and SSE `onSessionError` could share a "kind → action" helper
+
+- [ ] Evaluar la mejora 64 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 64 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 64 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 64 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 65 — Finding 16.2.A — LOW — `server.url()` + null-check pattern repeated at every call site
+
+- [ ] Evaluar la mejora 65 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 65 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 65 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 65 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 66 — Finding 16.2.B — LOW — Inconsistent inline vs variable form across call sites
+
+- [ ] Evaluar la mejora 66 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 66 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 66 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 66 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 67 — Finding 16.3.A — LOW — `props.planFile || DEFAULTS.PLAN_FILE` repeated at 8 sites
+
+- [ ] Evaluar la mejora 67 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 67 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 67 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 67 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 68 — Finding 16.3.B — LOW — `AppProps extends CLIArgs` makes the `||` type-unjustified
+
+- [ ] Evaluar la mejora 68 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 68 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 68 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 68 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 69 — Finding 16.4.A — LOW — `sessionId() || lastSessionId()` repeated at 11 sites
+
+- [ ] Evaluar la mejora 69 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 69 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 69 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 69 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 70 — Finding 16.4.B — LOW — Site #2 + #3 evaluate the same expression twice
+
+- [ ] Evaluar la mejora 70 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 70 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 70 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 70 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 71 — Finding 16.5.A — HIGH — Completion effect re-runs every second, pushing a new dialog onto the stack
+
+- [ ] Evaluar la mejora 71 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 71 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 71 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 71 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 72 — Finding 16.5.B — MEDIUM — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each
+
+- [ ] Evaluar la mejora 72 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 72 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 72 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 72 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 73 — Finding 16.5.C — LOW — `ActivityLog.displayEvents` is a no-op memo
+
+- [ ] Evaluar la mejora 73 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 73 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 73 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 73 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 74 — Finding 16.5.D — LOW — `BottomPanel.rate()` and `compactLine()` re-evaluate on every tick
+
+- [ ] Evaluar la mejora 74 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 74 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 74 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 74 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 75 — Finding 16.5.E — LOW — `App.tsx` persistence effect reads `loop.state()` and `loop.iteration()` — double subscription
+
+- [ ] Evaluar la mejora 75 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 75 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 75 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 75 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 76 — Finding 16.6.B — MEDIUM — Test at `api.test.ts:196-209` is fragile due to module-level cache state
+
+- [ ] Evaluar la mejora 76 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 76 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 76 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 76 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 77 — Finding 16.6.C — LOW — `clientCache` could grow across `bun test` runs in the same process
+
+- [ ] Evaluar la mejora 77 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 77 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 77 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 77 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 78 — Finding 17.1.B — LOW — `main().catch()` does not call `restoreTerminal()` directly
+
+- [ ] Evaluar la mejora 78 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 78 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 78 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 78 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 79 — Finding 17.2.B — LOW — `main().catch()` lacks an explicit `restoreTerminal()` call (carryover)
+
+- [ ] Evaluar la mejora 79 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 79 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 79 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 79 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 80 — Finding 17.3.A — MEDIUM — `onMount` awaits `detectInstalledTerminals()` without a try/catch
+
+- [ ] Evaluar la mejora 80 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 80 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 80 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 80 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 81 — Finding 17.3.B — MEDIUM — `await saveConfig(newConfig)` in four command `onSelect` callbacks is unguarded
+
+- [ ] Evaluar la mejora 81 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 81 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 81 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 81 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 82 — Finding 17.3.C — LOW — `handleQuit` calls `renderer.setTerminalTitle` and `renderer.destroy` without a try/catch
+
+- [ ] Evaluar la mejora 82 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 82 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 82 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 82 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 83 — Finding 17.4.A — MEDIUM — `getPlanCompleteSummary` failure is misclassified as an iteration error
+
+- [ ] Evaluar la mejora 83 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 83 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 83 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 83 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 84 — Finding 17.4.B — LOW — `validatePrerequisites` propagates `exists()` exceptions to `main().catch()`
+
+- [ ] Evaluar la mejora 84 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 84 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 84 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 84 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 85 — Finding 17.4.C — LOW — TOCTOU window between `exists()` and `text()` in `isPlanComplete` / `getPlanCompleteSummary`
+
+- [ ] Evaluar la mejora 85 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 85 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 85 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 85 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 86 — Finding 17.5.A — LOW — `Bun.write()` in `validatePrerequisites` propagates errors to `main().catch()`
+
+- [ ] Evaluar la mejora 86 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 86 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 86 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 86 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 87 — Finding 17.7.B — LOW — `finally { clearTimeout(failsafe) }` is unreachable from the catch-exit path
+
+- [ ] Evaluar la mejora 87 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 87 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 87 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 87 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 88 — Finding 17.8.B — LOW — `require()` is a CommonJS primitive in an ESM-first project
+
+- [ ] Evaluar la mejora 88 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 88 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 88 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 88 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 89 — Finding 18.2.A — HIGH — `useServer.ts` has no test (carried from 18.1.B)
+
+- [ ] Evaluar la mejora 89 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 89 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 89 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 89 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 90 — Finding 18.2.B — HIGH — `shutdown.ts` has no test (failsafe race verified by file read only)
+
+- [ ] Evaluar la mejora 90 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 90 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 90 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 90 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 91 — Finding 18.2.C — MEDIUM — `config.ts` has no test
+
+- [ ] Evaluar la mejora 91 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 91 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 91 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 91 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 92 — Finding 18.2.D — MEDIUM — `terminal-launcher.ts`, `clipboard.ts`, `power.ts` have no test
+
+- [ ] Evaluar la mejora 92 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 92 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 92 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 92 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 93 — Finding 18.2.E — LOW — `theme-resolver.ts`, `i18n.ts`, `project.ts`, `command-exists.ts` have no test
+
+- [ ] Evaluar la mejora 93 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 93 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 93 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 93 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 94 — Finding 18.2.F — LOW — `context/*.tsx` and `components/*.tsx` have no test
+
+- [ ] Evaluar la mejora 94 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 94 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 94 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 94 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 95 — Finding 18.3.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook (carried from 18.1.A)
+
+- [ ] Evaluar la mejora 95 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 95 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 95 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 95 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 96 — Finding 18.3.B — MEDIUM — `useServer.test.ts` does not exist (cross-reference a 18.2.A)
+
+- [ ] Evaluar la mejora 96 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 96 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 96 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 96 y corregir cualquier regresión causada por el cambio.
+
+### Mejora 97 — Finding 18.3.C — LOW — `DialogContext.tsx` top-only render contract is not pinned
+
+- [ ] Evaluar la mejora 97 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [ ] Si la mejora 97 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [ ] Si la mejora 97 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [ ] Ejecutar la verificación mínima aplicable después de la mejora 97 y corregir cualquier regresión causada por el cambio.
+
+- [ ] Procesar el siguiente bloque explícito de mejora agregado a esta Fase 2 después de leer `MEJORAS.md`.
+- [ ] Confirmar que no quedan mejoras de `MEJORAS.md` sin bloque explícito de tareas en este `PLAN.md`.
+- [ ] Si falta alguna mejora, actualizar este `PLAN.md` agregando sus tareas explícitas antes de continuar con la consolidación.
+
+## Fase 3 — Consolidación
+
+- [ ] Revisar los cambios acumulados para eliminar duplicación introducida durante las implementaciones.
+- [ ] Confirmar que ninguna mejora implementada contradice patrones existentes del proyecto.
+- [ ] Confirmar que no quedaron cambios parciales, archivos temporales ni código muerto.
+- [ ] Ejecutar la suite completa de verificación disponible para el proyecto.
+- [ ] Corregir cualquier fallo causado por las mejoras implementadas.
+- [ ] Preparar un resumen final con mejoras implementadas, mejoras adaptadas, mejoras descartadas y motivo de cada descarte.
+
+## Fase 4 — Revisión manual
+
+- [MANUAL] Revisar el resumen final y confirmar si alguna mejora descartada debe replantearse como una nueva propuesta.
+- [MANUAL] Validar manualmente cualquier flujo de producto que no esté cubierto por pruebas automatizadas.
+
+## Criterios de aceptación
+
+- [ ] Todas las mejoras de `MEJORAS.md` fueron evaluadas una por una.
+- [ ] Este `PLAN.md` fue expandido con tareas explícitas para cada mejora detectada en `MEJORAS.md`.
+- [ ] No quedó ninguna mejora cubierta solo por una tarea genérica de repetición.
+- [ ] Cada mejora quedó clasificada como implementada, adaptada o descartada.
+- [ ] Toda mejora implementada aporta valor real al proyecto actual.
+- [ ] Ninguna mejora implementada rompe comportamiento existente conocido.
+- [ ] Los cambios aplicados son mínimos, confiables, eficientes y siguen DRY.
+- [ ] Las mejoras inviables fueron descartadas o adaptadas con justificación técnica.
+- [ ] La verificación automatizada disponible finaliza correctamente.
+- [ ] El resumen final permite auditar qué se hizo y por qué.
