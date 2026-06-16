@@ -50,6 +50,8 @@ const shared = {
   logTokenOut: "out:",
   logTokenRsn: "rsn:",
   logDiff: "Diff: ",
+  // BottomPanel metric (same abbrev in both locales)
+  lblRate: "Tokens/min",
   // Activity-log event label (same word in both locales)
   logLblError: "error",
   // Runtime
@@ -210,6 +212,10 @@ const en = {
   lblTaskPrefix: "Task: ",
   lblWaiting: "waiting...",
   lblGuard: "Guard",
+  // --- BottomPanel labels ---
+  lblTotal: "Total Time",
+  lblFinish: "Done By",
+  lblLast: "Last Action",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
@@ -514,6 +520,9 @@ const es: Record<MessageKey, Msg> = {
   lblTaskPrefix: "Tarea: ",
   lblWaiting: "esperando...",
   lblGuard: "Guardián",
+  lblTotal: "Tiempo total",
+  lblFinish: "Termina",
+  lblLast: "Última acción",
 
   hintStart: "iniciar",
   hintPause: "pausar",

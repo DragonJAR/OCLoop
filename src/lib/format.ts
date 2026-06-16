@@ -52,11 +52,18 @@ function getBasename(path: string): string {
   return path.split(/[/\\]/).pop() || path;
 }
 
+// Generous memory guard for previews — NOT a display width. The activity log is
+// the single width-aware truncator (truncates to logContentWidth, which scales
+// with the terminal and reflows on resize), so previews must stay full-length
+// here; capping them short would waste a wide window and not respond to resize.
+const PREVIEW_MAX = 500;
+
 export function getToolPreview(toolName: string, input: Record<string, unknown>): string {
   try {
     switch (toolName) {
       case "bash":
-        return truncateText(String(input.command || ""), 50);
+        // Normalize whitespace to a single line; let the log fit it to width.
+        return truncateText(String(input.command || ""), PREVIEW_MAX);
       case "read":
         return getBasename(String(input.filePath || ""));
       case "write":
@@ -75,6 +82,39 @@ export function getToolPreview(toolName: string, input: Record<string, unknown>)
   } catch (e) {
     return toolName;
   }
+}
+
+/** Token throughput in tokens/min. Guards elapsed<=0 to avoid div-by-zero/Infinity. */
+export function tokensPerMin(totalTokens: number, elapsedMs: number): number {
+  if (elapsedMs <= 0) return 0;
+  return totalTokens / (elapsedMs / 60000);
+}
+
+/**
+ * Word-wrap `text` into lines no wider than `width` columns. A word longer than
+ * `width` is hard-split so a single long token never overflows. Whitespace is
+ * collapsed. Returns [] for empty input or non-positive width. Deterministic, so
+ * callers can render one line per element and the box grows to fit.
+ */
+export function wrapText(text: string, width: number): string[] {
+  if (width <= 0) return [];
+  const words = text.split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  for (const word of words) {
+    let w = word;
+    // Hard-split a word that can't fit on a line by itself.
+    while (w.length > width) {
+      if (line) { lines.push(line); line = ""; }
+      lines.push(w.slice(0, width));
+      w = w.slice(width);
+    }
+    if (!line) line = w;
+    else if (line.length + 1 + w.length <= width) line += " " + w;
+    else { lines.push(line); line = w; }
+  }
+  if (line) lines.push(line);
+  return lines;
 }
 
 export function stripMarkdown(text: string): string {

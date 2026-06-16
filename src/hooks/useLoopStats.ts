@@ -12,6 +12,8 @@ interface LoopStatsState {
   pauseStartTime: number | null;
   accumulatedPauseTime: number;
   history: number[]; // Active times for completed iterations
+  runStartTime: number | null; // Wall-clock ms when the run first started (never reset mid-run)
+  runEndTime: number | null; // Wall-clock ms when the run ended (freezes the global timer)
 }
 
 /**
@@ -29,6 +31,8 @@ export interface UseLoopStatsReturn {
   averageTime: () => number | null; // Average iteration time in ms, null if no history
   totalActiveTime: () => number; // Sum of all active time including current iteration
   estimatedTotal: (remaining: number) => number | null; // Estimated time for remaining iterations
+  globalElapsedTime: () => number; // Wall-clock ms since the run started (incl. pauses); frozen after markRunEnd
+  markRunEnd: () => void; // Freeze the global timer (call on complete/stopped/error)
 }
 
 /**
@@ -65,6 +69,8 @@ export function useLoopStats(): UseLoopStatsReturn {
     pauseStartTime: null,
     accumulatedPauseTime: 0,
     history: [],
+    runStartTime: null,
+    runEndTime: null,
   });
 
   // Timer for updating elapsed time every second
@@ -76,11 +82,14 @@ export function useLoopStats(): UseLoopStatsReturn {
    * Start timing a new iteration
    */
   function startIteration(): void {
+    const s = state();
     setState({
+      ...s,
       iterationStartTime: Date.now(),
       pauseStartTime: null,
       accumulatedPauseTime: 0,
-      history: state().history,
+      // Wall-clock run start: stamped once on the first iteration, never reset.
+      runStartTime: s.runStartTime ?? Date.now(),
     });
   }
 
@@ -138,6 +147,7 @@ export function useLoopStats(): UseLoopStatsReturn {
     const activeTime = Math.max(0, totalElapsed - pauseTime);
 
     setState({
+      ...s,
       iterationStartTime: null,
       pauseStartTime: null,
       accumulatedPauseTime: 0,
@@ -209,6 +219,25 @@ export function useLoopStats(): UseLoopStatsReturn {
     return avg * remaining;
   }
 
+  /**
+   * Wall-clock time since the run started ("desde que se dio start").
+   * Unlike elapsedTime/totalActiveTime this does NOT subtract pauses/cooldowns —
+   * it's real time. Freezes once markRunEnd() captures runEndTime.
+   */
+  const globalElapsedTime = createMemo(() => {
+    tick(); // re-run every second
+    const s = state();
+    if (s.runStartTime === null) return 0;
+    return Math.max(0, (s.runEndTime ?? Date.now()) - s.runStartTime);
+  });
+
+  /** Freeze the global timer at the first terminal state (idempotent). */
+  function markRunEnd(): void {
+    const s = state();
+    if (s.runStartTime === null || s.runEndTime !== null) return;
+    setState({ ...s, runEndTime: Date.now() });
+  }
+
   return {
     startIteration,
     pause,
@@ -218,5 +247,7 @@ export function useLoopStats(): UseLoopStatsReturn {
     averageTime,
     totalActiveTime,
     estimatedTotal,
+    globalElapsedTime,
+    markRunEnd,
   };
 }

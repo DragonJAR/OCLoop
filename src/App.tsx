@@ -12,7 +12,7 @@ import {
 } from "@opentui/solid"
 
 import { useServer } from "./hooks/useServer"
-import { useSSE, classifySessionError, type FileDiff } from "./hooks/useSSE"
+import { useSSE, classifySessionError } from "./hooks/useSSE"
 import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
@@ -74,6 +74,7 @@ import {
   DialogCompletion,
   DialogError,
   ActivityLog,
+  BottomPanel,
   DialogTerminalConfig,
   createTerminalConfigState,
   DialogTerminalError,
@@ -376,6 +377,16 @@ function AppContent(props: AppProps) {
       log.debug("state", "Iteration ended", { iteration: state.iteration })
       stats.endIteration()
     }
+
+    // Run reached a terminal state: freeze the global wall-clock timer (once).
+    if (
+      (state.type === "complete" || state.type === "stopped" || state.type === "error") &&
+      prev.type !== "complete" &&
+      prev.type !== "stopped" &&
+      prev.type !== "error"
+    ) {
+      stats.markRunEnd()
+    }
   })
 
   // Plan progress tracking
@@ -527,17 +538,6 @@ function AppContent(props: AppProps) {
           cacheRead: part.tokens.cache.read,
           cacheWrite: part.tokens.cache.write,
         })
-      },
-      onSessionDiff: (diffs: FileDiff[]) => {
-        // Filter out .loop.log files
-        const filtered = diffs.filter(d => !d.file.endsWith('.loop.log'))
-        
-        // Aggregate stats
-        const additions = filtered.reduce((acc, d) => acc + d.additions, 0)
-        const deletions = filtered.reduce((acc, d) => acc + d.deletions, 0)
-        const files = filtered.length
-        
-        sessionStats.setDiff({ additions, deletions, files })
       },
       onToolUse: (part) => {
         heartbeat()
@@ -1820,11 +1820,18 @@ function AppContent(props: AppProps) {
       />
 
       {/* Activity Log takes remaining space */}
-      <ActivityLog 
-        events={activityLog.events()} 
-        tokens={sessionStats.tokens()}
-        diff={sessionStats.diff()}
+      <ActivityLog
+        events={activityLog.events()}
         showScrollbar={ocloopConfig().scrollbar_visible ?? true}
+      />
+
+      {/* Bottom panel: full current task (wrapped) + global run metrics */}
+      <BottomPanel
+        currentTask={currentTask() ?? null}
+        stats={stats}
+        tokens={sessionStats.tokens()}
+        progress={planProgress()}
+        lastEvent={activityLog.events()[activityLog.events().length - 1]}
       />
 
       {/* Overlays */}

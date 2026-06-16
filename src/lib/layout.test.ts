@@ -27,6 +27,12 @@ describe("getLayout — breakpoints & fallback", () => {
     expect(getLayout(100).compact).toBe(false)
   })
 
+  it("short flips at the 18-row threshold", () => {
+    expect(getLayout(80, 17).short).toBe(true)
+    expect(getLayout(80, 18).short).toBe(false)
+    expect(getLayout(80, 60).short).toBe(false)
+  })
+
   it("progress bar grows with width; log content scales", () => {
     expect(getLayout(40).progressWidth).toBeLessThan(getLayout(140).progressWidth)
     expect(getLayout(40).logContentWidth).toBeLessThan(getLayout(140).logContentWidth)

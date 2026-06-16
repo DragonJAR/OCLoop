@@ -2,11 +2,8 @@ import { For, createMemo, Show } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import { useTheme } from "../context/ThemeContext";
 import type { ActivityEvent } from "../hooks/useActivityLog";
-import type { SessionTokens, SessionDiff } from "../hooks/useSessionStats";
-import { formatTokenCount, formatDiffSummary } from "../lib/format";
 import { formatActivityLine, formatTime, type ColorKey } from "../lib/activity-format";
 import { getLayout } from "../lib/layout";
-import { t } from "../lib/i18n";
 
 /**
  * Props for the ActivityLog component
@@ -14,10 +11,6 @@ import { t } from "../lib/i18n";
 export interface ActivityLogProps {
   /** List of activity events to display */
   events: ActivityEvent[];
-  /** Session token statistics */
-  tokens?: SessionTokens;
-  /** Session diff statistics */
-  diff?: SessionDiff;
   /** Whether to show the scrollbar */
   showScrollbar?: boolean;
 }
@@ -25,7 +18,8 @@ export interface ActivityLogProps {
 /**
  * ActivityLog component
  *
- * Displays a scrollable list of activity events.
+ * Displays a scrollable list of activity events. Token/diff stats live in the
+ * BottomPanel now, so this is purely the event stream.
  *
  * Each row shows: `HH:MM:SS  <icon> <message>`
  *
@@ -39,19 +33,16 @@ export interface ActivityLogProps {
  * @example
  * ```tsx
  * const activity = useActivityLog()
- * const stats = useSessionStats()
  *
- * <ActivityLog
- *   events={activity.events()}
- *   tokens={stats.tokens()}
- *   diff={stats.diff()}
- * />
+ * <ActivityLog events={activity.events()} />
  * ```
  */
 export function ActivityLog(props: ActivityLogProps) {
   const { theme } = useTheme();
   const dimensions = useTerminalDimensions();
   // Message width, derived from the real terminal size (re-runs on resize).
+  // This is the SINGLE, width-aware truncation point for log lines — upstream
+  // previews (getToolPreview) must not pre-truncate to a fixed width.
   const contentWidth = () => getLayout(dimensions().width, dimensions().height).logContentWidth;
 
   // Map a semantic color key (from the pure formatter) to a theme color.
@@ -68,7 +59,6 @@ export function ActivityLog(props: ActivityLogProps) {
     }
   };
 
-  // Reverse events so most recent is at the bottom
   const displayEvents = createMemo(() => props.events);
 
   return (
@@ -80,34 +70,6 @@ export function ActivityLog(props: ActivityLogProps) {
         overflow: "hidden",
       }}
     >
-      {/* Stats header */}
-      <Show when={props.tokens && props.diff}>
-        <box
-          style={{
-            height: 2,
-            flexDirection: "row",
-            justifyContent: "space-between",
-            paddingLeft: 1,
-            paddingRight: 1,
-            paddingTop: 1,
-            marginBottom: 1,
-            flexShrink: 0,
-          }}
-        >
-          <text>
-            <span style={{ fg: theme().textMuted }}>
-              {t("logTokens")}{formatTokenCount(props.tokens!.input + props.tokens!.output + props.tokens!.reasoning)}
-              {" "}({t("logTokenIn")}{formatTokenCount(props.tokens!.input)} {t("logTokenOut")}{formatTokenCount(props.tokens!.output)} {t("logTokenRsn")}{formatTokenCount(props.tokens!.reasoning)})
-            </span>
-          </text>
-          <text>
-            <span style={{ fg: theme().textMuted }}>
-              {t("logDiff")}{formatDiffSummary(props.diff!.additions, props.diff!.deletions, props.diff!.files)}
-            </span>
-          </text>
-        </box>
-      </Show>
-
       {/* Event list - scrollable, most recent at bottom */}
       <scrollbox
         stickyScroll={true}
@@ -122,6 +84,9 @@ export function ActivityLog(props: ActivityLogProps) {
         viewportOptions={{
           paddingRight: props.showScrollbar ? 1 : 0,
         }}
+        // ponytail: pack events to the bottom so a short log hugs the fold instead
+        // of leaving a blank band below it (matches stickyStart:"bottom" intent).
+        contentOptions={{ justifyContent: "flex-end" }}
         flexGrow={1}
         style={{
           flexDirection: "column",

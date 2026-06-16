@@ -5,6 +5,7 @@
  */
 
 export { ActivityLog, type ActivityLogProps } from "./ActivityLog"
+export { BottomPanel, type BottomPanelProps } from "./BottomPanel"
 export { Dashboard, type DashboardProps } from "./Dashboard"
 export { DialogCompletion, type DialogCompletionProps } from "./DialogCompletion"
 export { DialogError, type DialogErrorProps } from "./DialogError"

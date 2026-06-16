@@ -1,6 +1,6 @@
 
 import { describe, expect, test } from "bun:test";
-import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown } from "./format";
+import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown, tokensPerMin, wrapText } from "./format";
 
 describe("format utilities", () => {
   describe("truncate (width-exact, …)", () => {
@@ -93,5 +93,36 @@ describe("format utilities", () => {
     expect(stripMarkdown("compute 2 * 3 * 4")).toBe("compute 2 * 3 * 4");
     // Real emphasis still strips.
     expect(stripMarkdown("a _word_ here")).toBe("a word here");
+  });
+
+  describe("tokensPerMin (guards div-by-zero)", () => {
+    test("returns 0 when no time has elapsed", () => {
+      expect(tokensPerMin(1000, 0)).toBe(0);
+      expect(tokensPerMin(1000, -5)).toBe(0);
+    });
+    test("computes tokens per minute", () => {
+      expect(tokensPerMin(600, 60000)).toBe(600);
+      expect(tokensPerMin(300, 30000)).toBe(600);
+    });
+  });
+
+  describe("wrapText (full task across N lines, never cut)", () => {
+    test("keeps a short string on one line", () => {
+      expect(wrapText("hello world", 20)).toEqual(["hello world"]);
+    });
+    test("wraps at word boundaries without exceeding width", () => {
+      const lines = wrapText("the quick brown fox jumps", 10);
+      expect(lines.every((l) => l.length <= 10)).toBe(true);
+      expect(lines.join(" ")).toBe("the quick brown fox jumps");
+    });
+    test("hard-splits a word longer than the width", () => {
+      const lines = wrapText("supercalifragilistic", 5);
+      expect(lines.every((l) => l.length <= 5)).toBe(true);
+      expect(lines.join("")).toBe("supercalifragilistic");
+    });
+    test("returns [] for empty input or non-positive width", () => {
+      expect(wrapText("", 10)).toEqual([]);
+      expect(wrapText("hi", 0)).toEqual([]);
+    });
   });
 });

@@ -27,6 +27,8 @@ export interface Layout {
   taskWidth: number
   /** Narrow terminals drop secondary fields and shorten hints. */
   compact: boolean
+  /** Short terminals (few rows) collapse multi-line panels to a single line. */
+  short: boolean
 }
 
 function clampInt(v: number | undefined, fallback: number): number {
@@ -44,8 +46,10 @@ export function getLayout(cols?: number, rows?: number): Layout {
   const inner = Math.max(10, c - 2)
   // Progress bar scales with space: tiny when cramped, generous when wide.
   const progressWidth = breakpoint === "narrow" ? 6 : breakpoint === "wide" ? 24 : 12
-  // Log prefix: "HH:MM:SS"(8) + "  "(2) + level glyph+space(2) + label(~9) + pad(1) ≈ 22.
-  const logContentWidth = Math.max(16, inner - 22)
+  // Log line prefix: "HH:MM:SS"(8) + "  "(2) + glyph+space(2) + "[label]" padded
+  // to LABEL_WIDTH(11) + 1 = 24. The activity log truncates the message to this
+  // budget (the single, width-aware truncation point — no fixed caps upstream).
+  const logContentWidth = Math.max(16, inner - 24)
   const taskWidth = Math.max(16, inner - 8) // minus the "Task: " prefix + slack
   return {
     cols: c,
@@ -56,6 +60,8 @@ export function getLayout(cols?: number, rows?: number): Layout {
     logContentWidth,
     taskWidth,
     compact: breakpoint === "narrow",
+    // < 18 rows: collapse the bottom panel to one line so it never crowds out the log.
+    short: r < 18,
   }
 }
 
