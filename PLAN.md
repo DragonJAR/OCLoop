@@ -2337,10 +2337,83 @@ run build` verde. Commit `a20f4fb`.
 
 ### Mejora 53 — Finding 12.3.C — LOW — `pickDefined` does not reject unknown keys
 
-- [ ] Evaluar la mejora 53 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 53 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 53 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 53 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 53 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 53 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 53 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 53 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:14916-14956`: `pickDefined`
+(`config.ts:175-180`) filtra `undefined` y `null`
+(post-Mejora 51) pero no verifica que cada key sea un
+campo conocido de `DEFAULT_RESILIENCE`. Un archivo
+hand-edited con `{"resilience": {"createTimeoutMs":
+5000, "totallyMadeUpKey": 42}}` produce un objeto
+resultado que contiene `totallyMadeUpKey: 42`. El
+TypeScript type annotation `Partial<ResilienceConfig>`
+atrapa esto al type level, pero el JSON loader bypasea
+esa layer enteramente (el `as Partial<ResilienceConfig>`
+en el spread es unchecked), así que el extra key
+aterriza en el runtime config object. El impacto
+práctico hoy es cero: todo consumer lee campos
+específicos por nombre. El riesgo es **mantenimiento
+futuro** (cualquier `for (const k of
+Object.keys(resilience))` vería el extra key
+silenciosamente).
+
+El audit confirma que la fix es estrictamente
+defense-in-depth: Mejora 52 (Finding 12.3.B, commit
+`a20f4fb`) ya implementó all-or-nothing deep
+validation en `validateConfigShape` (`config.ts:301-322`),
+así que un `ocloop.json` con un unknown key en
+`resilience` NUNCA llega a `pickDefined` por el path
+del loader. El filtro de `pickDefined` pinea la
+garantía en la layer de abajo, en caso de que un
+refactor futuro debilite el loader, un hand-rolled
+test path pase un raw `Partial<ResilienceConfig>`, o
+un nuevo call site alimente una fuente no tipada.
+
+Implementación mínima: 1 línea modificada en
+`config.ts:183-185` — el filter ahora es
+`[k, v]) => k in DEFAULT_RESILIENCE && v !==
+undefined && v !== null` — + 7 líneas de comentario
+que renombran el docstring de `resolveResilience`
+para nombrar la nueva invariante, el example concreto
+del audit, y el source `MEJORAS.md Finding 12.3.C`.
+Cero cambios a la firma de `resolveResilience`
+(`(Partial<ResilienceConfig>?, Partial<ResilienceConfig>?) => ResilienceConfig`
+intacta), cero cambios a `DEFAULT_RESILIENCE`, cero
+cambios a `validateConfigShape`/`isValidResilienceValue`/
+`loadConfig`/`saveConfig`, cero cambios a los 2 call
+sites de `App.tsx:161, 430` ni al call site de
+`index.tsx:146` (la unknown-key skip es invisible al
+consumer — el `Partial<ResilienceConfig>` typed-input
+ya promete que solo hay keys conocidos, así que el
+filter es observable-equivalente para los call sites
+existentes; la diferencia es únicamente en la robustez
+ante un input no honrado). Cero impacto en el camino
+feliz: las 4 tests preexistentes de `resolveResilience
+— null skip (Finding 12.3.A)` siguen verdes (todos los
+keys usados son conocidos: `createTimeoutMs`,
+`promptTimeoutMs`, `caffeinate`). Cero impacto en los
+8 tests preexistentes de `loadConfig — resilience
+per-field type validation (Finding 12.3.B)`: el
+unknown-key check ya pineado por
+`isValidResilienceValue` corre upstream del spread a
+`out.resilience`, así que un `resilience: undefined`
+en el output del loader fluye a `pickDefined({})` y
+no hay keys (conocidos o no) que filtrar.
+
+Cubierto por 3 tests nuevos en `config.test.ts`:
+file-layer drop (caso central del audit, `createTimeoutMs
++ totallyMadeUpKey`), CLI-layer drop (paralelo, defensivo
+ante un futuro call site), y mixed known+unknown en la
+misma layer (2 conocidos + 2 unknowns, confirma que el
+filter compone en una sola pasada). `bun test` verde:
+750 pass / 1 skip / 0 fail (era 747 / 1 / 0), 1784
+expect() calls (era 1776), 25 files, 340 ms — +3 tests,
++8 expects, sin cambio en el conteo de archivos. `bun
+run build` verde. Commit `fbfeb69`.
 
 ### Mejora 54 — Finding 12.5.E — LOW — `logDiff` is defined but never referenced
 
