@@ -22119,3 +22119,225 @@ mitigated by URL uniqueness in the existing test.
 No code changes recommended for the production code. The 16.6.B test fix is
 optional (the test still catches the most likely regression — total cache
 explosion — and is the only test exercising the eviction path at all).
+
+---
+
+## Phase 16.7 — `console.log`/`console.error` vs `log.*` consistency audit
+
+Source: `src/lib/debug-logger.ts` (`log` singleton, exported as the
+project-wide structured logger) · 67 raw `console.*` call sites in
+`src/**/*.{ts,tsx}` (excluding `node_modules` and build output).
+
+### Scope of the audit
+
+The project exposes a single `log` singleton (`src/lib/debug-logger.ts:123`)
+with methods `info`, `warn`, `error`, `debug`, `health` that write structured
+entries to `.loop.log` (rotated to `.loop.log.old` on session start). Ten
+production modules import it: `App.tsx`, `index.tsx`, `config.ts`,
+`terminal-launcher.ts`, `loop-state-store.ts`, `power.ts`, `project.ts`,
+`useServer.ts`, `useSSE.ts`, `useWatchdog.ts`. The remaining 67
+`console.log`/`console.error`/`console.warn` call sites in `src/` are
+classified below.
+
+### Classification — Production code that should use `log` (but does not)
+
+| File:line | Call | Severity | Notes |
+| --- | --- | --- | --- |
+| `src/App.tsx:784` | `console.error("Cannot start iteration: server not ready")` | LOW | Should be `log.error("session", ...)`. TUI is rendering at this point so `log` is initialized. |
+| `src/App.tsx:1150` | `console.error("Failed to initialize session:", err)` | LOW | Should be `log.error("startup", "Failed to initialize session", err)`. TUI is rendering, `log` is initialized. |
+| `src/lib/shutdown.ts:59` | `console.error("Shutdown timed out after ${signal}; forcing exit to avoid hanging.")` | LOW | Should be `log.error("shutdown", ...)`. The `log` singleton writes synchronously (`fs.appendFileSync`) so a final write in the failsafe path is safe. |
+| `src/lib/shutdown.ts:72` | `console.error("Error during shutdown (${signal}):", error)` | LOW | Should be `log.error("shutdown", "Error during shutdown", error)`. Same reasoning. |
+| `src/context/CommandContext.tsx:34` | `console.warn("Command.register called outside of reactive scope, manual cleanup required (not implemented)")` | LOW | Should be `log.warn("command", ...)`. TUI context, `log` is initialized. |
+
+### Classification — Production code with `console.*` (intentional, documented)
+
+These call sites are **correct as written**. Documented so future audits
+don't re-flag them.
+
+| File:line(s) | Call | Why `console.*` is correct here |
+| --- | --- | --- |
+| `src/lib/debug-logger.ts:51` | `console.error("Failed to initialize debug log:", err)` | **Cannot use `log`** — this is inside the `DebugLogger` constructor's failure path. `log` is the very thing being initialized, so the fallback must be `console.error` to avoid infinite recursion. |
+| `src/lib/cli-args.ts:24, 32` | `console.log` for `--version` and `--help` | CLI parse path runs **before** `log.sessionStart()` is called. These are user-facing CLI output (stdout) — they should go to the terminal directly, not to a log file. The user typed `ocloop --version` and expects the version to be printed, not buried in `.loop.log`. |
+| `src/lib/cli-args.ts:80, 87, 92, 97, 98, 105, 112, 121, 126, 139, 147, 151, 231, 252, 259` | `console.error` for CLI parse errors | Same reason: runs before `log.sessionStart()`. These are user-facing stderr — the user typed an invalid flag and expects to see the error on stderr, not buried in `.loop.log`. |
+| `src/index.tsx:38, 53, 157, 215` | `console.error` for `validatePrerequisites` / `runCreatePlan` errors | `validatePrerequisites` runs **before** `log.sessionStart()` is called (line 326). The plan-generator also runs before TUI/logger init. User-facing stderr is the correct channel. |
+| `src/index.tsx:51, 149, 150, 153, 161, 178, 222, 223, 224, 231, 233, 239, 246` | `console.log` for `--create-plan` interactive output | The plan generator is a **headless** TTY-only interactive CLI that runs before TUI/logger init. It uses `console.log` to print the proposed plan, the `cpTitle`, `cpGenerating`, `cpSaved` banners etc. — all user-facing stdout. Cannot be `log.*` because the log file isn't open yet. |
+| `src/index.tsx:250, 297, 302, 359` | `console.error` in `try/catch` / `uncaughtException` / `unhandledRejection` / `main().catch` | Process-level error handlers. `log.sessionStart()` may or may not have run yet (the `unhandledRejection` handler runs at any time). Falling back to `console.error` is the correct belt-and-suspenders behavior — the user needs to see the crash, not just the log file. |
+| `src/lib/activity-format.ts:165, 168, 177, 182, 183, 184, 185` | `console.log` in preview harness | Wrapped in `if (import.meta.main)` (line 142). Runs only when `bun run src/lib/activity-format.ts` is invoked explicitly. The output **is** the demo — it shows the "BEFORE / AFTER" layout comparison to the human. Using `log` would write to `.loop.log` and break the demo. |
+
+### Classification — Test code (intentional mocks)
+
+| File:line(s) | Call | Why `console.*` is correct here |
+| --- | --- | --- |
+| `src/lib/cli-args.test.ts:18, 19, 25, 28, 40, 41` | `console.error = ...` / `console.log = ...` monkey-patches | Test fixture: `runParse` captures `console.log`/`console.error` output so individual test cases can assert on what `parseArgs` printed. The whole point is to **not** use `log` (which writes to disk and would pollute `.loop.log` during `bun test`). |
+| `src/lib/cli-args.test.ts:1225` | `console.error(...)` inside a JSDoc comment | JSDoc-quoted code, not a live call. Shows the `requireValue` rule for the test at line 1220+ ("Phase 1 Task 1.9"). Not a real call. |
+
+### Classification — JSDoc examples (no actual call)
+
+These appear inside JSDoc/TSDoc ` * ` comment blocks, not as live code. They
+are illustrative usage examples for the public API of each hook/signal.
+
+| File:line(s) | JSDoc example | Hook documented |
+| --- | --- | --- |
+| `src/hooks/useLoopState.ts:283` | `console.log("Loop is running, iteration:", loop.iteration())` | `useLoopState` consumer example |
+| `src/hooks/useServer.ts:66` | `console.log("Server ready at", server.url())` | `useServer` consumer example |
+| `src/hooks/useSSE.ts:284, 288, 295` | `console.log("Session idle:", sessionId)` etc. | `useSSE` consumer example |
+| `src/hooks/useLoopStats.ts:62, 63` | `console.log("Elapsed:", ...)` | `useLoopStats` consumer example |
+
+These are **not bugs**. They are documentation showing how a downstream
+consumer of the hook would log values. The audit should ignore them.
+
+### Finding 16.7.A — LOW — Duplicated `log.error` + `console.error` in `createDebugSession`
+
+**Problem.** `src/App.tsx:883-884` calls **both** `log.error(...)` and
+`console.error(...)` for the same "Cannot create debug session: server not
+ready" message:
+
+```ts
+if (!url) {
+  log.error("session", "Cannot create debug session: server not ready")
+  console.error("Cannot create debug session: server not ready")
+  return
+}
+```
+
+The `log.error` line was added when the file was migrated to use the
+structured logger, but the original `console.error` was left in place. The
+result is that the same message appears twice in `.loop.log` (once via
+`log.error`, once via the un-captured `console.error` falling through to
+stderr, and once more in `.loop.log` if stderr is redirected).
+
+**Where.** `src/App.tsx:883-884`.
+
+**Proposed fix.** Delete the `console.error` line. The `log.error` above
+already records the event with the `"session"` context.
+
+**Severity: LOW.** Not a runtime bug — the debug-session code path is only
+exercised in `--debug` mode and the duplicate message is harmless. The
+issue is **code quality**: a `grep console.error` audit reports 4 hits in
+`App.tsx` when there should be 3 (the 3 real findings above).
+
+### Finding 16.7.B — INFO — `index.tsx` runs in a "log-not-yet-initialized" window
+
+**Problem.** `src/index.tsx:38, 53, 157, 215, 250, 297, 302, 359` use
+`console.error` because the logger may not be initialized yet. The
+`log.sessionStart()` call sits at `index.tsx:326`, **after** the
+`validatePrerequisites` (line 343), the `parseArgs` call (line 311), and
+the `if (args.createPlan)` branch (line 320). Any error raised in those
+three early phases cannot reach the structured logger.
+
+This is **not a bug** — `console.error` is the correct fallback. But it
+means: if the user runs `ocloop --create-plan "build a thing"` and the
+server fails to start, the error is **only** on stderr, never in
+`.loop.log`. A user debugging "why didn't my plan generate?" will only see
+`! Error: server failed to start` on their terminal — no audit trail.
+
+**Where.** `src/index.tsx:28-260` (everything before `log.sessionStart()`).
+
+**Proposed fix.** (Optional.) Move `log.sessionStart()` to the **top** of
+`main()` — before `validatePrerequisites`, before the `args.createPlan`
+branch. This way:
+
+- The session header is always written (even for `--help` / `--version`
+  we may want to skip it; gate behind a "did we render the TUI?" check).
+- All `console.error` calls below it can be converted to `log.error`
+  with no behavior change.
+- Crash forensics from `--create-plan` and the CLI parse path become
+  visible in `.loop.log`.
+
+**Severity: INFO.** Current behavior is correct. The fix improves
+post-incident analysis at the cost of creating a `.loop.log` for every
+`ocloop` invocation, even quick `--help` calls. The trade-off is
+defensible either way; documented for completeness.
+
+### Finding 16.7.C — INFO — `validatePrerequisites` and the `--debug` auto-create path
+
+**Problem.** `src/index.tsx:48-58` (`validatePrerequisites`) auto-creates
+the default loop-prompt file when it's missing:
+
+```ts
+if (!promptExists) {
+  if (args.promptFile === DEFAULTS.PROMPT_FILE) {
+    await Bun.write(args.promptFile, t("defaultLoopPrompt"))
+    console.log(t("promptCreated", { path: args.promptFile }))
+  } else {
+    console.error(t("errPromptNotFound", { path: args.promptFile }))
+    process.exit(1)
+  }
+}
+```
+
+Both the success path (`promptCreated`) and the error path
+(`errPromptNotFound`) use `console.*` for the same reason as 16.7.B: the
+logger isn't initialized yet. The success message is informational
+(stdout) and the error message is fatal (stderr + `process.exit(1)`).
+Both are correct.
+
+**Where.** `src/index.tsx:48-58`.
+
+**Severity: INFO.** Documented so the next auditor doesn't re-flag this
+line. No action needed.
+
+### Verification result
+
+- **Five production sites** (`App.tsx:784, 1150` · `shutdown.ts:59, 72` ·
+  `CommandContext.tsx:34`) should be migrated to `log.*` for consistency.
+  The cost is 5 single-line edits; the benefit is `grep console.error
+  src/` returns 0 hits in app code outside the documented "before logger
+  init" window.
+- **One duplicate** (`App.tsx:884`) — `console.error` left behind after
+  `log.error` was added. Should be removed.
+- **Eighteen `console.*` sites are intentional** (CLI parse path, plan
+  generator, debug-logger fallback, demo harness, test mocks) and should
+  not be changed.
+- **Eight JSDoc/example sites** are not live code; ignored.
+- **No CRITICAL or HIGH findings.** All five LOW sites are polish-grade.
+- **No code changes applied** (audit-only per PLAN.md acceptance criteria).
+
+A mechanical refactor that would close the five LOW findings:
+
+```ts
+// src/App.tsx:784
+- console.error("Cannot start iteration: server not ready")
++ log.error("session", "Cannot start iteration: server not ready")
+
+// src/App.tsx:884 (the duplicate)
+- log.error("session", "Cannot create debug session: server not ready")
+- console.error("Cannot create debug session: server not ready")
++ log.error("session", "Cannot create debug session: server not ready")
+
+// src/App.tsx:1150
+- console.error("Failed to initialize session:", err)
++ log.error("startup", "Failed to initialize session", err)
+
+// src/lib/shutdown.ts:59
+- console.error(`Shutdown timed out after ${signal}; forcing exit to avoid hanging.`)
++ log.error("shutdown", `Shutdown timed out after ${signal}; forcing exit to avoid hanging.`)
+
+// src/lib/shutdown.ts:72
+- console.error(`Error during shutdown (${signal}):`, error)
++ log.error("shutdown", `Error during shutdown (${signal})`, error)
+
+// src/context/CommandContext.tsx:34
+- console.warn("Command.register called outside of reactive scope, manual cleanup required (not implemented)")
++ log.warn("command", "Command.register called outside of reactive scope, manual cleanup required (not implemented)")
+```
+
+If the `shutdown.ts` changes are applied, add an import:
+`import { log } from "./debug-logger"`. `App.tsx` and `CommandContext.tsx`
+already import `log`.
+
+### Cross-reference
+
+- The `log` singleton: `src/lib/debug-logger.ts:123` (export). The
+  `health()` method (`src/lib/debug-logger.ts:89-91`) is the structured
+  channel for the watchdog — it should be the only writer of
+  `[HEALTH] ...` lines in `.loop.log`.
+- Migration pattern used elsewhere: when a module's first error path is
+  converted to `log.error`, the prior `console.error` is removed in the
+  same commit (see `useSSE.ts:4` import — the file has zero `console.*`
+  call sites, suggesting the migration was clean). The five remaining LOW
+  sites are residual migrations that were left half-done.
+- Audit scope note: this audit covers `src/**/*.{ts,tsx}` only. The
+  `dist/` build output and `node_modules` are excluded by definition
+  (they don't ship in source-control).
+

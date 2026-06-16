@@ -173,7 +173,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Identify and document duplicated session ID resolution (`sessionId() || lastSessionId()`)
 - [x] Identify and document any unnecessary re-renders caused by signal reads in effects that don't depend on those signals
 - [x] Audit `createClient` cache: verify the eviction policy (oldest half) is correct and the cache doesn't grow unbounded in long sessions with many server restarts
-- [ ] Document any `console.log`/`console.error` calls that should use `log` instead for consistency
+- [x] Document any `console.log`/`console.error` calls that should use `log` instead for consistency
 
 ## Phase 17 — Unhandled Exceptions & Missing Guards
 
