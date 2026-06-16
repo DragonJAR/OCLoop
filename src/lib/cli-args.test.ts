@@ -62,10 +62,12 @@ describe("parseArgs — defaults & single flags", () => {
   })
 
   it("value flags capture their argument (long & short)", () => {
+    expect(runParse(["-p", "0"]).args?.port).toBe(0)
     expect(runParse(["-p", "5000"]).args?.port).toBe(5000)
+    expect(runParse(["--port", "65535"]).args?.port).toBe(65535)
     expect(runParse(["--port", "4096"]).args?.port).toBe(4096)
-    expect(runParse(["-m", "glm-5.2"]).args?.model).toBe("glm-5.2")
-    expect(runParse(["--model", "claude"]).args?.model).toBe("claude")
+    expect(runParse(["-m", "zai-coding-plan/glm-5.2"]).args?.model).toBe("zai-coding-plan/glm-5.2")
+    expect(runParse(["--model", "opencode/claude"]).args?.model).toBe("opencode/claude")
     expect(runParse(["-a", "build"]).args?.agent).toBe("build")
     expect(runParse(["--prompt", "p.md"]).args?.promptFile).toBe("p.md")
     expect(runParse(["--plan", "x.md"]).args?.planFile).toBe("x.md")
@@ -90,12 +92,10 @@ describe("parseArgs — defaults & single flags", () => {
       .toEqual({ caffeinate: true })
   })
 
-  it("unknown flags are ignored, defaults preserved", () => {
-    const { args } = runParse(["--totally-unknown", "value"])
-    expect(args).toEqual({
-      promptFile: DEFAULTS.PROMPT_FILE,
-      planFile: DEFAULTS.PLAN_FILE,
-    })
+  it("unknown flags fail with a clear error", () => {
+    const result = runParse(["--totally-unknown", "value"])
+    expect(result.exitCode).toBe(1)
+    expect(result.errors.join("\n")).toContain("unknown argument")
   })
 })
 
@@ -119,16 +119,29 @@ describe("parseArgs — help/version exit", () => {
 describe("parseArgs — invalid input exits 1", () => {
   const bad: Array<[string, string[]]> = [
     ["--port non-numeric", ["--port", "abc"]],
+    ["--port partial integer", ["--port", "123abc"]],
+    ["--port decimal", ["--port", "123.4"]],
+    ["--port negative", ["--port", "-1"]],
+    ["--port above TCP range", ["--port", "65536"]],
     ["--port missing arg", ["--port"]],
     ["--model missing arg", ["--model"]],
+    ["--model bare model", ["--model", "claude-sonnet-4"]],
+    ["--model empty provider", ["--model", "/claude-sonnet-4"]],
+    ["--model empty model", ["--model", "anthropic/"]],
+    ["--model extra slash", ["--model", "anthropic/family/model"]],
     ["--agent missing arg", ["--agent"]],
     ["--prompt missing arg", ["--prompt"]],
     ["--plan missing arg", ["--plan"]],
     ["--lang invalid", ["--lang", "fr"]],
     ["--resilience no equals", ["--resilience", "foo"]],
+    ["--resilience empty value", ["--resilience", "backoffBaseMs="]],
     ["--resilience unknown key", ["--resilience", "bogus=1"]],
     ["--resilience non-number", ["--resilience", "backoffBaseMs=abc"]],
+    ["--resilience negative number", ["--resilience", "backoffBaseMs=-1"]],
+    ["--resilience decimal count", ["--resilience", "maxRateLimitRetries=1.5"]],
+    ["--resilience invalid boolean", ["--resilience", "caffeinate=maybe"]],
     ["--resilience missing arg", ["--resilience"]],
+    ["unknown positional arg", ["PLAN.md"]],
   ]
   for (const [name, argv] of bad) {
     it(`${name} → exit 1 with a message`, () => {
@@ -137,6 +150,12 @@ describe("parseArgs — invalid input exits 1", () => {
       expect(r.errors.join("\n")).toContain("Error")
     })
   }
+
+  it("--model bare model explains provider/model format", () => {
+    const r = runParse(["--model", "claude-sonnet-4"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("provider/model")
+  })
 })
 
 describe("parseArgs — pairwise combinations of interacting params", () => {
@@ -147,9 +166,9 @@ describe("parseArgs — pairwise combinations of interacting params", () => {
   })
 
   it("--create-plan + -m + -a", () => {
-    const { args } = runParse(["-c", "-m", "glm-5.2", "-a", "plan"])
+    const { args } = runParse(["-c", "-m", "zai-coding-plan/glm-5.2", "-a", "plan"])
     expect(args?.createPlan).toBe(true)
-    expect(args?.model).toBe("glm-5.2")
+    expect(args?.model).toBe("zai-coding-plan/glm-5.2")
     expect(args?.agent).toBe("plan")
   })
 
@@ -169,9 +188,9 @@ describe("parseArgs — pairwise combinations of interacting params", () => {
   })
 
   it("adjacent value-consuming flags don't swallow each other", () => {
-    const { args } = runParse(["--port", "8080", "--model", "m1"])
+    const { args } = runParse(["--port", "8080", "--model", "opencode/m1"])
     expect(args?.port).toBe(8080)
-    expect(args?.model).toBe("m1")
+    expect(args?.model).toBe("opencode/m1")
   })
 
   it("repeated --resilience accumulates; last wins on conflict", () => {

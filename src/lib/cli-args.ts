@@ -14,6 +14,8 @@ import { isLocale } from "./i18n"
 
 // Read version from package.json (repo root, two levels up from src/lib).
 const VERSION = require("../../package.json").version
+const PORT_RE = /^\d+$/
+const MODEL_RE = /^[^\s/]+\/[^\s/]+$/
 
 /**
  * Display version and exit
@@ -38,10 +40,10 @@ the opencode TUI embedded and visible throughout.
 
 Options:
   -p, --port <number>      Server port (opencode defaults: try 4096, then random)
-  -m, --model <string>     Model to use (passed to opencode)
+  -m, --model <provider/model> Model to use (for example openai/gpt-5)
   -a, --agent <string>     Agent to use (passed to opencode)
   -r, --run                Start iterations immediately (default: wait for [S])
-  -c, --create-plan        Interactively generate PLAN.md (model glm-5.2, agent plan)
+  -c, --create-plan        Interactively generate PLAN.md (model zai-coding-plan/glm-5.2, agent plan)
   -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
   --verbose                Enable verbose logging (keyboard events, etc.)
   --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
@@ -58,7 +60,7 @@ Examples:
   ocloop                           # Start, wait for [S] to begin
   ocloop --create-plan             # Generate a PLAN.md interactively, then exit
   ocloop -r                        # Start iterations immediately
-  ocloop -m claude-sonnet-4        # Use specific model
+  ocloop -m opencode/claude-sonnet-4 # Use specific provider/model
   ocloop -a plan                   # Use specific agent
   ocloop --plan my-plan.md         # Use custom plan file
 `)
@@ -81,6 +83,11 @@ export function applyResilienceOverride(
   const key = kv.slice(0, eq).trim()
   const raw = kv.slice(eq + 1).trim()
 
+  if (!raw) {
+    console.error(`Error: --resilience ${key || "<empty>"} requires a non-empty value`)
+    process.exit(1)
+  }
+
   if (!(key in DEFAULT_RESILIENCE)) {
     console.error(`Error: unknown resilience key "${key}"`)
     console.error(`Valid keys: ${Object.keys(DEFAULT_RESILIENCE).join(", ")}`)
@@ -89,15 +96,46 @@ export function applyResilienceOverride(
 
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") {
+    if (raw !== "true" && raw !== "false" && raw !== "1" && raw !== "0") {
+      console.error(`Error: --resilience ${key} expects a boolean (true/false/1/0), got "${raw}"`)
+      process.exit(1)
+    }
     ;(target as Record<string, unknown>)[key] = raw === "true" || raw === "1"
   } else {
     const num = Number(raw)
-    if (!Number.isFinite(num)) {
-      console.error(`Error: --resilience ${key} expects a number, got "${raw}"`)
+    if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
+      console.error(`Error: --resilience ${key} expects a non-negative integer, got "${raw}"`)
       process.exit(1)
     }
     ;(target as Record<string, unknown>)[key] = num
   }
+}
+
+function parsePort(portStr: string | undefined): number {
+  if (!portStr || !PORT_RE.test(portStr)) {
+    console.error("Error: --port requires a full integer argument")
+    process.exit(1)
+  }
+  const port = Number(portStr)
+  if (port < 0 || port > 65535) {
+    console.error("Error: --port must be in TCP range 0..65535")
+    process.exit(1)
+  }
+  return port
+}
+
+function parseModel(model: string | undefined): string {
+  if (!model) {
+    console.error("Error: --model requires an argument")
+    process.exit(1)
+  }
+  if (!MODEL_RE.test(model)) {
+    console.error(
+      `Error: --model expects provider/model (for example openai/gpt-5), got "${model}"`,
+    )
+    process.exit(1)
+  }
+  return model
 }
 
 /**
@@ -128,21 +166,12 @@ export function parseArgs(argv: string[]): CLIArgs {
       case "-p":
       case "--port":
         const portStr = argv[++i]
-        if (!portStr || isNaN(parseInt(portStr, 10))) {
-          console.error("Error: --port requires a numeric argument")
-          process.exit(1)
-        }
-        args.port = parseInt(portStr, 10)
+        args.port = parsePort(portStr)
         break
 
       case "-m":
       case "--model":
-        const model = argv[++i]
-        if (!model) {
-          console.error("Error: --model requires an argument")
-          process.exit(1)
-        }
-        args.model = model
+        args.model = parseModel(argv[++i])
         break
 
       case "-a":
@@ -224,8 +253,8 @@ export function parseArgs(argv: string[]): CLIArgs {
         break
 
       default:
-        // Unknown argument - ignore for now (could warn)
-        break
+        console.error(`Error: unknown argument "${arg}"`)
+        process.exit(1)
     }
   }
 
