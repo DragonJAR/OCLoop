@@ -2417,10 +2417,50 @@ run build` verde. Commit `fbfeb69`.
 
 ### Mejora 54 — Finding 12.5.E — LOW — `logDiff` is defined but never referenced
 
-- [ ] Evaluar la mejora 54 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 54 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 54 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 54 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 54 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 54 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 54 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 54 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es que la wiring se perdió en un refactor: la
+data (`sessionStats.diff()` con `{additions, deletions, files}`) y el
+formatter (`formatDiffSummary` en `format.ts:46`) ya existían y se
+usaban en tests (`useSessionStats.test.ts:60`, `format.test.ts:62-64`),
+pero ninguna UI los consumía. La opción (a) "wire it up" del audit
+(`MEJORAS.md:15355-15367`) es estrictamente superior a la opción (b)
+"remove + `ponytail:` comment": la primera cierra el dead catalog
+entry Y le da al usuario la única señal visible de "qué archivos
+cambió el agent en este run" — información que ya está siendo
+recolectada por `useSSE.ts:466` (`onSessionDiff` handler) y enviada
+al `setDiff` del store, pero que nunca llegaba a la pantalla.
+Implementación mínima:
+
+- `src/components/BottomPanel.tsx`: añadir `diff: SessionDiff` a las
+  props (importando el type de `useSessionStats`); añadir un
+  `LabelValue` con `t("logDiff")` + `formatDiffSummary(additions,
+  deletions, files)` al bloque de métricas globales; añadir el
+  segmento `${t("logDiff")}…` al `compactLine` fallback
+  (`fitSegments` lo descarta si no entra en la anchura).
+- `src/App.tsx`: pasar `sessionStats.diff()` al `<BottomPanel>`.
+
+Cero cambios al reducer, cero cambios al SSE handler, cero cambios al
+`useSessionStats` hook, cero cambios a `format.ts`. Cero impacto en el
+camino feliz (la label "Diff:" + "+0/-0 (0)" se renderiza en el primer
+tick, igual que "Tokens: 0" o "Avg/task 0s"). Cero impacto en el
+short-circuit `--create-plan` (BottomPanel no se monta en ese flujo).
+Cero impacto en la ruta de `cooldown`/`error` (la métrica es
+read-only, no consume el reducer).
+
+Sin nuevos tests: el contrato de `formatDiffSummary` ya está pineado
+en `format.test.ts:62-64` ("formatDiffSummary formats correctly",
+`+10/-5 (2)`); el contrato de `useSessionStats.diff`/`setDiff` ya
+está pineado en `useSessionStats.test.ts:56-69` ("should update diff
+summary"); el contrato de `t("logDiff")` lo pinea su único call site
+(compilador TS, ya que es key del `Record<MessageKey, Msg>`); y la
+documentación de `docs/testing.md:14` prohíbe explícitamente tests de
+componentes TUI que importen `@opentui/solid`. `bun test` verde: 750
+pass / 1 skip / 0 fail (sin cambio en el conteo). `bun run build`
+verde. Commit `d15efe8`.
 
 ### Mejora 55 — Finding 15.4.A — LOW — `handleQuit` lacks a module-level `isShuttingDown` guard
 
