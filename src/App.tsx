@@ -201,6 +201,25 @@ function AppContent(props: AppProps) {
   // at the end of handleQuit guarantees the flag is reset by process
   // death. Source: MEJORAS.md Finding 15.4.A.
   let isShuttingDown = false
+  // Process-scoped re-entry guard for restartServer. Closes the
+  // concurrent-call race window: the watchdog recovery path
+  // (`useWatchdog.ts:205` → `options.actions.restartServer()`) and
+  // the SSE-exhaustion path (`App.tsx:1421` → `void
+  // restartServer()`) and the user-driven command palette entry
+  // (`App.tsx:1711`) all call restartServer independently. Two
+  // concurrent callers would otherwise produce a duplicate
+  // `actGuardRestart` activity event, a duplicate
+  // `reconcileAndAdvance()` (wasted API round-trip), and two SSE
+  // reconnect attempts. The underlying hooks are individually
+  // idempotent or guard-protected (useServer.restart's
+  // `status() === "starting"` guard from Mejora 27, useSSE's
+  // `myController` pattern), so the duplicate is wasteful rather
+  // than correctness-breaking — but the user-visible duplicate
+  // activity entry is enough to warrant the guard. Unlike
+  // `isShuttingDown`, the function does NOT end in `process.exit`,
+  // so the flag is reset in a `finally` to allow subsequent
+  // sequential restarts. Source: MEJORAS.md Finding 15.7.B.
+  let restartServerInProgress = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
 
@@ -713,18 +732,24 @@ function AppContent(props: AppProps) {
    * URL, and reconcile the in-flight session. Used by the watchdog and on wake.
    */
   async function restartServer(): Promise<void> {
-    log.health("server", "recovery_restart", { url: server.url() })
-    activityLog.addEvent("error", t("actGuardRestart"))
-    await server.restart()
-    sse.reconnect()
-    const verdict = await reconcileAndAdvance()
-    // If the session survived the restart and is still working, grant it a fresh
-    // heartbeat window. Otherwise the watchdog would re-measure silence from the
-    // now-stale pre-restart timestamp and trip STUCK again on the very next tick,
-    // collapsing the recovery ladder into a near-instant circuit-breaker fail.
-    // (recoveryAttempts is NOT reset, so the breaker still bounds total attempts.)
-    if (verdict === "working") {
-      watchdog.notifyWake()
+    if (restartServerInProgress) return
+    restartServerInProgress = true
+    try {
+      log.health("server", "recovery_restart", { url: server.url() })
+      activityLog.addEvent("error", t("actGuardRestart"))
+      await server.restart()
+      sse.reconnect()
+      const verdict = await reconcileAndAdvance()
+      // If the session survived the restart and is still working, grant it a fresh
+      // heartbeat window. Otherwise the watchdog would re-measure silence from the
+      // now-stale pre-restart timestamp and trip STUCK again on the very next tick,
+      // collapsing the recovery ladder into a near-instant circuit-breaker fail.
+      // (recoveryAttempts is NOT reset, so the breaker still bounds total attempts.)
+      if (verdict === "working") {
+        watchdog.notifyWake()
+      }
+    } finally {
+      restartServerInProgress = false
     }
   }
 
