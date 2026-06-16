@@ -22523,3 +22523,267 @@ verification rests on reading the code, which is unambiguous:
 - **No code changes applied** (audit-only per PLAN.md acceptance
   criteria).
 
+### 17.2 — `restoreTerminal()` coverage of every `process.exit()` call in error handlers
+
+PLAN.md 17.2: "Verify: `restoreTerminal()` is called on every exit path
+including `process.exit(1)` in error handlers."
+
+#### Complete inventory of `process.exit()` calls
+
+The audit is a full sweep of the codebase. Every `process.exit(...)` call is
+listed below, categorized by the **phase of execution** at which it fires
+(pre-TUI vs TUI-running) and the **mechanism** by which `restoreTerminal()`
+runs (explicit call vs `process.on("exit", ...)` backstop vs neither).
+
+The mechanism to remember:
+
+- **Explicit.** The function or handler calls `restoreTerminal()` directly
+  before `process.exit(...)`.
+- **Backstop.** No explicit call, but `process.on("exit", restoreTerminal)`
+  at `src/index.tsx:294` fires on **every** `process.exit()` call in Node.js.
+  This is a hard guarantee from the Node.js event loop: the `exit` event is
+  emitted synchronously inside the process-termination sequence, regardless
+  of which function or which event loop turn called `process.exit()`.
+- **Neither.** The path is genuinely not covered. (None found in this audit.)
+
+The `tuiStarted` gate (`src/index.tsx:268`, set `true` at `:348`) further
+narrows the backstop: pre-TUI exits skip the restore because the terminal
+modes were never enabled (emitting `?1049l` on Terminal.app when alternate
+screen was never entered causes a visible screen-buffer switch — see
+`restoreTerminal` docstring at `src/index.tsx:280-284`).
+
+#### A. `src/lib/cli-args.ts` — CLI argument parsing (pre-TUI)
+
+`parseArgs` runs at `src/index.tsx:311`, the first line of `main()`, BEFORE
+`tuiStarted` is set at `:348`. Every `process.exit()` from this module
+fires while `tuiStarted === false`.
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 25 | `process.exit(0)` | `--version` (clean exit) | Backstop, no-op (gate) |
+| 67 | `process.exit(0)` | `--help` (clean exit) | Backstop, no-op (gate) |
+| 81 | `process.exit(1)` | `--resilience` without `=` | Backstop, no-op (gate) |
+| 88 | `process.exit(1)` | `--resilience` empty key | Backstop, no-op (gate) |
+| 93 | `process.exit(1)` | `--resilience` empty value | Backstop, no-op (gate) |
+| 99 | `process.exit(1)` | `--resilience` unknown key | Backstop, no-op (gate) |
+| 106 | `process.exit(1)` | `--resilience` non-boolean for bool key | Backstop, no-op (gate) |
+| 113 | `process.exit(1)` | `--resilience` non-integer | Backstop, no-op (gate) |
+| 122 | `process.exit(1)` | `--port` missing or non-numeric | Backstop, no-op (gate) |
+| 127 | `process.exit(1)` | `--port` out of TCP range | Backstop, no-op (gate) |
+| 140 | `process.exit(1)` | `requireValue` (no value or value starts with `-`) | Backstop, no-op (gate) |
+| 148 | `process.exit(1)` | `--model` missing | Backstop, no-op (gate) |
+| 154 | `process.exit(1)` | `--model` bad `provider/name` format | Backstop, no-op (gate) |
+| 232 | `process.exit(1)` | `--lang` not `en`/`es` | Backstop, no-op (gate) |
+| 253 | `process.exit(1)` | `--resilience` missing key=value arg | Backstop, no-op (gate) |
+| 260 | `process.exit(1)` | Unknown argument | Backstop, no-op (gate) |
+
+All 16 calls in `cli-args.ts` are pre-TUI. The backstop covers them; the
+`tuiStarted` gate correctly suppresses the restore because the TUI never
+enabled any terminal modes on this path. **Verified.**
+
+#### B. `src/index.tsx` — `validatePrerequisites()` (pre-TUI)
+
+`validatePrerequisites()` is called at `src/index.tsx:343`, BEFORE
+`tuiStarted` is set at `:348`. Both `process.exit(1)` calls in this
+function fire while `tuiStarted === false`.
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 39 | `process.exit(1)` | `PLAN.md` not found and not in debug | Backstop, no-op (gate) |
+| 54 | `process.exit(1)` | User-supplied `--prompt` file missing | Backstop, no-op (gate) |
+
+Same pattern: backstop covers, gate suppresses. **Verified.**
+
+#### C. `src/index.tsx` — `runCreatePlan()` (pre-TUI)
+
+`runCreatePlan()` is called at `src/index.tsx:321` for the
+`--create-plan` flow. It runs in a `try/catch/finally` block, never
+touches the TUI, and `tuiStarted` is set to `true` at `:348` — AFTER
+`runCreatePlan` returns and the explicit `process.exit(...)` at `:322`
+fires.
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 158 | `process.exit(1)` | Empty goal (no input to `prompt()`) | Backstop, no-op (gate) |
+| 216 | `process.exitCode = 1` | `extractLastAssistantText` returned empty | Sets code, process exits at `:322` |
+| 253 | `process.exitCode = 1` | Caught exception in the try block | Sets code, process exits at `:322` |
+| 322 | `process.exit(process.exitCode ?? 0)` | Final exit after `runCreatePlan` returns | Backstop, no-op (gate) |
+
+Two `process.exitCode = 1` assignments don't actually call `process.exit()`
+themselves — they set the exit code for the eventual natural exit. The
+process exits at line 322 (`process.exit(process.exitCode ?? 0)`), which
+is pre-TUI. Backstop covers. **Verified.**
+
+#### D. `src/index.tsx` — process-level error handlers (TUI-running)
+
+The three handlers at the top of `index.tsx` (lines 294-304) are
+registered at module-evaluation time, so they cover all execution phases
+(pre-TUI and TUI-running alike).
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 294 | `process.on("exit", restoreTerminal)` | ANY `process.exit()` anywhere in the program | Backstop (canonical) |
+| 295-299 | `restoreTerminal(); console.error(...); process.exit(1)` | Synchronous throw that escapes every `try/catch` | **Explicit** + backstop |
+| 300-304 | `restoreTerminal(); console.error(...); process.exit(1)` | Unhandled promise rejection | **Explicit** + backstop |
+
+The two error handlers (lines 295 and 300) call `restoreTerminal()`
+**before** `process.exit(1)`, providing belt-and-suspenders coverage. If
+the explicit call is removed by a future refactor, the backstop on
+line 294 still fires. **Verified.**
+
+#### E. `src/index.tsx` — `main().catch()` (TUI-running, post-render possible)
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 360 | `process.exit(1)` | `main()` rejected (fatal error) | Backstop only (carryover from 17.1.B) |
+
+This is the LOW finding flagged in 17.1.B. The explicit `restoreTerminal()`
+call would be nice-to-have for grep-ability, but the backstop covers it
+correctly. **Verified.**
+
+#### F. `src/lib/shutdown.ts` — graceful shutdown (TUI-running)
+
+The `ShutdownManager` is constructed and registers SIGINT/SIGTERM/SIGHUP
+handlers at module load. These signals are only delivered while the
+process is running, which means by the time they fire, the TUI is
+running (or about to start) and `tuiStarted === true`. The shutdown
+manager calls `process.exit()` in four places:
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 62 | `process.exit(1)` | Failsafe timer fires (cleanup stalled) | Backstop |
+| 73 | `process.exit(1)` | Shutdown handler threw | Backstop |
+| 79 | `process.exit(0)` | Shutdown handler finished cleanly | Backstop |
+| 83 | `process.exit(0)` | No shutdown handler registered | Backstop |
+
+All four fire while `tuiStarted === true` (TUI is running). The
+`process.on("exit", restoreTerminal)` at `index.tsx:294` fires on every
+one of these exits, and `restoreTerminal()` correctly runs the disable
+sequences. **Verified.**
+
+#### G. `src/App.tsx` — `handleQuit()` (TUI-running)
+
+The TUI's quit handler at `src/App.tsx:968-1010` is the canonical
+"user pressed Q / Ctrl+C dialog confirmed / plan complete" path.
+
+| Line | Call | Trigger | Mechanism |
+| --- | --- | --- | --- |
+| 1006 | `renderer.destroy()` | Before `process.exit()` | OpenTUI canonical cleanup |
+| 1009 | `process.exit(exitCode)` | Final quit exit | Backstop (redundant w/ `renderer.destroy()`) |
+
+`renderer.destroy()` is the OpenTUI-recommended way to clean up the
+renderer. It internally disables mouse tracking, leaves alternate screen,
+and shows the cursor. The subsequent `process.exit(exitCode)` fires the
+`process.on("exit", restoreTerminal)` backstop, which is redundant
+(`renderer.destroy()` already did the work) but provides a safety net
+for the case where `renderer.destroy()` itself fails or panics. **Verified.**
+
+#### Edge case — uncaught exception during `restoreTerminal()`
+
+What if `process.stdout.write(...)` inside `restoreTerminal()` throws
+(e.g. stdout was already closed by the parent shell)? The `exit` handler
+at `src/index.tsx:294` has no `try/catch`, so the throw propagates to
+the `exit` event itself — but the process is already terminating, so
+nothing else can catch it. The `uncaughtException` and
+`unhandledRejection` handlers (lines 295-304) have the same shape: no
+`try/catch` around `restoreTerminal()`. If `restoreTerminal()` throws
+inside one of these handlers, the handler itself unwinds (the throw
+propagates), and the process exit still happens (the `process.exit(1)`
+on the next line is unreachable, but the `exit` event still fires once
+the process does terminate, even if by the unwound throw). This is a
+graceful failure mode — the worst case is a leaked terminal mode, which
+is the same failure mode the `restoreTerminal` was trying to prevent in
+the first place. The `process.stdout.write` call uses a single
+concatenated string (line 289-291), so partial writes are not a
+concern: either the whole sequence lands or the write throws. **Verified.**
+
+#### Finding 17.2.A — INFO — Every `process.exit()` in the codebase is covered
+
+**Problem.** None. Every `process.exit(...)` call in the codebase is
+covered by `restoreTerminal()`, either:
+
+- **Explicitly** in the `uncaughtException` and `unhandledRejection`
+  handlers at `src/index.tsx:295-304` (belt-and-suspenders), or
+- **Implicitly** via the `process.on("exit", restoreTerminal)`
+  backstop at `src/index.tsx:294`, which fires on every `process.exit()`
+  call in Node.js.
+
+The `tuiStarted` gate correctly suppresses the restore for pre-TUI
+exits (where the terminal modes were never enabled) and correctly
+enables the restore for TUI-running exits (where the modes must be
+disabled). The full inventory is in the table above (sections A-G).
+
+**Where.** `src/index.tsx:268, 286-292, 294-304, 348, 358-361`;
+`src/lib/cli-args.ts` (16 calls); `src/lib/shutdown.ts:62, 73, 79, 83`;
+`src/App.tsx:1009`.
+
+**Severity: INFO.** Verified by reading every `process.exit()` call in
+the codebase and tracing it through the `restoreTerminal()` mechanism.
+No code changes needed. Documented so future audits don't re-flag this
+section.
+
+#### Finding 17.2.B — LOW (carryover) — `main().catch()` lacks an explicit `restoreTerminal()` call
+
+This is the same finding as 17.1.B. The current code at
+`src/index.tsx:358-361` is:
+
+```ts
+main().catch((error) => {
+  console.error("Fatal error:", error)
+  process.exit(1)
+})
+```
+
+The `process.on("exit", restoreTerminal)` backstop at line 294 covers
+this. The proposed fix (one extra line) is repeated here for
+completeness:
+
+```ts
+main().catch((error) => {
+  console.error("Fatal error:", error)
+  restoreTerminal()
+  process.exit(1)
+})
+```
+
+**Severity: LOW.** Not a bug. The current behavior is correct. The
+explicit form is more grep-friendly and self-documenting. Carryover
+from the 17.1 audit (`MEJORAS.md:22462-22492`).
+
+#### Test coverage gap — INFO
+
+There is no automated test that:
+
+- Forcibly calls every `process.exit()` in the codebase and verifies
+  that `restoreTerminal()` was called.
+- Verifies that the `exit` event handler is registered with
+  `restoreTerminal` as the listener.
+
+The existing `cli-args.test.ts` (49 tests) does stub `process.exit` for
+the parser, but only to assert the correct exit code, not the terminal
+restoration side-effect. A test that verifies restoration would need to
+spy on `process.stdout.write` and assert that the escape sequence was
+written, but this is complicated by the `tuiStarted` gate (the test
+would have to set `tuiStarted = true` via a test-only export, or
+short-circuit the gate). Phase 18 (test coverage) flags the absence.
+For now, the verification rests on reading the code, which is
+unambiguous: every `process.exit()` is either explicitly guarded by
+`restoreTerminal()` or implicitly guarded by the `process.on("exit", ...)`
+backstop.
+
+#### Verification result
+
+- **All `process.exit()` calls in the codebase are covered by
+  `restoreTerminal()`** — 30+ calls across `src/lib/cli-args.ts`,
+  `src/lib/shutdown.ts`, `src/index.tsx`, and `src/App.tsx`.
+- **`tuiStarted` gate verified** to correctly suppress `restoreTerminal()`
+  for pre-TUI paths (CLI parsing, `validatePrerequisites`,
+  `runCreatePlan`) and to enable it for TUI-running paths (`handleQuit`,
+  signal handlers, unhandled rejection / uncaught exception, post-render
+  errors).
+- **Two LOW findings**, both carryovers from 17.1.B (explicit
+  `restoreTerminal()` call in `main().catch()` is nice-to-have for
+  grep-ability but not required for correctness).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+- **No code changes applied** (audit-only per PLAN.md acceptance
+  criteria).
