@@ -800,7 +800,7 @@ function AppContent(props: AppProps) {
     if (startingIteration) return
     const url = server.url()
     if (!url) {
-      console.error("Cannot start iteration: server not ready")
+      log.error("iteration", "Cannot start iteration: server not ready")
       return
     }
     startingIteration = true
@@ -900,7 +900,6 @@ function AppContent(props: AppProps) {
     const url = server.url()
     if (!url) {
       log.error("session", "Cannot create debug session: server not ready")
-      console.error("Cannot create debug session: server not ready")
       return
     }
 
@@ -1177,7 +1176,7 @@ function AppContent(props: AppProps) {
       }
     } catch (err) {
       // Log error but don't block startup
-      console.error("Failed to initialize session:", err)
+      log.error("session", "Failed to initialize session", err)
 
       // If --run flag is set, start anyway
       if (props.run) {
