@@ -23,9 +23,22 @@ export type { OpencodeClient, SessionStatus }
  * one on nearly every action — caching avoids rebuilding it ~10×. A server
  * restart that reuses the same URL reuses the same client (correct); a restart
  * on a fresh ephemeral port just gets a new entry.
+ *
+ * The cache is bounded: when it exceeds MAX_CACHE_SIZE entries, the oldest
+ * half are evicted so a long session with many server restarts can't leak
+ * stateless client wrappers indefinitely.
  */
+const MAX_CACHE_SIZE = 10
 const clientCache = new Map<string, OpencodeClient>()
 export function createClient(url: string): OpencodeClient {
+  if (clientCache.size >= MAX_CACHE_SIZE) {
+    // Evict the oldest half. Map preserves insertion order, so the first
+    // entries are the stalest (from previous server URLs).
+    const keysToDelete = [...clientCache.keys()].slice(0, Math.ceil(clientCache.size / 2))
+    for (const key of keysToDelete) {
+      clientCache.delete(key)
+    }
+  }
   let client = clientCache.get(url)
   if (!client) {
     client = createOpencodeClient({ baseUrl: url })
