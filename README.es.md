@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/d3vr/ocloop@main/assets/logo.jpg" width="300" />
+  <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/logo.jpg" width="300" />
 </p>
 <p align="center">
   <i>Round and round we go</i>
@@ -8,6 +8,8 @@
   <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+  <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>
+  <a href="README.md"><img src="https://img.shields.io/badge/read%20in-English-blue.svg" alt="English" /></a>
 </p>
 <p align="center">
   <a href="README.md">English</a> · <b>Español</b>
@@ -37,6 +39,7 @@
 - [Solución de problemas](#solución-de-problemas)
 - [Desarrollo](#desarrollo)
 - [Licencia](#licencia)
+- [Autor](#-autor)
 
 ## Características
 
@@ -72,8 +75,8 @@ bunx ocloop
 ### Desde el código fuente
 
 ```bash
-git clone https://github.com/d3vr/ocloop.git
-cd ocloop
+git clone https://github.com/DragonJAR/OCLoop.git
+cd OCLoop
 bun install
 bun run build
 bun link        # deja `ocloop` disponible globalmente
@@ -266,6 +269,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `abortTimeoutMs` | Timeout para abortar una sesión |
 | `statusTimeoutMs` | Timeout para reconciliar el estado de la sesión |
 | `pingTimeoutMs` | Timeout del health check del servidor |
+| `planTimeoutMs` | Presupuesto total para que `--create-plan` termine de generar (por defecto 600000 = 10 min; súbelo para planes grandes/lentos) |
 | `backoffBaseMs` | Retardo base del backoff exponencial |
 | `backoffMaxMs` | Retardo máximo del backoff |
 | `backoffJitter` | Aplicar jitter completo al backoff (`true`/`false`) |
@@ -340,3 +344,9 @@ bun run build    # build de producción
 ## Licencia
 
 MIT
+
+## 👨‍💻 Autor
+
+Creado originalmente por **Fayçal Mitidji** ([d3vr](https://github.com/d3vr)). Este fork lo mantiene **[DragonJAR SAS](https://www.DragonJAR.org)** con varias mejoras.
+
+[Expertos en servicios de seguridad informática, validación proactiva y seguridad ofensiva.](https://www.dragonjar.org/servicios-de-seguridad-informatica)

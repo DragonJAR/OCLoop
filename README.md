@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://cdn.jsdelivr.net/gh/d3vr/ocloop@main/assets/logo.jpg" width="300" />
+  <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/logo.jpg" width="300" />
 </p>
 <p align="center">
   <i>Round and round we go</i>
@@ -8,6 +8,8 @@
   <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
+  <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>
+  <a href="README.es.md"><img src="https://img.shields.io/badge/read%20in-Espa%C3%B1ol-blue.svg" alt="Español" /></a>
 </p>
 <p align="center">
   <b>English</b> · <a href="README.es.md">Español</a>
@@ -37,6 +39,7 @@
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
 - [License](#license)
+- [Author](#-author)
 
 ## Features
 
@@ -72,8 +75,8 @@ bunx ocloop
 ### From source
 
 ```bash
-git clone https://github.com/d3vr/ocloop.git
-cd ocloop
+git clone https://github.com/DragonJAR/OCLoop.git
+cd OCLoop
 bun install
 bun run build
 bun link        # makes `ocloop` available globally
@@ -266,6 +269,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `abortTimeoutMs` | Timeout for aborting a session |
 | `statusTimeoutMs` | Timeout for session-status reconciliation |
 | `pingTimeoutMs` | Timeout for the server health ping |
+| `planTimeoutMs` | Overall budget for `--create-plan` to finish generating (default 600000 = 10 min; raise for big/slow plans) |
 | `backoffBaseMs` | Base delay for exponential backoff |
 | `backoffMaxMs` | Maximum backoff delay |
 | `backoffJitter` | Apply full jitter to backoff (`true`/`false`) |
@@ -340,3 +344,9 @@ bun run build    # production build
 ## License
 
 MIT
+
+## 👨‍💻 Author
+
+Originally created by **Fayçal Mitidji** ([d3vr](https://github.com/d3vr)). This fork is maintained by **[DragonJAR SAS](https://www.DragonJAR.org)** with several improvements.
+
+[Experts in IT security services, proactive validation, and offensive security.](https://www.dragonjar.org/servicios-de-seguridad-informatica)
