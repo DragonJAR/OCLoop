@@ -16,7 +16,17 @@ export type ErrorSource = "server" | "sse" | "pty" | "api" | "plan"
 export type LoopState =
   | { type: "starting" }
   | { type: "ready" }  // Server ready, waiting for user to start iterations
-  | { type: "running"; iteration: number; sessionId: string }
+  // `resumedFromIdle` is set on the FIRST `running` reached via `iteration_resumed`
+  // (doResume idle branch). The next `iteration_started` consumes it: the in-flight
+  // session's work was already done in the previous run, so the counter does not
+  // increment for the resumed iteration. A later session_idle → startIteration cycle
+  // will increment normally because the flag is cleared. See MEJORAS.md Finding 8.5.A.
+  | {
+      type: "running"
+      iteration: number
+      sessionId: string
+      resumedFromIdle?: boolean
+    }
   | { type: "pausing"; iteration: number; sessionId: string }
   | { type: "paused"; iteration: number }
   // Waiting out a provider rate limit (or a transient connection blip) before
@@ -85,6 +95,13 @@ export type LoopAction =
   // non-empty sessionId re-attaches to a live session; an empty one lets the
   // iteration-driver start the next session (the attempt counter then advances).
   | { type: "resume_session"; iteration: number; sessionId: string }
+  // Like `resume_session` but signals that the in-flight session was already
+  // done in a previous run (the server returned `idle` during doResume). The
+  // reducer tags the resulting `running` state with `resumedFromIdle: true` so
+  // the next `iteration_started` does NOT increment the counter — the count
+  // represents "iterations of unique work", not "iterations started", in this
+  // one edge case. See MEJORAS.md Finding 8.5.A.
+  | { type: "iteration_resumed"; iteration: number; sessionId: string }
 
 /**
  * Progress information parsed from PLAN.md

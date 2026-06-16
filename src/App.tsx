@@ -1292,8 +1292,23 @@ function AppContent(props: AppProps) {
         t("actContinuing", { verdict }),
       )
       await clearLoopState()
-      // Fresh iteration, iteration count preserved.
-      loop.dispatch({ type: "resume_session", iteration: p.iteration, sessionId: "" })
+      // Finding 8.5.A: when verdict === "idle", the in-flight session
+      // already finished its work in a previous run (the process crashed
+      // between the session idling and plan_complete being detected). The
+      // upcoming startIteration + iteration_started would otherwise bump
+      // the counter to p.iteration + 1, over-counting the actual work done.
+      // Dispatch `iteration_resumed` (instead of `resume_session`) so the
+      // next `iteration_started` skips the increment; the count stays at
+      // p.iteration, matching the work that was already done. For
+      // `missing`/`unknown` verdicts the in-flight session's outcome is
+      // unknown, so we use `resume_session` to start a genuinely new
+      // iteration that correctly counts as p.iteration + 1.
+      const isIdleResume = verdict === "idle"
+      loop.dispatch({
+        type: isIdleResume ? "iteration_resumed" : "resume_session",
+        iteration: p.iteration,
+        sessionId: "",
+      })
     }
   }
 

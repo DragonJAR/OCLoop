@@ -78,6 +78,19 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     case "iteration_started": {
       // Set the session ID when an iteration starts
       if (state.type === "running") {
+        // Finding 8.5.A: when the running state was reached via
+        // `iteration_resumed` (doResume idle branch), the in-flight session's
+        // work was already done in the previous run. The counter represents
+        // "iterations of unique work" and must NOT increment for the resumed
+        // iteration. The flag is one-shot and is cleared here. A later
+        // session_idle → startIteration cycle will increment normally.
+        if (state.resumedFromIdle) {
+          return {
+            type: "running",
+            iteration: state.iteration,
+            sessionId: action.sessionId,
+          }
+        }
         return {
           type: "running",
           iteration: state.iteration + 1,
@@ -199,6 +212,25 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           type: "running",
           iteration: action.iteration,
           sessionId: action.sessionId,
+        }
+      }
+      return state
+    }
+
+    case "iteration_resumed": {
+      // Finding 8.5.A: like `resume_session` but tags the resulting running
+      // state with `resumedFromIdle: true` so the next `iteration_started`
+      // does NOT increment the counter. Used by doResume when the server
+      // reports the persisted session is `idle` (work was already done in a
+      // previous run, but plan_complete was not detected before the crash).
+      // Without this, the resumed fresh iteration would over-count the
+      // actual work done by 1.
+      if (state.type === "ready") {
+        return {
+          type: "running",
+          iteration: action.iteration,
+          sessionId: action.sessionId,
+          resumedFromIdle: true,
         }
       }
       return state

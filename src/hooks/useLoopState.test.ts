@@ -648,6 +648,125 @@ describe("loopReducer", () => {
     })
   })
 
+  describe("iteration_resumed action (Finding 8.5.A)", () => {
+    it("from ready, sets running with resumedFromIdle=true and preserves iteration", () => {
+      const result = loopReducer({ type: "ready" }, {
+        type: "iteration_resumed",
+        iteration: 8,
+        sessionId: "",
+      })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(8)
+        expect(result.sessionId).toBe("")
+        expect(result.resumedFromIdle).toBe(true)
+      }
+    })
+
+    it("from ready with a live sessionId re-attaches and tags resumedFromIdle=true", () => {
+      // Defensive: even if a future caller passes a non-empty sessionId, the
+      // resumedFromIdle flag is set so the next iteration_started (if it ever
+      // fires) does not double-count.
+      const result = loopReducer({ type: "ready" }, {
+        type: "iteration_resumed",
+        iteration: 3,
+        sessionId: "ses_live",
+      })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(3)
+        expect(result.sessionId).toBe("ses_live")
+        expect(result.resumedFromIdle).toBe(true)
+      }
+    })
+
+    it("is ignored from non-ready states (mirrors resume_session guard)", () => {
+      const state: LoopState = { type: "running", iteration: 1, sessionId: "x" }
+      expect(
+        loopReducer(state, { type: "iteration_resumed", iteration: 9, sessionId: "y" }),
+      ).toEqual(state)
+    })
+  })
+
+  describe("iteration_started with resumedFromIdle flag (Finding 8.5.A)", () => {
+    it("does NOT increment iteration when the source state has resumedFromIdle=true", () => {
+      // The in-flight work was already done in a previous run. The counter
+      // represents "iterations of unique work" — the resumed iteration is a
+      // redo, not new work, so the count stays at p.iteration.
+      const state: LoopState = {
+        type: "running",
+        iteration: 8,
+        sessionId: "",
+        resumedFromIdle: true,
+      }
+      const result = loopReducer(state, {
+        type: "iteration_started",
+        sessionId: "ses_new",
+      })
+      expect(result.type).toBe("running")
+      if (result.type === "running") {
+        expect(result.iteration).toBe(8)
+        expect(result.sessionId).toBe("ses_new")
+        expect(result.resumedFromIdle).toBeUndefined() // one-shot: flag is cleared
+      }
+    })
+
+    it("increments iteration normally when resumedFromIdle is absent or false (regression)", () => {
+      // Sanity: the new behavior is opt-in via the flag. Fresh iterations
+      // (no flag) still bump from N to N+1. The reducer only short-circuits
+      // the increment when the flag is truthy; false/undefined both take the
+      // normal path and the field is dropped from the result (it was never
+      // set in the first place).
+      const fresh: LoopState = { type: "running", iteration: 8, sessionId: "" }
+      const result1 = loopReducer(fresh, { type: "iteration_started", sessionId: "ses_a" })
+      if (result1.type !== "running") throw new Error("expected running")
+      expect(result1.iteration).toBe(9)
+      expect(result1.resumedFromIdle).toBeUndefined()
+
+      const flagged: LoopState = {
+        type: "running",
+        iteration: 8,
+        sessionId: "",
+        resumedFromIdle: false, // explicit false behaves like absent
+      }
+      const result2 = loopReducer(flagged, { type: "iteration_started", sessionId: "ses_b" })
+      if (result2.type !== "running") throw new Error("expected running")
+      expect(result2.iteration).toBe(9)
+      expect(result2.resumedFromIdle).toBeUndefined()
+    })
+
+    it("a SECOND iteration_started after the flag was cleared increments normally (one-shot semantics)", () => {
+      // After the resumed iteration's session_idle fires, the next genuine
+      // iteration (started by the iteration-driver) should increment to
+      // p.iteration + 1. The flag must be one-shot.
+      const state: LoopState = {
+        type: "running",
+        iteration: 8,
+        sessionId: "",
+        // resumedFromIdle already cleared by the previous iteration_started
+      }
+      const result = loopReducer(state, {
+        type: "iteration_started",
+        sessionId: "ses_next",
+      })
+      if (result.type !== "running") throw new Error("expected running")
+      expect(result.iteration).toBe(9)
+    })
+
+    it("from paused, increments normally (paused → running via iteration_started is unaffected)", () => {
+      // The flag is only set by `iteration_resumed` from ready, which can
+      // only land us in running. paused → running via iteration_started
+      // (the resume-from-pause path) must increment as before.
+      const state: LoopState = { type: "paused", iteration: 5 }
+      const result = loopReducer(state, {
+        type: "iteration_started",
+        sessionId: "ses_resume",
+      })
+      if (result.type !== "running") throw new Error("expected running")
+      expect(result.iteration).toBe(6)
+    })
+  })
+
   describe("Phase 2 — state machine edge cases", () => {
     it("session_idle on running with sessionId === '' returns the SAME state object (idempotency guard)", () => {
       const state: LoopState = {
@@ -1046,6 +1165,14 @@ describe("loopReducer", () => {
     it("resume_session: from starting, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
       expectNoOp(
         { type: "resume_session", iteration: 1, sessionId: "x" },
+        ["starting", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- iteration_resumed: only "ready" transitions (Finding 8.5.A) ---
+    it("iteration_resumed: from starting, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "iteration_resumed", iteration: 1, sessionId: "x" },
         ["starting", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
       )
     })
