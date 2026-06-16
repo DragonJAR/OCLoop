@@ -14391,3 +14391,337 @@ documenting in a comment on line 218.
 | 12.1.F  | INFO     | `loadConfig` returns the object reference (not a defensive copy); relies on `JSON.parse` producing a fresh graph. Document the invariant. |
 
 **Net severity tally for Phase 12.1: 1 MEDIUM, 2 LOW, 3 INFO; no CRITICAL or HIGH.** The MEDIUM is a real silent-corruption risk for the `resilience` sub-config (string-where-number). The LOWs are a silent-typo risk and a coverage gap. The INFOs document benign design choices. The structural guard at line 212 (object-not-null-not-array) handles all five "malformed JSON" cases correctly; the gap is in per-field type validation, which the loader delegates to the consumer today (and every consumer happens to validate). Tasks 12.2-12.6 (atomic save, merge order, `isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
+
+---
+
+### 12.2 — Audit `saveConfig` for atomic write (tmp + rename), directory creation, and error handling
+
+**Status: COMPLETE — VERIFIED, one MEDIUM and four LOW findings; no CRITICAL or HIGH.**
+
+The `saveConfig` function (lines 230-245 of `src/lib/config.ts`) is the
+write-side counterpart to `loadConfig`. It must write atomically (a reader
+must never see a half-written config) and must create the config directory
+on first run. The function is invoked from four call sites in
+`src/App.tsx` (lines 1389, 1411, 1561, 1575) and the contract is "fire and
+forget best-effort" — the user clicked a button in the command palette and
+the in-memory state should reflect the new value regardless of whether the
+disk write succeeded.
+
+```ts
+export function saveConfig(config: OcloopConfig): void {
+  const configDir = getConfigDir()
+  const configPath = getConfigPath()
+
+  // Create directory if needed
+  if (!existsSync(configDir)) {
+    mkdirSync(configDir, { recursive: true })
+  }
+
+  // Write atomically: tmp file then rename (rename is atomic on the same
+  // filesystem, so a reader never sees a half-written config).
+  const tmpPath = configPath + ".tmp"
+  writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+  renameSync(tmpPath, configPath)
+  log.info("config", "Saved config", config)
+}
+```
+
+The required case matrix from PLAN.md Task 12.2 maps to the code as
+follows:
+
+| Required case | Code path | Test coverage | Result |
+| --- | --- | --- | --- |
+| Atomic write (tmp + rename) | line 241-243 (`writeFileSync` → `renameSync`) | None | OK (POSIX `rename(2)` is atomic; Node `renameSync` on Windows uses `MoveFileEx` with `MOVEFILE_REPLACE_EXISTING` since v8 — atomic on the same volume) |
+| Creates directory if missing | line 235-237 (`existsSync` + `mkdirSync({recursive: true})`) | None | OK (mkdir recursive is idempotent) |
+| Config dir already exists | line 235-237 short-circuits via `existsSync` | None | OK (no-op) |
+| `mkdirSync` already-exists race (TOCTOU) | line 236 throws `EEXIST` | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| `writeFileSync` permission denied (`EACCES`) | throws | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| `writeFileSync` disk full (`ENOSPC`) | throws | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| `writeFileSync` read-only filesystem (`EROFS`) | throws | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| `renameSync` cross-device (`EXDEV` on Linux) | throws; original + tmp both persist | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| `renameSync` permission denied (`EACCES`) | throws | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| Caller writes while another reader holds the file open (Windows) | `writeFileSync`/`renameSync` may fail | None | **Uncaught** — propagates to caller, see Finding 12.2.A |
+| Two `saveConfig` calls fire concurrently (impossible in single-threaded JS) | N/A | N/A | INFO — see Finding 12.2.B |
+| Caller writes a malformed config (e.g. `terminal: "foo"`) | Persisted as-is | None | INFO — see Finding 12.2.G |
+
+The 3 required PLAN.md cases (atomic, mkdir, already-exists) are correct.
+The 7 additional I/O failure modes I enumerated (EEXIST, EACCES, ENOSPC,
+EROFS, EXDEV, Windows-share, plus content validation) all share the same
+root cause: **no try/catch around the I/O**. This is the MEDIUM finding
+below. The remaining LOW findings cover the `.tmp` filename collision
+risk, stale `.tmp` leak, a redundant `existsSync` check, and the
+misleading `await` on a `void` return.
+
+#### Finding 12.2.A — MEDIUM — `saveConfig` does not catch I/O errors; a disk-full or permission-denied crash propagates to all four `App.tsx` call sites, none of which have a `try/catch`
+
+**Problem.** `saveConfig` is invoked from four command-palette handlers
+in `src/App.tsx`:
+
+| Call site | Handler | Wraps `saveConfig` in `try/catch`? |
+| --- | --- | --- |
+| App.tsx:1389 | `onConfigSelect` (user picked a terminal from the dialog) | No |
+| App.tsx:1411 | `onConfigCustom` (user entered a custom terminal command) | No |
+| App.tsx:1561 | `toggle_scrollbar` (command palette) | No |
+| App.tsx:1575 | `toggle_language` (command palette) | No |
+
+All four follow the same pattern:
+
+```ts
+await saveConfig(newConfig)
+setOcloopConfig(newConfig)
+dialog.clear()
+```
+
+If `saveConfig` throws (EACCES on `~/.config/ocloop/`, ENOSPC on a full
+disk, EROFS on a sandbox, EEXIST race on `mkdirSync`, EXDEV on a
+cross-device rename), the async function rejects, the local state is
+never updated, the dialog is never closed, and the user sees no
+diagnostic. The error is a bare `Error` with no context — the user
+debugging from a TUI can't tell whether the disk is full or the
+filesystem is read-only. Compare to `saveLoopState` in
+`src/lib/loop-state-store.ts:49-57`, which is explicitly documented as
+**"never throws — persistence is best-effort and must not crash the
+app"** and wraps the whole I/O in `try { … } catch (err) { log.warn(...) }`.
+The two persistence layers have inconsistent contracts: the loop-state
+writer swallows errors silently, the config writer lets them escape.
+
+Concrete failure scenarios:
+
+| Scenario | Outcome today | What should happen |
+| --- | --- | --- |
+| `~/.config/ocloop/` is on a read-only mount (CI sandbox, corporate-managed mac) | `EACCES` from `mkdirSync` or `writeFileSync` propagates uncaught; toggle_scrollbar/toggle_language handlers reject with no UI feedback | Log a `warn`, show a toast "Could not persist config" |
+| Disk full | `ENOSPC` from `writeFileSync` propagates uncaught | Log a `warn`, show a toast |
+| User accidentally set `XDG_CONFIG_HOME=/sys` (a sysfs mount) | `EACCES` on the directory, then `EACCES` on the file — propagates uncaught | Log a `warn` |
+| `~/.config/ocloop/` is a symlink to a file | `EEXIST` from `mkdirSync` (not a dir) — propagates uncaught | Log a `warn` and `log.warn("config", "saveConfig path is not a directory", configDir)` |
+| Cross-device rename (user symlinked `~/.config/ocloop` to a different mount) | `EXDEV` from `renameSync` — propagates uncaught; **the tmp file is leaked** | Log a `warn`; clean up the tmp file |
+
+**Where.** `src/lib/config.ts:230-245` (`saveConfig`) and the four
+`await saveConfig(newConfig)` call sites in `src/App.tsx:1389, 1411, 1561, 1575`.
+
+**Proposed fix.** Match the `saveLoopState` contract. Wrap the I/O in
+`try/catch`, log a `warn` with the error, do not re-throw. The
+command-palette handlers can also show a toast on rejection, but the
+minimum viable fix is to make `saveConfig` not throw:
+
+```ts
+export function saveConfig(config: OcloopConfig): void {
+  const configDir = getConfigDir()
+  const configPath = getConfigPath()
+  const tmpPath = configPath + ".tmp"
+
+  try {
+    // mkdirSync({ recursive: true }) is a no-op if the dir already exists.
+    mkdirSync(configDir, { recursive: true })
+    writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
+    renameSync(tmpPath, configPath)
+    log.info("config", "Saved config", config)
+  } catch (err) {
+    log.warn("config", "Failed to save config", err)
+    // Best-effort cleanup of leaked tmp file; ignore secondary errors.
+    try { if (existsSync(tmpPath)) unlinkSync(tmpPath) } catch { /* swallow */ }
+  }
+}
+```
+
+The MEDIUM rating reflects that the failure mode is **reachable on every
+supported platform** (any sandboxed install, any read-only mount, any
+CI/devcontainer), it surfaces in the most user-facing path (the command
+palette), and the fix is a one-line wrapper. The cost of the bug is
+diagnostic: a user with a misconfigured environment will see their
+language toggle or scrollbar toggle "do nothing" and have to read the
+debug log to find out why.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria).
+
+#### Finding 12.2.B — LOW — `tmpPath` is a fixed suffix `.tmp`; two simultaneous writes would clobber each other's tmp file
+
+**Problem.** Line 241 sets `tmpPath = configPath + ".tmp"` — a single,
+predictable name. JavaScript is single-threaded so two `saveConfig`
+calls cannot run in parallel within the same process, **but** the
+function uses sync I/O, so the *event loop* is blocked during the
+write+rename. A `setTimeout` callback or a microtask queued by a
+Solid signal update cannot preempt the in-flight write. So the
+collision risk is theoretical for the in-process case.
+
+The cross-process case is real: if a user runs `ocloop` in two terminals
+(both pointing to the same `$XDG_CONFIG_HOME`), both processes write to
+`ocloop.json.tmp` at the same instant. Last-writer-wins for the tmp
+file, then `renameSync` from the second process overwrites the first
+process's `renameSync` result with the *second* process's serialized
+config. The final on-disk state is whichever process's `renameSync`
+ran last. This is a "two-process interference" footgun, not a
+correctness bug — both writes are valid configs, just whichever ran
+last is the one that wins. The user sees the same effect as if they'd
+run the two commands sequentially.
+
+**Where.** `src/lib/config.ts:241` (`const tmpPath = configPath + ".tmp"`).
+
+**Proposed fix.** Use a unique tmp suffix so the two processes don't
+fight over the same file:
+
+```ts
+import { randomBytes } from "node:crypto"
+// ...
+const tmpPath = `${configPath}.${randomBytes(6).toString("hex")}.tmp`
+```
+
+The cost is one syscall (`randomBytes(6)`) and a longer filename. The
+benefit is no cross-process tmp-file contention.
+
+**Status.** Fix proposed, not applied. LOW rating because the in-process
+case is impossible and the cross-process case is benign (last-writer-wins
+on a valid config).
+
+#### Finding 12.2.C — LOW — Stale `.tmp` files are not cleaned up after a write that succeeded `writeFileSync` but failed `renameSync`
+
+**Problem.** If `writeFileSync` succeeds and `renameSync` fails (EXDEV,
+target-rename EACCES, Windows share violation), the `.tmp` file is
+left behind on disk. The next call to `saveConfig` overwrites it, so
+there is no growth over time, **but** the stale file may confuse
+external tools (e.g. a user `cat`-ing the directory, a backup tool
+picking up `ocloop.json.tmp`).
+
+**Where.** `src/lib/config.ts:242-243` (the `writeFileSync` → `renameSync`
+sequence).
+
+**Proposed fix.** Wrap the I/O in `try/catch` (per Finding 12.2.A) and
+on the catch path, attempt a best-effort `unlinkSync(tmpPath)`. The
+cleanup itself can fail (the file may not exist if the failure was
+before the write completed) — swallow that secondary error:
+
+```ts
+} catch (err) {
+  log.warn("config", "Failed to save config", err)
+  try { unlinkSync(tmpPath) } catch { /* tmp may not exist */ }
+}
+```
+
+**Status.** Fix proposed, not applied. LOW rating because the leak is
+benign (next save overwrites) and the cleanup is already part of the
+12.2.A wrapper.
+
+#### Finding 12.2.D — LOW — `existsSync(configDir)` check is redundant; `mkdirSync({ recursive: true })` is already idempotent
+
+**Problem.** Line 235-237:
+
+```ts
+if (!existsSync(configDir)) {
+  mkdirSync(configDir, { recursive: true })
+}
+```
+
+`mkdirSync(path, { recursive: true })` is a no-op if the directory
+already exists (no error thrown). The `existsSync` check is therefore
+redundant. The redundant check also introduces a TOCTOU window: between
+`existsSync` returning `false` and `mkdirSync` running, another process
+could create the directory; `mkdirSync` would still succeed (idempotent
+semantics) but the TOCTOU is wasted work.
+
+**Where.** `src/lib/config.ts:235-237`.
+
+**Proposed fix.** Drop the `existsSync` check; call `mkdirSync` directly:
+
+```ts
+mkdirSync(configDir, { recursive: true })
+```
+
+The simplification also removes one syscall (the `existsSync`) from
+every save. The cost is zero — the current behavior is correct, just
+verbose.
+
+**Status.** Fix proposed, not applied. LOW rating because the current
+behavior is correct (no bug, just dead code).
+
+#### Finding 12.2.E — LOW — `saveConfig` returns `void` but all four callers `await` it — the `await` is misleading
+
+**Problem.** The function signature is `saveConfig(config: OcloopConfig): void`
+(line 230). The four call sites all use `await saveConfig(newConfig)`
+(App.tsx:1389, 1411, 1561, 1575). `await` on a non-Promise value
+resolves immediately on the next microtask, so the runtime behavior is
+correct (the function runs synchronously, the `await` adds one tick of
+delay), but a future maintainer who refactors `saveConfig` to be
+async (e.g., to use `fs/promises`) will get a silent semantic change
+at the call sites — the local state would no longer be updated
+synchronously. The current code "accidentally works" because the I/O
+is synchronous.
+
+**Where.** `src/lib/config.ts:230` (signature) and `src/App.tsx:1389,
+1411, 1561, 1575` (call sites).
+
+**Proposed fix.** Two options:
+
+1. **Cheap**: change the signature to `Promise<void>` and wrap the body
+   in `async`. The four `await` sites stay the same; the function
+   becomes a true async that the JS engine can interleave with other
+   work. Use `await promisify(...)` or just convert to `fs/promises`.
+2. **Cheaper**: drop the `await` from the call sites (4 edits) and
+   document in the function header that it is synchronous.
+
+**Status.** Fix proposed, not applied. LOW rating because both
+behaviors are correct today; the maintenance hazard is real but
+small.
+
+#### Finding 12.2.F — INFO — Directory and file mode inherit the process umask; a paranoid umask (`0077`) gives the right result, a permissive umask (`0000`) gives `0o755` / `0o666`
+
+**Problem.** `mkdirSync(configDir, { recursive: true })` and
+`writeFileSync(tmpPath, ...)` use default permissions. With a default
+umask of `0o022`, the directory gets `0o755` and the file gets `0o644`.
+With a strict umask of `0o077`, the directory gets `0o700` and the
+file gets `0o600` (private, correct for a config file). With a
+permissive umask of `0o000` (unusual but legal in dev), the directory
+would be world-writable.
+
+`ocloop.json` typically contains `terminal.command` / `terminal.args`
+or a `language` preference — not credentials, but on a multi-user
+system the `theme` field is benign and the `resilience` overrides
+could be considered private to the user. There is no "secret" in the
+config today, so the default umask behavior is acceptable.
+
+**Where.** `src/lib/config.ts:236, 242` (default-permission I/O).
+
+**Proposed fix.** If hardening is desired in the future, pass
+`{ mode: 0o700 }` to `mkdirSync` and call `chmodSync` on the file
+after rename. Out of scope for this audit — no current user data is
+sensitive.
+
+**Status.** INFO — design choice, no fix proposed.
+
+#### Finding 12.2.G — INFO — `saveConfig` does not validate the config shape; a caller passing a malformed value persists it
+
+**Problem.** `saveConfig` writes whatever the caller hands it. If a
+future bug in `App.tsx` builds `newConfig = { ...ocloopConfig(), language: 42 }`
+(a number where a string is expected), `saveConfig` happily serializes
+`42` and `loadConfig` on the next launch returns `{ language: 42 }`.
+The TypeScript type guards (`isLocale`, `hasTerminalConfig`,
+`isValidTheme`, `pickDefined`) catch the wrong-type at the consumer
+site, so the user sees the right behavior. The defense is correct but
+distributed across 4+ consumers.
+
+**Where.** `src/lib/config.ts:230-245` (the `saveConfig` body) and
+`src/App.tsx:1389, 1411, 1561, 1575` (the four callers).
+
+**Proposed fix.** Same `validateConfigShape` helper proposed in
+Finding 12.1.A, applied to the write side. The simplest
+implementation is a shared `validateConfigShape` (or
+`normalizeConfig`) used by both `loadConfig` and `saveConfig` to
+guarantee the on-disk shape matches the in-memory shape. The savings
+are: (1) a single source of truth for the schema, (2) consistent warn
+logs at both read and write time.
+
+**Status.** INFO — symmetry with 12.1.A. Not a bug, a refactor
+opportunity.
+
+#### Summary of Phase 12.2 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 12.2.A  | MEDIUM   | `saveConfig` does not catch I/O errors; EACCES / ENOSPC / EROFS / EEXIST / EXDEV propagate to all four `App.tsx` callers, none of which have a `try/catch`. Wrap the body in `try/catch` (matching the `saveLoopState` contract) and log a `warn`. |
+| 12.2.B  | LOW      | `tmpPath` uses a fixed `.tmp` suffix; two `ocloop` processes writing concurrently clobber each other's tmp file. Use `randomBytes(6)` in the suffix. |
+| 12.2.C  | LOW      | Stale `.tmp` files are not cleaned up after a partial-write failure. Add a best-effort `unlinkSync(tmpPath)` in the catch block (already part of the 12.2.A wrapper). |
+| 12.2.D  | LOW      | `existsSync(configDir)` check before `mkdirSync({ recursive: true })` is redundant — `recursive: true` is idempotent. Drop the check. |
+| 12.2.E  | LOW      | `saveConfig` returns `void` but all four callers `await` it; the `await` is misleading. Either make the function genuinely async or drop the `await` at the call sites. |
+| 12.2.F  | INFO     | Directory and file mode inherit the process umask; today no field holds a secret, so default-permission is acceptable. |
+| 12.2.G  | INFO     | `saveConfig` does not validate the config shape; same refactor as 12.1.A — a shared `validateConfigShape` / `normalizeConfig` helper would enforce the schema at both read and write. |
+
+**Net severity tally for Phase 12.2: 1 MEDIUM, 4 LOW, 2 INFO; no CRITICAL or HIGH.** The MEDIUM is a real consistency gap with `saveLoopState` (which already swallows errors per its "never throws" contract) and is reachable on every supported platform via disk-full / read-only-mount / sandboxed-install. The 4 LOWs are maintenance hazards (tmp filename, stale-tmp leak, redundant check, misleading `await`) — individually correct behavior, collectively a code-smell cluster that the proposed wrapper in 12.2.A would resolve. The 2 INFOs document umask behavior and a symmetry opportunity with 12.1.A. The atomic write (tmp + rename) and the `mkdirSync({ recursive: true })` directory creation are both correct as written. Tasks 12.3-12.6 (merge order, `isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
