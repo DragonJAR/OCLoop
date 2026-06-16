@@ -294,3 +294,105 @@ describe("parseArgs — planTimeoutMs resilience override", () => {
     expect(args?.resilience?.planTimeoutMs).toBe(600000)
   })
 })
+
+describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)", () => {
+  it("accepts --lang en and --lang es (the only valid locales)", () => {
+    expect(runParse(["--lang", "en"]).args?.lang).toBe("en")
+    expect(runParse(["--lang", "es"]).args?.lang).toBe("es")
+  })
+
+  it("accepts --language as the long-form alias with identical semantics", () => {
+    expect(runParse(["--language", "en"]).args?.lang).toBe("en")
+    expect(runParse(["--language", "es"]).args?.lang).toBe("es")
+  })
+
+  // Case sensitivity: isLocale is a strict `===` check, so any non-lowercase
+  // variant must be rejected. Users on a Spanish keyboard or those who
+  // capitalize locales by mistake (common with locale tags like en-US) get a
+  // hard error rather than silent coercion.
+  const wrongCase: Array<[string, string]> = [
+    ["uppercase EN", "EN"],
+    ["titlecase En", "En"],
+    ["uppercase ES", "ES"],
+    ["titlecase Es", "Es"],
+  ]
+  for (const [name, value] of wrongCase) {
+    it(`rejects --lang with ${name}`, () => {
+      const r = runParse(["--lang", value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    })
+  }
+
+  // Whitespace around a valid locale: must be rejected, no silent trim.
+  // Same rationale as --model (Phase 1.3): a paste from a clipboard or a
+  // shell-quoting mistake should fail loudly, not be silently accepted.
+  const whitespace: Array<[string, string]> = [
+    ["leading space", " en"],
+    ["trailing space", "en "],
+    ["leading tab", "\ten"],
+    ["trailing tab", "en\t"],
+    ["leading newline", "\nen"],
+    ["trailing newline", "es\n"],
+  ]
+  for (const [name, value] of whitespace) {
+    it(`rejects --lang with ${name}`, () => {
+      const r = runParse(["--lang", value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    })
+  }
+
+  // Empty string: an empty shell-quoted arg should not be accepted.
+  it("rejects --lang with empty string", () => {
+    const r = runParse(["--lang", ""])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("'en' or 'es'")
+  })
+
+  // Missing value: --lang with no following arg. (Different from the case
+  // where the following arg exists but is invalid.)
+  it("rejects --lang with no following arg", () => {
+    const r = runParse(["--lang"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("'en' or 'es'")
+  })
+
+  // Non-locale values: every other string is rejected with the same message.
+  // (Most of these are covered by the existing 'invalid input exits 1'
+  // table at --lang invalid, but spelling out the common cases makes the
+  // intent of the audit visible.)
+  const garbage: Array<[string, string]> = [
+    ["French code", "fr"],
+    ["English with locale tag", "en-US"],
+    ["Spanish with locale tag", "es-MX"],
+    ["English with extra letters", "english"],
+    ["numeric", "1"],
+    ["boolean-shaped", "true"],
+  ]
+  for (const [name, value] of garbage) {
+    it(`rejects --lang with ${name}`, () => {
+      const r = runParse(["--lang", value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    })
+  }
+
+  // FINDING 1.4.A — LOW — Inconsistent missing-value error message for --lang.
+  // --lang reads its value inline (no requireValue guard), so --lang --debug
+  // produces "Error: --lang requires 'en' or 'es'" — the message is technically
+  // correct (the value is invalid) but the user almost certainly meant to
+  // pass a value, not a locale. The other value flags (--prompt, --plan,
+  // --agent) use requireValue and emit "requires a value" instead, which is
+  // more diagnostic. Same root cause as if a user typed "--lang en --debug"
+  // and meant "--lang es --debug" but swapped positions: the error would
+  // currently blame the locale, not the missing value.
+  it("--lang --debug fails with the locale error (not the 'requires a value' error)", () => {
+    const r = runParse(["--lang", "--debug"])
+    expect(r.exitCode).toBe(1)
+    // The actual current behavior — documented here so a future fix that
+    // switches to requireValue is visible as a behavioral change.
+    expect(r.errors.join("\n")).toContain("'en' or 'es'")
+    expect(r.errors.join("\n")).not.toContain("requires a value")
+  })
+})

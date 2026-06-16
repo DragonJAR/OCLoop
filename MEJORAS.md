@@ -322,13 +322,176 @@ substring. **No change needed.**
 
 ---
 
-### 1.4 — Remaining Phase 1 sub-tasks (audit pending)
+### 1.4 — Audit `--lang` locale validation (case sensitivity, empty string, whitespace)
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. One LOW finding (inconsistent missing-value error message) and three INFO observations.**
+
+The `--lang` (and alias `--language`) case in `parseArgs` (lines 227-235 of
+`src/lib/cli-args.ts`) delegates to `isLocale` in `src/lib/i18n.ts`:
+
+```ts
+case "--lang":
+case "--language":
+  const lang = argv[++i]
+  if (!lang || !isLocale(lang)) {
+    console.error("Error: --lang requires 'en' or 'es'")
+    process.exit(1)
+  }
+  args.lang = lang
+  break
+```
+
+```ts
+// src/lib/i18n.ts:22-24
+export function isLocale(v: unknown): v is Locale {
+  return v === "en" || v === "es"
+}
+```
+
+`isLocale` is a strict triple-equals check, with no normalization, no trim,
+and no tolerance for case variations. PLAN.md Task 1.4 asked for case
+sensitivity, empty string, and "other invalid values" to be verified.
+
+#### Mapping each required case to a test
+
+| Required case (PLAN.md 1.4)               | Test before this iteration         | Behavior                                            | Status   |
+| ----------------------------------------- | ----------------------------------- | --------------------------------------------------- | -------- |
+| Value other than `en`/`es` (e.g. `fr`)    | line 135 (`--lang fr`)              | Rejected: `isLocale("fr") === false`.              | OK       |
+| Case sensitivity (`EN`, `En`, `ES`, `Es`) | **none** before this iteration      | Rejected: strict `===` comparison.                  | CLOSED ↓ |
+| Empty string                              | **none** before this iteration      | Rejected: `!lang` short-circuit.                    | CLOSED ↓ |
+| Whitespace around value                   | **none** before this iteration      | Rejected: no `.trim()` in the code path.            | CLOSED ↓ |
+| Missing value (`--lang` with no arg)      | **none** before this iteration      | Rejected: `argv[++i]` is `undefined` → `!lang`.     | CLOSED ↓ |
+| Non-locale garbage (numeric, boolean)     | **none** before this iteration      | Rejected: `isLocale` returns false.                 | CLOSED ↓ |
+| `--language` alias behaves identically    | line 75 (positive `en`)             | Rejected for invalid values; accepted for valid.    | OK       |
+
+#### What the strict check actually rejects (21 new test cases)
+
+The audit added a dedicated `describe` block at the bottom of
+`src/lib/cli-args.test.ts` (`describe("parseArgs — --lang locale validation (Phase 1 Task 1.4)")`).
+The table below maps every test case to the rejection mechanism:
+
+| Case family              | Inputs                                                                  | Mechanism                          |
+| ------------------------ | ----------------------------------------------------------------------- | ---------------------------------- |
+| Wrong case               | `"EN"`, `"En"`, `"ES"`, `"Es"`                                          | `isLocale` strict `===`            |
+| Whitespace around value  | `" en"`, `"en "`, `"\ten"`, `"en\t"`, `"\nen"`, `"es\n"`                | No `.trim()` in code path          |
+| Empty string             | `""`                                                                     | `!lang` short-circuit              |
+| Missing value            | (no following arg)                                                       | `argv[++i]` is `undefined`         |
+| Non-locale garbage       | `"fr"`, `"en-US"`, `"es-MX"`, `"english"`, `"1"`, `"true"`             | `isLocale` returns false           |
+| Alias consistency        | `--language` with each of the above                                    | Same code path as `--lang`         |
+
+#### Finding 1.4.A — LOW — `--lang` does not use `requireValue`, so `--lang --debug` blames the locale
+
+**Problem.** The other value flags (`--port`, `--model`, `--agent`, `--prompt`,
+`--plan`) all run their value through a helper that distinguishes "missing
+value" from "invalid value":
+
+- `parsePort` emits `"Error: --port requires a full integer argument"` when
+  the value is missing or non-numeric, and `"Error: --port must be in TCP
+  range 0..65535"` when the value is well-formed but out of range.
+- `parseModel` emits `"Error: --model requires an argument"` for a missing
+  value, and `"Error: --model expects provider/model ..."` for a malformed
+  one.
+- `requireValue` (used by `--agent`, `--prompt`, `--plan`) emits
+  `"Error: <flag> requires a value"` for either a missing value OR a value
+  that looks like another flag (`--prompt --debug`).
+
+`--lang` skips all of those. The inline check is:
+
+```ts
+const lang = argv[++i]
+if (!lang || !isLocale(lang)) {
+  console.error("Error: --lang requires 'en' or 'es'")
+  process.exit(1)
+}
+```
+
+So a user who runs
+
+```
+ocloop --lang --debug
+```
+
+gets `Error: --lang requires 'en' or 'es'`, which is technically true
+(`--debug` is not a valid locale) but reads as "your locale value is
+wrong" rather than "you forgot to pass a value". The same applies to
+`--lang --chaos`, `--lang --verbose`, etc.
+
+**Where.** `src/lib/cli-args.ts:227-235` (the `--lang` case).
+
+**Proposed fix.** Use `requireValue` (or a similar pre-check) before
+`isLocale`, so the missing-value case emits a distinct error:
+
+```ts
+case "--lang":
+case "--language": {
+  const lang = requireValue(argv[++i], "--lang")
+  if (!isLocale(lang)) {
+    console.error("Error: --lang requires 'en' or 'es'")
+    process.exit(1)
+  }
+  args.lang = lang
+  break
+}
+```
+
+Note that `requireValue` rejects values starting with `-` (except `-`),
+so `--lang --debug` would emit `Error: --lang requires a value` (the
+existing, consistent message), while `--lang fr` would still emit the
+locale error. This matches the pattern of the other value flags.
+
+**Status.** **NOT FIXED** — documented only. The current behavior is
+correct (it rejects the bad input), only the error message is suboptimal.
+A test now pins the current behavior so a future fix is visible as a
+behavioral change.
+
+#### Finding 1.4.B — INFO — Locale is a closed set by design
+
+`isLocale` accepts exactly two values. This is intentional: the only
+shipped locales are `en` and `es`, and adding a new locale is a
+deliberate i18n effort (every UI string needs a translation, the `es`
+mirror type-checks the new keys). The CLI does not silently accept
+`en-US` or `es-MX` — those get the same error as `fr`. This is the
+right call for a CLI surface that drives a typed `Locale` field.
+
+#### Finding 1.4.C — INFO — Empty string is correctly rejected via `!lang`
+
+The `!lang` short-circuit handles three distinct cases uniformly:
+`undefined` (no following arg), `null` (impossible from `argv`), and
+`""` (empty shell-quoted arg). The error message does not distinguish
+them, but that is fine: the action is the same in all three (the user
+must supply a non-empty value).
+
+#### Finding 1.4.D — INFO — The `--language` alias is purely cosmetic
+
+Both `--lang` and `--language` map to the same `case` and call the
+same `isLocale` check. There is no behavioral difference other than
+the spelling. The test suite covers both forms on the positive path
+(`"en"` and `"es"` accepted) and the alias is exercised in the
+`--lang + --chaos + numeric --resilience together` combination test
+at line 182-188.
+
+#### Summary
+
+| Severity | Count | Notes                                                              |
+| -------- | ----- | ------------------------------------------------------------------ |
+| CRITICAL | 0     |                                                                    |
+| HIGH     | 0     |                                                                    |
+| MEDIUM   | 0     |                                                                    |
+| LOW      | 1     | 1.4.A — inconsistent missing-value error (not fixed, documented)   |
+| INFO     | 3     | 1.4.B (closed set), 1.4.C (empty short-circuit), 1.4.D (alias)     |
+
+`bun test src/lib/cli-args.test.ts` → **81 pass, 0 fail, 184 expect() calls**
+(was 60/0/141 before this iteration).
+
+---
+
+### 1.5 — Remaining Phase 1 sub-tasks (audit pending)
 
 The following PLAN.md Phase 1 sub-tasks still need their own dedicated audit
 section. They are listed here as a roadmap for the next iteration so the
 report stays ordered as additional sections are appended in order.
 
-- [ ] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). (Implemented by `isLocale` in `src/lib/i18n.ts`; covered by test at line 135.)
+- [x] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). ✅ COMPLETE — see section 1.4 above.
 - [ ] **Task 1.5** — Verify `--resilience key=value` edge cases. (Tests at lines 86-93, 136-145, 226-243, 259-264.)
 - [ ] **Task 1.6** — Verify `--create-plan` flag combinations. (Tests at lines 162-188.)
 - [ ] **Task 1.7** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone.
@@ -337,7 +500,7 @@ report stays ordered as additional sections are appended in order.
 
 ---
 
-### 1.4 — Other observations on the file
+### 1.6 — Other observations on the file
 
 - **`require("../../package.json").version` at `src/lib/cli-args.ts:16`** — uses
   CommonJS `require` from an ESM module (the rest of the file is ESM). Bun
