@@ -53,7 +53,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 4 — Session Lifecycle & Iteration Driver
 
-- [ ] Audit `startIteration` for: server not ready, createSession failure, sendPromptAsync failure, prompt file missing, prompt file empty
+- [x] Audit `startIteration` for: server not ready, createSession failure, sendPromptAsync failure, prompt file missing, prompt file empty
 - [ ] Verify: `startingIteration` guard prevents double-creation on rapid state transitions — what if the guard is true but the effect fires again before it's cleared?
 - [ ] Verify: `checkPlanComplete` is called before creating a session — if plan is already complete, does it dispatch `plan_complete` and return without creating a session?
 - [ ] Verify: `minIterationGapMs` uses monotonic clock — confirm `lastIterationStartAt` is set with `monotonicNow()` and gap calculation uses `monotonicNow()`
