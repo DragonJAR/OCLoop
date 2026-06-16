@@ -1261,10 +1261,41 @@ Commit `4e64e13`.
 
 ### Mejora 33 — Finding 11.2.A — MEDIUM — `Bun.spawn` is missing `detached: true`
 
-- [ ] Evaluar la mejora 33 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 33 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 33 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 33 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 33 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 33 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 33 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 33 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13456-13475`): `Bun.spawn` se llama sin `detached: true`
+ni `windowsHide: true`, así que el terminal hereda el process group
+de OCLoop. Cuando el usuario cierra la TUI o termina la sesión SSH,
+el SIGHUP puede matar el terminal recién abierto — el fire-and-forget
+del launcher queda socavado. El comment block encima del spawn
+también mentía (`MEJORAS.md:13563-13589`, Finding 11.2.F): decía
+"Using 'inherit' for stdio" pero el código usa `"ignore"`. La
+propuesta del audit es estrictamente la mínima útil: 2 flags más
+en el options object + un comment block corregido. Implementación
+mínima: 2 líneas añadidas (`detached: true`, `windowsHide: true`)
++ 6 líneas de comentario que nombran la racionalidad
+defensiva (process group / SIGHUP), el source `MEJORAS.md
+Finding 11.2.A`, y aclaran que `proc.unref()` cubre el lado
+"OCLoop no espera al child" (el audit proponía quitarlo por
+redundancia, pero el contrato de "fire-and-forget" sigue
+siendo load-bearing en caso de que Bun cambie la semántica
+de `detached: true` entre versiones). Cero cambios a la firma
+de `launchTerminal`, cero cambios a `KNOWN_TERMINALS`,
+cero cambios a `getAttachCommand` / `buildArgs` / `detectInstalledTerminals`,
+cero impacto en la ruta de error (el `try/catch` exterior
+sigue capturando `ENOENT` / `EACCES` igual), cero impacto
+en tests (`terminal-launcher.test.ts` no existe — Mejora 92
+lo cubrirá cuando llegue su turno; un test que pinee
+"detached: true se pasa" requeriría mockear `Bun.spawn`
+que rompe el patrón de tests del codebase, ver `docs/testing.md`).
+El cambio es estructuralmente correcto y operacionalmente
+gratis: POSIX `setsid()` + `windowsHide` solo en Windows.
+`bun test` verde: 694 pass / 0 fail, 1714 expect() calls,
+23 files, 310 ms — sin cambio en el conteo. Commit `5741886`.
 
 ### Mejora 34 — Finding 11.2.B — LOW — Empty `config.args` for a custom terminal silently launches without the attach command
 
