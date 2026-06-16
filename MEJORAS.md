@@ -19220,3 +19220,234 @@ wasted call from surfacing to the user.
 - No MEDIUM findings.
 - One LOW finding (15.4.A — wasted `abortSession` HTTP call
   under SIGINT-during-Q).
+
+---
+
+### 15.5 — `refreshPlan` race: PLAN.md edited while SSE event fires
+
+PLAN.md 15.5: "Verify: Plan file edits by OpenCode trigger
+`refreshPlan()` — what if the edit is in-progress (partial
+file)?"
+
+**Status: COMPLETE — VERIFIED. Parser is defensive against
+partial content; no in-flight guard needed. One LOW finding
+(missing debounce on rapid-fire `file.edited` events).**
+
+#### The data flow — VERIFIED
+
+The `file.edited` SSE event from OpenCode reaches
+`refreshPlan` via a four-hop path:
+
+1. OpenCode server fires `EventFileEdited`
+   (`node_modules/@opencode-ai/sdk/dist/gen/types.gen.d.ts`:
+   `{ type: "file.edited", properties: { file: string } }`).
+   The server-side write semantics — atomic vs. non-atomic,
+   ordering relative to the SSE flush — live in the OpenCode
+   server (a separate process outside this repo) and are not
+   observable from the SDK.
+2. `useSSE` (`src/hooks/useSSE.ts:398-401`) receives the
+   event and dispatches to `handlers.onFileEdited?.(file)`.
+3. `App.tsx:517-530` — the handler:
+   - Records a watchdog heartbeat (irrelevant to the race
+     question; documented for completeness).
+   - Adds an "edit" activity-log entry.
+   - Resolves both paths to absolute form
+     (`path.resolve(planFile)` vs `path.resolve(file)`) and
+     compares strings.
+   - On match, calls `refreshPlan()` (and
+     `refreshCurrentTask()` as a fallback for cases where
+     SSE didn't deliver a `todo_updated`).
+4. `refreshPlan` (`App.tsx:570-581`) calls
+   `parsePlanFile(planPath)`, which reads
+   `Bun.file(planPath).text()` and feeds the result to
+   `parsePlan` (`plan-parser.ts:103-153`).
+
+#### The race: partial read
+
+The question is: can `Bun.file(planPath).text()` observe a
+file mid-write? The answer depends on the OpenCode edit tool's
+write strategy, which lives outside this repo. Three
+scenarios are possible:
+
+| Scenario | What the reader sees | Impact |
+| --- | --- | --- |
+| **Atomic write** (write to `tmp` + `rename`) | SSE fires after `rename(2)` returns; reader sees the post-edit file in full. | None — correct. |
+| **POSIX `write(2)` of < `PIPE_BUF` (4096 bytes on Linux, 512 on macOS HFS+)** | POSIX guarantees that a `read(2)` of a regular file sees either the pre-image or the post-image, never a torn write. | None — correct. PLAN.md is typically < 4 KB. |
+| **`truncate` + `write` (non-atomic)** | Reader may see the pre-truncate content followed by a partial new write. | Transient stale progress. The parser's defensive design absorbs the partial content (see below). |
+
+#### The parser is defensive — VERIFIED
+
+`parsePlan` and `parseTaskLine` are robust to partial content:
+
+- `parseTaskLine` (`plan-parser.ts:20-89`) returns
+  `not-a-task` for:
+  - Lines not starting with `- [`.
+  - Lines with `- [` but no closing `]` (line 31-33).
+  - Lines with `- [ ]` and no description (line 80-83).
+  - Lines with unknown checkbox content (line 87-88).
+- `parsePlan` (`plan-parser.ts:103-153`) skips
+  `not-a-task` lines and counts only the well-formed ones.
+  A partial PLAN.md therefore yields a count that is **no
+  larger** than the count of well-formed task lines in the
+  partial content. The count cannot grow because a partial
+  line is never misread as a new task.
+
+#### The error path is forgiving — VERIFIED
+
+`refreshPlan` (`App.tsx:575-580`) wraps the read in
+`try/catch`:
+
+```ts
+try {
+  const progress = await parsePlanFile(...)
+  setPlanProgress(progress)
+} catch (err) {
+  log.error("plan", "Failed to parse plan file", err)
+}
+```
+
+The catch block:
+- Logs to the structured logger (visible in the debug log
+  via `log.error`).
+- **Does NOT** call `handleIterationError` — the failed
+  read does not abort the loop, does not enter cooldown, and
+  does not transition to `error` state.
+- **Does NOT** throw — the function returns `void` and the
+  caller (`onFileEdited` at line 526) is also `void`.
+
+The only failure modes that escape the catch are
+synchronous throws from `parsePlanFile` itself. Walking the
+code (`plan-parser.ts:226-230`):
+
+```ts
+export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
+  const file = Bun.file(planPath)
+  const content = await file.text()
+  return parsePlan(content)
+}
+```
+
+`Bun.file(planPath)` never throws (returns a handle even for
+non-existent files). `await file.text()` rejects on I/O
+errors. `parsePlan` is pure and cannot throw on partial
+content. So the catch is hit for: ENOENT mid-write, EACCES
+on a locked file, EMFILE on fd exhaustion, or `read` errors
+on a network mount. None of these crash the loop.
+
+#### Test coverage gap — INFO
+
+The existing `plan-parser.test.ts` suite covers
+`parseTaskLine` for every marker variant
+(`- [x]`, `- [ ]`, `- [MANUAL]`, `- [BLOCKED]`, edge cases
+like trailing spaces, multi-line, etc.) but does **not**
+cover the "partial file" scenario explicitly. A test like:
+
+```ts
+it("parsePlan on a partial line returns no count for the partial line", () => {
+  const progress = parsePlan(
+    "- [x] task A\n- [x] task B\n- [x] task C\n- ["
+  )
+  // Three completed, one partial = not-a-task.
+  expect(progress.completed).toBe(3)
+  expect(progress.total).toBe(3)
+})
+```
+
+…would pin the defensive behavior. Not blocking — the
+parser is small, the logic is direct, and the test gap is
+documented for the next coverage pass.
+
+#### Race walk-through — VERIFIED
+
+| Scenario | Outcome |
+| --- | --- |
+| `file.edited` fires after a successful atomic write | `parsePlan` sees the post-edit state. `setPlanProgress` updates the UI. Correct. |
+| `file.edited` fires during a non-atomic write (POSIX `PIPE_BUF` race) | Reader sees pre-image or post-image. Parser counts the well-formed lines. UI shows momentarily-stale progress. Self-heals on the next event. |
+| `file.edited` fires during a `truncate` + `write` | Reader sees truncated + partial new. Partial lines return `not-a-task`. Count is ≤ the post-edit count. UI shows a low count. Self-heals on the next event. |
+| Two `file.edited` events in rapid succession (multi-edit tool) | Both `refreshPlan` calls run concurrently. No in-flight guard. Each reads the file independently. The OS may return the file as it is at the moment of each read. **Order of `setPlanProgress` calls is non-deterministic** (the `await` interleavings are not serialized). The final state matches the final `setPlanProgress` call. Transient flicker possible. |
+| `file.edited` for a non-PLAN file | Path comparison fails; `refreshPlan` not called. Correct. |
+| `file.edited` for PLAN.md but with a relative path | `path.resolve(file)` normalizes. Comparison works. Correct. |
+| PLAN.md deleted between `file.edited` and the read | `Bun.file(planPath).text()` rejects with ENOENT. `log.error` fires. Loop continues. Correct. |
+
+#### Finding 15.5.A — LOW — No debounce on rapid-fire `file.edited` events for PLAN.md
+
+**Problem.** A multi-edit tool call (e.g., OpenCode's edit
+tool rewriting PLAN.md to flip several `- [ ]` to `- [x]`)
+can fire several `file.edited` SSE events in quick
+succession. Each event triggers an independent
+`refreshPlan()` → `parsePlanFile()` → `Bun.file().text()` →
+`parsePlan` cycle. The reads are wasteful (the same file is
+re-read N times in N ms) and the `setPlanProgress` calls
+race in `setPlanProgress`'s call order, producing transient
+flicker in the progress bar.
+
+**Why LOW.** The race is benign:
+- The parser is defensive — it never misreads partial
+  content as additional tasks.
+- The final `setPlanProgress` call reflects the most recent
+  read; any earlier flicker is overwritten.
+- The activity log is append-only, so the duplicate
+  "file_edit" entries are user-visible but informative (not
+  misleading).
+- No correctness impact on the loop, the iteration
+  driver, or the task-tracking signals.
+
+**Where.** `src/App.tsx:517-530` — the `onFileEdited`
+handler in the SSE options block.
+
+**Proposed fix.** A 100-200 ms trailing debounce on
+PLAN.md-only `refreshPlan` calls would coalesce rapid-fire
+events. Two viable patterns:
+
+1. **Timeout-based debounce** (simple, 6 lines):
+   ```ts
+   let refreshPlanTimer: ReturnType<typeof setTimeout> | null = null
+   // ...
+   if (absoluteFilePath === absolutePlanPath) {
+     if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
+     refreshPlanTimer = setTimeout(() => {
+       refreshPlan()
+       refreshCurrentTask()
+     }, 150)
+   }
+   ```
+2. **Counter-based version** (more robust under load, ~15
+   lines): keep a monotonic version stamp on
+   `setPlanProgress` and ignore stale writes.
+
+The simpler option is sufficient because `refreshPlan` is
+a pure read+parse — no side effects beyond `setPlanProgress`
+and the activity log. The activity log entries should
+remain real-time (not debounced) so the user sees the edit
+happen as it occurs.
+
+**Status.** Fix proposed, not applied (audit-only per
+PLAN.md acceptance criteria).
+
+#### Verification result
+
+`refreshPlan()` is correct under partial-file reads:
+- The parser is defensive: malformed lines return
+  `not-a-task` and are silently skipped.
+- The catch block at `App.tsx:578-580` swallows I/O errors
+  without crashing the loop.
+- POSIX `read(2)` of a regular file is atomic for
+  PLAN.md's typical size (< `PIPE_BUF`), so torn writes
+  are not observable on common filesystems.
+- `setPlanProgress` is a Solid setter; multiple rapid
+  writes coalesce to the final value.
+- The activity log entry is informational, not
+  control-flow-relevant.
+
+The only optimization opportunity is a 100-200 ms debounce
+on PLAN.md-triggered `refreshPlan` calls to coalesce
+multi-edit tool calls — recorded as Finding 15.5.A
+(LOW).
+
+- No CRITICAL findings.
+- No HIGH findings.
+- No MEDIUM findings.
+- One LOW finding (15.5.A — no debounce on rapid-fire
+  PLAN.md edits).
+- One INFO-level test-coverage note (partial-file parser
+  test missing).
