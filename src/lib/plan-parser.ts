@@ -131,6 +131,9 @@ export function parsePlan(content: string): PlanProgress {
   // they must leave the denominator — otherwise a fully-resolved plan with
   // blocked items never reaches 100%.
   const denominator = total - manual - blocked
+  // When denominator is 0 (all tasks are MANUAL or BLOCKED), there are no
+  // automatable tasks for the loop to run — it has nothing to do, so 100% is
+  // the correct semantic: the plan is complete from the loop's perspective.
   const percentComplete = denominator > 0 ? Math.round((completed / denominator) * 100) : 100
 
   return {
