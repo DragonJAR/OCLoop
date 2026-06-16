@@ -107,27 +107,99 @@ whitespace. Tested at lines 128-131 and 252-256. No findings.
 
 ---
 
-### 1.2 — Verifications deferred to subsequent tasks
+### 1.2 — Audit `--port` boundary values
 
-The following Phase 1 sub-tasks are covered by the existing test suite but
-**not separately documented** here; they are revisited as their own entries
-later in the audit so the report stays ordered.
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. Two INFO observations.**
 
-- Task 1.2: `--port` non-numeric, negative, zero, float, >65535 — covered in
-  test table above. **No findings.**
-- Task 1.3: `--model` validation — covered by 1.1.E. **No findings.**
-- Task 1.4: `--lang` rejects anything other than `en`/`es` — verified by
-  `isLocale` in `src/lib/i18n.ts:22-24`. **No findings.**
-- Task 1.5: `--resilience` edge cases — covered by tests at line 86-93,
-  136-145, 226-243, 259-264. **No findings.**
-- Tasks 1.6-1.7: `--create-plan`/`--resume` flag combinations and standalone
-  behavior — combination tests at line 162-188. **No findings.**
-- Task 1.8: `requireValue` `-` acceptance — covered. **No findings.**
-- Task 1.9: `parseArgs` idempotency — covered. **No findings.**
+The `parsePort` helper (lines 119-130 of `src/lib/cli-args.ts`) uses a two-stage
+gate: a regex (`PORT_RE = /^\d+$/`) blocks non-integer tokens before they reach
+the numeric range check, so a single error path covers most malformed inputs.
+
+```ts
+function parsePort(portStr: string | undefined): number {
+  if (!portStr || !PORT_RE.test(portStr)) {
+    console.error("Error: --port requires a full integer argument")
+    process.exit(1)
+  }
+  const port = Number(portStr)
+  if (port < 0 || port > 65535) {
+    console.error("Error: --port must be in TCP range 0..65535")
+    process.exit(1)
+  }
+  return port
+}
+```
+
+Each of the five required cases (PLAN.md Task 1.2) is exercised by
+`src/lib/cli-args.test.ts`:
+
+| Required case         | Input               | Code path                                           | Test                       | Result |
+| --------------------- | ------------------- | --------------------------------------------------- | -------------------------- | ------ |
+| Non-numeric           | `abc`               | `PORT_RE` fails → exit 1                            | line 121                   | OK     |
+| Negative              | `-1`                | `PORT_RE` fails (no `\d` for `-`) → exit 1          | line 124                   | OK     |
+| Zero                  | `0`                 | matches → range check passes (0 ≤ 0 ≤ 65535)        | lines 65, 246-250          | OK     |
+| Float                 | `123.4`             | `PORT_RE` fails (`.` not in `\d`) → exit 1          | line 123                   | OK     |
+| >65535                | `65536`             | matches → range check fails → exit 1                | line 125                   | OK     |
+
+Additional cases worth covering for completeness:
+
+| Case                       | Input         | Behavior                  | Notes                                         |
+| -------------------------- | ------------- | ------------------------- | --------------------------------------------- |
+| Empty string               | `""`          | `!portStr` → exit 1       | Same error path as non-numeric. OK            |
+| Missing arg                | `--port`      | `argv[++i]` → undefined → `!portStr` → exit 1 | Tested line 126. OK              |
+| Hex / scientific / unicode | `0x10`, `1e3` | `PORT_RE` fails → exit 1  | Intentionally rejected. OK                    |
+| Whitespace-padded          | `" 80"`       | `PORT_RE` fails → exit 1  | User must trim themselves. OK                |
+| Leading zeros              | `"0080"`      | matches → returns 80      | Accepted as 80. See Observation 1.2.A below.  |
+| Repeated flag              | `--port 1 --port 2` | last wins (2)         | Same switch fall-through as 1.1.B. OK         |
+
+#### Observation 1.2.A — INFO — Leading zeros silently coerced (e.g. `--port 0080` → 80)
+
+`--port 0080` parses as 80. `Number("0080")` is 80, so the range check passes
+without complaint. This is the standard behavior of the JS `Number()`
+constructor for integer strings and is consistent with most CLI tools
+(node, curl, etc.). No user-facing harm — port 80 is the HTTP port regardless
+of how the user typed it. **No change needed.**
+
+#### Observation 1.2.B — INFO — Port 0 is explicitly accepted as "OS-assigned"
+
+The test at lines 246-250 documents the design decision to accept port 0
+rather than reject it as out-of-range. The current implementation handles
+this correctly because the range check is `port < 0 || port > 65535`, which
+admits 0. This matches the TCP spec (RFC 6335 §2.2) where port 0 means
+"let the OS pick". **No change needed.**
+
+#### Finding 1.2.C — INFO — All five required boundary cases are tested
+
+The audit-trail test file `src/lib/cli-args.test.ts` covers every case listed
+in PLAN.md Task 1.2. Running the suite locally:
+
+```
+$ bun test src/lib/cli-args.test.ts
+49 pass, 0 fail
+```
+
+This is the strongest form of verification — the assertions live in the repo
+and run on every `bun test`. **No additional test work needed for Task 1.2.**
 
 ---
 
-### 1.3 — Other observations on the file
+### 1.3 — Remaining Phase 1 sub-tasks (audit pending)
+
+The following PLAN.md Phase 1 sub-tasks still need their own dedicated audit
+section. They are listed here as a roadmap for the next iteration so the
+report stays ordered as additional sections are appended in order.
+
+- [ ] **Task 1.3** — Verify `--model` rejects strings without `/`, with multiple `/`, empty provider/model, and whitespace. (Largely covered by 1.1.E + tests at lines 128-131, 252-256.)
+- [ ] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). (Implemented by `isLocale` in `src/lib/i18n.ts`.)
+- [ ] **Task 1.5** — Verify `--resilience key=value` edge cases. (Tests at lines 86-93, 136-145, 226-243, 259-264.)
+- [ ] **Task 1.6** — Verify `--create-plan` flag combinations. (Tests at lines 162-188.)
+- [ ] **Task 1.7** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone.
+- [ ] **Task 1.8** — Document `requireValue` accepting a lone `-`. (Covered by tests at line 211-218.)
+- [ ] **Task 1.9** — Verify `parseArgs` is idempotent. (Test at lines 238-244.)
+
+---
+
+### 1.4 — Other observations on the file
 
 - **`require("../../package.json").version` at `src/lib/cli-args.ts:16`** — uses
   CommonJS `require` from an ESM module (the rest of the file is ESM). Bun
