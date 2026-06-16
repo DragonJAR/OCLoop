@@ -8352,3 +8352,453 @@ end-to-end value.
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+### 7.4 — Verify SSE reconnection threshold (6 attempts) triggers a server restart — is it configurable?
+
+PLAN.md 7.4: "Verify: SSE
+reconnection threshold (6 attempts)
+triggers a server restart — is this
+configurable?"
+
+**Status: COMPLETE — VERIFIED. The
+threshold IS effective (a failure streak
+of 6 reconnect attempts does fire
+`restartServer()`), but it is
+**hardcoded** — not exposed as a
+resilience config key, not settable via
+`--resilience key=value`, and not
+present in `~/.config/ocloop/ocloop.json`.
+One MEDIUM finding (configurability
+gap), one INFO observation (timing
+analysis), one INFO observation (the
+flag-reset path on successful
+reconnect). No CRITICAL or HIGH
+findings.**
+
+#### The threshold is a hardcoded constant
+
+`App.tsx:1228`:
+
+```ts
+const SSE_RECONNECT_RESTART_THRESHOLD = 6
+```
+
+The constant is referenced in the
+recovery effect at `App.tsx:1230-1245`:
+
+```ts
+let sseRecoveryFired = false
+createEffect(() => {
+  const attempts = sse.reconnectAttempts()
+  if (attempts === 0) {
+    sseRecoveryFired = false
+    return
+  }
+  if (
+    attempts >= SSE_RECONNECT_RESTART_THRESHOLD &&
+    loop.isRunning() &&
+    !sseRecoveryFired
+  ) {
+    sseRecoveryFired = true
+    log.health("sse", "reconnect_exhausted", { attempts })
+    void restartServer()
+  }
+})
+```
+
+#### Configurability audit — NOT configurable
+
+Searched for the threshold across the
+configuration surface:
+
+| Source | Key? | Reference |
+| --- | --- | --- |
+| `ResilienceConfig` interface | No | `src/lib/config.ts:45-105` (18 keys: createTimeoutMs, promptTimeoutMs, abortTimeoutMs, statusTimeoutMs, pingTimeoutMs, planTimeoutMs, backoffBaseMs, backoffMaxMs, backoffJitter, maxRateLimitRetries, minIterationGapMs, sleepTickMs, sleepThresholdMs, caffeinate, watchdogTickMs, watchdogSuspectMs, watchdogConfirmMs, maxRecoveryAttempts) |
+| `DEFAULT_RESILIENCE` defaults | No | `src/lib/config.ts:110-135` — matches the interface, no SSE key |
+| `applyResilienceOverride` (CLI parser) | Would **reject** any override | `src/lib/cli-args.ts:96-99` — `if (!(key in DEFAULT_RESILIENCE))` exits 1 with "unknown resilience key" message |
+| Config-file `resilience` block | No | `OcloopConfig.resilience: Partial<ResilienceConfig>` at `config.ts:151` — only keys present in the interface are accepted |
+| Help text | No | `src/lib/cli-args.ts:32-67` — `--resilience <key=value>` documented but no per-key list |
+| `grep` for the constant in `src/` | Defined and used in 2 lines only | `App.tsx:1228, 1237` |
+
+A user who runs `ocloop
+--resilience sseReconnectRestartThreshold=4`
+will see:
+
+```
+Error: unknown resilience key
+  "sseReconnectRestartThreshold"
+Valid keys: createTimeoutMs,
+  promptTimeoutMs, abortTimeoutMs,
+  statusTimeoutMs, pingTimeoutMs,
+  planTimeoutMs, backoffBaseMs,
+  backoffMaxMs, backoffJitter,
+  maxRateLimitRetries, minIterationGapMs,
+  sleepTickMs, sleepThresholdMs,
+  caffeinate, watchdogTickMs,
+  watchdogSuspectMs, watchdogConfirmMs,
+  maxRecoveryAttempts, resume, chaos
+```
+
+…with exit code 1. The key is not
+documented anywhere in the help, README,
+or config schema. The threshold is a
+**compile-time** constant.
+
+**Finding 7.4.A — MEDIUM — The SSE
+reconnection threshold is a hardcoded
+constant; users with slow/unreliable
+servers cannot tune it.**
+
+The default of `6` was chosen to balance
+"don't restart prematurely on a blip"
+vs "don't sit silent for too long on a
+genuinely dead server". The actual
+wall-clock time to fire the threshold
+is ~61s (see INFO observation below),
+which is reasonable for a healthy
+network. But:
+
+- A user running the harness against
+  a **flaky** server (e.g., a dev VM
+  on a congested LAN) may see 6 failed
+  reconnects fire `restartServer()`
+  while the server is still alive,
+  causing a needless restart + session
+  reconcile.
+- A user running against a **truly
+  dead** server (the loop's primary
+  failure mode) may prefer a **lower**
+  threshold (e.g., 3) to restart
+  sooner.
+- The behavior is otherwise
+  unreachable from configuration: a
+  power user with a non-standard
+  deployment has no escape hatch
+  short of editing `App.tsx:1228` and
+  rebuilding.
+
+The other resilience thresholds in
+`config.ts` follow a consistent
+pattern: defaults + `Partial<…>` for
+file overrides + `--resilience key=value`
+for CLI overrides. SSE reconnect
+threshold is the **only** major
+recovery threshold that breaks this
+pattern. (The watchdog has
+`maxRecoveryAttempts` and the rate-
+limit path has `maxRateLimitRetries`,
+both configurable; SSE reconnect is
+the outlier.)
+
+**Where.** `App.tsx:1228`
+(`SSE_RECONNECT_RESTART_THRESHOLD`).
+`src/lib/config.ts:45-135` (the
+`ResilienceConfig` shape — no SSE
+key).
+
+**Proposed fix.** Add a `sseReconnectRestartThreshold:
+number` key to `ResilienceConfig` with
+`DEFAULT_RESILIENCE.sseReconnectRestartThreshold
+= 6`, and read the value from
+`resilience()` (the same accessor
+already used by the rate-limit path at
+`App.tsx:676`) inside the effect. The
+fix is **fully backward compatible**
+(the default preserves current
+behavior) and **trivially testable**:
+the existing `useWatchdog.test.ts`
+fixtures (which mock `recover()` and
+inspect the action calls) provide a
+template for an effect-level test of
+the threshold check.
+
+```ts
+// config.ts — add the key
+export interface ResilienceConfig {
+  // ... existing keys ...
+  /** Consecutive SSE reconnect failures before escalating to a server restart. */
+  sseReconnectRestartThreshold: number
+}
+export const DEFAULT_RESILIENCE:
+  ResilienceConfig = {
+  // ... existing defaults ...
+  sseReconnectRestartThreshold: 6,
+}
+
+// App.tsx:1224-1245 — read from
+// resilience() instead of a constant
+createEffect(() => {
+  const threshold =
+    resilience().sseReconnectRestartThreshold
+  const attempts = sse.reconnectAttempts()
+  if (attempts === 0) {
+    sseRecoveryFired = false
+    return
+  }
+  if (
+    attempts >= threshold &&
+    loop.isRunning() &&
+    !sseRecoveryFired
+  ) {
+    sseRecoveryFired = true
+    log.health("sse",
+      "reconnect_exhausted",
+      { attempts, threshold })
+    void restartServer()
+  }
+})
+```
+
+This change is mechanical, preserves
+the current default, and unblocks
+configuration via:
+
+- CLI: `ocloop --resilience
+  sseReconnectRestartThreshold=4`
+- File: `"resilience":
+  {"sseReconnectRestartThreshold": 4}`
+  in `~/.config/ocloop/ocloop.json`
+- Both, with CLI > file > default
+  precedence already implemented in
+  `resolveResilience` at
+  `config.ts:160-175`.
+
+**Status.** Fix proposed, not applied
+(audit-only per PLAN.md acceptance
+criteria). Severity is MEDIUM because
+the threshold's default is reasonable
+for typical use; the gap affects power
+users, not the standard case.
+
+#### INFO — Threshold timing: ~61s to fire
+
+The `scheduleReconnect` backoff curve
+at `useSSE.ts:574-591`:
+
+```ts
+const attempt = reconnectAttempts()
+const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
+setReconnectAttempts(attempt + 1)
+```
+
+The `reconnectAttempts` counter
+**increments inside `scheduleReconnect`
+itself**, before the timeout fires.
+The effect at `App.tsx:1230-1245` reads
+the counter reactively, so the
+threshold check fires as soon as the
+counter is updated.
+
+Walk-through for the default
+threshold of `6`:
+
+| Step | Counter before `scheduleReconnect` | Delay scheduled | Approx. wall-clock |
+| --- | --- | --- | --- |
+| 1st connect fail | 0 | 1000 * 2^0 = 1s | t = 0 |
+| 2nd connect fail | 1 | 1000 * 2^1 = 2s | t ≈ 1s |
+| 3rd connect fail | 2 | 1000 * 2^2 = 4s | t ≈ 3s |
+| 4th connect fail | 3 | 1000 * 2^3 = 8s | t ≈ 7s |
+| 5th connect fail | 4 | 1000 * 2^4 = 16s | t ≈ 15s |
+| 6th connect fail | 5 | min(1000*2^5, 30000) = 30s | t ≈ 31s |
+| **Effect fires** (counter = 6) | — | — | **t ≈ 61s** |
+| 7th connect (never happens) | 6 | 30s | would be t ≈ 91s |
+
+So `SSE_RECONNECT_RESTART_THRESHOLD =
+6` translates to "fire `restartServer()`
+~61 seconds after the initial
+disconnect". A user who sets the
+threshold to `3` would see the
+escalation fire at ~7s; at `10` it
+would fire at ~91s+30s = ~121s (well
+into the second 30s backoff interval).
+The relationship is non-linear, which
+is a small footgun for users who try
+to reason about the threshold as a
+"raw attempt count" — the exponential
+backoff means a higher threshold
+buys disproportionately more wall-
+clock time.
+
+#### INFO — The `sseRecoveryFired` flag and the reconnect counter reset
+
+The flag-reset path at `App.tsx:1232-1234`:
+
+```ts
+if (attempts === 0) {
+  sseRecoveryFired = false
+  return
+}
+```
+
+`reconnectAttempts` resets to `0` in
+two places in `useSSE.ts`:
+
+1. `useSSE.ts:522` — on a **successful
+   connect** (`setReconnectAttempts(0)`
+   after `setStatus("connected")`).
+2. `useSSE.ts:618` — in the
+   **manual** `reconnect()` function
+   (called by `restartServer()` at
+   `App.tsx:653`, the watchdog action
+   at `App.tsx:260`, the wake handler
+   at `App.tsx:207`, and the server-
+   ready effect at `App.tsx:1026`).
+
+So the recovery flow is:
+
+1. 6 failed reconnects → effect
+   fires → `restartServer()` →
+   `server.restart()` →
+   `sse.reconnect()` → counter resets
+   to `0` → flag resets to `false`
+   (next render of the effect sees
+   `attempts === 0`).
+2. New server comes up, `connect()`
+   succeeds → counter stays at `0`.
+3. If the **new** server also fails,
+   the streak starts over from `0` and
+   the threshold can fire **again**
+   on the new streak (correct
+   behavior — we want a fresh budget
+   per server instance).
+
+This is the right semantics. The
+flag is the "one-shot per failure
+streak" guarantee; the counter reset
+on `reconnect()` is the "fresh budget
+after recovery" guarantee. The two
+work together without conflicting.
+
+#### INFO — The threshold does NOT fire when the loop is paused, in cooldown, or in any non-running state
+
+The guard `loop.isRunning() &&` at
+`App.tsx:1238` ties the threshold to
+the loop's `isRunning` memo at
+`useLoopState.ts:307-310`:
+
+```ts
+const isRunning = createMemo(() => {
+  const s = state()
+  return s.type === "running" || s.type === "pausing"
+})
+```
+
+So the threshold only fires when the
+loop is `running` or `pausing`. In
+`paused` state, `cooldown` state, or
+any non-running state, the condition
+short-circuits to false and the
+`restartServer()` call is **not**
+fired. This is correct: there is no
+benefit to restarting the server
+while the loop is paused (the user
+intends to be idle) or while it is
+waiting out a rate-limit cooldown
+(restarting the server would not
+unblock the upstream rate limit).
+
+A subtle consequence: if the SSE
+stream breaks while the loop is
+`paused`, the reconnect counter
+accumulates but the threshold never
+fires. When the user resumes (the
+state transitions to `running`),
+the effect re-runs and the threshold
+can fire immediately on the next
+`createEffect` cycle. This is
+intentional — the threshold is a
+"loop is iterating, server is dead"
+signal, not a "SSE has been broken
+for N attempts" signal.
+
+#### Verifier checklist for Task 7.4
+
+- [x] The threshold constant is at
+  `App.tsx:1228` (`const
+  SSE_RECONNECT_RESTART_THRESHOLD = 6`)
+  — verified by direct file read.
+- [x] The threshold is referenced at
+  `App.tsx:1237` (`attempts >=
+  SSE_RECONNECT_RESTART_THRESHOLD`) —
+  verified.
+- [x] `ResilienceConfig` interface at
+  `config.ts:45-105` has no
+  `sseReconnectRestartThreshold` key
+  — verified by direct file read of
+  all 18 keys.
+- [x] `DEFAULT_RESILIENCE` at
+  `config.ts:110-135` has no
+  `sseReconnectRestartThreshold`
+  default — verified.
+- [x] `applyResilienceOverride` at
+  `cli-args.ts:96-99` rejects unknown
+  keys (the `if (!(key in
+  DEFAULT_RESILIENCE))` guard) — the
+  CLI cannot override the threshold
+  — verified.
+- [x] The recovery effect fires
+  `restartServer()` exactly once per
+  failure streak (the
+  `sseRecoveryFired` flag at
+  `App.tsx:1229, 1241`) — verified.
+- [x] The recovery effect resets the
+  flag when `sse.reconnectAttempts()
+  === 0` (`App.tsx:1232-1234`) — the
+  `useSSE.ts:522` reset on a
+  successful connect and the
+  `useSSE.ts:618` reset in
+  `reconnect()` both feed this path
+  — verified.
+- [x] The threshold does NOT fire when
+  the loop is `paused`, `cooldown`,
+  `error`, `ready`, `complete`, or
+  `stopping` (the `loop.isRunning()`
+  guard excludes those states) —
+  verified at `useLoopState.ts:307-310`.
+- [x] The `restartServer()` body at
+  `App.tsx:649-663` calls
+  `server.restart()` + `sse.reconnect()`
+  + `reconcileAndAdvance()` and
+  notifies the watchdog on a `working`
+  verdict — verified by direct file read.
+- [x] The exponential backoff curve
+  at `useSSE.ts:580-582` produces
+  delays of 1, 2, 4, 8, 16, 30, 30,
+  30 seconds (capped at 30s) — verified
+  by direct file read; the threshold
+  fires at ~61s wall-clock for the
+  default of 6.
+
+#### Test-suite delta for Task 7.4
+
+No new tests added. The threshold
+behavior is not covered by
+`useSSE.test.ts` (which only tests
+`classifySessionError` in isolation)
+or `useWatchdog.test.ts` (which
+exercises the watchdog's recovery
+ladder, not the SSE reconnect-
+exhaustion effect). The effect at
+`App.tsx:1230-1245` is in the
+`App.tsx` orchestration layer, which
+has no unit tests — it is exercised
+only by the integration test at
+`resilience-integration.test.ts`
+(which covers the watchdog's restart
+path, not the SSE reconnect path).
+
+A future test would mount a
+`createRoot` around the effect with
+a mocked `sse.reconnectAttempts`
+signal, drive the counter to 6, and
+assert that `restartServer` was
+called once. This is a deferred
+Phase 18 (test coverage) finding —
+the test is mechanical and the
+behavior is verifiable by direct
+file read, so the lack of a test
+is not load-bearing for the audit.
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.
