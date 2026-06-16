@@ -8,7 +8,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Audit `parseArgs` for every flag combination: long/short forms, missing required values, empty strings, duplicate flags, unknown flags
 - [x] Verify `--port` rejects non-numeric, negative, zero, float, and >65535 values
-- [ ] Verify `--model` rejects strings without `/`, with multiple `/`, empty provider/model, and whitespace
+- [x] Verify `--model` rejects strings without `/`, with multiple `/`, empty provider/model, and whitespace
 - [ ] Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string)
 - [ ] Verify `--resilience key=value` with: unknown key, non-numeric value for numeric keys, empty value, value with `=` signs, boolean keys with non-boolean values
 - [ ] Verify `--prompt` and `--plan` with: non-existent paths, directories, empty filenames, relative vs absolute paths

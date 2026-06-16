@@ -183,14 +183,152 @@ and run on every `bun test`. **No additional test work needed for Task 1.2.**
 
 ---
 
-### 1.3 — Remaining Phase 1 sub-tasks (audit pending)
+### 1.3 — Audit `--model` format rejection (no `/`, multi `/`, empty sides, whitespace)
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. One LOW finding (whitespace test gap, now closed).**
+
+The `parseModel` helper (lines 145-157 of `src/lib/cli-args.ts`) is a single
+regex gate:
+
+```ts
+const MODEL_RE = /^[^\s/]+\/[^\s/]+$/
+```
+
+The character class `[^\s/]+` is the single source of truth for "provider
+must be non-empty, non-whitespace, and not contain a slash" — applied twice,
+once per side of the literal `/`. The anchors `^` and `$` reject any
+surrounding whitespace.
+
+#### Mapping each required case to a test
+
+| Required case (PLAN.md 1.3)            | Test before this iteration         | Behavior                                            | Status   |
+| -------------------------------------- | ----------------------------------- | --------------------------------------------------- | -------- |
+| String without `/` (bare model)        | line 128 (`"claude-sonnet-4"`)      | Rejected: zero slashes → no match.                  | OK       |
+| String with multiple `/` (e.g. `a/b/c`)| line 131, 252-256                   | Rejected: third side has no `[^\s/]+` content.      | OK       |
+| Empty provider (`/claude`)             | line 129                            | Rejected: leading slash → provider side is empty.   | OK       |
+| Empty model (`anthropic/`)             | line 130                            | Rejected: trailing slash → model side is empty.      | OK       |
+| Whitespace (any position)              | **none** before this iteration      | Rejected by regex anchors + `[^\s/]+` exclusion.    | CLOSED ↓ |
+
+#### What the regex actually rejects for whitespace
+
+The regex `/^[^\s/]+\/[^\s/]+$/` has no implicit `.trim()`. Every one of the
+following inputs fails the match (verified by adding 11 new test cases in
+`describe("parseArgs — --model whitespace rejection (Phase 1 Task 1.3)")`):
+
+| Input                         | Failure point                                    |
+| ----------------------------- | ------------------------------------------------ |
+| `" anthropic/claude"`         | `^` anchor: leading space                       |
+| `"anthropic/claude "`         | `$` anchor: trailing space                       |
+| `"anthropic /claude"`         | `[^\s/]+` on provider side: contains space       |
+| `"anthropic/ claude"`         | `[^\s/]+` on model side: contains space           |
+| `"\tanthropic/claude"`        | `^` anchor: leading tab                          |
+| `"anthropic/claude\t"`        | `$` anchor: trailing tab                          |
+| `"anthropic\t/claude"`        | `[^\s/]+` on provider side: contains tab          |
+| `"anthropic/\tclaude"`        | `[^\s/]+` on model side: contains tab              |
+| `"anthropic/   "`             | `[^\s/]+` on model side: only whitespace          |
+| `"anthropic/claude\n"`        | `$` anchor: trailing newline                      |
+| `"  openai/gpt-5  "`          | Both anchors: leading and trailing whitespace    |
+
+#### Finding 1.3.A — LOW — Whitespace not explicitly tested (closed by this audit)
+
+**Problem.** Before this iteration the test file exercised every *structural*
+failure mode of `parseModel` (missing arg, no slash, multi-slash, empty
+provider, empty model) but did not pin down whitespace rejection. The
+behavior was correct (the regex is unambiguous on the subject), but a
+regression that loosened the regex to `/.+\/.+/` would not have been caught
+by the existing suite.
+
+**Where.** `src/lib/cli-args.test.ts` (no whitespace cases before this
+audit).
+
+**Proposed fix.** Add a dedicated `describe` block with table-driven cases
+covering leading, trailing, internal, and tab/newline whitespace on both
+sides of the slash. Implemented below.
+
+**Status.** **FIX APPLIED** (test-only). New suite at lines 268-300 of
+`src/lib/cli-args.test.ts`. 11 cases, all passing.
+
+```ts
+describe("parseArgs — --model whitespace rejection (Phase 1 Task 1.3)", () => {
+  const cases: Array<[string, string]> = [
+    ["leading space", " anthropic/claude"],
+    ["trailing space", "anthropic/claude "],
+    ["internal space (provider side)", "anthropic /claude"],
+    ["internal space (model side)", "anthropic/ claude"],
+    ["leading tab", "\tanthropic/claude"],
+    ["trailing tab", "anthropic/claude\t"],
+    ["tab between provider and slash", "anthropic\t/claude"],
+    ["tab between slash and model", "anthropic/\tclaude"],
+    ["only whitespace after slash", "anthropic/   "],
+    ["newline embedded", "anthropic/claude\n"],
+  ]
+  for (const [name, value] of cases) {
+    it(`rejects --model with ${name}`, () => {
+      const r = runParse(["--model", value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("provider/model")
+    })
+  }
+
+  it("model regex anchors strictly (no allow-trim semantics)", () => {
+    const r = runParse(["--model", "  openai/gpt-5  "])
+    expect(r.exitCode).toBe(1)
+  })
+})
+```
+
+#### Finding 1.3.B — INFO — `--model` does not allow quoted whitespace
+
+The CLI does not strip surrounding quotes or whitespace from the value
+passed to `--model`. A user who runs
+
+```
+ocloop --model "  openai/gpt-5  "
+```
+
+(quotes for grouping) will see the regex reject the value because the
+shell strips the quotes and the regex sees the leading/trailing spaces.
+This is consistent with how `--prompt`, `--plan`, and `--agent` behave
+(`requireValue` does not trim either; see Finding 1.1.A) and is the
+intentional design — the user can `.trim()` themselves if they need to.
+**No change needed.**
+
+#### Finding 1.3.C — INFO — The error message is informative
+
+When `parseModel` rejects an input, the error message embeds the offending
+value in backticks and provides an example of the correct shape
+(`openai/gpt-5`):
+
+```
+Error: --model expects provider/model (for example openai/gpt-5), got "<bad-value>"
+```
+
+This is verified by the test at line 154-158 (`expect(...).toContain("provider/model")`).
+The new whitespace tests in Finding 1.3.A also assert on the same
+substring. **No change needed.**
+
+#### Summary
+
+| Severity | Count | Notes                                      |
+| -------- | ----- | ------------------------------------------ |
+| CRITICAL | 0     |                                            |
+| HIGH     | 0     |                                            |
+| MEDIUM   | 0     |                                            |
+| LOW      | 1     | 1.3.A — whitespace test gap (closed)       |
+| INFO     | 2     | 1.3.B (no quoted whitespace), 1.3.C (error) |
+
+`bun test src/lib/cli-args.test.ts` → **60 pass, 0 fail, 141 expect() calls**
+(was 49/0/120 before this iteration).
+
+---
+
+### 1.4 — Remaining Phase 1 sub-tasks (audit pending)
 
 The following PLAN.md Phase 1 sub-tasks still need their own dedicated audit
 section. They are listed here as a roadmap for the next iteration so the
 report stays ordered as additional sections are appended in order.
 
-- [ ] **Task 1.3** — Verify `--model` rejects strings without `/`, with multiple `/`, empty provider/model, and whitespace. (Largely covered by 1.1.E + tests at lines 128-131, 252-256.)
-- [ ] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). (Implemented by `isLocale` in `src/lib/i18n.ts`.)
+- [ ] **Task 1.4** — Verify `--lang` rejects values other than `en`/`es` (case sensitivity, empty string). (Implemented by `isLocale` in `src/lib/i18n.ts`; covered by test at line 135.)
 - [ ] **Task 1.5** — Verify `--resilience key=value` edge cases. (Tests at lines 86-93, 136-145, 226-243, 259-264.)
 - [ ] **Task 1.6** — Verify `--create-plan` flag combinations. (Tests at lines 162-188.)
 - [ ] **Task 1.7** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone.

@@ -256,6 +256,37 @@ describe("parseArgs — Phase 3 edge cases", () => {
   })
 })
 
+describe("parseArgs — --model whitespace rejection (Phase 1 Task 1.3)", () => {
+  const cases: Array<[string, string]> = [
+    ["leading space", " anthropic/claude"],
+    ["trailing space", "anthropic/claude "],
+    ["internal space (provider side)", "anthropic /claude"],
+    ["internal space (model side)", "anthropic/ claude"],
+    ["leading tab", "\tanthropic/claude"],
+    ["trailing tab", "anthropic/claude\t"],
+    ["tab between provider and slash", "anthropic\t/claude"],
+    ["tab between slash and model", "anthropic/\tclaude"],
+    ["only whitespace after slash", "anthropic/   "],
+    ["newline embedded", "anthropic/claude\n"],
+  ]
+  for (const [name, value] of cases) {
+    it(`rejects --model with ${name}`, () => {
+      const r = runParse(["--model", value])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("provider/model")
+    })
+  }
+
+  it("model regex anchors strictly (no allow-trim semantics)", () => {
+    // DOCUMENT: the regex is ^[^\s/]+\/[^\s/]+$ — there is no silent
+    // .trim(). A user who pastes " anthropic/claude " from a clipboard
+    // gets a hard error, not a silent coercion. This is intentional:
+    // trimming would hide typos in CI logs and provider names.
+    const r = runParse(["--model", "  openai/gpt-5  "])
+    expect(r.exitCode).toBe(1)
+  })
+})
+
 describe("parseArgs — planTimeoutMs resilience override", () => {
   it("accepts --resilience planTimeoutMs=<ms>", () => {
     const { args, exitCode } = runParse(["--resilience", "planTimeoutMs=600000"])
