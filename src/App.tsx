@@ -461,6 +461,13 @@ function AppContent(props: AppProps) {
         // aborted error from a just-replaced session (arriving in the brief
         // running("") window) would otherwise toggle_pause and wedge the loop in
         // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
+        //
+        // Policy: the `eventSessionId &&` truthy guard is asymmetric with the
+        // session.idle consumer filter (which has no such guard); see the
+        // policy comment at useSSE.ts:374 (Finding 7.2.A). Un-attributed
+        // session.error events pass through here because the state-aware
+        // branches below (running/pausing/debug) are the authoritative arbiter
+        // and already drop errors in other states.
         const debugSid = state.type === "debug" ? state.sessionId : undefined
         if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
           return

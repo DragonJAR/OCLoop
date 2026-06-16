@@ -369,11 +369,20 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       case "session.error": {
         const eventSessionId = (event.properties as { sessionID?: string })
           .sessionID
-        
+
         const rawError = (event.properties as any).error
         const sessionError = classifySessionError(rawError)
 
-        // Filter by session if a filter is set
+        // Policy: un-attributed session.error events (eventSessionId === undefined)
+        // are passed through to handlers. The extra `eventSessionId &&` truthy
+        // guard makes this asymmetric vs the session.idle / todo.updated filters,
+        // and that asymmetry is deliberate: the App-level onSessionError handler
+        // is the authoritative arbiter of which states accept errors
+        // (running/pausing/debug only) and already short-circuits on state, so
+        // a missing sessionID is not a reason to drop the event here. The
+        // sessionID comparison itself is what protects against stale-session
+        // events when a sessionID IS present.
+        // Source: MEJORAS.md Finding 7.2.A.
         if (
           filterSessionId &&
           eventSessionId &&
