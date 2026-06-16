@@ -214,8 +214,6 @@ const en = {
   lblGuard: "Guard",
   // --- BottomPanel labels ---
   lblTotal: "Total Time",
-  lblFinish: "Done By",
-  lblLast: "Last Action",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
@@ -521,8 +519,6 @@ const es: Record<MessageKey, Msg> = {
   lblWaiting: "esperando...",
   lblGuard: "Guardián",
   lblTotal: "Tiempo total",
-  lblFinish: "Termina",
-  lblLast: "Última acción",
 
   hintStart: "iniciar",
   hintPause: "pausar",

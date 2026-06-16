@@ -1830,8 +1830,6 @@ function AppContent(props: AppProps) {
         currentTask={currentTask() ?? null}
         stats={stats}
         tokens={sessionStats.tokens()}
-        progress={planProgress()}
-        lastEvent={activityLog.events()[activityLog.events().length - 1]}
       />
 
       {/* Overlays */}

@@ -352,23 +352,16 @@ export function Dashboard(props: DashboardProps) {
         </Show>
       </box>
 
-      {/* Row 3: Cooldown countdown (during rate limits) or current task */}
+      {/* Row 3: Cooldown countdown (during rate limits). The current task now
+          lives ONLY in the bottom panel (no duplication between bars); debug
+          mode keeps its session id here. */}
       <box style={{ flexDirection: "row" }}>
         <Show
           when={cooldownText()}
           fallback={
-            <Show
-              when={truncatedTask()}
-              fallback={
-                <text>
-                  <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
-                  <span style={{ fg: theme().textMuted, italic: true }}>{t("lblWaiting")}</span>
-                </text>
-              }
-            >
+            <Show when={props.state.type === "debug" && truncatedTask()}>
               <text>
-                <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
-                <span style={{ fg: theme().text }}>{truncatedTask()}</span>
+                <span style={{ fg: theme().textMuted }}>{truncatedTask()}</span>
               </text>
             </Show>
           }
