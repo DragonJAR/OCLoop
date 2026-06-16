@@ -334,10 +334,37 @@ cambio en el conteo). Commit `2fd8af7`.
 
 ### Mejora 13 — Finding 4.1.B — MEDIUM — Empty / whitespace-only prompt file is sent verbatim
 
-- [ ] Evaluar la mejora 13 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 13 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 13 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 13 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 13 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 13 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 13 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 13 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es la ausencia de una guarda de
+contenido en `src/App.tsx:855-857`. El path "file exists pero
+vacío" produce dos modos de fallo desperdiciosos (audit
+`MEJORAS.md:2980-2992`): (a) 4xx del server clasificado como
+`fatal` y mostrado como recoverable error, o (b) tight re-iteration
+loop hasta que la rate limit del provider dispare cooldown.
+La opción del fix propuesta en `MEJORAS.md:2996-3008` (lanzar
+un `Error` con el path resuelto) es claramente superior a
+alternativas como skip-and-retry o auto-default: se integra con
+el `try/catch` existente (línea 878) sin cambiar el contrato de
+`startIteration`, y produce el mismo UX que el path "file
+missing" (línea 849-852) — un único recoverable error con un
+mensaje que apunta al path del prompt. Implementación mínima:
+guarda `if (prompt.trim() === "")` justo después de la
+substitución de `{{PLAN_FILE}}`, con un `throw new Error(...)`
+que nombra el path resuelto. Cero cambios al flujo principal,
+cero impacto en el caso "file con contenido real" (que es el
+99.9% de los runs), cero nuevos tipos exportados, cero nuevas
+funciones. Como dice el audit (línea 3017-3019), el guard no
+necesita un nuevo unit test: el branch `fatal` de
+`classifySessionError` ya está pineado en
+`src/hooks/useSSE.test.ts` y el `try/catch` que lo enruta a
+`handleIterationError` es exactamente el mismo que usa el path
+"file missing". `bun test` verde: 678 pass / 0 fail, 23 files,
+1676 expect() calls, 316 ms — sin cambio en el conteo (era 678
+antes del guard). Commit pendiente.
 
 ### Mejora 14 — Finding 4.1.C — LOW — Orphaned session on `sendPromptAsync` failure
 

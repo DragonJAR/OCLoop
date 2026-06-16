@@ -855,6 +855,15 @@ function AppContent(props: AppProps) {
       const promptContent = await promptFile.text()
       // Replace {{PLAN_FILE}} placeholder with actual plan file path
       const prompt = promptContent.replaceAll("{{PLAN_FILE}}", props.planFile || DEFAULTS.PLAN_FILE)
+      // Guard: an empty / whitespace-only prompt would either 4xx the server
+      // (classified fatal) or, worse, idle the session and re-fire the same
+      // empty prompt in a tight loop. Fail fast with the same path the
+      // missing-file branch uses (top-level catch → fatal → recoverable error).
+      if (prompt.trim() === "") {
+        throw new Error(
+          `Prompt file is empty: ${props.promptFile || DEFAULTS.PROMPT_FILE}`,
+        )
+      }
 
       // Send the prompt asynchronously
       await sendPromptAsync(client, {
