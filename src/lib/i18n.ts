@@ -67,8 +67,7 @@ const en = {
   cpStartingServer: "Starting the OpenCode server…",
   cpSessionFail: "Could not create the planning session",
   cpGenerating: "Generating plan… (this may take a moment)\n",
-  cpGenFail: (p: Params) =>
-    `Failed to generate the plan: ${p.status} ${p.statusText}`,
+  cpTimeout: "Plan generation timed out. Try again or simplify the goal.",
   cpNoContent:
     "The model returned no content. Try again with a different goal.",
   cpProposedTitle: "PROPOSED PLAN",
@@ -334,6 +333,15 @@ const en = {
   toastCopied: "Copied to clipboard",
   toastSampleInserted: "Sample activity inserted",
   toastNoSessionAttach: "No active session to attach to",
+  sampleSessionStarted: "Session started",
+  sampleUserMessage: "User: Implement feature X",
+  sampleAssistantMessage: "Assistant: I'll help with that",
+  sampleReasoning: "Analyzing the codebase structure...",
+  sampleFileRead: "Reading src/App.tsx",
+  sampleFileEdit: "Modified src/components/Button.tsx (+15, -3)",
+  sampleTask: "Implementing dark mode toggle",
+  sampleError: "Build failed: Type error in Button.tsx",
+  sampleSessionIdle: "Session idle - waiting for input",
 } satisfies Record<string, Msg>
 
 type MessageKey = keyof typeof en
@@ -350,11 +358,11 @@ const es: Record<MessageKey, Msg> = {
   cpStartingServer: "Arrancando el servidor OpenCode…",
   cpSessionFail: "No se pudo crear la sesión de planificación",
   cpGenerating: "Generando plan… (esto puede tardar un momento)\n",
-  cpGenFail: (p) => `Fallo al generar el plan: ${p.status} ${p.statusText}`,
+  cpTimeout: "La generación del plan superó el tiempo límite. Reintenta o simplifica el objetivo.",
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
   cpProposedTitle: "PLAN PROPUESTO",
-  cpAskApprove: "\n¿Apruebas el plan? [y = guardar · e = editar · n = cancelar]: ",
+  cpAskApprove: "\n¿Apruebas el plan? [s = guardar · y = guardar · e = editar · n = cancelar]: ",
   cpSaved: (p) => `\n✓ Guardado en ${p.path}`,
   cpRunHint: (p) => `Ahora ejecuta 'ocloop'${p.planArg} para empezar.`,
   cpAskEdit: "¿Qué quieres cambiar o añadir?\n> ",
@@ -600,6 +608,15 @@ const es: Record<MessageKey, Msg> = {
   toastCopied: "Copiado al portapapeles",
   toastSampleInserted: "Actividad de ejemplo insertada",
   toastNoSessionAttach: "No hay sesión activa para conectar",
+  sampleSessionStarted: "Sesión iniciada",
+  sampleUserMessage: "Usuario: Implementar la funcionalidad X",
+  sampleAssistantMessage: "Asistente: Puedo ayudarte con eso",
+  sampleReasoning: "Analizando la estructura del código...",
+  sampleFileRead: "Leyendo src/App.tsx",
+  sampleFileEdit: "Modificado src/components/Button.tsx (+15, -3)",
+  sampleTask: "Implementando selector de modo oscuro",
+  sampleError: "Falló el build: error de tipos en Button.tsx",
+  sampleSessionIdle: "Sesión inactiva: esperando entrada",
 }
 
 // Reactive locale: a Solid signal so the TUI re-renders live when the language
