@@ -229,13 +229,20 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         return { type: "complete", iterations: state.iteration, summary: action.summary }
       }
       if (state.type === "error") {
-        return { type: "complete", iterations: 0, summary: action.summary }
+        // Finding 3.1.A: preserve the iteration count from the last state that
+        // had one. `lastIteration` is set by the `error` reducer when entering
+        // this state from running/pausing/paused/cooldown. If absent (e.g. error
+        // arrived from a state that never had an iteration), fall back to 0.
+        return { type: "complete", iterations: state.lastIteration ?? 0, summary: action.summary }
       }
       return state
     }
 
     case "error": {
-      // Transition to error state from most states
+      // Transition to error state from most states. When the source state has
+      // an `iteration` field (running/pausing/paused/cooldown), carry it into
+      // `lastIteration` so a later `plan_complete` can report real progress
+      // instead of resetting to 0. See MEJORAS.md Finding 3.1.A.
       if (
         state.type === "starting" ||
         state.type === "ready" ||
@@ -245,11 +252,19 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         state.type === "cooldown" ||
         state.type === "debug"
       ) {
+        const lastIteration =
+          state.type === "running" ||
+          state.type === "pausing" ||
+          state.type === "paused" ||
+          state.type === "cooldown"
+            ? state.iteration
+            : undefined
         return {
           type: "error",
           source: action.source,
           message: action.message,
           recoverable: action.recoverable,
+          ...(lastIteration !== undefined ? { lastIteration } : {}),
         }
       }
       return state

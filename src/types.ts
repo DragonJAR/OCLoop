@@ -32,7 +32,18 @@ export type LoopState =
   | { type: "stopping" }
   | { type: "stopped" }
   | { type: "complete"; iterations: number; summary: CompletionSummary }
-  | { type: "error"; source: ErrorSource; message: string; recoverable: boolean }
+  // `lastIteration` is the iteration count the loop had reached BEFORE entering
+  // the error state, carried over from the source state when it had one
+  // (running/pausing/paused/cooldown). `plan_complete` fired while in `error`
+  // uses this to report the real progress instead of resetting to 0. See
+  // MEJORAS.md Finding 3.1.A.
+  | {
+      type: "error"
+      source: ErrorSource
+      message: string
+      recoverable: boolean
+      lastIteration?: number
+    }
   | { type: "debug"; sessionId: string }
 
 /**

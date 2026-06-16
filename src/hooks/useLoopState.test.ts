@@ -642,7 +642,11 @@ describe("loopReducer", () => {
       }
     })
 
-    it("plan_complete from error state sets iterations to 0", () => {
+    it("plan_complete from error state without lastIteration falls back to 0", () => {
+      // Regression: callers that construct an error state directly (tests, mocks)
+      // without `lastIteration` still get the old default of 0. The fix only
+      // preserves a count when the error state was reached from a state that
+      // had one. See MEJORAS.md Finding 3.1.A.
       const state: LoopState = {
         type: "error",
         source: "server",
@@ -657,6 +661,29 @@ describe("loopReducer", () => {
       if (result.type === "complete") {
         expect(result.iterations).toBe(0)
         expect(result.summary.summary).toBe("Done despite error")
+      }
+    })
+
+    it("plan_complete from error state with lastIteration preserves the count (Finding 3.1.A)", () => {
+      // When the error was reached from a state that had an `iteration` field
+      // (running/pausing/paused/cooldown), the reducer now carries that count
+      // into `lastIteration` so a later `plan_complete` can report real
+      // progress instead of resetting to 0.
+      const state: LoopState = {
+        type: "error",
+        source: "api",
+        message: "transient",
+        recoverable: true,
+        lastIteration: 12,
+      }
+      const result = loopReducer(state, {
+        type: "plan_complete",
+        summary: { summary: "Plan finished after error" },
+      })
+      expect(result.type).toBe("complete")
+      if (result.type === "complete") {
+        expect(result.iterations).toBe(12)
+        expect(result.summary.summary).toBe("Plan finished after error")
       }
     })
 
@@ -1021,15 +1048,28 @@ describe("loopReducer", () => {
       if (result.type !== "complete") throw new Error("expected complete")
       expect(result.iterations).toBe(4)
     })
-    it("plan_complete: from error ALWAYS sets iterations to 0 (KNOWN BUG: loses progress if plan was running before error)", () => {
+    it("plan_complete: from error with lastIteration preserves the count (Finding 3.1.A)", () => {
+      // When the error state was reached from a source that had an `iteration`
+      // field (running/pausing/paused/cooldown), the reducer carries it into
+      // `lastIteration` so `plan_complete` here reports the real progress
+      // instead of resetting to 0. See MEJORAS.md Finding 3.1.A.
+      const result = loopReducer(
+        { type: "error", source: "api", message: "x", recoverable: true, lastIteration: 9 },
+        { type: "plan_complete", summary: { summary: "plan done anyway" } },
+      )
+      if (result.type !== "complete") throw new Error("expected complete")
+      expect(result.iterations).toBe(9)
+    })
+    it("plan_complete: from error without lastIteration falls back to 0 (Finding 3.1.A default)", () => {
+      // Regression: callers (tests, mocks) that construct an error state
+      // directly without `lastIteration` still get the default 0. The carry
+      // is only triggered when the error transition itself comes from a state
+      // that had an iteration. See MEJORAS.md Finding 3.1.A.
       const result = loopReducer(
         { type: "error", source: "api", message: "x", recoverable: true },
         { type: "plan_complete", summary: { summary: "plan done anyway" } },
       )
       if (result.type !== "complete") throw new Error("expected complete")
-      // This is the current behavior, but it IS a bug: error state has no
-      // iteration field, so the plan-complete summary loses the iteration
-      // count. See MEJORAS.md 3.8.
       expect(result.iterations).toBe(0)
     })
 
@@ -1039,6 +1079,46 @@ describe("loopReducer", () => {
         { type: "error", source: "server", message: "x", recoverable: true },
         ["stopping", "stopped", "complete", "error"],
       )
+    })
+    it("error: from running(N) carries N into lastIteration (Finding 3.1.A)", () => {
+      // The `error` reducer must preserve the iteration count from the source
+      // state when the source had one, so a later `plan_complete` can report
+      // real progress. See MEJORAS.md Finding 3.1.A.
+      const result = loopReducer(
+        { type: "running", iteration: 7, sessionId: "ses-7" },
+        { type: "error", source: "api", message: "x", recoverable: true },
+      )
+      expect(result.type).toBe("error")
+      if (result.type === "error") expect(result.lastIteration).toBe(7)
+    })
+    it("error: from paused(N) carries N into lastIteration (Finding 3.1.A)", () => {
+      const result = loopReducer(
+        { type: "paused", iteration: 3 },
+        { type: "error", source: "api", message: "x", recoverable: true },
+      )
+      expect(result.type).toBe("error")
+      if (result.type === "error") expect(result.lastIteration).toBe(3)
+    })
+    it("error: from cooldown(N) carries N into lastIteration (Finding 3.1.A)", () => {
+      const result = loopReducer(
+        { type: "cooldown", iteration: 5, reason: "r", resumeAt: 1, attempt: 1 },
+        { type: "error", source: "api", message: "x", recoverable: true },
+      )
+      expect(result.type).toBe("error")
+      if (result.type === "error") expect(result.lastIteration).toBe(5)
+    })
+    it("error: from starting does NOT set lastIteration (Finding 3.1.A)", () => {
+      // `starting` has no `iteration` field, so the carry must be absent (not
+      // `undefined` as a value — the field is simply omitted from the new
+      // state object, matching the project's "optional = omit" convention).
+      const result = loopReducer(
+        { type: "starting" },
+        { type: "error", source: "api", message: "x", recoverable: true },
+      )
+      expect(result.type).toBe("error")
+      if (result.type === "error") {
+        expect("lastIteration" in result).toBe(false)
+      }
     })
 
     // --- retry: from "error (recoverable)" → starting ---
