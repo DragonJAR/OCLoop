@@ -127,15 +127,15 @@ export function BottomPanel(props: BottomPanelProps) {
         {/* Global run metrics — none of these appear in the top bar. */}
         {/* Same "fill the row" rule as the dashboard (space-between), responsive. */}
         <box style={{ ...FILL_ROW, flexWrap: "wrap", marginTop: 1 }}>
-          <LabelValue label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} marginRight={2} />
+          <LabelValue label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} />
           {/* Global tokens: total always; full in/out/rsn breakdown only when wide. */}
           <LabelValue
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
                      />
           {/* Per-task tokens (current iteration). */}
-          <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} marginRight={2} />
-          <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} marginRight={2} />
+          <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} />
+          <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} />
         </box>
       </Show>
     </box>
