@@ -156,12 +156,18 @@ export async function launchTerminal(
 
     log.info("terminal", "Spawning terminal", { command, args })
 
-    // Spawn the terminal as a detached process
-    // Using 'inherit' for stdio so the terminal can run independently
+    // Spawn the terminal detached from OCLoop's process group so closing the
+    // TUI / SSH session does not SIGHUP the launched terminal. stdio is set
+    // to "ignore" because the terminal app owns its own TTY/display; we do
+    // not want OCLoop blocked on terminal output. `proc.unref()` keeps the
+    // parent from waiting on the child.
+    // Source: MEJORAS.md Finding 11.2.A.
     const proc = Bun.spawn([command, ...args], {
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
+      detached: true,
+      windowsHide: true,
     })
 
     // Unref the process so it doesn't keep the parent alive
