@@ -25,6 +25,9 @@ describe("getIgnoredCreatePlanFlags (Finding 1.7.A)", () => {
   })
 
   it("flags --resume, --chaos, --no-caffeinate from the resilience partial", () => {
+    // --resume here doubles as coverage for Finding 1.8.A (cross-reference
+    // to 1.7.A): --create-plan --resume stores both flags but the TUI
+    // path that would read resilience().resume (App.tsx:1119) never runs.
     expect(
       getIgnoredCreatePlanFlags({
         promptFile: DEFAULTS.PROMPT_FILE,

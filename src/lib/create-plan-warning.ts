@@ -8,7 +8,9 @@
  * (`2>/dev/null`) to silence it. The fix improves discoverability without
  * breaking the "store everything, decide later" philosophy of parseArgs.
  *
- * Source: MEJORAS.md Finding 1.7.A.
+ * Source: MEJORAS.md Finding 1.7.A. Also covers the cross-reference
+ * Finding 1.8.A (`--resume` is the most prominent of the resilience
+ * flags silently swallowed by --create-plan).
  */
 
 import { DEFAULTS } from "./constants"
