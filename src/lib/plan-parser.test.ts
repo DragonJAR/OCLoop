@@ -776,6 +776,202 @@ More text here.
     expect(result.automatable).toBe(0)
     expect(result.percentComplete).toBe(100)
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.1 — parsePlan whole-file edge cases.
+  // The task asks us to verify parsePlan against degenerate whole-file
+  // inputs: empty file, no tasks, headings only, and plans that contain
+  // only one of the terminal categories (completed / blocked / manual).
+  // Each case is pinned with the full PlanProgress shape so the contract
+  // of "no work to do" (denominator=0 → 100%) is enforced end-to-end.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.1 — whole-file edge cases", () => {
+    it("empty file → 0 total / 0 in every bucket / 100% (denominator=0, nothing to do)", () => {
+      const result = parsePlan("")
+
+      expect(result).toEqual({
+        total: 0,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 0,
+        automatable: 0,
+        percentComplete: 100,
+      })
+    })
+
+    it("file with prose but no checkbox lines → 0 total / 100% (no tasks to do)", () => {
+      // Confirms that random prose / paragraphs are silently ignored by
+      // parseTaskLine (returns not-a-task) and never enter the total.
+      const content = `Some intro paragraph.
+Another paragraph with no checkboxes at all.
+Just plain text — not a task list.`
+      const result = parsePlan(content)
+
+      expect(result).toEqual({
+        total: 0,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 0,
+        automatable: 0,
+        percentComplete: 100,
+      })
+    })
+
+    it("file with only headings → 0 total / 100% (no actionable lines)", () => {
+      // Markdown headers are not task lines — parseTaskLine requires the
+      // "- [" prefix. Headings of any depth (##, ###, ####) are all ignored.
+      const content = `# Top-level title
+## Phase 1 — Setup
+### Subsection
+#### Deep heading
+##### Even deeper
+## Phase 2 — Run`
+      const result = parsePlan(content)
+
+      expect(result).toEqual({
+        total: 0,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 0,
+        automatable: 0,
+        percentComplete: 100,
+      })
+    })
+
+    it("file with only completed tasks → 100% (every automatable task is done)", () => {
+      // Denominator = total - manual - blocked = 2 - 0 - 0 = 2.
+      // 2 completed / 2 denominator = 100%.
+      const content = `
+- [x] First done
+- [X] Second done
+- [x] Third done
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(3)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("file with only blocked tasks → 100% (denominator=0, loop has nothing automatable to do)", () => {
+      // Denominator = total - manual - blocked = 2 - 0 - 2 = 0 → 100%.
+      // The loop treats [BLOCKED] as terminal — it is NOT pending work.
+      const content = `
+- [BLOCKED: reason one] Task A
+- [BLOCKED] Task B
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(2)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("file with only manual tasks → 100% (denominator=0, all work is human-driven)", () => {
+      // Denominator = total - manual - blocked = 2 - 2 - 0 = 0 → 100%.
+      // Same semantic: loop has no automatable work, 100% is correct.
+      const content = `
+- [MANUAL] Manual task one
+- [ ] [MANUAL] Tagged manual task two
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(2)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("file with only blocked + manual tasks (no completed, no pending) → 100%", () => {
+      // Mixed terminal categories: denominator=0, no automatable work.
+      // Confirms that the 100%-when-denominator=0 rule holds regardless
+      // of which terminal categories fill the plan.
+      const content = `
+- [MANUAL] Manual A
+- [MANUAL] Manual B
+- [BLOCKED: x] Blocked A
+- [ ] [BLOCKED] Blocked B
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(0)
+      expect(result.manual).toBe(2)
+      expect(result.blocked).toBe(2)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("file with only one pending task → 0 total? no — total=1, percentComplete=0", () => {
+      // The PLAN.md 2.1 task asks us to verify the single-pending edge.
+      // total=1, completed=0, denominator=1, 0/1 = 0%.
+      const content = `
+# A plan with a single task
+
+Some intro.
+
+- [ ] The only thing to do
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(1)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(1)
+      expect(result.percentComplete).toBe(0)
+    })
+
+    it("whitespace-only file → 0 total / 100% (no parseable task lines)", () => {
+      // A file containing only blank lines and whitespace must behave
+      // like an empty file — no parseable tasks, denominator=0, 100%.
+      const content = `
+
+   
+
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("file with only bare - [ ] checkboxes (no descriptions) → 0 total / 100%", () => {
+      // Bare - [ ] is classified as not-a-task (no description), so the
+      // total stays 0 and percentComplete stays at 100%. This is the
+      // intended asymmetry: only bare [MANUAL] / [x] / [BLOCKED] count
+      // toward total, not bare - [ ].
+      const content = `
+- [ ]
+- [ ]
+- [ ]
+`
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(0)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
