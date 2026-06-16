@@ -54,6 +54,12 @@ export interface ResilienceConfig {
   statusTimeoutMs: number
   /** Timeout for the lightweight server health ping (ms). */
   pingTimeoutMs: number
+  /**
+   * Overall budget for `--create-plan` to finish generating a plan (ms). The
+   * generator polls until the model is done; raise this for big/slow plans.
+   * Override via `--resilience planTimeoutMs=<ms>` or the config file.
+   */
+  planTimeoutMs: number
 
   // --- Phase 1: rate-limit handling ---
   /** Base delay for exponential backoff (ms). */
@@ -107,6 +113,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
   abortTimeoutMs: 15_000,
   statusTimeoutMs: 15_000,
   pingTimeoutMs: 5_000,
+  planTimeoutMs: 600_000,
 
   backoffBaseMs: 1_000,
   backoffMaxMs: 60_000,

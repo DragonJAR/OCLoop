@@ -4,10 +4,10 @@ import { render } from "@opentui/solid"
 import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
-import { assertResponse, reconcileSession, sendPromptAsync, type OpencodeClient } from "./lib/api"
+import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
 import type { CLIArgs } from "./types"
-import { loadConfig } from "./lib/config"
+import { loadConfig, resolveResilience } from "./lib/config"
 import { parseArgs } from "./lib/cli-args"
 import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
@@ -19,8 +19,8 @@ import { log } from "./lib/debug-logger"
  */
 const DEFAULT_PLAN_MODEL = "zai-coding-plan/glm-5.2"
 const DEFAULT_PLAN_AGENT = "plan"
-/** Plan generation can take a while; bound it so it can never hang forever. */
-const PLAN_GEN_TIMEOUT_MS = 240_000
+// Plan-generation budget is configurable via `resilience.planTimeoutMs`
+// (default in DEFAULT_RESILIENCE); resolved per-run in runCreatePlan.
 
 /**
  * Validate that required files exist before starting
@@ -56,14 +56,6 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   }
 }
 
-/** Parse a "provider/model" string into the SDK model param, or undefined. */
-function parsePlanModel(
-  model: string,
-): { providerID: string; modelID: string } | undefined {
-  const slash = model.indexOf("/")
-  if (slash <= 0 || slash === model.length - 1) return undefined
-  return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
-}
 
 /** Strip a surrounding ```fence``` if the model wrapped its output in one. */
 function stripCodeFences(text: string): string {
@@ -145,7 +137,14 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
   const planPath = args.planFile || DEFAULTS.PLAN_FILE
   const modelStr = args.model || DEFAULT_PLAN_MODEL
   const agent = args.agent || DEFAULT_PLAN_AGENT
-  const model = parsePlanModel(modelStr)
+  const model = toSdkModel(modelStr)
+
+  // Resolve resilience for this headless run (App's onMount never runs here):
+  // applies --resilience / config overrides to both the SDK call timeouts and
+  // the overall plan-generation budget (planTimeoutMs).
+  const resilience = resolveResilience(loadConfig().resilience, args.resilience)
+  configureApiTimeouts(resilience)
+  const planTimeoutMs = resilience.planTimeoutMs
 
   console.log(t("cpTitle"))
   console.log(
@@ -162,7 +161,7 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
   console.log("\n" + t("cpStartingServer"))
   let server: { url: string; close: () => void } | null = null
   try {
-    server = await createOpencodeServer({ hostname: "127.0.0.1", timeout: 15000 })
+    server = await createOpencodeServer({ hostname: "127.0.0.1", port: args.port, timeout: 15000 })
     const client = createOpencodeClient({ baseUrl: server.url })
 
     const created = await client.session.create({})
@@ -191,7 +190,7 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
         { timeoutMs: 30_000 },
       )
 
-      const deadline = Date.now() + PLAN_GEN_TIMEOUT_MS
+      const deadline = Date.now() + planTimeoutMs
       let messages: SessionMessage[] = []
       for (;;) {
         await Bun.sleep(1500)
@@ -206,7 +205,9 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
         ) {
           break
         }
-        if (Date.now() > deadline) throw new Error(t("cpTimeout"))
+        if (Date.now() > deadline) {
+          throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
+        }
       }
 
       const text = extractLastAssistantText(messages)
@@ -260,6 +261,13 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
 }
 
 /**
+ * Set to true only once the TUI render starts (i.e. once mouse tracking and the
+ * alternate screen are actually enabled). The quick paths — `--help`,
+ * `--version`, `--create-plan` — never set it, so they never need restoration.
+ */
+let tuiStarted = false
+
+/**
  * Best-effort terminal restoration.
  *
  * OpenTUI restores the terminal on a clean exit, but a crash, an unhandled
@@ -269,12 +277,14 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
  * macOS, Linux and Windows terminals. SIGKILL (e.g. an OOM kill) is uncatchable
  * so this can't cover that, but it covers every in-process exit path.
  *
- * The disable sequences are idempotent: emitting them when the modes are
- * already off is a harmless no-op, so running this after OpenTUI's own teardown
- * is safe. Guarded on isTTY so we never spew escape codes into a pipe/file.
+ * Gated on `tuiStarted`: emitting the disable sequences (esp. `?1049l`, leave
+ * alternate screen) when the TUI never ran makes some terminals (e.g.
+ * Terminal.app) visibly switch/refresh the screen buffer — so `--help` and
+ * friends must NOT touch terminal modes they never enabled. Also guarded on
+ * isTTY so we never spew escape codes into a pipe/file.
  */
 function restoreTerminal(): void {
-  if (!process.stdout.isTTY) return
+  if (!tuiStarted || !process.stdout.isTTY) return
   // disable mouse (1000/1002/1003 + SGR 1006/1015) · reset SGR · show cursor · leave alt-screen
   process.stdout.write(
     "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[0m\x1b[?25h\x1b[?1049l",
@@ -332,7 +342,10 @@ async function main(): Promise<void> {
   // Validate prerequisites before rendering
   await validatePrerequisites(args)
 
-  // Render the application
+  // Render the application. From here the TUI owns mouse + alternate screen, so
+  // mark it started: the exit-time restore must run for this path (and only this
+  // path) — quick CLI paths above never enabled those modes.
+  tuiStarted = true
   // The render function returns when the app exits
   await render(() => <App {...args} />, {
     targetFps: 60,
