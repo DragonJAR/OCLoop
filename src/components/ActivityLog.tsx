@@ -74,6 +74,10 @@ export function ActivityLog(props: ActivityLogProps) {
       <scrollbox
         stickyScroll={true}
         stickyStart="bottom"
+        // Bottom-anchor: content node fills the viewport and pushes rows to the
+        // bottom, so few logs hug the panel below (empty space above, terminal-style).
+        // Many logs scroll + sticky-to-bottom as before (scroll logic is separate).
+        contentOptions={{ flexGrow: 1, justifyContent: "flex-end" }}
         verticalScrollbarOptions={{
           visible: props.showScrollbar ?? true,
           trackOptions: {
