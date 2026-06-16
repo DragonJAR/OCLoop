@@ -243,6 +243,66 @@ describe("parseArgs — Phase 3 edge cases", () => {
     expect(argv.length).toBe(argvCopy.length)
   })
 
+  // ---- Idempotency (Phase 1 Task 1.10) -----------------------------------
+  //
+  // The "does not mutate argv" check above proves the input is preserved. This
+  // group proves the stronger claim: the OUTPUT is also a pure function of the
+  // input. Calling parseArgs twice with the same argv must produce two CLIArgs
+  // objects that are deeply equal. This matters because every consumer of
+  // parseArgs (index.tsx, tests, subshells, replays) shares the contract that
+  // "same argv → same result", and a future refactor that introduces a
+  // counter, cache, or external state would be invisible without this test.
+
+  it("parseArgs is idempotent on an empty argv (PLAN.md 1.10)", () => {
+    const a = runParse([]).args
+    const b = runParse([]).args
+    expect(a).toEqual(b)
+    // Distinct object identity — each call allocates a fresh CLIArgs literal.
+    expect(a).not.toBe(b)
+  })
+
+  it("parseArgs is idempotent on a single boolean flag (PLAN.md 1.10)", () => {
+    const argv = ["--run"]
+    const a = runParse([...argv]).args
+    const b = runParse([...argv]).args
+    expect(a).toEqual(b)
+    expect(a).not.toBe(b)
+  })
+
+  it("parseArgs is idempotent on the full flag set (PLAN.md 1.10)", () => {
+    // Every value flag + every boolean flag + every resilience flag, so the
+    // idempotency claim covers every code path in the switch.
+    const argv = [
+      "--run",
+      "--debug",
+      "--create-plan",
+      "--verbose",
+      "--chaos",
+      "--resume",
+      "--no-caffeinate",
+      "--port", "4096",
+      "--model", "openai/gpt-5",
+      "--agent", "build",
+      "--prompt", "p.md",
+      "--plan", "x.md",
+      "--lang", "es",
+      "--resilience", "backoffBaseMs=500",
+    ]
+    const a = runParse([...argv]).args
+    const b = runParse([...argv]).args
+    expect(a).toEqual(b)
+  })
+
+  it("parseArgs repeated calls keep the input argv identical (PLAN.md 1.10)", () => {
+    // Stronger than line 238: even after MANY calls in a row, argv must be
+    // exactly as it started. This guards against an accumulation bug (e.g.
+    // a future refactor that `argv.shift()`s or appends to argv).
+    const argv = ["--run", "--port", "4096", "--model", "openai/gpt-5", "--lang", "es"]
+    const argvSnapshot = [...argv]
+    for (let i = 0; i < 5; i++) runParse(argv)
+    expect(argv).toEqual(argvSnapshot)
+  })
+
   it("--port 0 is accepted (TCP port 0 means OS-assigned)", () => {
     const { args, exitCode } = runParse(["--port", "0"])
     expect(exitCode).toBeNull()

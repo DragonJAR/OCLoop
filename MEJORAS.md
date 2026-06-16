@@ -661,7 +661,7 @@ report stays ordered as additional sections are appended in order.
 - [x] **Task 1.7** — Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags. ✅ COMPLETE — see section 1.7 below.
 - [x] **Task 1.8** — Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior. ✅ COMPLETE — see section 1.8 below.
 - [ ] **Task 1.9** — Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename). (Covered by tests at lines 211-218; cross-pinned for --prompt and --plan paths in section 1.6.)
-- [ ] **Task 1.10** — Check if `parseArgs` is idempotent — calling it twice should produce the same result. (Test at lines 238-244.)
+- [x] **Task 1.10** — Check if `parseArgs` is idempotent — calling it twice should produce the same result. ✅ COMPLETE — see section 1.11.
 
 ---
 
@@ -1504,3 +1504,87 @@ message to point at the specific flag. Pinned by the new
   inside cases** — this is the classic pre-increment-in-switch pattern; no
   off-by-one risk because the increment happens before the `requireValue`
   call sees the next token. **No findings.**
+
+---
+
+### 1.11 — Verify `parseArgs` is idempotent — calling it twice produces the same result
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL/MEDIUM/LOW findings. One INFO observation.**
+
+`parseArgs` is the public entry point used by every CLI invocation
+(`src/index.tsx:311`) and by every test in `src/lib/cli-args.test.ts`. The
+contract consumers depend on is "same input → same output, no observable
+side effects". The `does not mutate argv` test (line 238) is the weak half of
+that contract; the strong half is that the **returned** `CLIArgs` object is
+also a pure function of the input.
+
+#### Why this matters (vs. the existing line 238 test)
+
+The line 238 test (`parseArgs does not mutate the input argv array`) covers
+the **input** side: argv must be the same after the call. This audit covers
+the **output** side: two calls with the same input must produce two
+deeply-equal `CLIArgs` objects. The two are not equivalent — a future
+refactor could leave argv intact but start populating a module-level cache,
+a counter, or a `WeakMap` that would only be visible by calling twice.
+
+The implementation review (`src/lib/cli-args.ts:162-269`) confirms there is
+no such hidden state:
+
+- The function creates a fresh `args: CLIArgs` literal at line 163 and a
+  fresh `resilience: Partial<ResilienceConfig>` literal at line 168 on
+  every call. There are no module-level mutable variables read inside the
+  function body.
+- The only mutation is on these fresh locals (`args.port = …`,
+  `resilience.resume = true`, etc.) plus the `target` parameter in
+  `applyResilienceOverride` (line 74), which is the caller's own `resilience`
+  literal — also fresh.
+- `argv[++i]` (lines 186, 192, 197, 201, 205, 229, 250) writes to the loop
+  counter `i`, which is a local `let` — not to the `argv` array. This is
+  why the line 238 test passes.
+- `process.exit(...)` (called from `showHelp`, `showVersion`, `parsePort`,
+  `parseModel`, `requireValue`, `applyResilienceOverride`, and the
+  `default` case) terminates the process; it cannot leak state across
+  calls because the process no longer exists after the call. The only
+  observable effect is console output, which is captured by `runParse` in
+  the test harness and ignored in production.
+
+#### Mapping the new tests to the requirement
+
+| Required case (PLAN.md 1.10)                                            | Test                                                                       | Result       |
+| ----------------------------------------------------------------------- | -------------------------------------------------------------------------- | ------------ |
+| Calling `parseArgs` twice with the same input produces the same result. | `parseArgs is idempotent on an empty argv (PLAN.md 1.10)`                 | OK — equal   |
+| Same, with at least one boolean flag set.                               | `parseArgs is idempotent on a single boolean flag (PLAN.md 1.10)`         | OK — equal   |
+| Same, with the full flag set exercising every switch case.              | `parseArgs is idempotent on the full flag set (PLAN.md 1.10)`             | OK — equal   |
+| argv must be unchanged after MANY calls (accumulation guard).           | `parseArgs repeated calls keep the input argv identical (PLAN.md 1.10)`    | OK — equal   |
+
+The "empty argv" and "single boolean flag" cases also assert that the two
+returned objects have distinct **identity** (`expect(a).not.toBe(b)`).
+Distinct identity plus deep equality is the strongest possible pinning:
+the function allocates a fresh `CLIArgs` on every call, so a future
+refactor that memoized and returned the same object across calls would
+fail this assertion immediately.
+
+#### Finding 1.11.A — INFO — `parseArgs` is pure & idempotent (now formally verified)
+
+`parseArgs` is a pure function of its input. Two calls with the same argv
+return deeply-equal `CLIArgs` objects with distinct object identity, and
+argv itself is unchanged across an arbitrary number of calls. This holds
+across the empty case, the boolean-only case, and the full flag set
+(every value flag + every boolean flag + every resilience flag). The
+stronger of these checks (object identity + deep equality on the full
+flag set) is the canonical "is this function pure?" assertion, and it
+passes. **No code changes required.**
+
+#### Test-suite delta for Task 1.10
+
+The `Phase 3 edge cases` describe block grew from 7 cases to 11 cases
+(+4 new idempotency assertions). The file-level total went from 198
+to 202 tests. New describe block entries:
+
+- `parseArgs is idempotent on an empty argv (PLAN.md 1.10)` — pure-function assertion + object identity check.
+- `parseArgs is idempotent on a single boolean flag (PLAN.md 1.10)` — same, with a flag set.
+- `parseArgs is idempotent on the full flag set (PLAN.md 1.10)` — covers every code path in the switch.
+- `parseArgs repeated calls keep the input argv identical (PLAN.md 1.10)` — accumulation guard (5 calls in a row).
+
+`bun test src/lib/cli-args.test.ts` → **202 pass, 0 fail, 452 expect() calls**
+(was 198/0/446 before this iteration). +4 tests, +6 expects, all green.

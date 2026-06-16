@@ -15,7 +15,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify `--create-plan` combined with `--run`, `--debug`, `--resume`, and other conflicting/combined flags
 - [x] Verify `--resume` combined with `--run`, `--create-plan`, and standalone behavior
 - [x] Document: `requireValue` treats a value starting with `-` (except lone `-`) as missing — verify this rejects `--plan --debug` correctly but allows `--plan -` (a valid filename)
-- [ ] Check if `parseArgs` is idempotent — calling it twice should produce the same result
+- [x] Check if `parseArgs` is idempotent — calling it twice should produce the same result
 
 ## Phase 2 — Plan File Parsing & Progress Tracking
 
