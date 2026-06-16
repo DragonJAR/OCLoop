@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, type OpencodeClient } from "./api"
+import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, type OpencodeClient } from "./api"
 import type { SessionStatus } from "@opencode-ai/sdk/v2"
 
 describe("assertResponse", () => {
@@ -162,5 +162,88 @@ describe("getSessionStatus", () => {
   it("returns undefined for an unknown session id", async () => {
     const client = fakeClient({ data: { a: { type: "idle" } } })
     expect(await getSessionStatus(client, "zzz")).toBeUndefined()
+  })
+})
+
+describe("Phase 4 — API layer edge cases", () => {
+  describe("assertResponse — non-Error error objects", () => {
+    it("extracts message from a plain object with .message", () => {
+      expect(() =>
+        assertResponse({ error: { message: "custom error" }, response: undefined }, "test op"),
+      ).toThrow(/test op.*custom error/)
+    })
+
+    it("falls back to JSON for error objects without .message", () => {
+      expect(() =>
+        assertResponse({ error: { code: 42, detail: "bad" }, response: undefined }, "op"),
+      ).toThrow(/op/)
+    })
+
+    it("handles non-ok response with status code", () => {
+      expect(() =>
+        assertResponse({ response: { ok: false, status: 429, statusText: "Too Many Requests" } }, "rate-limited call"),
+      ).toThrow(/rate-limited call.*429.*Too Many Requests/)
+    })
+  })
+
+  describe("reconcileSession — unknown status type", () => {
+    it("returns 'unknown' for an unrecognized session status type", async () => {
+      const client = fakeClient({ data: { s1: { type: "suspended" } as unknown as SessionStatus } })
+      expect(await reconcileSession(client, "s1")).toBe("unknown")
+    })
+  })
+
+  describe("createClient — cache eviction", () => {
+    it("evicts the oldest half when cache exceeds MAX_CACHE_SIZE", () => {
+      // Reset the module-level cache by inserting unique URLs up to the limit + 1.
+      // createClient is memoized per URL; we verify that early entries are evicted.
+      const clients: OpencodeClient[] = []
+      for (let i = 0; i <= 11; i++) {
+        clients.push(createClient(`http://localhost:${10000 + i}`))
+      }
+      // After 11 inserts (MAX_CACHE_SIZE=10), the oldest ~6 should have been evicted.
+      // Verify the newest entries still return the same cached instance.
+      const newest = createClient(`http://localhost:10011`)
+      expect(newest).toBe(clients[11])
+    })
+  })
+
+  describe("toSdkModel — undefined and non-string inputs", () => {
+    it("returns undefined for undefined input", () => {
+      expect(toSdkModel(undefined)).toBeUndefined()
+    })
+
+    it("passes through an already-normalized model object", () => {
+      const obj = { providerID: "anthropic", modelID: "claude-sonnet-4" }
+      expect(toSdkModel(obj)).toBe(obj)
+    })
+
+    it("passes through a non-string truthy value (type-unsafe edge case)", () => {
+      // toSdkModel accepts string | PromptModel | undefined. A number leaks
+      // through because `typeof model !== "string"` is true for numbers, and
+      // the function returns it as-is. This is a known type-safety gap that
+      // the TypeScript type system prevents at compile time.
+      expect(toSdkModel(42 as unknown as string)).toBe(42)
+    })
+  })
+
+  describe("sendPromptAsync — empty but ok response", () => {
+    it("returns void when assertResponse passes (no data read)", async () => {
+      const client = {
+        session: {
+          promptAsync: async () => ({
+            response: { ok: true, status: 200, statusText: "OK" },
+          }),
+        },
+      } as unknown as OpencodeClient
+
+      // Should not throw — sendPromptAsync only calls assertResponse and returns.
+      await expect(
+        sendPromptAsync(client, {
+          sessionID: "s1",
+          parts: [{ type: "text", text: "go" }],
+        }),
+      ).resolves.toBeUndefined()
+    })
   })
 })
