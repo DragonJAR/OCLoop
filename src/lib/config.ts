@@ -9,6 +9,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync } from "
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { log } from "./debug-logger"
+import { isLocale } from "./i18n"
 
 /**
  * Terminal configuration for a known terminal emulator
@@ -194,6 +195,89 @@ export function getConfigPath(): string {
 }
 
 /**
+ * Top-level config keys accepted by `validateConfigShape`. Any other key in
+ * the parsed JSON is dropped (and a warn is logged) so a typo like
+ * `languaje: "es"` becomes visible instead of silently falling back to
+ * English.
+ *
+ * Source: MEJORAS.md Finding 12.1.B.
+ */
+const ALLOWED_CONFIG_KEYS = new Set([
+  "terminal",
+  "scrollbar_visible",
+  "theme",
+  "language",
+  "resilience",
+])
+
+/**
+ * Per-field type validation for the parsed config. Returns a clean
+ * `OcloopConfig` with only the fields that pass type checks; any malformed
+ * field is dropped and a `warn` is logged so the user sees a hint in
+ * `.loop.log`. `resilience` is shallow-validated (must be a non-null,
+ * non-array object) — per-field type checks for its 20+ keys are deferred to
+ * `isValidResilienceValue` (Finding 12.3.B).
+ *
+ * The unknown-key check fires after per-field validation so a single warn
+ * line surfaces every unrecognized top-level key (e.g. `languaje: "es"`)
+ * instead of silently falling back to defaults.
+ *
+ * Source: MEJORAS.md Finding 12.1.A (per-field types) + 12.1.B (unknown
+ * keys).
+ */
+function validateConfigShape(raw: unknown): OcloopConfig {
+  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+    log.warn("config", "Config file did not contain a JSON object, using default", raw)
+    return {}
+  }
+  const r = raw as Record<string, unknown>
+  const out: OcloopConfig = {}
+
+  if ("terminal" in r) {
+    if (hasTerminalConfig(r as unknown as OcloopConfig)) {
+      out.terminal = (r as unknown as OcloopConfig).terminal
+    } else {
+      log.warn("config", "Ignoring malformed 'terminal' field", r.terminal)
+    }
+  }
+  if ("language" in r) {
+    if (typeof r.language === "string" && isLocale(r.language)) {
+      out.language = r.language
+    } else {
+      log.warn("config", "Ignoring malformed 'language' field", r.language)
+    }
+  }
+  if ("theme" in r) {
+    if (typeof r.theme === "string") {
+      out.theme = r.theme
+    } else {
+      log.warn("config", "Ignoring malformed 'theme' field", r.theme)
+    }
+  }
+  if ("scrollbar_visible" in r) {
+    if (typeof r.scrollbar_visible === "boolean") {
+      out.scrollbar_visible = r.scrollbar_visible
+    } else {
+      log.warn("config", "Ignoring malformed 'scrollbar_visible' field", r.scrollbar_visible)
+    }
+  }
+  if ("resilience" in r) {
+    if (typeof r.resilience === "object" && r.resilience !== null && !Array.isArray(r.resilience)) {
+      out.resilience = r.resilience as Partial<ResilienceConfig>
+    } else {
+      log.warn("config", "Ignoring malformed 'resilience' field", r.resilience)
+    }
+  }
+
+  const unknown = Object.keys(r).filter((k) => !ALLOWED_CONFIG_KEYS.has(k))
+  if (unknown.length > 0) {
+    log.warn("config", `Unknown config keys ignored: ${unknown.join(", ")}`, unknown)
+  }
+
+  return out
+}
+
+/**
  * Load and parse the configuration file.
  * Returns an empty config object if the file doesn't exist.
  */
@@ -208,14 +292,9 @@ export function loadConfig(): OcloopConfig {
   try {
     const content = readFileSync(configPath, "utf-8")
     const parsed = JSON.parse(content)
-    // JSON.parse("null") succeeds but yields null; treat as missing config.
-    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      log.warn("config", "Config file did not contain a JSON object, using default", parsed)
-      return {}
-    }
-    const config = parsed as OcloopConfig
-    log.info("config", "Loaded config", config)
-    return config
+    const validated = validateConfigShape(parsed)
+    log.info("config", "Loaded config", validated)
+    return validated
   } catch (err) {
     // If parsing fails, return empty config
     log.warn("config", "Failed to load config, using default", err)
