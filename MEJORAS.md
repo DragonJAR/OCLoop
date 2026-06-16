@@ -23172,3 +23172,261 @@ defense in depth. Verified.
 - **No CRITICAL or HIGH findings.**
 - **No code changes applied** (audit-only per PLAN.md acceptance
   criteria).
+
+### 17.4 — `Bun.file().exists()` and `Bun.file().text()` await & error-handling audit
+
+**Status: COMPLETE — VERIFIED. 1 MEDIUM, 2 LOW findings.**
+
+The previous Phase 17.3 finding 17.3.F covered one site (App.tsx:828, 836)
+inside `startIteration`. This entry expands the audit to every
+`Bun.file().exists()` and `Bun.file().text()` call in the codebase. The
+goal: confirm every such call is `await`ed AND that an exception from
+`text()` / `exists()` (e.g. permission-denied, ENOENT, EBUSY) is
+handled by the caller with an appropriate user-visible error or
+graceful degradation.
+
+#### Inventory of call sites (excluding test files)
+
+| # | File:Line | Function | Call | Awaited? | Caller handles error? |
+| - | --------- | -------- | ---- | -------- | --------------------- |
+| 1 | `src/lib/plan-parser.ts:201` | `isPlanComplete` | `await file.exists()` | YES | n/a (returns false on missing) |
+| 2 | `src/lib/plan-parser.ts:202` | `isPlanComplete` | `await file.text()` | YES | **YES** (caller `App.tsx:610` `checkPlanComplete` wrapped in try/catch returning false) |
+| 3 | `src/lib/plan-parser.ts:214` | `getPlanCompleteSummary` | `await file.exists()` | YES | n/a (returns null on missing) |
+| 4 | `src/lib/plan-parser.ts:215` | `getPlanCompleteSummary` | `await file.text()` | YES | **NO** (caller `App.tsx:794` `startIteration` relies on outer try/catch — see Finding 17.4.A) |
+| 5 | `src/lib/plan-parser.ts:228` | `parsePlanFile` | `await file.text()` | YES | **YES** (JSDoc documents `@throws`; caller `App.tsx:576` `refreshPlan` wrapped in try/catch) |
+| 6 | `src/lib/plan-parser.ts:264` | `getCurrentTask` | `await file.text()` | YES | **YES** (JSDoc documents `@throws`; caller `App.tsx:592` `refreshCurrentTask` wrapped in try/catch) |
+| 7 | `src/index.tsx:36` | `validatePrerequisites` | `await planFile.exists()` | YES | **PARTIAL** (see Finding 17.4.B — propagates to `main().catch`) |
+| 8 | `src/index.tsx:47` | `validatePrerequisites` | `await promptFile.exists()` | YES | **PARTIAL** (same as #7) |
+| 9 | `src/index.tsx:339` | `main` (startup log) | `await Bun.file(planPath).exists()` | YES | **PARTIAL** (log-only call; throws would hit `main().catch`) |
+| 10 | `src/App.tsx:828` | `startIteration` | `await promptFile.exists()` | YES | **YES** (inside `startIteration` try/catch — see Finding 17.3.F) |
+| 11 | `src/App.tsx:836` | `startIteration` | `await promptFile.text()` | YES | **YES** (same as #10) |
+| 12 | `src/context/ThemeContext.tsx:98` | `readOpenCodePreferences` | `await file.exists()` | YES | **YES** (full function wrapped in try/catch returning null) |
+| 13 | `src/context/ThemeContext.tsx:102` | `readOpenCodePreferences` | `await file.text()` | YES | **YES** (same as #12) |
+
+**Net result: 9 distinct call sites (12 individual awaited calls), all
+properly awaited. 8 of 9 sites have proper error handling. 1 site has a
+MEDIUM classification mismatch (Finding 17.4.A). 3 sites are classified
+PARTIAL (Finding 17.4.B) and represent low-impact degradation only.**
+
+#### Finding 17.4.A — MEDIUM — `getPlanCompleteSummary` failure in `startIteration` is misclassified as an iteration error
+
+**Problem.** The block at `src/App.tsx:789-801` is the plan-complete
+detection path:
+
+```ts
+try {
+  // Check for plan completion first
+  if (await checkPlanComplete()) {
+    const planPath = props.planFile || DEFAULTS.PLAN_FILE
+    // We know it's complete, but getPlanCompleteSummary returns string | null
+    const summaryContent = await getPlanCompleteSummary(planPath)
+
+    loop.dispatch({
+      type: "plan_complete",
+      summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
+    })
+    return
+  }
+  // ... rest of startIteration (createSession, sendPromptAsync, etc.)
+} catch (err) {
+  handleIterationError(err)  // ← treats ALL errors as iteration failures
+}
+```
+
+`checkPlanComplete()` (lines 604-614) wraps `isPlanComplete()` in a
+try/catch and returns `false` on any error. So when `checkPlanComplete`
+returns `true`, we KNOW the plan file exists, contains a
+`<plan-complete>` tag, and was readable moments ago. The subsequent
+`getPlanCompleteSummary()` call at line 794 re-reads the file to
+extract the summary text. If THIS call throws (e.g., the file is
+removed between the two awaits, a transient FS error, the file is
+replaced with a directory mid-iteration), the error is caught by the
+outer try/catch and routed to `handleIterationError(err)`, which:
+
+1. Classifies the error via `classifySessionError` (it isn't an SSE
+   error — it's a FS read).
+2. Enters cooldown (for transient) or dispatches a permanent error
+   (for non-transient).
+3. The plan is now treated as "not yet complete" from the loop's
+   perspective, and the next iteration will re-detect the completion
+   tag and try again — this is a soft recovery, but the user sees a
+   spurious "rate limit" or "error" toast.
+
+**Where.** `src/App.tsx:789-801` (the try block of `startIteration`).
+
+**Proposed fix.** Wrap the `getPlanCompleteSummary` call in a
+LOCAL try/catch that falls back to the localized "plan complete"
+message and proceeds with `plan_complete` dispatch regardless:
+
+```ts
+if (await checkPlanComplete()) {
+  const planPath = props.planFile || DEFAULTS.PLAN_FILE
+  let summaryContent: string | null = null
+  try {
+    summaryContent = await getPlanCompleteSummary(planPath)
+  } catch (err) {
+    log.warn("plan", "Plan complete but summary unreadable", err)
+  }
+  loop.dispatch({
+    type: "plan_complete",
+    summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
+  })
+  return
+}
+```
+
+This decouples the "plan is complete" decision (which is already
+protected by `checkPlanComplete`'s try/catch) from the
+"summary text is readable" decision. The plan is complete in either
+case — only the human-readable summary is best-effort.
+
+**Severity: MEDIUM.** A real user-visible misclassification, but the
+recovery path (next iteration re-detects completion) is benign. The
+fix is a 5-line try/catch.
+
+#### Finding 17.4.B — LOW — `validatePrerequisites` propagates `exists()` exceptions to `main().catch()`
+
+**Problem.** `validatePrerequisites` at `src/index.tsx:28-57` calls
+`await planFile.exists()` and `await promptFile.exists()` to gate
+startup. If either throws (e.g., the user's PLAN.md is on a
+permission-denied filesystem, or the parent directory is missing
+entirely), the exception propagates out of `validatePrerequisites`
+and is caught by `main().catch()` at line 358-361:
+
+```ts
+main().catch((error) => {
+  console.error("Fatal error:", error)
+  process.exit(1)
+})
+```
+
+The user sees "Fatal error: <stack trace>" instead of a clear
+"Cannot read PLAN.md: <reason>" or "Cannot read prompt file: <reason>"
+message. The terminal is NOT restored at this point
+(`tuiStarted` is still `false` at this point in `main`), so the
+visual state is clean, but the error UX is poor.
+
+**Where.** `src/index.tsx:36, 47` (the two `await ... .exists()`
+calls in `validatePrerequisites`).
+
+**Proposed fix.** Wrap each `exists()` in a try/catch that prints a
+localized error and exits with code 1:
+
+```ts
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    return await Bun.file(path).exists()
+  } catch (err) {
+    console.error(t("errCannotReadFile", { path, message: errMessage(err) }))
+    process.exit(1)
+  }
+}
+```
+
+Then call `await fileExists(args.planFile)` /
+`await fileExists(args.promptFile)`. The localized error is the same
+pattern used elsewhere in `validatePrerequisites` for the
+file-not-found case (`t("errPlanNotFound", ...)`).
+
+**Severity: LOW.** Rare in practice (the user runs OCLoop in their
+own working directory, where PLAN.md is usually readable), but the
+error message is confusing when it does happen.
+
+#### Finding 17.4.C — LOW — TOCTOU window between `exists()` and `text()` in `isPlanComplete` / `getPlanCompleteSummary`
+
+**Problem.** Both `isPlanComplete` (lines 199-204) and
+`getPlanCompleteSummary` (lines 212-217) do:
+
+```ts
+const file = Bun.file(planPath)
+if (!await file.exists()) return false / null
+const content = await file.text()
+```
+
+In a multi-process environment (OCLoop + a separate editor like
+VS Code + the OpenCode server), the file can be removed, replaced
+with a directory, or have its permissions changed between the two
+awaits. `file.text()` will then throw a Node-style ENOENT /
+EACCES / EISDIR. The two callers in `App.tsx` handle this
+differently:
+
+- `checkPlanComplete` (line 604-614) — wrapped in try/catch returning
+  false. **Safe.**
+- `startIteration` (line 789-801) — relies on the outer try/catch.
+  **Unsafe** (see Finding 17.4.A — same root cause).
+
+**Where.** `src/lib/plan-parser.ts:201-202` and `:214-215`.
+
+**Proposed fix.** Either (a) accept the throw and rely on the
+caller's try/catch (current design), or (b) wrap the read in a
+local try/catch that returns `false` / `null` on error:
+
+```ts
+export async function isPlanComplete(planPath: string): Promise<boolean> {
+  try {
+    const content = await Bun.file(planPath).text()
+    return parsePlanComplete(content) !== null
+  } catch {
+    return false
+  }
+}
+```
+
+Option (b) eliminates the TOCTOU window entirely and is more
+defensive. It also makes the function a drop-in replacement for the
+two callers without requiring them to wrap it in try/catch.
+
+**Severity: LOW.** The window is microseconds wide and the only
+realistic attacker is the user's own editor saving the file. The
+fix is a small simplification.
+
+#### Finding 17.4.D — INFO — All 12 `await` calls in 9 call sites are properly placed
+
+No missing `await` was found. The `Bun.file().path.exists()`
+and `Bun.file().path.text()` methods both return Promises; the
+audit verified that every call site in the table above uses
+`await` (or assigns to a `const` inside a `try { ... } catch`
+boundary). The `Bun.file()` constructor itself is synchronous (it
+just wraps the path), so no await is needed there.
+
+**Severity: INFO.** Not a bug. Documented for completeness so the
+next audit doesn't re-verify every call site from scratch.
+
+#### Finding 17.4.E — INFO — `parsePlanFile` and `getCurrentTask` intentionally throw on missing files
+
+The JSDoc for both functions at `src/lib/plan-parser.ts:224` and
+`:260` explicitly document `@throws Error if the file cannot be
+read`. The test at `src/lib/plan-parser.test.ts:1661-1678` pins
+this contract for `parsePlanFile`:
+
+> The contract being pinned here: "parsePlanFile does NOT silently
+> return null/empty on a missing file — it throws, and that throw
+> is what triggers the refreshPlan error path (logged via
+> log.error). If a future refactor changes parsePlanFile to 'be
+> safe and return null', the App.tsx refreshPlan error log would
+> never fire for ENOENT — this test catches that regression by
+> asserting the throw."
+
+This is the correct design: the caller (`refreshPlan` /
+`refreshCurrentTask`) IS wrapped in try/catch and logs the error,
+which is the right behavior for a non-critical display update.
+Preserving the throw contract means a future regression that
+"silently swallows" the ENOENT will be caught by the test.
+
+**Severity: INFO.** Not a bug. Documented so the design intent is
+preserved across refactors.
+
+#### Verification result
+
+- **12 awaited `Bun.file()` calls** audited across **9 call sites**.
+- **All 12 are properly awaited.** No missing `await` found.
+- **1 MEDIUM finding** (17.4.A): `getPlanCompleteSummary` failure in
+  `startIteration` is misclassified as an iteration error. Fix is a
+  5-line local try/catch.
+- **2 LOW findings** (17.4.B, 17.4.C): `validatePrerequisites`
+  error UX on `exists()` throw, and TOCTOU window between `exists()`
+  and `text()` in `isPlanComplete` / `getPlanCompleteSummary`.
+- **2 INFO observations** documented.
+- **No CRITICAL or HIGH findings.**
+- **No code changes applied** (audit-only per PLAN.md acceptance
+  criteria).

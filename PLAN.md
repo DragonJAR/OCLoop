@@ -180,7 +180,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Verify: `main().catch()` handles all unhandled promise rejections — confirm the `unhandledRejection` handler in index.tsx covers TUI mode
 - [x] Verify: `restoreTerminal()` is called on every exit path including `process.exit(1)` in error handlers
 - [x] Verify: No unguarded `await` calls that could reject without a try/catch in App.tsx effect handlers
-- [ ] Verify: `Bun.file().exists()` and `Bun.file().text()` calls are properly awaited and error-handled
+- [x] Verify: `Bun.file().exists()` and `Bun.file().text()` calls are properly awaited and error-handled
 - [ ] Verify: `Bun.write()` in `validatePrerequisites` handles permission errors
 - [ ] Verify: `withTimeout` always cleans up its timer even if the task throws synchronously
 - [ ] Verify: `shutdownManager` handles the case where `handler` throws AND the failsafe timer fires simultaneously
