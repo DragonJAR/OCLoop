@@ -1868,10 +1868,61 @@ Commit `d9dd9ee` (parte 3: tests + Mejora 45).
 
 ### Mejora 46 — Finding 12.2.A — MEDIUM — `saveConfig` does not catch I/O errors
 
-- [ ] Evaluar la mejora 46 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 46 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 46 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 46 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 46 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 46 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 46 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 46 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:14455-14535`): `saveConfig` no defendía su
+precondición de I/O, y los 4 call sites de `App.tsx` (líneas
+1515, 1537, 1711, 1725) — `onConfigSelect`, `onConfigCustom`,
+`toggle_scrollbar`, `toggle_language` — disparan
+`dialog.clear()` después del `await saveConfig(...)`, así que
+un error de I/O dejaba al usuario con un dialog abierto y un
+state local sin persistir, sin pista de por qué. El contrato
+a alcanzar es el de `saveLoopState` (`loop-state-store.ts:46-48`,
+"Never throws — persistence is best-effort and must not
+crash the app"). La opción del fix propuesta en
+`MEJORAS.md:14501-14524` (wrapper `try/catch` + `log.warn` +
+best-effort `unlinkSync(tmpPath)`) es estrictamente la mínima
+útil y reusa exactamente el patrón ya establecido en
+`saveLoopState:55-67` (Mejora 28, Finding 8.1.A). Implementación
+mínima: añadir `unlinkSync` al import de `node:fs` (línea 8),
+extraer `const tmpPath = configPath + ".tmp"` al top de
+`saveConfig` (línea 325, 1 línea) para que tanto el `writeFile`
+como el `unlink` del catch vean el mismo path, envolver el
+cuerpo I/O en `try { … } catch (err) { log.warn(...); try {
+if (existsSync(tmpPath)) unlinkSync(tmpPath) } catch {} }`
+(líneas 327-350, 16 líneas de código + 14 líneas de comentario
+que nombran el source `MEJORAS.md Finding 12.2.A`, el
+cross-reference a 12.2.C, y el paralelo con `saveLoopState`).
+Cero cambios a la firma pública de `saveConfig`
+(`(OcloopConfig) => void` intacta), cero cambios a `loadConfig`,
+cero cambios a `validateConfigShape` / `resolveResilience` /
+`getConfigDir` / `getConfigPath` / `hasTerminalConfig`, cero
+cambios a los 4 call sites de `App.tsx` (su `await
+saveConfig(...)` ahora resuelve con `undefined` en vez de
+throw, lo cual es observable-equivalente para el `await`
+porque el `void`-return ya estaba en el contract — Mejora 50
+lo pinea), cero impacto en la TUI, cero impacto en el
+reducer, cero impacto en el lifecycle de iteración. Cero
+cambio en la `if (!existsSync(configDir))` preexistente (esa
+es Mejora 49 / Finding 12.2.D, queda para su turno).
+
+Cubierto por 5 tests nuevos en `src/lib/config.test.ts`:
+round-trip `saveConfig` + `loadConfig`, atomic overwrite
+sin `.tmp` residual (pinea el contrato de Mejora 50
+indirectamente), `void` return explícito (pin directo de
+12.2.E), `saveConfig` no lanza con dir read-only via
+`chmodSync(dir/ocloop, 0o555)` (replica el patrón de
+`loop-state-store.test.ts:77-92`, mismas guardas
+`skipIf(win32 || root)`), y verificación de que el `.tmp`
+no queda en disco tras un save fallido (cierra 12.2.C como
+side-effect). `bun test` verde: 729 pass / 1 skip / 0 fail,
+1756 expect() calls, 25 files, 322 ms — +5 tests, +7
+expects, sin cambio en el conteo de archivos. Commit
+`671581c`.
 
 ### Mejora 47 — Finding 12.2.B — LOW — `tmpPath` is a fixed suffix `.tmp`; simultaneous writes clobber each other
 
