@@ -3,6 +3,8 @@
  * Detects appropriate clipboard tool based on environment (Wayland vs X11).
  */
 
+import { commandExists } from "./command-exists"
+
 type ClipboardTool = {
   command: string;
   args: string[];
@@ -92,18 +94,4 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
   }
 }
 
-/**
- * Checks if a command exists in PATH using `which`.
- */
-async function commandExists(command: string): Promise<boolean> {
-  try {
-    const proc = Bun.spawn(["which", command], {
-      stdout: "ignore",
-      stderr: "ignore",
-    });
-    const exitCode = await proc.exited;
-    return exitCode === 0;
-  } catch {
-    return false;
-  }
-}
+

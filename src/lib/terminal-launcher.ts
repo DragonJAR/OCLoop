@@ -6,6 +6,7 @@
  */
 
 import type { TerminalConfig } from "./config"
+import { commandExists } from "./command-exists"
 import { log } from "./debug-logger"
 
 /**
@@ -63,21 +64,7 @@ export function getKnownTerminalByName(name: string): KnownTerminal | undefined 
   return KNOWN_TERMINALS.find((t) => t.name === name)
 }
 
-/**
- * Check if a command exists on the system using `which`
- */
-async function commandExists(command: string): Promise<boolean> {
-  try {
-    const proc = Bun.spawn(["which", command], {
-      stdout: "pipe",
-      stderr: "pipe",
-    })
-    const exitCode = await proc.exited
-    return exitCode === 0
-  } catch {
-    return false
-  }
-}
+
 
 /**
  * Detect which known terminals are installed on the system.
