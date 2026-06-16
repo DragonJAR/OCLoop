@@ -104,11 +104,11 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 9 — Sleep Detection & Power Management
 
-- [ ] Audit `createSleepDetector` for: threshold detection accuracy, negative gap handling, timer cleanup
-- [ ] Verify: `handleWake` correctly reconnects SSE, reconciles session, and handles cooldown state
-- [ ] Verify: sleep detector stops on cleanup — `onCleanup` calls `sleepDetector?.stop()`
-- [ ] Verify: `caffeinate` starts/stops based on `loop.isRunning() || loop.isCooldown()` — confirm this covers all active states
-- [ ] Verify: power manager (`createPowerManager`) correctly calls `caffeinate` on macOS and is a no-op on other platforms
+- [x] Audit `createSleepDetector` for: threshold detection accuracy, negative gap handling, timer cleanup
+- [x] Verify: `handleWake` correctly reconnects SSE, reconciles session, and handles cooldown state
+- [x] Verify: sleep detector stops on cleanup — `onCleanup` calls `sleepDetector?.stop()`
+- [x] Verify: `caffeinate` starts/stops based on `loop.isRunning() || loop.isCooldown()` — confirm this covers all active states
+- [x] Verify: power manager (`createPowerManager`) correctly calls `caffeinate` on macOS and is a no-op on other platforms
 
 ## Phase 10 — Plan Generator (`--create-plan`)
 

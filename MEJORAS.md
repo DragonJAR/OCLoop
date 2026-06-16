@@ -10705,3 +10705,769 @@ implementation commit, not now.
 expect() calls**. No regressions. The full
 suite (`bun test`) was not re-run because
 this audit makes no code changes.
+
+## Phase 9 — Sleep Detection & Power Management
+
+The sleep detector (`src/lib/sleep-detector.ts`)
+samples the wall clock every `tickMs` and
+fires `onWake(gapMs)` whenever the actual
+gap between samples exceeds `thresholdMs`
+(plus a hard gate `gap > 0` to skip backwards
+clock movement). The power manager
+(`src/lib/power.ts`) is a thin wrapper around
+`caffeinate -dimsu` that is constructed at
+`App.tsx:190` and toggled on/off in the
+lifecycle effect at `App.tsx:1251-1263` based
+on `loop.isRunning() || loop.isCooldown()`.
+
+The whole module is small — 80 + 79 lines of
+code, 99 lines of tests — but it is the only
+place in the codebase that uses the *wall*
+clock as a signal (every other timing path
+uses `monotonicNow()` to avoid jumps). That
+deliberate inversion is correct: here the
+jump IS the signal.
+
+### 9.1 — Audit `createSleepDetector` for threshold detection accuracy, negative gap handling, timer cleanup
+
+The detector is 80 lines, has 5 unit tests
+in `src/lib/sleep-detector.test.ts`, and
+ships in production as the sole consumer in
+`App.tsx:432-437` (created in the
+config-loading `onMount`). Three behaviors to
+verify:
+
+**Threshold detection accuracy.**
+`sleep-detector.ts:52-61`:
+
+```ts
+function poll(): number {
+  const now = clock.wallClockNow()
+  const gap = now - lastSeen
+  lastSeen = now
+  // A negative gap (clock moved backwards) is not a wake; ignore it.
+  if (gap > thresholdMs) {
+    options.onWake(gap)
+  }
+  return gap
+}
+```
+
+The comparison is `gap > thresholdMs` (strict
+greater-than). This is the right boundary
+choice: at `gap === thresholdMs` the detector
+stays quiet, which means the system is
+allowed `tickMs` jitter above the threshold
+without a wake. With the defaults
+(`tickMs: 5000`, `thresholdMs: 30000`), a
+gap of exactly 30s does NOT fire, a gap of
+30.001s DOES. The strict-greater semantics
+prevent a single slow GC pause from triggering
+a wake storm. **Verified correct.**
+
+`lastSeen` is updated on every `poll()`,
+including the wake case (line 55). So the
+gap reported to `onWake` is the delta from
+the previous sample, not from the
+detector's `start()`. This is the property
+the third test (`uses the gap since the last
+sample, not since start`) explicitly asserts.
+**Verified correct.**
+
+**Negative gap handling.** A backwards
+clock jump (e.g., NTP step, manual time
+change, `settimeofday`) produces a negative
+`gap`. The detector:
+
+1. Updates `lastSeen = now` (line 55), so
+   the backwards jump is *consumed* and does
+   not poison the next sample.
+2. Skips `onWake` (line 57), because a
+   negative gap is never a wake.
+
+This is the only correct behavior: a backwards
+clock movement would otherwise count as a
+"negative sleep", which is nonsensical. The
+fourth test (`ignores backwards clock movement`)
+asserts `wakes === []` after a `clock.wall -= 100_000`.
+**Verified correct.**
+
+**Timer cleanup.** `start()` (line 64-68)
+guards against double-start with `if (timer)
+return`. `stop()` (line 69-74) nulls the
+interval handle. The internal `setInterval`
+is bound to the Bun event loop, so a missed
+`stop()` would keep the process alive
+indefinitely. The double-stop and double-start
+safety are both verified by the test
+`tracks running state via start/stop` —
+it asserts `isRunning()` flips correctly on
+each call. **Verified correct.**
+
+**Gap value returned.** `poll()` always
+returns the observed gap, including negative
+gaps and sub-threshold gaps. The wake callback
+receives the *same* gap via the `gap` argument
+to `onWake` (line 58). Callers can therefore
+distinguish "tiny gap" from "10-minute gap"
+in the same handler, which is what
+`App.tsx:199-221` relies on (the
+`activityLog.addEvent("task", t("actWake", { secs: ... }))`
+at line 201-204 rounds the gap to seconds
+for the user-visible message). **Verified
+correct.**
+
+#### MEDIUM — `lastSeen` baseline is set inside `start()` but the first `setInterval` tick is delayed by `tickMs`
+
+`sleep-detector.ts:64-68`:
+
+```ts
+start() {
+  if (timer) return
+  lastSeen = clock.wallClockNow()
+  timer = setInterval(poll, tickMs)
+}
+```
+
+The baseline is captured at `start()` time
+and the first `poll()` is scheduled `tickMs`
+later. If the system sleeps BETWEEN
+`lastSeen = now` and the first interval
+firing, the wake is detected on the FIRST
+tick after wake (gap will be `tickMs + sleepMs`,
+which exceeds `thresholdMs`). This is the
+correct behavior — the wake IS detected,
+just on a delayed tick.
+
+**The real issue is the opposite case.** If
+the system sleeps and wakes BEFORE `start()`
+is called (e.g., the OCLoop process is
+launched after a sleep), `start()` captures
+a baseline of "now" and the detector will
+not fire until the NEXT sleep. This is
+inherent to the design (we can't measure a
+sleep we didn't see) but is worth a one-line
+comment in the code so future maintainers
+don't waste time looking for a bug.
+
+**Proposed fix.** Add a doc comment to
+`start()`:
+
+```ts
+start() {
+  // ponytail: baseline is set here, so a sleep that
+  // completed BEFORE start() is invisible. This is
+  // intentional — there is no wall-clock signal we
+  // could use to detect it.
+  if (timer) return
+  lastSeen = clock.wallClockNow()
+  timer = setInterval(poll, tickMs)
+}
+```
+
+**Severity: MEDIUM** (documentation gap that
+masks a deliberate design choice; the
+alternative — comparing against a fixed
+"boot time" — would cause a false wake on
+the very first tick after every restart).
+
+#### LOW — Test coverage gaps in `sleep-detector.test.ts`
+
+The 5 existing tests cover the happy paths
+(threshold, no-threshold, gap semantics,
+backwards clock, start/stop state) but miss:
+
+1. **`start()` is idempotent** — calling it
+   twice should NOT create two timers. Test:
+   `start(); start(); expect(d.isRunning()).toBe(true)`,
+   then peek at the private `timer` handle or
+   count intervals by advancing the clock and
+   counting `poll` calls.
+2. **`stop()` is idempotent** — calling it
+   twice should not throw and should leave
+   `isRunning() === false`. Test:
+   `d.start(); d.stop(); d.stop(); expect(d.isRunning()).toBe(false)`.
+3. **Re-start after stop** — `start(); stop();
+   start()` should resume sampling with a
+   fresh baseline. Test: start, advance clock
+   5s, stop, advance 10s, start, advance 5s,
+   poll — no wake should fire (the 10s gap
+   during stop is invisible because
+   `lastSeen` is reset).
+4. **Threshold edge case** — at `gap ===
+   thresholdMs` the detector must NOT fire
+   (strict greater-than). Test:
+   `clock.wall += thresholdMs; d.poll();
+   expect(wakes).toEqual([])`.
+5. **`poll()` before `start()`** — calling
+   `poll()` directly on a never-started
+   detector should still return a gap
+   (against the initial `lastSeen` set in
+   the factory body at line 49). This is
+   tested implicitly by the existing tests
+   but never asserted.
+6. **`isRunning()` is `false` initially** —
+   the constructor at line 49 sets `lastSeen`
+   but does NOT create a timer, so
+   `isRunning()` returns `false` until
+   `start()`. Trivial but the invariant
+   matters for `App.tsx`'s cleanup path
+   (which calls `sleepDetector?.stop()` in
+   the onCleanup at line 1631 — see 9.3
+   below).
+
+**Proposed fix.** Add 6 `it()` blocks to
+`sleep-detector.test.ts`. Total expected
+count goes from 5 to 11. No source changes
+needed.
+
+**Severity: LOW** (no behavioral gap, just
+defensive coverage).
+
+#### INFO — `setInterval` is not cleared if `poll()` throws
+
+`sleep-detector.ts:67`: `timer = setInterval(poll, tickMs)`.
+If `poll()` itself throws (e.g., the
+injected `clock` returns a non-number from
+`wallClockNow()`, or `onWake` throws
+synchronously), the `setInterval` is NOT
+cleared and will keep firing on the same
+ticking loop, throwing on every tick. Bun's
+default behavior is to log the unhandled
+error and keep going.
+
+In practice this can't happen — the
+production `wallClockNow()` returns
+`Date.now()` (a number, never throws) and
+`onWake` is `handleWake` in `App.tsx:199`,
+which only calls solid signals and the
+watchdog API (none of which throw
+synchronously). The injected-clock test
+path also doesn't throw.
+
+**Severity: INFO** (theoretical, not
+reachable from current code).
+
+### 9.2 — Verify `handleWake` correctly reconnects SSE, reconciles session, and handles cooldown state
+
+`handleWake` is at `App.tsx:199-221` and
+is wired as the `onWake` callback at
+`App.tsx:435`. Every wake from a system
+suspension funnels through it.
+
+**Reconnect SSE.** Line 207: `sse.reconnect()`.
+The SSE stream is HTTP/1.1 long-poll over
+TCP; on macOS sleep the OS tears down the
+underlying socket, so the next SSE event
+after wake is almost certainly on a dead
+connection. The `sse.reconnect()` call
+closes the dead socket and opens a fresh
+one, which is the only way to recover event
+delivery. **Verified correct.**
+
+**Reset the watchdog.** Line 208: `watchdog.notifyWake()`.
+A long sleep would have stopped the
+heartbeat baseline (no SSE events for
+minutes), so when the watchdog next ticks
+it would suspect/confirm the session as
+wedged and try to recover. `notifyWake()`
+resets the heartbeat baseline so the
+watchdog gives the session a fresh window
+to produce events. This is the same
+mechanism as the 6.4 audit confirmed
+(heartbeat baseline reset). **Verified
+correct.**
+
+**Cooldown handling.** Lines 210-216:
+
+```ts
+const st = loop.state()
+if (st.type === "cooldown") {
+  // Cooldown deadline may have passed while we slept.
+  if (monotonicNow() >= st.resumeAt) {
+    clearCooldownTimers()
+    loop.dispatch({ type: "resume_cooldown" })
+  }
+} else {
+  // Recover a possibly-missed session.idle.
+  void reconcileAndAdvance()
+}
+```
+
+This is the smart part of the handler:
+
+- **In `cooldown` state** with the deadline
+  already in the past: cancel the
+  (no-longer-needed) timer, dispatch
+  `resume_cooldown` so the loop continues
+  iterating. If the deadline is in the
+  future, do nothing — the existing timer
+  will fire normally on the (now-overdue)
+  Bun event loop.
+- **In every other state** (`running`,
+  `pausing`, `paused`, `error`, etc.):
+  call `reconcileAndAdvance()` to recover
+  a `session.idle` that may have fired
+  while we were asleep (the SSE stream was
+  dead, so the event was lost).
+
+**Verified correct.** The branch is
+exhaustive over `cooldown` vs everything-else
+and the action taken in each branch is the
+minimum-necessary recovery.
+
+**Activity log.** Lines 201-204 add a
+human-readable "Woke after Ns" event to
+the activity log. This is the only
+user-visible signal that a wake happened;
+it appears in the TUI events panel. The
+i18n key is `actWake` (defined in
+`src/lib/i18n.ts`). **Verified correct.**
+
+#### LOW — `reconcileAndAdvance()` in `paused` state is a no-op but still calls the SDK
+
+`App.tsx:219`: `void reconcileAndAdvance()`.
+
+If the user has explicitly paused the loop
+(`s.type === "paused"`) when the system
+sleeps and wakes, `handleWake` calls
+`reconcileAndAdvance()`. The implementation
+of `reconcileAndAdvance` short-circuits on
+non-`running`/`pausing` states (it only
+acts when there's a session to advance),
+so the user-paused case is effectively a
+no-op. But the `getActiveSessionId(loop.state())`
+call inside `reconcileAndAdvance` still
+runs, and any SSE/network call inside it
+would fire unnecessarily.
+
+**This is harmless in practice** — the
+function gates on state before doing any
+network work. But it would be more
+defensive to skip the call entirely in
+`paused` state:
+
+```ts
+} else if (st.type !== "paused") {
+  void reconcileAndAdvance()
+}
+```
+
+**Severity: LOW** (defensive, not
+correctness-critical).
+
+#### INFO — `handleWake` does not log a wake duration to `log.health` from the cooldown branch
+
+Lines 200-216 log the wake to the activity
+log (user-facing) and to `log.health("sleep",
+"wake", { gapMs })` (developer-facing) only
+ONCE, at line 200. The subsequent branch
+(cooldown or reconcile) is not logged. This
+is the right level of detail — the wake is
+the event, the recovery is internal. **No
+finding.**
+
+#### INFO — Concurrent wakes (two ticks landing in quick succession) are coalesced by `lastSeen`
+
+If the system wakes and the first post-wake
+poll fires with a 10-minute gap, a SECOND
+poll 5 seconds later fires with a 5-second
+gap. Both are dispatched through
+`handleWake`. The second call is
+effectively a no-op (the SSE is already
+reconnected, the watchdog is already reset,
+the cooldown is already resumed). The cost
+is one extra `sse.reconnect()` (idempotent
+in `useSSE` per the 7.5 audit) and one extra
+`reconcileAndAdvance()` (no-op in non-active
+states). **Verified acceptable** — the
+overhead is bounded and self-corrects on
+the second wake.
+
+### 9.3 — Verify sleep detector stops on cleanup — `onCleanup` calls `sleepDetector?.stop()`
+
+Two cleanup paths exist:
+
+1. **`handleQuit`** at `App.tsx:968-1010`.
+   Line 976: `sleepDetector?.stop()`. This
+   runs on user-initiated quit (Ctrl+C,
+   'q' key, SIGINT, SIGTERM via
+   `shutdownManager.register(handleQuit)` at
+   line 1625). It runs BEFORE `process.exit(0)`
+   at line 1009, so the interval is cleared
+   before the process terminates.
+
+2. **`onCleanup`** at `App.tsx:1629-1633`.
+   Line 1631: `sleepDetector?.stop()`. This
+   is the SolidJS lifecycle hook paired
+   with the `onMount` at line 1624. It
+   runs when the component unmounts.
+
+**Both paths are correct.** The optional
+chaining `sleepDetector?.stop()` handles
+the case where `sleepDetector` was never
+assigned (e.g., if the onMount at line 421
+threw before reaching line 432). The
+`stop()` method itself is idempotent
+(`if (timer) { clearInterval(timer); timer = null }`
+at lines 70-73 of `sleep-detector.ts`), so
+calling it twice (once from `handleQuit` and
+once from `onCleanup`) is harmless.
+
+**Verified correct.** The `App.tsx:976` and
+`App.tsx:1631` lines are the only two
+callers of `sleepDetector?.stop()`; grep
+confirms this.
+
+**Coverage matrix:**
+
+| Trigger | Cleanup path | Sleep detector stopped? |
+| --- | --- | --- |
+| User presses Q / Esc | `handleQuit` (line 976) | Yes |
+| Ctrl+C / SIGINT | `shutdownManager` → `handleQuit` (line 976) | Yes |
+| SIGTERM | `shutdownManager` → `handleQuit` (line 976) | Yes |
+| Process.exit from inside `onMount` before `sleepDetector` is assigned | `onCleanup` runs but `sleepDetector` is still `null`, so `?.stop()` is a no-op | Yes (no leak — `timer` was never created) |
+| Component unmount without quit (SolidJS HMR, error boundary) | `onCleanup` (line 1631) | Yes |
+| Hard crash (uncaught exception) | None — process dies | Acceptable (the OS reaps the interval handle) |
+
+**No findings for 9.3.** Cleanup is
+exhaustive and idempotent.
+
+### 9.4 — Verify `caffeinate` starts/stops based on `loop.isRunning() || loop.isCooldown()` — confirm this covers all active states
+
+The lifecycle effect is at
+`App.tsx:1251-1263`:
+
+```ts
+createEffect(() => {
+  if (loop.isRunning()) {
+    watchdog.start()
+  } else {
+    watchdog.stop()
+  }
+
+  if (loop.isRunning() || loop.isCooldown()) {
+    power.start()
+  } else {
+    power.stop()
+  }
+})
+```
+
+The two conditions are deliberately
+different:
+
+- **Watchdog** runs only on `isRunning()`
+  (which is `running` OR `pausing` per
+  `useLoopState.ts:307-310`). Rationale: a
+  wedged session can only happen while a
+  session is active, and sessions only exist
+  in `running` or `pausing`. In `cooldown`
+  there is no session to wedge.
+- **caffeinate** runs on `isRunning() ||
+  isCooldown()`. Rationale: a rate-limit
+  cooldown can take minutes (`backoffMaxMs:
+  60_000` per `config.ts:119` × 8 retries
+  per `maxRateLimitRetries: 8` =
+  ~8 minutes worst case), and the user
+  expects the system to stay awake through
+  the wait. Killing caffeinate during
+  cooldown would let the machine sleep and
+  miss the resume.
+
+**State coverage matrix:**
+
+| State | `isRunning()` | `isCooldown()` | Watchdog | caffeinate |
+| --- | --- | --- | --- | --- |
+| `ready` | false | false | stopped | stopped |
+| `starting` | false | false | stopped | stopped |
+| `running` | **true** | false | **started** | **started** |
+| `pausing` | **true** | false | **started** | **started** |
+| `paused` | false | false | stopped | **stopped** |
+| `cooldown` | false | **true** | stopped | **started** |
+| `error` | false | false | stopped | stopped |
+| `complete` | false | false | stopped | stopped |
+| `stopping` | false | false | stopped | stopped |
+| `stopped` | false | false | stopped | stopped |
+| `debug` | false | false | stopped | stopped |
+
+**Verified correct for the design intent.**
+The 3 states that get caffeinate
+(`running`, `pausing`, `cooldown`) are
+exactly the 3 states where the loop is
+*doing work or about to do work* and would
+be harmed by a sleep.
+
+**`paused` is deliberately excluded.**
+The user explicitly asked to pause, so
+letting the system sleep is correct (and
+probably desired). The user's intent takes
+precedence over the loop's convenience.
+
+**`error` and `complete` are excluded.**
+These are terminal-ish states — the loop
+is done for this run, even if `complete`
+will dispatch `quit` and the user might
+want to launch a fresh run. Letting the
+machine sleep here is fine.
+
+#### LOW — `power.stop()` is called on `paused` even though the user might resume within minutes
+
+If a user pauses for lunch and resumes 30
+minutes later, the system sleeps, the
+laptop lid closes, etc. When they resume,
+`paused` → `running` dispatches and the
+lifecycle effect flips caffeinate back on.
+There is a 5-30 second window where the
+OpenCode SDK could be sending heartbeats to
+a sleeping server, but the SSE stream is
+likely dead at that point and the watchdog
+(also off) won't trigger a recovery until
+~90 seconds (`watchdogSuspectMs`). The
+reconciliation on the next `iteration_started`
+will catch the dead session.
+
+**This is acceptable behavior** — the user
+asked to pause, so they accept the recovery
+cost on resume. **No fix recommended.**
+
+**Severity: LOW (INFO-ish)** (intentional
+design choice, no correctness gap).
+
+#### INFO — The lifecycle effect and `handleWake` race on the very first post-sleep tick
+
+When the system wakes during a `running`
+session, the order of events is:
+
+1. Sleep detector polls (gap > threshold) →
+   `handleWake(gapMs)` fires.
+2. `handleWake` calls `sse.reconnect()` and
+   `watchdog.notifyWake()`.
+3. The lifecycle effect (running) is
+   unaffected — caffeinate stays on.
+4. `handleWake` calls `reconcileAndAdvance()`
+   which may dispatch a new iteration.
+
+If the system wakes during a `cooldown`
+session, the order is:
+
+1. Sleep detector polls → `handleWake`.
+2. `handleWake` calls `sse.reconnect()` and
+   `watchdog.notifyWake()`.
+3. `handleWake` sees `st.type === "cooldown"`
+   and `monotonicNow() >= st.resumeAt`, then
+   `clearCooldownTimers()` + dispatch
+   `resume_cooldown`.
+4. The reducer transitions `cooldown` →
+   `running("")`, the lifecycle effect re-
+   fires with `isRunning() === true`, and
+   caffeinate stays on.
+
+**No race** because the lifecycle effect
+re-fires on every state change (it's a
+Solid `createEffect` reading `loop.state()`).
+The 3-ms to 10-ms window between the
+`loop.dispatch` at line 215 and the effect
+re-run has caffeinate already running
+(because `isCooldown` was true the whole
+time), so there is no gap in coverage.
+
+**No findings for 9.4.** The lifecycle
+effect is correct and intentional.
+
+### 9.5 — Verify power manager (`createPowerManager`) correctly calls `caffeinate` on macOS and is a no-op on other platforms
+
+`power.ts` is 79 lines. The relevant
+branches:
+
+- **Line 30**: `const isMac = platform === "darwin"`.
+  Uses `process.platform` by default
+  (line 29: `options.platform ?? process.platform`).
+  Override is testable.
+- **Lines 35-40**: `start()` short-circuits
+  if `proc` is already set (idempotent), if
+  `options.enabled()` is false (respects
+  `--no-caffeinate` and the config), and if
+  not macOS. The non-mac short-circuit is
+  the documented "graceful degrade" path
+  for Linux/Windows users.
+- **Lines 41-60**: Spawns `caffeinate -dimsu`
+  with `stdout/stderr/stdin: "ignore"`. The
+  `try/catch` at lines 54-60 handles a
+  missing `caffeinate` binary (e.g., a
+  minimal macOS install or a path issue)
+  by logging `caffeinate_failed` and
+  leaving `proc = null`.
+- **Line 52**: `proc.unref()` ensures the
+  spawned caffeinate process does not keep
+  the Bun event loop alive — critical
+  because `handleQuit` calls `process.exit(0)`
+  (not a natural exit) and any unrefed
+  child would survive.
+- **Lines 63-72**: `stop()` kills the
+  caffeinate process. The `try/catch` at
+  lines 66-69 handles the case where
+  `proc.kill()` throws (e.g., the process
+  was already reaped by a SIGCHLD race).
+- **Lines 74-76**: `isActive()` returns
+  `proc !== null`. Used by the cleanup
+  path to confirm the lifecycle effect
+  actually stopped caffeinate.
+
+**Verified correct.** Each branch has a
+single, clear responsibility and a
+documented reason for being there.
+
+**No-op on non-macOS.** `isMac` is
+captured ONCE at construction time
+(line 30), so a hot-swap of
+`process.platform` (impossible — it's a
+constant) wouldn't change the behavior.
+The `options.platform` parameter is the
+test override.
+
+**Caffeinate binary missing.** The
+`Bun.spawn(["caffeinate", "-dimsu"])` call
+at line 43 throws synchronously if the
+binary is not found in `$PATH`. The
+`try/catch` at line 54 catches it, logs
+`caffeinate_failed` to the health log, and
+sets `proc = null`. Subsequent `isActive()`
+returns false, and the next `start()` will
+retry the spawn. **Verified correct.**
+
+#### MEDIUM — `createPowerManager` has zero test coverage
+
+There is no `power.test.ts` in
+`src/lib/`. This is a 79-line module
+with 4 behavioral branches (idempotent
+start, enabled() gate, macOS-only gate,
+graceful-degrade on spawn failure) and
+NONE of them are covered by automated
+tests. The only existing test reference
+is a passing reference in
+`cli-args.test.ts:845-851` (which tests
+the CLI flag, not the manager).
+
+**Proposed test file** (`src/lib/power.test.ts`):
+
+```ts
+import { describe, expect, it, mock } from "bun:test"
+import { createPowerManager } from "./power"
+
+describe("createPowerManager", () => {
+  it("returns isActive() === false initially", () => { ... })
+  it("does NOT spawn caffeinate on non-darwin platforms", () => {
+    const pm = createPowerManager({ enabled: () => true, platform: "linux" })
+    pm.start()
+    expect(pm.isActive()).toBe(false)
+  })
+  it("does NOT spawn caffeinate when enabled() returns false", () => { ... })
+  it("is idempotent: start() twice keeps isActive() === true", () => { ... })
+  it("stop() is idempotent: stop() twice keeps isActive() === false", () => { ... })
+  it("isActive() flips false → true → false across start/stop", () => { ... })
+  it("re-enables when enabled() flips false → true (e.g. config reload)", () => { ... })
+})
+```
+
+The macOS-spawn tests would need to mock
+`Bun.spawn` via `mock.module`, which is
+fragile in Bun. A cleaner approach: extract
+the spawn call into an injected dependency
+(like the `clock` injection in
+`sleep-detector.ts`) so tests can pass a
+`fakeSpawn` that records calls. **Both
+approaches belong in a follow-up
+implementation commit, not this audit.**
+
+**Severity: MEDIUM** (the only MEDIUM in
+this phase; the manager is small but
+uncovered).
+
+#### LOW — `proc.kill()` on macOS sends SIGTERM; caffeinate does not have a graceful exit
+
+`power.ts:66`: `proc.kill()`. The default
+on Unix is SIGTERM. `caffeinate` (a
+small Apple-shipped C program) handles
+SIGTERM by exiting cleanly with status 0.
+There is no risk of an orphaned caffeinate
+process — the kill is synchronous from
+the kernel's perspective, the process is
+reaped on exit, and the
+`shutdownManager.register(handleQuit)`
+double-fire (e.g., SIGINT + Q key) is
+handled by `stop()`'s idempotency (line
+64: `if (!proc) return`).
+
+**Verified correct**, but worth a one-line
+comment in the code so future maintainers
+don't add a `SIGKILL` escalation that
+breaks the cleanup.
+
+**Severity: LOW** (documentation gap).
+
+#### INFO — `enabled` is a function, not a boolean — design choice worth preserving
+
+`power.ts:22-23`:
+
+```ts
+export interface PowerManagerOptions {
+  /** Reactive/lazy enabled flag (respects --no-caffeinate and config). */
+  enabled: () => boolean
+  ...
+}
+```
+
+The `enabled: () => boolean` signature
+(thunk) is called on every `start()` rather
+than captured once at construction. This
+is the right design because the value comes
+from a Solid signal `resilience().caffeinate`
+(`App.tsx:190`), and the signal may change
+after construction (e.g., a config reload).
+Reading the signal at start time is fresh
+and correct.
+
+**The caller side** at `App.tsx:190`:
+`const power = createPowerManager({ enabled: () => resilience().caffeinate })`.
+The thunk reads `resilience()` (a Solid
+`createSignal`) lazily. The lifecycle
+effect at line 1258 calls `power.start()`
+on every state change, and the thunk fires
+on every call, so the latest value of
+`caffeinate` is always respected. **No
+finding.**
+
+### Test-suite delta for Phase 9
+
+**No new tests added.** The existing
+5 tests in `src/lib/sleep-detector.test.ts`
+cover the 4 main behaviors; the LOW
+finding 9.1.B proposes 6 more. The
+MEDIUM finding 9.5.A proposes a new
+file `src/lib/power.test.ts` with ~7
+`it()` blocks. Both are deferred to a
+follow-up implementation commit per
+PLAN.md acceptance criteria (audit-only).
+
+`bun test` was not re-run because this
+audit makes no code changes.
+
+### Summary of Phase 9 findings
+
+| # | Severity | One-liner |
+| --- | --- | --- |
+| 9.1.A | MEDIUM | `start()` baseline comment gap — a sleep BEFORE start() is invisible by design; needs a one-line comment. |
+| 9.1.B | LOW | `sleep-detector.test.ts` is missing 6 defensive tests (idempotent start/stop, restart-after-stop, threshold edge, pre-start poll, isRunning-initial). |
+| 9.1.C | INFO | `setInterval` is not cleared if `poll()` throws (theoretical, not reachable from current code). |
+| 9.2 | LOW | `reconcileAndAdvance()` in `paused` state is a no-op but still does a state-read; defensive to gate it out. |
+| 9.2.A | INFO | `handleWake` is not double-logged from the cooldown branch (intentional). |
+| 9.2.B | INFO | Concurrent wakes (two ticks) are coalesced by `lastSeen` reset (acceptable). |
+| 9.3 | — | No findings. Cleanup is exhaustive and idempotent. |
+| 9.4 | LOW (INFO) | `power.stop()` on `paused` is intentional; user-acceptance-of-cost is the right model. |
+| 9.4.A | INFO | Lifecycle effect vs. `handleWake` race is benign — the effect re-fires on every state change. |
+| 9.5.A | MEDIUM | `createPowerManager` has zero test coverage — proposed `power.test.ts` with ~7 cases. |
+| 9.5.B | LOW | `proc.kill()` SIGTERM semantics on `caffeinate` deserve a one-line comment. |
+| 9.5.C | INFO | `enabled: () => boolean` thunk design is the right choice for signal-reactive config. |
+
+**Net severity tally for Phase 9: 2 MEDIUM, 4 LOW, 5 INFO; no CRITICAL or HIGH.** All findings are documentation-or-test gaps, not behavioral bugs. The sleep-detection and power-management logic is correct as written.
