@@ -144,6 +144,13 @@ function sdkErrorMessage(error: unknown): string {
  * `response`. Reading `result.response.ok` directly crashes with "undefined is
  * not an object" and masks the real failure, so every call site goes through
  * here. Exported so the plan generator (`index.tsx`) uses the same path.
+ *
+ * NOTE: This only validates the HTTP layer (response exists + ok). The caller
+ * owns data-layer validation: `result.data` may be null/undefined even when
+ * ok=true. Every consumer handles this consistently — either throws an
+ * explicit "empty response body" error (createSession, getSessionStatus,
+ * runCreatePlan), uses a safe fallback (abortSession → `?? false`,
+ * fetchMessages → `?? []`), or doesn't read data at all (sendPromptAsync, ping).
  */
 export function assertResponse(
   result: { error?: unknown; response?: { ok: boolean; status: number; statusText: string } },
