@@ -192,6 +192,17 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Falls back to an ephemeral port if the old one is not yet released.
    */
   async function restart(): Promise<void> {
+    // Don't double-restart. status flips to "starting" on entry and back to
+    // "ready" / "error" on exit; bail if a restart is mid-flight. Reuses the
+    // same guard pattern as startServer() (above) so a concurrent caller
+    // (watchdog + SSE-exhaustion effect, or two rapid user commands) can't
+    // race two `launch()`s and leak the first server's process handle by
+    // overwriting serverRef. Source: MEJORAS.md Finding 7.5.A.
+    if (status() === "starting") {
+      log.health("server", "restart_in_flight_noop", { url: url() })
+      return
+    }
+
     const preferredPort = serverPort() ?? port ?? 0
     log.health("server", "restart_begin", { preferredPort })
 
