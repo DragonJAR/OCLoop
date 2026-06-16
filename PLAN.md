@@ -213,10 +213,26 @@ cambios de código. Test suite verde: `667 pass / 0 fail`.
 
 ### Mejora 9 — Finding 1.8.A — MEDIUM — Cross-reference a 1.7.A: `--resume` is silently swallowed by `--create-plan`
 
-- [ ] Evaluar la mejora 9 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 9 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 9 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 9 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 9 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 9 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 9 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 9 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Finding 1.8.A está documentado en `MEJORAS.md:1153-1172` como
+cross-reference a Finding 1.7.A y propone añadir `--resume` a la lista de
+flags ignorados. Esa propuesta ya está implementada por la Mejora 7 (commit
+`602f2f5`, `src/lib/create-plan-warning.ts:27` — `if (args.resilience?.resume)
+ignored.push("--resume")`); además, el contrato de `parseArgs` está pineado
+en `src/lib/cli-args.test.ts:1066-1076` (`--resume + --create-plan: both
+parsed, --resume is silently ignored`) y el orden estable se verifica en
+`create-plan-warning.test.ts:84-106` (incluye `--resume` en la línea 101).
+La advertencia se emite desde `src/index.tsx:324-330` antes de
+`runCreatePlan()`. Fix en raíz → superficie cubierta. Implementación
+mínima: anotación de 1 línea en el comentario de cabecera de
+`create-plan-warning.ts` (extiende "Source: MEJORAS.md Finding 1.7.A" para
+nombrar 1.8.A) y 3 líneas en `create-plan-warning.test.ts:27` (declara
+explícitamente que el caso `--resume` también cubre 1.8.A). Cero cambios de
+comportamiento. `bun test` verde: 667 pass / 0 fail. Commit `cb99847`.
 
 ### Mejora 10 — Finding 1.8.B — LOW — `--resume` with no persisted state is a silent no-op
 
