@@ -197,7 +197,19 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     // same guard pattern as startServer() (above) so a concurrent caller
     // (watchdog + SSE-exhaustion effect, or two rapid user commands) can't
     // race two `launch()`s and leak the first server's process handle by
-    // overwriting serverRef. Source: MEJORAS.md Finding 7.5.A.
+    // overwriting serverRef.
+    //
+    // This single guard addresses both:
+    //   - MEJORAS.md Finding 7.5.A (hook-level restart concurrency) and
+    //   - MEJORAS.md Finding 15.7.A (server process leak on overlapping
+    //     `launch()`s; URL flip mid-recovery; false "restart_failed" log
+    //     on success; lost `setError`).
+    // The latter's proposed `restartInProgress` boolean + try/finally is
+    // functionally equivalent to the `status() === "starting"` check:
+    // `setStatus("starting")` (line below) is the sole flag for an in-flight
+    // restart, and the synchronous entry sequence (no awaits between this
+    // guard and the set on line 209) preserves mutual exclusion between
+    // overlapping callers.
     if (status() === "starting") {
       log.health("server", "restart_in_flight_noop", { url: url() })
       return
