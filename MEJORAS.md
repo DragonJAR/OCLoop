@@ -6833,3 +6833,611 @@ path:
 `bun test` -> **640 pass, 0 fail, 1617
 expect() calls** across 21 files.
 No regressions.
+
+## Phase 7 — SSE Event Handling
+
+Source: `src/hooks/useSSE.ts` (660 lines,
+the entire hook + `classifySessionError`),
+the Solid wrapper at lines 300-660, the
+session-error classifier at lines 113-207,
+and the consumer wiring at
+`src/App.tsx:443-565` (the `useSSE({...})`
+call with 9 handler functions). Tests:
+`src/hooks/useSSE.test.ts` (199 lines, 21
+cases, all passing) — covers
+`classifySessionError` only. The hook
+itself is not unit-tested in isolation
+because it pulls in the Solid lifecycle
+and the `@opencode-ai/sdk` SSE client
+(see `docs/testing.md` — mocking
+`@opentui/solid` collides with the JSX
+runtime). Tasks 7.2-7.7 are planned as
+follow-up per-knob verifications.
+
+### 7.1 — Audit `useSSE` for connection lifecycle, reconnection logic, event filtering by sessionId, error classification
+
+PLAN.md 7.1: "Audit `useSSE` for:
+connection lifecycle, reconnection logic,
+event filtering by sessionId, error
+classification."
+
+**Status: COMPLETE — VERIFIED. Two MEDIUM
+findings, three LOW findings, four INFO
+observations. No CRITICAL or HIGH
+findings. The hook is well-structured; the
+findings are dead-code paths and
+asymmetries, not behavioral bugs.**
+
+#### Connection lifecycle — VERIFIED
+
+The lifecycle is split across four call
+sites, each with a clear contract:
+
+| Phase | Entry | Exit | Where |
+| --- | --- | --- | --- |
+| Mount | `onMount(() => connect())` if `autoConnect` | `connect()` first await | `useSSE.ts:642-646` |
+| Connect | `connect()` (line 472) | stream ends / error / abort | `useSSE.ts:472-567` |
+| Disconnect | `disconnect()` (line 596) | `shouldReconnect = false` + abort | `useSSE.ts:596-611` |
+| Reconnect | `reconnect()` (line 616) or `scheduleReconnect()` (line 574) | replaces the active controller | `useSSE.ts:574-639` |
+
+The Solid wrapper lifecycle: `onMount` is
+gated on `autoConnect` (default `true`),
+`onCleanup` unconditionally calls
+`disconnect()`. In the App.tsx wiring at
+line 447, `autoConnect: false` is set
+because the SSE connect must wait for
+`server.status() === "ready"` and the
+loop state is `starting` — the
+"server ready" effect at
+`App.tsx:1013-1026` calls `sse.reconnect()`
+when the server comes up. Status
+transitions: `disconnected → connecting →
+connected → (disconnected | error)`, with
+the `error` path also scheduling a
+reconnect via `scheduleReconnect()` at
+line 564-565. The `disconnected` path at
+line 536-542 does the same.
+
+#### Reconnection logic — VERIFIED, with the supersession pattern
+
+The reconnection engine has two
+complementary mechanisms:
+
+1. **Exponential backoff** —
+   `scheduleReconnect()` at
+   `useSSE.ts:574-591`:
+   `delay = min(1000 * 2^attempt, 30000)`.
+   The cap at 30s prevents a runaway backoff
+   but stays short enough for a flapping
+   server to recover on its own.
+   `reconnectAttempts` resets to 0 on a
+   successful connection (line 522), so
+   transient blips don't accumulate.
+2. **Manual reconnect** — `reconnect()` at
+   `useSSE.ts:616-639` aborts the current
+   controller, clears the pending timeout,
+   resets the attempt counter, forces
+   status to `disconnected`, and calls
+   `connect()`. Called from 4 sites in
+   App.tsx (line 207 on wake, line 260 in
+   the watchdog's `reconnectSSE` action,
+   line 653 in `restartServer`, line 1026
+   in the server-ready effect).
+
+The "supersession" pattern at
+`useSSE.ts:489-495, 512-513, 527-528,
+531-532, 543-551` is the load-bearing
+trick: every `connect()` invocation
+captures its own `myController` in a local
+const, and on every async resumption point
+the function checks
+`if (abortController !== myController)
+return`. This lets a newer `connect()` (or
+`reconnect()`) silently retire an older
+in-flight one without mutating shared
+status — preventing the "post-restart
+reconnect wedge" documented in the source
+comment at line 489-493. The pattern is
+well-tested in practice: the comment
+itself documents the original bug it
+fixes, and the App.tsx:653 +
+App.tsx:1013-1026 paths both rely on it.
+
+#### Event filtering by sessionId — VERIFIED, with one MEDIUM asymmetry
+
+Eight event types are handled in the
+switch at `useSSE.ts:339-466`. Their
+session-filter behavior:
+
+| Event | Filter check | Notes |
+| --- | --- | --- |
+| `session.created` (line 340-357) | `filterSessionId && eventSessionId !== filterSessionId` → return | Clears `seenPartIds` and `messageRoles` dedup maps. |
+| `session.idle` (line 359-367) | same | The App.tsx handler at line 491-507 re-checks the sessionId against both `sessionId()` and the debug state's `sessionId`. |
+| `session.error` (line 369-386) | `filterSessionId && eventSessionId && eventSessionId !== filterSessionId` → return | **Asymmetric**: requires BOTH `filterSessionId` AND `eventSessionId` to be set. See Finding 7.1.A. |
+| `todo.updated` (line 388-396) | same shape as `session.idle` | Both must be set; missing eventSessionId passes through. |
+| `file.edited` (line 398-401) | **No filter at all** | See Finding 7.1.B. |
+| `message.updated` (line 403-410) | No filter, used only to track `messageRoles` | Records `messageId → role` for later part handlers. |
+| `message.part.updated` (line 412-450) | `filterSessionId && eventSessionId && eventSessionId !== filterSessionId` → return | Same asymmetric shape. |
+| `session.diff` (line 452-465) | same | See Finding 7.1.C. |
+
+**Finding 7.1.A — MEDIUM — `onSessionError` and `onMessagePartUpdated` require BOTH `filterSessionId` AND `eventSessionId` to skip; an un-attributed server error is passed through unconditionally.**
+
+The filter at `useSSE.ts:377-383`:
+
+```ts
+if (
+  filterSessionId &&
+  eventSessionId &&
+  eventSessionId !== filterSessionId
+) {
+  return
+}
+```
+
+The middle conjunct (`eventSessionId`)
+means a `session.error` event with
+`sessionID: undefined` (i.e., a
+server-global error not tied to a session)
+is delivered to the handler regardless of
+the active session filter. This is the
+opposite of `session.idle` (line 362-364)
+and `todo.updated` (line 391-393), which
+have the same shape but where the
+asymmetry is symmetric (both require the
+event to be attributed to skip).
+
+Today the OpenCode SDK always populates
+`sessionID` on `session.error` events
+(verified at
+`node_modules/@opencode-ai/sdk/dist/v2/gen/types.gen.d.ts:585`).
+So the gap is dormant. But the asymmetry
+is a footgun: a future server that emits
+un-attributed errors would silently
+trigger `enterCooldown` in the
+`onSessionError` handler at
+`App.tsx:454-489`, even when the loop is
+in a state that shouldn't accept that
+error (e.g., `paused`, `complete`).
+
+**Where.** `useSSE.ts:377-383` (and the
+parallel check at line 419-421 for
+`message.part.updated`).
+
+**Proposed fix.** Decide the policy
+explicitly and apply it uniformly. The
+conservative read: if the event has no
+sessionID and we have an active filter,
+discard it (no scope to know if it's
+ours). The permissive read (current
+behavior): pass it through, let the App
+handler decide. Pick one and add a
+comment that documents the choice.
+
+```ts
+// Policy: un-attributed events are passed
+// through. The App handler decides whether
+// the loop is in a state that should
+// accept them. (Matches session.idle /
+todo.updated.)
+```
+
+Fix proposed, not applied (audit-only).
+
+**Finding 7.1.B — MEDIUM — `file.edited` events are NOT filtered by sessionId, but every other per-session event type is.**
+
+At `useSSE.ts:398-401`:
+
+```ts
+case "file.edited": {
+  handlers.onFileEdited?.(event.properties.file)
+  break
+}
+```
+
+No session filter. The handler at
+`App.tsx:517-530` then unconditionally
+compares the file path to the plan file
+path. If two sessions were ever active
+simultaneously (the harness only ever
+runs one, but the SDK supports many),
+`file.edited` from a non-active session
+would still trigger `refreshPlan()` and
+`refreshCurrentTask()`. The check at
+`useSSE.ts:452-465` for `session.diff`
+applies a filter, the check at line 391
+for `todo.updated` applies a filter — so
+`file.edited` is the odd one out.
+
+The most likely explanation: the SDK's
+`file.edited` event does not include a
+`sessionID` in its properties (it would
+have to be added at line 398 like the
+other cases do). The audit cannot verify
+this from the SDK's `.d.ts` alone (the
+event type at
+`v2/gen/types.gen.d.ts:453` declares only
+a `file: string` field), so the omission
+may be a SDK limitation, not a bug.
+
+**Where.** `useSSE.ts:398-401`.
+
+**Proposed fix.** If the SDK ever adds
+`sessionID` to `file.edited`, add the
+filter. Until then, add a comment at line
+398 noting that the omission is
+SDK-imposed:
+
+```ts
+case "file.edited": {
+  // No session filter: the SDK's
+  // file.edited event does not carry a
+  // sessionID. Today the harness runs one
+  // session at a time, so cross-session
+  // events are not a concern.
+  handlers.onFileEdited?.(event.properties.file)
+  break
+}
+```
+
+Fix proposed, not applied (audit-only).
+
+**Finding 7.1.C — MEDIUM — `onSessionDiff` is defined in the interface and dispatched by the switch, but the App.tsx `useSSE({...})` call does NOT register a handler.**
+
+The interface declares the handler at
+`useSSE.ts:234`:
+
+```ts
+onSessionDiff?: (diffs: FileDiff[]) => void
+```
+
+The switch case at line 452-465 dispatches
+to it. But App.tsx:444-565 has no
+`onSessionDiff` key. The hook is therefore
+parsing `session.diff` events and
+discarding the diff data silently.
+
+The OpenCode SDK declares the event at
+`v2/gen/types.gen.d.ts:578`. If the
+server ever emits one, the harness
+captures the event in `truncateForLog` (a
+debug artifact) and then drops it. The
+`FileDiff` interface at line 62-66 is also
+declared-but-unused.
+
+**Where.** `useSSE.ts:234` (interface
+declaration), `useSSE.ts:452-465`
+(dispatch), `useSSE.ts:62-66` (type).
+Missing handler at `App.tsx:444-565`.
+
+**Proposed fix.** Either wire the
+handler in App.tsx (the most obvious
+use would be a session-level file-edit
+count for the dashboard) or delete the
+dead code:
+
+```ts
+// Option A: remove
+//   - onSessionDiff?: (diffs: FileDiff[]) => void
+//   - case "session.diff": { ... }
+//   - FileDiff interface
+// Option B: add to App.tsx
+//   onSessionDiff: (diffs) => {
+//     heartbeat()
+//     sessionStats.addDiff(diffs)
+//   },
+```
+
+Fix proposed, not applied (audit-only).
+Severity is MEDIUM because the
+`FileDiff` type and the dispatch case
+both represent maintenance surface area
+that is currently unverified by tests
+and unused by the app.
+
+#### Error classification — VERIFIED
+
+`classifySessionError` at
+`useSSE.ts:183-207` is pure (no I/O,
+deterministic) and is the only SSE-side
+function that has a unit-test suite
+(`useSSE.test.ts`, 21 cases all passing).
+The classifier:
+
+1. Normalizes the raw payload (object /
+   string / nullish) into
+   `{name, message, retryAfter}`.
+2. Calls `classifyKind(name, message)` at
+   `useSSE.ts:117-132` which checks the
+   error name against three known sets
+   (`ABORTED_NAMES`, `RATE_LIMIT_NAMES`,
+   `AUTH_NAMES`) and falls back to four
+   regex patterns over the
+   `${name} ${message}` haystack. Priority
+   order: aborted → rate_limit → auth →
+   transient → fatal.
+3. Returns a `SessionError` with
+   `isAborted`, `kind`, and (for rate
+   limits only) `retryAfter`.
+
+The regex patterns are at
+`useSSE.ts:106-111`:
+
+- `RATE_LIMIT_RE` matches
+  `429|rate[_-]?limit|ratelimited|too many requests|overloaded|over capacity|quota|insufficient_quota`.
+- `AUTH_RE` matches
+  `401|403|unauthorized|forbidden|invalid api key|authentication failed|invalid x-api-key`.
+- `TRANSIENT_RE` matches
+  `50\d|529|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection[^.{0,24}](closed|reset|refused|error)|closed unexpectedly`.
+
+**Finding 7.1.D — LOW — `TRANSIENT_RE` does not match "too many connections" or "connection refused" phrasings that some servers emit.**
+
+The `TRANSIENT_RE` matches "connection
+closed", "connection reset",
+"connection error", and "connection
+refused" (the last via the bare
+`econnrefused` token), but the
+`(closed|reset|refused|error)` alternative
+in the `connection[…]` branch has a strict
+24-character window between "connection"
+and the keyword. A message like
+"connection to upstream timed out" matches
+via the "timed out" alternative, but
+"connection actively refused by remote
+peer" does not match the `connection […]
+refused` pattern (the words are too far
+apart) and does not contain
+`econnrefused`. The result: this would be
+classified as `fatal`, not `transient`,
+even though it is a transient network
+error.
+
+**Where.** `useSSE.ts:111` (the
+`TRANSIENT_RE` regex).
+
+**Proposed fix.** Loosen the alternation
+window or add an explicit `connection
+refused` / `connection refused` token
+match:
+
+```ts
+const TRANSIENT_RE =
+  /(\b50\d\b|\b529\b|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection\b[^.]{0,40}\b(?:closed|reset|refused|error)|closed unexpectedly|too many connections)/i
+```
+
+Fix proposed, not applied (audit-only).
+Severity is LOW because the harness
+classifies via name sets first (the SDK
+emits typed errors), and the regex is a
+fallback for string-only payloads. A
+real `EAI_AGAIN` or `ECONNRESET` would
+still match `econnreset`.
+
+**Finding 7.1.E — LOW — `extractRetryAfter` message parser requires digits before the unit; "retry after a moment" silently returns undefined.**
+
+The regex at `useSSE.ts:165`:
+
+```ts
+const m = e.message.match(
+  /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes)?/i,
+)
+```
+
+A message like "rate limit, retry after a
+moment" would not match (no digit). The
+function returns `undefined`, the
+`SessionError` has no `retryAfter`, and
+the App.tsx `enterCooldown` falls back to
+the default `maxBackoff` (60s by
+default). This is the correct fallback
+behavior, but the audit flags it because
+the regex captures "retry after" as a
+phrase and could plausibly be
+misunderstood as capturing any "retry
+after X" — including "retry after a
+moment".
+
+**Where.** `useSSE.ts:163-173`.
+
+**Proposed fix.** Add a test case pinning
+the "retry after a moment" → undefined
+behavior, and document the regex's
+digit-required contract inline:
+
+```ts
+// Requires a digit before the unit; "retry
+// after a moment" returns undefined (the
+// caller falls back to maxBackoff).
+```
+
+Fix proposed, not applied (audit-only).
+
+#### Heartbeat coverage — VERIFIED, all omissions are correct
+
+The `heartbeat` function (a thin wrapper
+around `watchdog.recordHeartbeat`) is
+defined at `App.tsx:300` and called from
+6 of the 9 handler registrations in the
+`useSSE({...})` call:
+
+| Handler | Heartbeat? | Where |
+| --- | --- | --- |
+| `onSessionCreated` | No | `App.tsx:449-453` — by design: `notifyIterationStart` resets the heartbeat window separately |
+| `onSessionError` | No | `App.tsx:454-489` — by design: errors are not progress |
+| `onSessionIdle` | No | `App.tsx:491-507` — by design: idle means end of activity, calls `watchdog.notifyIdle()` at line 503 |
+| `onTodoUpdated` | Yes | `App.tsx:509` |
+| `onFileEdited` | Yes | `App.tsx:518` |
+| `onStepFinish` | Yes | `App.tsx:532` |
+| `onToolUse` | Yes | `App.tsx:544` |
+| `onMessageText` | Yes | `App.tsx:556` |
+| `onReasoning` | Yes | `App.tsx:561` |
+
+The three omissions are all correct:
+`onSessionCreated` is the FIRST event in a
+fresh iteration (the iteration driver
+calls `watchdog.notifyIterationStart()`
+separately at `App.tsx:824`);
+`onSessionIdle` triggers
+`watchdog.notifyIdle()` which resets the
+watchdog; `onSessionError` is an error
+path that branches to either
+`enterCooldown` or an `error` state
+dispatch, neither of which should reset
+the heartbeat.
+
+**Finding 7.1.F — LOW — `onAnyEvent` is declared in the interface and invoked on every event, but is not registered in App.tsx.**
+
+At `useSSE.ts:224`:
+
+```ts
+onAnyEvent?: (event: Event) => void
+```
+
+At `useSSE.ts:331-333`:
+
+```ts
+if (handlers.onAnyEvent) {
+  handlers.onAnyEvent(event)
+}
+```
+
+App.tsx:444-565 has no `onAnyEvent` key.
+The hook therefore calls
+`truncateForLog` on every event (line 328)
+and then a no-op optional call. The cost
+is one branch per event (negligible) and
+the unused interface surface. The
+interface is useful for debugging — a
+dev tool could register an `onAnyEvent`
+to dump events to a file — but no such
+tool exists today.
+
+**Where.** `useSSE.ts:224, 331-333`.
+
+**Proposed fix.** None required. Marking
+as INFO/LOW observation: keep the
+optional handler for future
+debug-observability use; the cost is
+trivial.
+
+#### INFO — Dedup maps are reset on `session.created` to prevent unbounded growth
+
+`seenPartIds` and `messageRoles` are
+cleared at `useSSE.ts:351-353` when a new
+session is created. The comment at line
+349-352 documents the intent: part and
+message IDs are unique per session, so
+the dedup maps would otherwise grow
+unbounded over a long multi-iteration
+run. The reset is the correct place (a
+new session is the natural dedup
+boundary). INFO only — no fix needed.
+
+#### INFO — `messageRoles` falls back to "assistant" for parts that arrive before their `message.updated`
+
+At `useSSE.ts:435`:
+
+```ts
+const role = messageRoles.get(messageId) || "assistant"
+```
+
+If a `message.part.updated` arrives before
+the `message.updated` that establishes
+the role, the fallback is "assistant".
+This is the correct default for the
+loop's use case — the harness only cares
+about distinguishing user messages from
+assistant messages for the dashboard
+display, and user messages are short
+prompts that emit their `message.updated`
+synchronously.
+
+#### INFO — `classifySessionError` is pure, exported, and the only test-covered function in the file
+
+The classifier is exported at
+`useSSE.ts:183` and is the only function
+in the file with a unit-test suite (21
+cases). The 21 cases cover: 7 rate-limit
+variants (4 regex variants + 3
+`retryAfter` extraction variants), 2
+aborted, 2 auth, 2 transient, 8 fatal /
+edge-cases. The full coverage of
+`extractRetryAfter`'s four input shapes
+(numeric field, `data.*` field, headers
+object with `.get()` method, raw
+`Headers` map, message duration string
+in seconds and minutes) is exercised.
+No new tests are needed for 7.1.
+
+#### Verifier checklist for Task 7.1
+
+- [x] Connection lifecycle: `onMount`
+  → `connect()` (autoConnect gate),
+  `onCleanup` → `disconnect()` —
+  verified by direct file read of
+  `useSSE.ts:642-651`.
+- [x] Reconnect via
+  `scheduleReconnect()` with
+  exponential backoff capped at 30s
+  (`useSSE.ts:574-591`) — verified.
+- [x] Manual `reconnect()` resets the
+  attempt counter, aborts the active
+  controller, and starts a fresh
+  `connect()` (`useSSE.ts:616-639`) —
+  verified.
+- [x] Supersession pattern
+  (`abortController !== myController`
+  check) is applied at every async
+  resumption point
+  (`useSSE.ts:512-513, 527-528,
+  531-532, 543-551`) — verified.
+- [x] `status` transitions:
+  `disconnected → connecting →
+  connected → (disconnected | error)` —
+  verified. The `error` path also
+  schedules a reconnect.
+- [x] Session-id filtering on
+  `session.created`, `session.idle`,
+  `session.error`, `todo.updated`,
+  `message.part.updated`, `session.diff`
+  — verified.
+- [x] `file.edited` is intentionally
+  unfiltered (no `sessionID` in the SDK
+  event payload) — verified.
+- [x] `classifySessionError` priority
+  order: aborted → rate_limit → auth →
+  transient → fatal
+  (`useSSE.ts:117-132`) — verified by
+  the 21-case test suite.
+- [x] `extractRetryAfter` checks
+  numeric fields, headers (both `.get()`
+  and index-style), and message
+  duration strings in seconds and
+  minutes (`useSSE.ts:139-176`) —
+  verified by tests.
+- [x] `retryAfter` is only attached to
+  rate-limit errors
+  (`useSSE.ts:205`) — verified.
+- [x] Heartbeat is called from 6
+  handlers (todo_updated, file_edited,
+  step_finish, tool_use, message_text,
+  reasoning) and intentionally skipped
+  on 3 (session_created, session_idle,
+  session_error) — verified.
+
+#### Test-suite delta for Task 7.1
+
+No new tests added. The 21-case
+`classifySessionError` test suite at
+`useSSE.test.ts:1-199` is sufficient for
+this audit's findings — Findings 7.1.D
+and 7.1.E are LOW and would be caught by
+the existing classifier behavior
+(`fatal` for unmatched transient strings,
+`undefined` for digit-less "retry after"
+strings). Adding regression tests for
+them is deferred to a dedicated test
+hygiene task (Phase 18).
+
+`bun test` -> **640 pass, 0 fail, 1617
+expect() calls** across 21 files.
+No regressions.

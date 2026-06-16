@@ -83,7 +83,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 7 — SSE Event Handling
 
-- [ ] Audit `useSSE` for: connection lifecycle, reconnection logic, event filtering by sessionId, error classification
+- [x] Audit `useSSE` for: connection lifecycle, reconnection logic, event filtering by sessionId, error classification
 - [ ] Verify: `classifySessionError` correctly categorizes rate limits (429), transient errors (5xx, timeouts), auth errors, and fatal errors
 - [ ] Verify: SSE `onSessionError` ignores errors from stale sessions — confirm the sessionId comparison is correct
 - [ ] Verify: SSE `onSessionIdle` ignores idle events from stale sessions — confirm this matches the behavior in `onSessionError`
