@@ -177,7 +177,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 17 — Unhandled Exceptions & Missing Guards
 
-- [ ] Verify: `main().catch()` handles all unhandled promise rejections — confirm the `unhandledRejection` handler in index.tsx covers TUI mode
+- [x] Verify: `main().catch()` handles all unhandled promise rejections — confirm the `unhandledRejection` handler in index.tsx covers TUI mode
 - [ ] Verify: `restoreTerminal()` is called on every exit path including `process.exit(1)` in error handlers
 - [ ] Verify: No unguarded `await` calls that could reject without a try/catch in App.tsx effect handlers
 - [ ] Verify: `Bun.file().exists()` and `Bun.file().text()` calls are properly awaited and error-handled

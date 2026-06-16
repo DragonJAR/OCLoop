@@ -22341,3 +22341,185 @@ already import `log`.
   `dist/` build output and `node_modules` are excluded by definition
   (they don't ship in source-control).
 
+---
+
+## Phase 17 — Unhandled Exceptions & Missing Guards
+
+Source: `src/index.tsx` (process-level handlers), `src/App.tsx` (effect
+handlers), `src/lib/with-timeout.ts` (timer cleanup), `src/lib/shutdown.ts`
+(graceful shutdown), `src/lib/cli-args.ts` (bundling test).
+
+This phase audits the in-process crash and exit paths: are unhandled
+rejections caught? Does every `process.exit(1)` restore the terminal? Do
+async operations in `createEffect` blocks have try/catch coverage? Is the
+timer cleanup in `withTimeout` guaranteed? Each task is one verification
+step; the findings below are what the verification uncovered.
+
+### 17.1 — `main().catch()` + `process.on("unhandledRejection")` coverage of TUI mode
+
+PLAN.md 17.1: "Verify: `main().catch()` handles all unhandled promise
+rejections — confirm the `unhandledRejection` handler in index.tsx covers
+TUI mode."
+
+#### The four layers of process-exit coverage — VERIFIED
+
+The entry point has **three independent layers** of process-exit coverage,
+all registered at module-evaluation time (top-level `process.on(...)` calls
+in `src/index.tsx`):
+
+1. **`process.on("exit", restoreTerminal)` — line 294.** Fires on ANY
+   `process.exit(code)`, including exit code 0 and exit codes from
+   uncaught signals. Calls `restoreTerminal()` (idempotent; gated on
+   `tuiStarted` and `process.stdout.isTTY`).
+
+2. **`process.on("uncaughtException", (err) => { restoreTerminal();
+   console.error("Uncaught exception:", err); process.exit(1) })` —
+   line 295-299.** Fires on any thrown exception that escapes the entire
+   event loop (i.e. a synchronous throw with no `try/catch` in a callback
+   or a microtask that nobody awaits). Calls `restoreTerminal()` first,
+   then logs, then exits with code 1.
+
+3. **`process.on("unhandledRejection", (reason) => { restoreTerminal();
+   console.error("Unhandled rejection:", reason); process.exit(1) })` —
+   line 300-304.** Fires on any promise rejection that is not handled by
+   the time the microtask queue drains. Calls `restoreTerminal()` first,
+   then logs, then exits with code 1.
+
+4. **`main().catch((error) => { console.error("Fatal error:", error);
+   process.exit(1) })` — line 358-361.** Handles errors that originate in
+   the `main()` async function (the function passed to `parseArgs`,
+   `runCreatePlan`, `validatePrerequisites`, `log.sessionStart`, and
+   `render`). Does NOT directly call `restoreTerminal()`, but exits with
+   code 1 which fires the `exit` event handler at line 294, which calls
+   `restoreTerminal()`.
+
+#### TUI mode coverage — VERIFIED
+
+**The `tuiStarted` flag is set to `true` at `src/index.tsx:348`, BEFORE
+the `await render(...)` call.** This means:
+
+- Any unhandled rejection in the `render()` callback (i.e. in the Solid
+  component tree, in any `createEffect`, in any Solid signal update)
+  triggers the `unhandledRejection` handler (layer 3), which calls
+  `restoreTerminal()` (gated on `tuiStarted === true` → fires the escape
+  sequences), then `process.exit(1)`.
+- Any uncaught exception in the `render()` callback triggers the
+  `uncaughtException` handler (layer 2), same path.
+- Any error in the main() chain that bubbles up to `main().catch()`
+  (layer 4) triggers `process.exit(1)`, which fires the `exit` event
+  handler (layer 1), which calls `restoreTerminal()` (gated on
+  `tuiStarted === true` → fires the escape sequences).
+
+In every case, the terminal is restored before the process dies.
+
+#### Non-TUI mode coverage — VERIFIED
+
+The three quick CLI paths — `--help`, `--version`, `--create-plan` — all
+exit via `process.exit(...)` BEFORE `tuiStarted` is set. The `exit`
+handler at line 294 calls `restoreTerminal()`, but `restoreTerminal()` is
+gated on `tuiStarted === true`, so it returns without doing anything. The
+TUI never enabled mouse/alternate-screen modes, so there's nothing to
+restore. This is the **correct** behavior: emitting `?1049l` (leave
+alternate screen) on a terminal that never entered it makes some
+terminals (Terminal.app) visibly switch screen buffers. See the
+`restoreTerminal` docstring at `src/index.tsx:280-284`.
+
+The `--create-plan` path uses `process.exit(process.exitCode ?? 0)` at
+line 322 — also fires the `exit` handler, also correctly no-ops.
+
+#### Edge case — `restoreTerminal()` failure itself
+
+What if `process.stdout.write(...)` inside `restoreTerminal()` throws
+(e.g. stdout was already closed by the parent shell)? The escape-sequence
+write is wrapped by Node's stream machinery and will not throw in normal
+operation. The `exit` handler (line 294) has no try/catch, so a thrown
+write would propagate to the `exit` event — which is fine because the
+process is already exiting. The `uncaughtException` and
+`unhandledRejection` handlers (lines 295-304) have the same shape: no
+try/catch around `restoreTerminal()`. The order is `restoreTerminal()` →
+`console.error(...)` → `process.exit(1)`. If `restoreTerminal()` itself
+throws, `console.error` is skipped and the exit still happens (the throw
+unwinds the handler, but the exit event still fires). This is a graceful
+failure mode.
+
+#### Finding 17.1.A — INFO — All four process-exit paths are covered
+
+**Problem.** None. The four layers (`exit` event, `uncaughtException`,
+`unhandledRejection`, `main().catch()`) provide defense-in-depth coverage
+of every process-exit path. The `tuiStarted` gate correctly suppresses
+`restoreTerminal()` for non-TUI invocations. The error logging falls back
+to `console.error` (not `log.*`) because the structured logger may not be
+initialized yet — this is the correct belt-and-suspenders behavior for
+process-level handlers and is documented in the Phase 16.7 audit
+(`MEJORAS.md:22219-22250`).
+
+**Where.** `src/index.tsx:286-304` and `src/index.tsx:358-361`.
+
+**Severity: INFO.** Verified by reading the four layers and tracing the
+`process.exit(1)` paths through the `exit` event handler. No code changes
+needed. Documented so future audits don't re-flag this section.
+
+#### Finding 17.1.B — LOW — `main().catch()` does not call `restoreTerminal()` directly
+
+**Problem.** `src/index.tsx:358-361` calls `process.exit(1)` without
+explicitly calling `restoreTerminal()`. The current code works because
+the `exit` event handler (line 294) calls `restoreTerminal()` and runs
+before the process actually terminates. This is implicit coverage: if
+someone removed the `exit` handler (e.g. refactored `restoreTerminal` out
+of an `exit` listener), `main().catch()` would silently leave the
+terminal in raw mode.
+
+**Where.** `src/index.tsx:358-361`.
+
+**Proposed fix.** None required — the `exit` handler is the canonical
+"fires on every exit" hook and removing it would be a regression. But the
+implicit coverage could be made explicit by calling `restoreTerminal()`
+before `process.exit(1)`:
+
+```ts
+main().catch((error) => {
+  console.error("Fatal error:", error)
+  restoreTerminal()
+  process.exit(1)
+})
+```
+
+This costs one line, costs one extra call to a function that internally
+no-ops on the gate, and makes the contract obvious from the catch block
+alone. The `exit` handler can stay as a backstop.
+
+**Severity: LOW.** Not a bug. The current behavior is correct. The
+explicit form is more grep-friendly and self-documenting.
+
+#### Test coverage gap — INFO
+
+There is no test that:
+- Forcibly rejects a promise in `main()` and verifies the catch block
+  fires.
+- Forcibly registers a rejected promise at module load and verifies the
+  `unhandledRejection` handler fires.
+- Verifies that the `exit` event handler is registered (would require
+  mocking `process.on`).
+
+These would require a forked-process test harness (`bun test --isolate`
+or a manual `child_process.spawn`) because the handlers are global. The
+Phase 18 audit (test coverage) flags the absence. For now, the
+verification rests on reading the code, which is unambiguous:
+`process.on("exit", restoreTerminal)` is at line 294, `process.on(
+"unhandledRejection", ...)` is at line 300, `tuiStarted = true` is at line
+348, `restoreTerminal()` is at line 286. The chain is unbroken.
+
+#### Verification result
+
+- **All four process-exit layers verified present and correctly wired**
+  (`src/index.tsx:294, 295, 300, 358`).
+- **`tuiStarted` gate verified** to correctly suppress `restoreTerminal()`
+  for non-TUI paths (`--help`, `--version`, `--create-plan`) and to enable
+  it for TUI paths.
+- **One LOW finding** (17.1.B — implicit coverage in `main().catch()`
+  could be made explicit by adding `restoreTerminal()` before
+  `process.exit(1)`).
+- **No CRITICAL, HIGH, or MEDIUM findings.**
+- **No code changes applied** (audit-only per PLAN.md acceptance
+  criteria).
+
