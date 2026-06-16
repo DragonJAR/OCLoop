@@ -310,15 +310,18 @@ export function loadConfig(): OcloopConfig {
  * Never throws — persistence is best-effort and must not crash the app. The
  * contract mirrors `saveLoopState` in `loop-state-store.ts`: any I/O failure
  * (EACCES on a read-only mount, ENOSPC on a full disk, EROFS on a sandbox,
- * EEXIST race on `mkdirSync`, EXDEV on a cross-device rename) is logged as
- * a `warn` and the orphan tmp file is best-effort cleaned up. The four
- * `App.tsx` call sites (command palette: `onConfigSelect`, `onConfigCustom`,
- * `toggle_scrollbar`, `toggle_language`) wrap `saveConfig` in a `dialog.clear()`
- * follow-up that would silently no-op on a thrown error — making this
- * `void`-and-swallows is strictly the minimum useful contract.
+ * EXDEV on a cross-device rename) is logged as a `warn` and the orphan tmp
+ * file is best-effort cleaned up. The four `App.tsx` call sites (command
+ * palette: `onConfigSelect`, `onConfigCustom`, `toggle_scrollbar`,
+ * `toggle_language`) wrap `saveConfig` in a `dialog.clear()` follow-up that
+ * would silently no-op on a thrown error — making this `void`-and-swallows
+ * is strictly the minimum useful contract.
  *
- * Source: MEJORAS.md Finding 12.2.A. Side effect: also closes Finding 12.2.C
- * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path.
+ * Source: MEJORAS.md Finding 12.2.A. Side effects: also closes Finding 12.2.C
+ * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path,
+ * and Finding 12.2.D (the `mkdirSync({ recursive: true })` call is invoked
+ * unconditionally — it is idempotent on an existing dir, so the previous
+ * `existsSync` guard added a wasted syscall plus a TOCTOU window).
  */
 export function saveConfig(config: OcloopConfig): void {
   const configDir = getConfigDir()
@@ -334,10 +337,12 @@ export function saveConfig(config: OcloopConfig): void {
   const tmpPath = `${configPath}.${randomBytes(6).toString("hex")}.tmp`
 
   try {
-    // Create directory if needed
-    if (!existsSync(configDir)) {
-      mkdirSync(configDir, { recursive: true })
-    }
+    // Create directory if needed. `mkdirSync` with `recursive: true` is
+    // idempotent — no `existsSync` guard needed, and the guard would add a
+    // wasted syscall plus a TOCTOU window (between the check and the mkdir
+    // another process could create the dir; mkdir would still succeed but
+    // the syscall is wasted work). Source: MEJORAS.md Finding 12.2.D.
+    mkdirSync(configDir, { recursive: true })
 
     // Write atomically: tmp file then rename (rename is atomic on the same
     // filesystem, so a reader never sees a half-written config).
