@@ -15018,3 +15018,154 @@ non-idempotency on the function header.
 | 12.3.D  | INFO     | `resolveResilience` is not idempotent in the strict sense — feeding its output back through it locks the inner call's filled-in slots as outer overrides. Not reachable from any current call site; add a docstring comment. |
 
 **Net severity tally for Phase 12.3: 1 MEDIUM, 2 LOW, 1 INFO; no CRITICAL or HIGH.** The two PLAN.md-required cases (3-level merge order and `undefined`-skip) are both correct as written. The MEDIUM is the `null` gap: the `undefined` filter is too permissive and a single missing comparison allows hand-edited configs to produce silently-wrong behavior. The two LOWs (per-field type validation, unknown-key rejection) share the same root cause as Finding 12.1.A (loader has no schema check) and can be folded into the same `validateConfigShape` / `isValidResilienceValue` refactor. The INFO notes non-idempotency for future maintainers. No tests exist for `resolveResilience`; the 4-case table above is a candidate starter set for `src/lib/config.test.ts`. Tasks 12.4-12.6 (`isLocale` strictness, i18n parity, `setLocale` persistence) are deferred to subsequent iterations.
+
+---
+
+### 12.4 — Verify `isLocale` accepts only `en` and `es` — confirm case sensitivity
+
+**Status: COMPLETE — VERIFIED, zero findings; no CRITICAL, HIGH, MEDIUM, LOW or INFO.**
+
+`isLocale` is a 3-line, side-effect-free type guard (i18n.ts:22-24):
+
+```ts
+export function isLocale(v: unknown): v is Locale {
+  return v === "en" || v === "es"
+}
+```
+
+The strict `===` against the two `Locale` union members means **only** the exact
+strings `"en"` and `"es"` (lowercase, no whitespace, no region tag) return
+`true`. Every other input — including `"EN"`, `"En"`, `"ES"`, `"Es"`, locale
+tags with regions (`"en-US"`, `"es-MX"`), empty string, leading/trailing
+whitespace, other BCP-47 codes, non-string primitives, and arbitrary
+objects/arrays — returns `false`. The `unknown` parameter type makes the
+function safe to call with any JSON-parsed value without `any` leakage.
+
+#### Required case matrix from PLAN.md Task 12.4
+
+The PLAN.md wording is "accepts only `en` and `es` — confirm case
+sensitivity". The exhaustive case matrix below covers every input shape
+that can reach either of the two call sites (CLI flag and config file
+value):
+
+| # | Input | Type | Source | Expected | Result | Where verified |
+|---|---|---|---|---|---|---|
+| 1 | `"en"` | string | CLI/config | `true` | OK | cli-args.test.ts:360; behavior at i18n.ts:23 |
+| 2 | `"es"` | string | CLI/config | `true` | OK | cli-args.test.ts:361 |
+| 3 | `"EN"` | string | CLI/config | `false` | OK | cli-args.test.ts:374 |
+| 4 | `"En"` | string | CLI/config | `false` | OK | cli-args.test.ts:375 |
+| 5 | `"ES"` | string | CLI/config | `false` | OK | cli-args.test.ts:376 |
+| 6 | `"Es"` | string | CLI/config | `false` | OK | cli-args.test.ts:377 |
+| 7 | `"en-US"` (region tag) | string | CLI/config | `false` | OK | cli-args.test.ts:427 |
+| 8 | `"es-MX"` (region tag) | string | CLI/config | `false` | OK | cli-args.test.ts:428 |
+| 9 | `"english"` (substring) | string | CLI/config | `false` | OK | cli-args.test.ts:429 |
+| 10 | `"fr"` (other BCP-47) | string | CLI/config | `false` | OK | cli-args.test.ts:426 |
+| 11 | `""` (empty) | string | CLI | `false` | OK | cli-args.test.ts:407-410 |
+| 12 | `" en"` (leading space) | string | CLI | `false` | OK | cli-args.test.ts:391 |
+| 13 | `"en "` (trailing space) | string | CLI | `false` | OK | cli-args.test.ts:392 |
+| 14 | `"\ten"` (leading tab) | string | CLI | `false` | OK | cli-args.test.ts:393 |
+| 15 | `"es\n"` (trailing newline) | string | CLI | `false` | OK | cli-args.test.ts:396 |
+| 16 | `"true"` (boolean-shaped) | string | CLI | `false` | OK | cli-args.test.ts:431 |
+| 17 | `"1"` (numeric) | string | CLI | `false` | OK | cli-args.test.ts:430 |
+| 18 | `null` | null | config (JSON `null`) | `false` | OK | strict `===` rejects (i18n.ts:23) |
+| 19 | `undefined` | undefined | config (missing key) | `false` | OK | strict `===` rejects; index.tsx:316 falls through to "en" |
+| 20 | `42` (number) | number | config (wrong type) | `false` | OK | strict `===` rejects |
+| 21 | `true` (boolean) | boolean | config (wrong type) | `false` | OK | strict `===` rejects |
+| 22 | `[]` (array) | array | config (wrong type) | `false` | OK | strict `===` rejects |
+| 23 | `{}` (object) | object | config (wrong type) | `false` | OK | strict `===` rejects |
+| 24 | missing `--lang` value | undefined | CLI | `false` | OK | cli-args.test.ts:415-418 |
+
+All 24 cases behave correctly. The two call sites handle the `false`
+return correctly:
+
+- **`src/lib/cli-args.ts:230`** — `--lang` parser:
+  `if (!lang || !isLocale(lang)) { console.error("Error: --lang requires 'en' or 'es'"); process.exit(1) }`.
+  `!lang` is the fast-path for `--lang` with no following arg (so the
+  error doesn't say "requires a value" — the `--lang` parser reads its
+  value inline, not via `requireValue`); `!isLocale(lang)` catches every
+  other invalid value. Both paths emit the same diagnostic, which is
+  acceptable since the only actionable fix is "pass `en` or `es`".
+
+- **`src/index.tsx:316`** — startup resolution:
+  `setLocale(isLocale(args.lang) ? args.lang : isLocale(cfgLang) ? cfgLang : "en")`.
+  Three-way precedence: CLI `--lang` > config `language` > "en". The
+  `isLocale` guard is the right discriminator because it accepts the
+  same two strings that `Locale` itself does, and `setLocale`'s
+  parameter is typed `Locale` so a `true` return passes the type
+  checker without a cast.
+
+#### Case sensitivity: VERIFIED STRICT
+
+The two-character-only comparison is intentional and correct:
+
+- `en` / `EN` differ only in the second character (`n` vs `N`); both
+  strings are different objects, so `===` returns `false` for `"EN"`.
+- The TS `Locale` type is `export type Locale = "en" | "es"` (i18n.ts:17).
+  The literal types in the union are lowercase, so the type system and
+  the runtime guard agree.
+
+This is **more strict than the user's typical mental model** — many
+people write "EN" or "En" expecting case-insensitive matching — but
+**strict is correct here** for two reasons:
+
+1. **No silent coercion to a wrong default.** A user who passes
+   `--lang EN` by mistake and gets English gets no error; if they wanted
+   Spanish, they get a confusing wrong-locale UX. Failing loudly at
+   startup is better than a silent wrong-language render.
+2. **Symmetric with the TS type.** The compiler already rejects `"EN"`
+   in any typed code. Letting it slip in via the CLI would create a
+   divide between "what the type system says" and "what the runtime
+   says", and that divide is the source of every subtle i18n bug
+   ("user reports a string in the wrong language but only in production
+   where the typed code never runs").
+
+#### Test coverage
+
+`isLocale` is exercised exclusively through `cli-args.test.ts` (rows
+1-17 of the matrix above). The other 7 cases (rows 18-24) reach the
+function only through the config-file path, which has no direct test.
+The function is small enough (1 line of logic) that the CLI test
+coverage is sufficient — the unknown-type cases (null, undefined, number,
+boolean, array, object) all follow trivially from `===` semantics and
+are de-facto guaranteed by TypeScript's `v: unknown` parameter type
+forcing consumers to handle the false branch. **No test gap is
+material.**
+
+#### Interaction with the proposed `validateConfigShape` (Finding 12.1.A)
+
+If the 12.1.A fix is applied, the loader would call `isLocale` inside
+its per-field validation step (the proposed `validateConfigShape`
+already uses `isLocale` at the proposed line 14238). Because
+`isLocale` already handles the strict-`"en"`/`"es"` requirement, the
+loader would silently drop any value outside that set (logging a warn
+and falling through to default). The current direct call at
+`index.tsx:316` would also work unchanged — it already calls
+`isLocale` on the raw value. **No interaction conflict** between the
+proposed 12.1.A validator and the current `isLocale` usage.
+
+#### What is **not** a finding (intentional behavior, not a bug)
+
+- The function does not accept `Intl.Locale`-compatible tags
+  (`"en-US"`, `"es-MX"`). Accepting them would force a runtime
+  negotiation with `Intl.Locale.baseName` and is out of scope for the
+  two-locale project. The README documents only `en` and `es`.
+- The function does not case-fold the input. Case-folding would be a
+  silent fix for a user typo; strict rejection is intentional (see
+  "symmetric with the TS type" above).
+- The function does not consult `Intl.DisplayNames` or any user-locale
+  preference. The two-locale system is hard-coded; if a third locale
+  is added, the function grows by one `||` clause and the TS union by
+  one literal — both are O(1) refactors.
+
+#### Summary of Phase 12.4 findings
+
+Zero findings. The function is a textbook 3-line type guard: the
+implementation matches the TS type, the strict-`===` matches the
+"accepts only `en` and `es`" requirement, the case-sensitivity is
+strict (and intentionally so), and every testable case is covered
+either directly (CLI) or trivially (config via the `unknown`
+parameter). No fix proposed, no fix needed.
+
+Tasks 12.5 (i18n string parity: missing keys, mismatched interpolation
+variables, empty strings) and 12.6 (`setLocale` persistence on toggle)
+are deferred to subsequent iterations.
