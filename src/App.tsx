@@ -462,12 +462,15 @@ function AppContent(props: AppProps) {
         // running("") window) would otherwise toggle_pause and wedge the loop in
         // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
         //
-        // Policy: the `eventSessionId &&` truthy guard is asymmetric with the
-        // session.idle consumer filter (which has no such guard); see the
-        // policy comment at useSSE.ts:374 (Finding 7.2.A). Un-attributed
-        // session.error events pass through here because the state-aware
-        // branches below (running/pausing/debug) are the authoritative arbiter
-        // and already drop errors in other states.
+        // Policy: the `eventSessionId &&` truthy guard is defense-in-depth
+        // here — the hook layer already drops un-attributed events uniformly
+        // (see the per-session filter policy at useSSE.ts:359, Finding 7.3.A),
+        // so this branch is unreachable in practice. It is kept because the
+        // sessionID comparison is what protects against stale-session errors
+        // for events that DO carry a sessionID, and the truthy guard makes the
+        // policy explicit at the consumer. The state-aware branches below
+        // (running/pausing/debug) are the authoritative arbiter of which
+        // states accept errors and already drop errors in other states.
         const debugSid = state.type === "debug" ? state.sessionId : undefined
         if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
           return

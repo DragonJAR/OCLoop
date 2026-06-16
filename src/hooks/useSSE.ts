@@ -356,6 +356,15 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         break
       }
 
+      // Per-session filter policy (uniform across session.idle, session.error,
+      // todo.updated, message.part.updated, session.diff): an event with no
+      // sessionID is dropped at the hook layer — the consumer filter has no
+      // key to compare against, and a silent drop is easier to debug than a
+      // silent dispatch into a state with no session context. The OpenCode
+      // SDK always populates sessionID (SessionIdleEvent / SessionErrorEvent
+      // both declare it as a required branded string), so this path is
+      // dormant in practice.
+      // Source: MEJORAS.md Finding 7.3.A.
       case "session.idle": {
         const eventSessionId = event.properties.sessionID
         // Filter by session if a filter is set
@@ -373,21 +382,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const rawError = (event.properties as any).error
         const sessionError = classifySessionError(rawError)
 
-        // Policy: un-attributed session.error events (eventSessionId === undefined)
-        // are passed through to handlers. The extra `eventSessionId &&` truthy
-        // guard makes this asymmetric vs the session.idle / todo.updated filters,
-        // and that asymmetry is deliberate: the App-level onSessionError handler
-        // is the authoritative arbiter of which states accept errors
-        // (running/pausing/debug only) and already short-circuits on state, so
-        // a missing sessionID is not a reason to drop the event here. The
-        // sessionID comparison itself is what protects against stale-session
-        // events when a sessionID IS present.
-        // Source: MEJORAS.md Finding 7.2.A.
-        if (
-          filterSessionId &&
-          eventSessionId &&
-          eventSessionId !== filterSessionId
-        ) {
+        if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
         handlers.onSessionError?.(eventSessionId, sessionError)
@@ -425,7 +420,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const eventSessionId = part?.sessionID
 
         // Filter by session if a filter is set
-        if (filterSessionId && eventSessionId && eventSessionId !== filterSessionId) {
+        if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
 
@@ -463,7 +458,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const eventSessionId = props.sessionID
 
         // Filter by session if a filter is set
-        if (filterSessionId && eventSessionId && eventSessionId !== filterSessionId) {
+        if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
 
