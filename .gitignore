@@ -33,3 +33,4 @@ bunfig.toml.lock
 *.swo
 *~
 Thumbs.db
+.loop*

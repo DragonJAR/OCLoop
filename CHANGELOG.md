@@ -5,7 +5,41 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+### Added
+- **`resilience.planTimeoutMs`** — the `--create-plan` generation budget (default
+  10 min) is now configurable: `--resilience planTimeoutMs=<ms>` or in the config
+  file. The timeout message names the parameter and how to raise it.
+
 ### Fixed
+- **Watchdog no longer near-instantly fails after a server restart.** When a
+  restart left the session genuinely "working", the stale pre-restart heartbeat
+  timestamp tripped STUCK on the next tick, collapsing the recovery ladder into
+  an immediate circuit-breaker fail. The restart path now grants a fresh
+  heartbeat window (`notifyWake`) on a "working" reconcile; the attempt counter
+  still bounds total retries.
+- **Rate-limit cooldowns no longer discard iteration timing.** Entering a
+  cooldown now pauses the stats timer and the retry resumes it (instead of
+  restarting), so a rate-limited iteration's active time still counts and the
+  wait itself stays excluded. Abort/normal/pause paths are unchanged.
+- **`<plan-complete>` inside an unterminated code fence no longer triggers a
+  premature stop** — a dangling fence is now stripped to EOF.
+- **Theme color resolution has a recursion depth cap** — a cyclic color def can
+  no longer infinite-loop / stack-overflow (falls back to neutral grey).
+- **SSE reconnect timer is cleared when it fires** (no stale handle racing
+  `disconnect`/`reconnect`); removed dead `onSessionStatus`/`onSessionSummary`
+  handlers and their unused types.
+- **`locale.truncate(str, len)` no longer overflows for `len <= 0`** (a negative
+  slice index returned a near-full string); now clamps to `""`/safe slice.
+- **SSE dedup maps (`seenPartIds`/`messageRoles`) are cleared per session** —
+  they grew unbounded across a long multi-iteration run.
+- **`--prompt`/`--plan`/`--agent` reject a following flag as their value** (e.g.
+  `--prompt --debug` now errors instead of silently setting the file to
+  `--debug` and dropping `--debug`).
+- **`--create-plan` honors `-p/--port`** and applies `--resilience` overrides
+  (it previously ignored both in the headless path).
+- **Stale aborted `session.error` can no longer wedge the loop** in `pausing("")`
+  — `onSessionError` now ignores events for a non-active session, mirroring the
+  guard `onSessionIdle` already had.
 - **`--create-plan` no longer fails on long generations.** It used the
   synchronous `session.prompt`, which holds a single HTTP request open for the
   entire (multi-minute) generation; on a long hold the connection drops and
