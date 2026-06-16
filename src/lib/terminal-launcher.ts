@@ -141,6 +141,22 @@ export async function launchTerminal(
 
       // Parse the args pattern, replacing {cmd}
       const argsPattern = config.args.split(/\s+/).filter((a) => a.length > 0)
+
+      // Defensive guard: an empty `config.args` produces `argsPattern = []`,
+      // which `buildArgs` passes through unchanged. `Bun.spawn` would then
+      // receive `[command]` and the terminal would open an empty shell with
+      // no attach command — the original bug of Finding 11.2.B. The custom
+      // dialog is the primary defense (it rejects empty args on save); this
+      // guard catches hand-edited configs, programmatic writes, and future
+      // call sites that bypass the dialog. The known-terminal path is safe:
+      // every entry in `KNOWN_TERMINALS` carries a non-empty `args` array.
+      // Source: MEJORAS.md Finding 11.2.B.
+      if (argsPattern.length === 0) {
+        return {
+          success: false,
+          error: "Custom terminal args must include the {cmd} placeholder",
+        }
+      }
       args = buildArgs(argsPattern, attachCmd)
     }
 
