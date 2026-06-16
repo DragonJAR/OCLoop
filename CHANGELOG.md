@@ -10,6 +10,17 @@ All notable changes to OCLoop are documented here. Format based on
   10 min) is now configurable: `--resilience planTimeoutMs=<ms>` or in the config
   file. The timeout message names the parameter and how to raise it.
 
+### Changed
+- **The activity log now fills the space between the panels and bottom-anchors.**
+  It grows to occupy the full gap between the dashboard and the bottom panel
+  (recomputed on every resize) and hugs the bottom panel, so the newest events sit
+  next to the current task. The bottom panel caps the current task to a responsive
+  number of lines (scales with terminal height) and shows a `+N` indicator when the
+  task is longer, so a long task no longer crowds out the log.
+- **Dashboard rows rebalanced** into a live-state row (status · tasks+progress ·
+  iteration · health) and a details row (model · agent · task time · avg ·
+  remaining), so neither row is overloaded.
+
 ### Fixed
 - **Transient connection errors at iteration start now auto-retry with backoff.**
   A dropped/reset socket (e.g. "The socket connection was closed unexpectedly")
