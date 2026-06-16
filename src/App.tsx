@@ -744,10 +744,19 @@ function AppContent(props: AppProps) {
       { level: "warn", progress: { current: rateLimitAttempts, total: r.maxRateLimitRetries } },
     )
 
+    // Clear stale timers before dispatching so any Solid effect subscribed
+    // to `state` cannot observe a window where stale timers are still alive
+    // after the reducer has already moved to the new `cooldown` value.
+    // Matches the clear-then-dispatch order used in handleWake
+    // (App.tsx:220-221). Defensive — the dispatch is synchronous and its
+    // only side effect today is the reducer, so this is observably
+    // equivalent; it preserves a stable invariant for future refactors.
+    // Source: MEJORAS.md Finding 5.1.B.
+    clearCooldownTimers()
+
     loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
     // Countdown for the dashboard, driven by the monotonic clock.
-    clearCooldownTimers()
     setCooldownRemainingMs(delayMs)
     cooldownTicker = setInterval(() => {
       const remaining = Math.max(0, resumeAt - monotonicNow())
