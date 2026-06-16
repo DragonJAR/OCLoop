@@ -150,10 +150,22 @@ Lista numerada de 97 mejoras accionables (no-INFO) detectadas en `MEJORAS.md`, e
 
 ### Mejora 6 — Finding 1.6.D — MEDIUM — Whitespace-only value accepted (cross-reference a Finding 1.1.A)
 
-- [ ] Evaluar la mejora 6 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 6 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 6 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 6 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 6 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 6 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 6 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 6 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Finding 1.6.D está documentado en `MEJORAS.md` como cross-reference
+a Finding 1.1.A. La causa raíz (Finding 1.1.A) ya fue corregida por la Mejora 1
+(commit `6769fa7`) en `src/lib/cli-args.ts`: la guarda `value.trim() === ""` en
+`requireValue` rechaza valores de solo whitespace. Esa misma guarda cubre las
+tres llamantes (`--prompt`, `--plan`, `--agent`) — Mejora 1 añadió test de
+paridad para `--agent` y los tests de superficie para `--prompt` / `--plan`
+ya están en el describe `parseArgs — --prompt / --plan path handling`
+(`cli-args.test.ts:616-635`). Fix en raíz → superficie cubierta. Implementación
+mínima: comentario en el bloque de tests que apunta al cross-reference 1.6.D
+para que un lector futuro vea la relación sin re-derivarla del audit. Sin
+cambios de código.
 
 ### Mejora 7 — Finding 1.7.A — MEDIUM — `--create-plan` silently swallows TUI-only flags; no diagnostic
 
