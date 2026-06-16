@@ -65,8 +65,9 @@ export const LEVEL_COLOR: Record<Level, ColorKey> = {
 
 /**
  * Bracketed labels are padded to this width so messages align in a column.
- * ponytail: every `logLbl*` translation must fit `[label]` ≤ this (≤ 9 chars);
- * longer ones break column alignment (padEnd won't shrink them).
+ * ponytail: every `logLbl*` translation must fit `[label]` ≤ this — i.e. the label
+ * text ≤ 12 chars (e.g. "herramienta"=11 ⇒ `[herramienta]`=13 ≤ 14); longer ones
+ * break column alignment (padEnd won't shrink them).
  */
 export const LABEL_WIDTH = 14
 

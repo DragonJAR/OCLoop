@@ -661,7 +661,7 @@ const es: Record<MessageKey, Msg> = {
   logLblTask: "tarea",
   logLblEdit: "editar",
   logLblRead: "leer",
-  logLblTool: "herram",
+  logLblTool: "herramienta",
   logLblYou: "tú",
   logLblAssistant: "asistente",
   logLblReason: "razonando",
