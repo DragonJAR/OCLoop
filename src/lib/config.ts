@@ -221,19 +221,46 @@ const ALLOWED_CONFIG_KEYS = new Set([
 ])
 
 /**
+ * Per-field type guard for a single `ResilienceConfig` entry. Returns
+ * `true` iff `key` is a known field of `DEFAULT_RESILIENCE` and `v` has the
+ * expected runtime type with a value in range. The strictness mirrors the
+ * CLI path in `applyResilienceOverride` (`cli-args.ts`): booleans must be
+ * booleans, numbers must be finite, integer, and non-negative. The same
+ * helper is the single source of truth for both layers — the CLI path keeps
+ * its `string → boolean|number` coercion in `applyResilienceOverride`, then
+ * routes the parsed value through this function so the file path cannot
+ * silently accept a hand-edited `"createTimeoutMs": "fast"` (which would
+ * reach `setTimeout("fast", …)` and coerce to `NaN`, burning retries in
+ * milliseconds).
+ *
+ * Source: MEJORAS.md Finding 12.3.B.
+ */
+function isValidResilienceValue(key: string, v: unknown): boolean {
+  if (!(key in DEFAULT_RESILIENCE)) return false
+  const def = (DEFAULT_RESILIENCE as Record<string, unknown>)[key]
+  if (typeof def === "boolean") return typeof v === "boolean"
+  if (typeof def === "number") {
+    return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+  }
+  return false
+}
+
+/**
  * Per-field type validation for the parsed config. Returns a clean
  * `OcloopConfig` with only the fields that pass type checks; any malformed
  * field is dropped and a `warn` is logged so the user sees a hint in
- * `.loop.log`. `resilience` is shallow-validated (must be a non-null,
- * non-array object) — per-field type checks for its 20+ keys are deferred to
- * `isValidResilienceValue` (Finding 12.3.B).
+ * `.loop.log`. `resilience` is deep-validated via `isValidResilienceValue`
+ * — per-field type checks for its 20+ keys are enforced, and any malformed
+ * field drops the whole `resilience` block (all-or-nothing) with a `warn`,
+ * matching the `terminal` / `language` / `theme` / `scrollbar_visible`
+ * policy of "either accept the field as-is or drop it entirely".
  *
  * The unknown-key check fires after per-field validation so a single warn
  * line surfaces every unrecognized top-level key (e.g. `languaje: "es"`)
  * instead of silently falling back to defaults.
  *
  * Source: MEJORAS.md Finding 12.1.A (per-field types) + 12.1.B (unknown
- * keys).
+ * keys) + 12.3.B (resilience per-field types).
  */
 function validateConfigShape(raw: unknown): OcloopConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -272,10 +299,25 @@ function validateConfigShape(raw: unknown): OcloopConfig {
     }
   }
   if ("resilience" in r) {
-    if (typeof r.resilience === "object" && r.resilience !== null && !Array.isArray(r.resilience)) {
-      out.resilience = r.resilience as Partial<ResilienceConfig>
-    } else {
+    if (typeof r.resilience !== "object" || r.resilience === null || Array.isArray(r.resilience)) {
       log.warn("config", "Ignoring malformed 'resilience' field", r.resilience)
+    } else {
+      // All-or-nothing: if any field is unknown, wrong-typed, or out of
+      // range, drop the whole block. Per-field truth in `DEFAULT_RESILIENCE`
+      // is the single source of truth — a hand-edited
+      // `{"createTimeoutMs": "fast"}` would otherwise flow through
+      // `pickDefined` and reach `setTimeout("fast", …)` as `NaN`.
+      const entries = Object.entries(r.resilience as Record<string, unknown>)
+      const invalid = entries.filter(([k, v]) => !isValidResilienceValue(k, v))
+      if (invalid.length > 0) {
+        log.warn(
+          "config",
+          `Ignoring 'resilience' block — contains ${invalid.length} invalid field(s)`,
+          invalid.map(([k, v]) => ({ key: k, value: v })),
+        )
+      } else {
+        out.resilience = r.resilience as Partial<ResilienceConfig>
+      }
     }
   }
 

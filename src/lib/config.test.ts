@@ -180,13 +180,121 @@ describe("loadConfig — per-field type validation (Finding 12.1.A)", () => {
     expect(config.resilience).toBeUndefined()
   })
 
-  it("keeps a valid resilience sub-object as-is (deep validation deferred to 12.3.B)", () => {
+  it("keeps a valid resilience sub-object with all-valid fields", () => {
     writeConfig(
       "ocloop.json",
       JSON.stringify({ resilience: { createTimeoutMs: 30_000 } }),
     )
     const config = loadConfig()
     expect(config.resilience).toEqual({ createTimeoutMs: 30_000 })
+  })
+})
+
+describe("loadConfig — resilience per-field type validation (Finding 12.3.B)", () => {
+  it("drops the whole block when a numeric field holds a string — the audit's central case", () => {
+    // `pickDefined` would accept the string (it's defined + not null), and
+    // the value would reach `setTimeout("fast", …)` → `NaN` → immediate
+    // timeout. The all-or-nothing deep validation catches this and drops
+    // the block; the user sees a single warn line in `.loop.log`.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { createTimeoutMs: "fast" } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when a boolean field holds a number", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { caffeinate: 1 } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when a numeric field is negative", () => {
+    // `setTimeout(-1, …)` is treated as 0 in Node/Bun → immediate timeout.
+    // The CLI path's `num < 0` rejection is mirrored here.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { createTimeoutMs: -1 } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when a numeric field is non-integer (1.5)", () => {
+    // The CLI path rejects `1.5` via `Number.isInteger`; the file path
+    // matches to keep both layers' strictness in lock-step.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { createTimeoutMs: 1.5 } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when a numeric field is null", () => {
+    // Per Finding 12.3.A, `null` is now filtered at the `pickDefined` layer
+    // too, but a file with a bare `null` value would still spread over the
+    // default without this check. Drop the whole block to be safe.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { createTimeoutMs: null } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when an unknown key is present (all-or-nothing)", () => {
+    // `isValidResilienceValue` rejects unknown keys. Even if every other
+    // field is valid, the whole block is dropped — the user must fix the
+    // config rather than silently inherit a partial set of overrides.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({
+        resilience: { createTimeoutMs: 30_000, totallyMadeUpKey: 42 },
+      }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("drops the whole block when valid and invalid fields are mixed", () => {
+    // The user has 19 valid fields and 1 bad; the all-or-nothing policy
+    // surfaces the bad one in the warn log rather than silently applying
+    // 19 overrides + the default for the bad one.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({
+        resilience: {
+          createTimeoutMs: 30_000,
+          promptTimeoutMs: "nope",
+        },
+      }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
+  it("keeps the whole block when every field is valid and uses the right type", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({
+        resilience: {
+          createTimeoutMs: 30_000,
+          caffeinate: false,
+          backoffJitter: true,
+        },
+      }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toEqual({
+      createTimeoutMs: 30_000,
+      caffeinate: false,
+      backoffJitter: true,
+    })
   })
 })
 
