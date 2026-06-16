@@ -8,6 +8,7 @@
 import type { ActivityEventType } from "../hooks/useActivityLog"
 import { truncateText } from "./format"
 import { getLayout } from "./layout"
+import { t, type MessageKey } from "./i18n"
 
 export type Level = "info" | "warn" | "error"
 
@@ -23,28 +24,28 @@ export type ColorKey =
 
 export interface EventMeta {
   level: Level
-  /** Short, descriptive, scannable label — says WHAT kind of thing happened. */
-  label: string
+  /** i18n key for the short, scannable label — says WHAT kind of thing happened. */
+  label: MessageKey
   /** Color for the label (semantic by event type). */
   colorKey: ColorKey
 }
 
-/** Default level + descriptive label + color per event type. */
+/** Default level + label i18n key + color per event type. */
 const META: Record<ActivityEventType, EventMeta> = {
-  session_start: { level: "info", label: "start", colorKey: "primary" },
-  session_idle: { level: "info", label: "idle", colorKey: "textMuted" },
-  task: { level: "info", label: "task", colorKey: "primary" },
-  file_edit: { level: "info", label: "edit", colorKey: "info" },
-  file_read: { level: "info", label: "read", colorKey: "info" },
-  tool_use: { level: "info", label: "tool", colorKey: "primary" },
-  user_message: { level: "info", label: "you", colorKey: "info" },
-  assistant_message: { level: "info", label: "assistant", colorKey: "success" },
+  session_start: { level: "info", label: "logLblStart", colorKey: "primary" },
+  session_idle: { level: "info", label: "logLblIdle", colorKey: "textMuted" },
+  task: { level: "info", label: "logLblTask", colorKey: "primary" },
+  file_edit: { level: "info", label: "logLblEdit", colorKey: "info" },
+  file_read: { level: "info", label: "logLblRead", colorKey: "info" },
+  tool_use: { level: "info", label: "logLblTool", colorKey: "primary" },
+  user_message: { level: "info", label: "logLblYou", colorKey: "info" },
+  assistant_message: { level: "info", label: "logLblAssistant", colorKey: "success" },
   // reasoning was colored as "warning" (false alarm) — de-emphasize to muted.
-  reasoning: { level: "info", label: "reason", colorKey: "textMuted" },
-  error: { level: "error", label: "error", colorKey: "error" },
+  reasoning: { level: "info", label: "logLblReason", colorKey: "textMuted" },
+  error: { level: "error", label: "logLblError", colorKey: "error" },
 }
 
-const DEFAULT_META: EventMeta = { level: "info", label: "event", colorKey: "text" }
+const DEFAULT_META: EventMeta = { level: "info", label: "logLblEvent", colorKey: "text" }
 
 /** Scannable glyph per severity. Info is blank to keep routine lines quiet. */
 export const LEVEL_GLYPH: Record<Level, string> = { info: " ", warn: "▲", error: "✖" }
@@ -55,7 +56,11 @@ export const LEVEL_COLOR: Record<Level, ColorKey> = {
   error: "error",
 }
 
-/** Bracketed labels are padded to this width so messages align in a column. */
+/**
+ * Bracketed labels are padded to this width so messages align in a column.
+ * ponytail: every `logLbl*` translation must fit `[label]` ≤ this (≤ 9 chars);
+ * longer ones break column alignment (padEnd won't shrink them).
+ */
 export const LABEL_WIDTH = 11
 
 export interface FormatInput {
@@ -104,7 +109,7 @@ export function formatActivityLine(e: FormatInput, contentWidth: number): Format
   return {
     glyph: LEVEL_GLYPH[level],
     glyphColor: LEVEL_COLOR[level],
-    label: `[${meta.label}]`.padEnd(LABEL_WIDTH),
+    label: `[${t(meta.label)}]`.padEnd(LABEL_WIDTH),
     labelColor: meta.colorKey,
     text,
     level,

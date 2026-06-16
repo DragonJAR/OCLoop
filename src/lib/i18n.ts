@@ -50,6 +50,8 @@ const shared = {
   logTokenOut: "out:",
   logTokenRsn: "rsn:",
   logDiff: "Diff: ",
+  // Activity-log event label (same word in both locales)
+  logLblError: "error",
   // Runtime
   actRateLimit: (p: Params) => `Rate limit: ${p.message}`,
 } satisfies Record<string, Msg>
@@ -349,9 +351,21 @@ const en = {
   sampleTask: "Implementing dark mode toggle",
   sampleError: "Build failed: Type error in Button.tsx",
   sampleSessionIdle: "Session idle - waiting for input",
+
+  // --- Activity-log event labels (bracketed [tag] in the log stream) ---
+  logLblStart: "start",
+  logLblIdle: "idle",
+  logLblTask: "task",
+  logLblEdit: "edit",
+  logLblRead: "read",
+  logLblTool: "tool",
+  logLblYou: "you",
+  logLblAssistant: "assistant",
+  logLblReason: "reason",
+  logLblEvent: "event",
 } satisfies Record<string, Msg>
 
-type MessageKey = keyof typeof en
+export type MessageKey = keyof typeof en
 
 /** Spanish mirror — the type forces every English key to be present here. */
 const es: Record<MessageKey, Msg> = {
@@ -630,6 +644,17 @@ const es: Record<MessageKey, Msg> = {
   sampleTask: "Implementando selector de modo oscuro",
   sampleError: "Falló el build: error de tipos en Button.tsx",
   sampleSessionIdle: "Sesión inactiva: esperando entrada",
+
+  logLblStart: "inicio",
+  logLblIdle: "inactivo",
+  logLblTask: "tarea",
+  logLblEdit: "editar",
+  logLblRead: "leer",
+  logLblTool: "herram",
+  logLblYou: "tú",
+  logLblAssistant: "asistente",
+  logLblReason: "razón",
+  logLblEvent: "evento",
 }
 
 // Reactive locale: a Solid signal so the TUI re-renders live when the language
