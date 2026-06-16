@@ -3539,3 +3539,298 @@ No new unit tests added. Rationale:
 across 21 files. No regressions.
 
 ---
+
+## Phase 5 — Rate Limit & Cooldown Handling
+
+Source: `src/App.tsx` (function `enterCooldown` at lines 671-745,
+`clearCooldownTimers` at 177-186, `handleIterationError` at
+754-771, `computeBackoff` at `src/lib/backoff.ts:35-64`,
+`extractRetryAfter` at `src/hooks/useSSE.ts:139-176`).
+Tests covering the pure contracts: `src/lib/backoff.test.ts`
+(13 cases), `src/hooks/useSSE.test.ts` (`extractRetryAfter`
+edge cases), `src/hooks/useLoopState.test.ts` (reducer
+contract for `rate_limited` / `resume_cooldown`).
+
+### 5.1 — Audit `enterCooldown`: counter, backoff, Retry-After
+
+**Status: COMPLETE — VERIFIED, two MEDIUM and three LOW findings.**
+
+`enterCooldown` (App.tsx:671-745) is the single funnel for
+every backoff path: rate limits surfaced mid-iteration by the
+SSE handler (App.tsx:477), iteration-start failures classified
+as `rate_limit` or `transient` by `handleIterationError`
+(App.tsx:757, 761), and the chaos-injected 429
+(App.tsx:1615). The function has three responsibilities:
+
+1. Maintain a **circuit-breaker counter** (`rateLimitAttempts`)
+   that escalates to a recoverable error after
+   `maxRateLimitRetries` consecutive cooldowns.
+2. Compute a **backoff delay** that respects a server-provided
+   `Retry-After` and otherwise follows an exponential-with-jitter
+   schedule.
+3. Schedule the **dashboard countdown ticker** and the
+   **resume timer**, both clearable by `clearCooldownTimers`.
+
+The full sequence (App.tsx:677-744):
+
+| Step | Line | Behavior | Verdict |
+| --- | --- | --- | --- |
+| Increment counter | 677 | `rateLimitAttempts++` (pre-check). | OK |
+| Exhaustion check | 679 | If `> maxRateLimitRetries`: log, dispatch `error {recoverable: true}`, reset counter, clear timers, return. | OK |
+| Compute backoff | 700-705 | `computeBackoff(rateLimitAttempts - 1, …)` — zero-indexed attempt. | OK (see Finding 5.1.A) |
+| `resumeAt` timestamp | 706 | `monotonicNow() + delayMs` — monotonic clock survives sleep. | OK |
+| Log + activity | 708-721 | `log.health` structured record + `activityLog` event. | OK |
+| Dispatch `rate_limited` | 723 | Reducer accepts only from `running` / `pausing`; if state has changed, dispatch is a no-op. | OK |
+| Clear old timers | 726 | `clearCooldownTimers()` before scheduling new ones. | OK (correctness, see Finding 5.1.B) |
+| Set initial countdown | 727 | `setCooldownRemainingMs(delayMs)` — full delay (pre-tick). | OK |
+| Countdown ticker | 728-735 | `setInterval(250ms)`; clears itself on `remaining <= 0`. | OK |
+| Resume timer | 739-744 | `setTimeout(delayMs)`; dispatches `resume_cooldown` only if state is still `cooldown`. | OK |
+
+#### Counter semantics — verified
+
+- **Pre-increment** (line 677 → check at 679) means that the
+  *first* rate limit makes `rateLimitAttempts = 1`, the
+  formula receives `attempt = 0`, and `maxRateLimitRetries = 8`
+  (default) yields 8 backoffs before the 9th increment trips
+  the exhaustion check. The dispatch is fired with
+  `tried = rateLimitAttempts - 1 = 8` (line 680), so the user
+  sees "after 8 attempts" — matches reality.
+- **Reset sites** (5 total) cover every successful-unblock path
+  without race:
+  - L264: `watchdog.actions.synthesizeIdle` — operator-initiated
+    recovery
+  - L502: SSE `onSessionIdle` (clean) — every successful
+    iteration
+  - L639: `reconcileAndAdvance` returning `idle` / `missing` —
+    post-sleep recovery
+  - L695: exhaustion path itself (counter starts fresh for
+    next streak; correct because the state is now `error`)
+  - L1165: `doResume` — counter survives across process restart
+- **Persistence** (L1165 / L1283) is symmetric with reset:
+  `doResume` restores `rateLimitAttempts` from
+  `.loop-state.json`, so a circuit-breaker that was at 4 when
+  the process died resumes at 4 — no "free retry budget" leak
+  across restarts. Confirmed by inspection of
+  `loop-state-store.ts:saveLoopState` writing
+  `rateLimitAttempts` and `loadLoopState` returning it.
+
+#### `computeBackoff` attempt-number semantics — verified
+
+The call site uses `rateLimitAttempts - 1` (line 700) so the
+formula receives a **zero-indexed** attempt: the 1st cooldown
+is `attempt=0` (exp = 1×base = 1000ms by default), the 8th is
+`attempt=7` (exp = 128×base = 128000ms, capped at 60000ms by
+`backoffMaxMs`). The cap + `Number.isFinite` guard at
+`backoff.ts:56-57` prevents any overflow for absurd attempt
+numbers; `Math.max(0, Math.floor(attempt))` rejects negative
+or fractional inputs. The `jitter` flag (configurable,
+default `true`) makes the delay uniform in `[0, exp]`. All
+these edges are covered by `backoff.test.ts:4-99`.
+
+#### `Retry-After` handling — verified end-to-end
+
+- **Extraction** (`extractRetryAfter`, SSE:139-176) is
+  exhaustive: explicit numeric fields, headers (both `get()`
+  API and bare-object), and a message-text regex that
+  understands `s`/`sec`/`secs`/`seconds`/`m`/`min`/`mins`/
+  `minutes`. Defensive guards reject `NaN`, `Infinity`,
+  `< 0`, and HTTP-date strings (which `Number()` converts
+  to `NaN`).
+- **Override** (`computeBackoff`, backoff.ts:40-42) is
+  authoritative: a valid `retryAfterSeconds` returns
+  `Math.max(0, round(seconds * 1000))`, *bypassing* the
+  formula and the `max` cap. The `computeBackoff` test at
+  line 81-88 pins this behavior. The `enterCooldown` log
+  records `retryAfterSeconds ?? null` (App.tsx:711) so the
+  override is observable in `.loop.log`.
+- **Rejection**: when `extractRetryAfter` returns `undefined`
+  (no header, no message hint, no explicit field), the
+  formula path is used. When the override is *invalid*
+  (negative, non-finite), `extractRetryAfter` already
+  filtered it (SSE:148, 159, 171), and `computeBackoff` would
+  ignore it (the `!== undefined && Number.isFinite(…)` guard
+  at backoff.ts:40).
+
+#### Finding 5.1.A — MEDIUM — `transient` kind dispatched as `rate_limited` to the reducer
+
+**Problem.** `enterCooldown` is called from `handleIterationError`
+for both `rate_limit` and `transient` error kinds (App.tsx:757,
+761), but the `rate_limited` action it dispatches (line 723)
+carries no `kind` field — the reducer transitions the same
+way and the dashboard countdown label is unconditional
+(`cooldownText` for rate_limit, `cooldownRetryText` for
+transient — selected at line 716, dispatched at 723 with
+neither marker). The user sees "Rate limit" wording for a
+plain socket drop or 5xx, which is misleading and, on
+flaky-network days, will *reduce user trust* in real
+rate-limit messages.
+
+**Where.** `src/App.tsx:716-723` (label selection + dispatch).
+
+**Proposed fix.** Extend the `rate_limited` action with an
+optional `kind: "rate_limit" | "transient"` field, plumb it
+through the reducer state (`cooldown.kind`), and let the
+dashboard / log line read from the state instead of from a
+local variable. Alternatively, the cheap fix: keep the
+existing UI copy and add the kind to the `log.health` call
+so the on-disk log can disambiguate; this is observability
+only and does not change behavior.
+
+**Status.** Fix proposed, not applied (audit-only per
+PLAN.md acceptance criteria). The cheap-fix variant
+(add `kind` to the log record) is one line; the proper fix
+is a small state-machine change. Either would close the gap.
+
+#### Finding 5.1.B — MEDIUM — `clearCooldownTimers` is called *after* the dispatch, not before, on the regular path
+
+**Problem.** In the regular (non-exhaustion) branch,
+`clearCooldownTimers()` is called at App.tsx:726 — *after*
+`loop.dispatch({ type: "rate_limited", … })` at line 723.
+The dispatch is synchronous and the reducer either
+transitions to `cooldown` (clean case) or no-ops (state
+changed under us, e.g. user paused). In the clean case this
+ordering is fine because the new timers are scheduled
+immediately after, on lines 728 and 739. **However**, the
+timer IDs are `let`-bound closure variables, not Solid
+signals: any *other* path that touches the same closures
+between the dispatch and the timer setup is undefined
+behavior. Today, no such path exists (the dispatch is
+synchronous, the only side effect is the reducer), so the
+ordering is safe in practice. It is, however, fragile: a
+future refactor that introduces a Solid effect subscribed
+to `state` (so it would fire on the dispatch) could observe
+a window where the timers are stale but not yet cleared.
+
+**Where.** `src/App.tsx:723-744`.
+
+**Proposed fix.** Move the `clearCooldownTimers()` call
+(line 726) to *before* the dispatch (immediately after
+`activityLog.addEvent`). It is purely defensive — current
+behavior is correct — but the cost is one line and the
+benefit is a stable invariant ("all cooldown state is
+cleared before any new state is dispatched").
+
+**Status.** Fix proposed, not applied. Observation, not
+defect.
+
+#### Finding 5.1.C — LOW — `setCooldownRemainingMs(delayMs)` briefly shows the *full* delay, not `delayMs - elapsed`
+
+**Problem.** At line 727 the signal is set to the *full*
+`delayMs`. The 250ms ticker (line 728) immediately corrects
+this on its first tick, so the user sees the right value
+within ~250ms. On a low-FPS TUI the lag is invisible; on
+a frozen renderer (debugger break, terminal scroll-jump)
+the user briefly sees a stale value.
+
+**Where.** `src/App.tsx:727`.
+
+**Proposed fix.** Set the initial value to
+`Math.max(0, resumeAt - monotonicNow())` instead of
+`delayMs`. One line, no new behavior. Optional.
+
+**Status.** Fix proposed, not applied. Cosmetic.
+
+#### Finding 5.1.D — LOW — `clearInterval` inside the ticker relies on closure-captured `cooldownTicker`
+
+**Problem.** The ticker's self-stop logic at line 731-734
+reads `cooldownTicker` from the closure, calls
+`clearInterval` on it, and nulls the reference. This is
+correct *as long as* no other `clearCooldownTimers` call has
+run in the meantime and nulled the reference. The closure
+captures the *variable*, not the value, so
+`clearCooldownTimers` nulling it would cause the ticker to
+`clearInterval(null)` — which `setInterval` handles
+gracefully (no-op), but it would skip the `cooldownTicker =
+null` self-clear and leave a stale reference. The next
+`enterCooldown` would then call `clearInterval` on the
+*same* interval ID that was already cleared (no-op again,
+safe), and assign a new ticker. Net result: no leak, no
+crash, but a small `if (cooldownTimer)` short-circuit fails
+the second time around. Verified by inspection that
+`clearCooldownTimers` is called only at:
+- L214 (wake from sleep, after resumeAt check)
+- L696 (exhaustion path)
+- L726 (regular enterCooldown, *after* the dispatch)
+- L974 (handleQuit, terminal-exit path)
+
+None of these race the ticker in practice because the
+ticker is a 250ms callback and the clear calls are
+synchronous user actions. Documenting the latent race for
+completeness.
+
+**Where.** `src/App.tsx:177-186`, `:728-735`.
+
+**Proposed fix.** Capture the interval ID in a local
+`const id = setInterval(…)`, then use `clearInterval(id)`
+in the self-stop branch. The outer `cooldownTicker` is only
+needed for `clearCooldownTimers` to know it has a live
+interval to clear. This pattern matches `cooldownTimer` at
+line 740 (which already uses a local capture for the
+self-null).
+
+**Status.** Fix proposed, not applied. Latent; no observed
+misbehavior.
+
+#### Finding 5.1.E — LOW — `log.health` for the exhausted branch omits `retryAfter`
+
+**Problem.** The exhaustion log at line 681 includes
+`attempts`, `reason`, and `kind` but **not** the
+`retryAfterSeconds` that was last seen. The non-exhausted
+log at line 708-713 includes it. Operators post-mortem
+comparing the two will have an incomplete picture for the
+exhaustion event.
+
+**Where.** `src/App.tsx:681`.
+
+**Proposed fix.** Add `retryAfterSeconds: retryAfterSeconds
+?? null` to the exhausted log object. One line.
+
+**Status.** Fix proposed, not applied. Observability gap
+only.
+
+#### Finding 5.1.F — INFO — `resume_cooldown` from non-`cooldown` states is a no-op (verified)
+
+The `setTimeout` callback at line 739-744 guards
+`if (loop.state().type === "cooldown")` before dispatching
+`resume_cooldown`. The reducer at `useLoopState.ts:175-186`
+also no-ops on non-`cooldown` states. So a stale timer that
+fires after the user paused (`paused` state) or quit
+(`stopping`) is correctly absorbed: no spurious transition,
+no leak, no double-dispatch.
+
+#### Finding 5.1.G — INFO — `Retry-After` HTTP-date format is silently rejected
+
+`Number("Wed, 21 Oct 2026 07:28:00 GMT")` is `NaN`. The
+guard at SSE:159 (`Number.isFinite(n) && n >= 0`) rejects
+it, so the formula path is used. This is RFC-compliant
+server behavior (RFC 7231 §7.1.3 allows either seconds or
+HTTP-date) but in practice every major provider returns
+seconds, so the unsupported format is acceptable. Documenting
+so a future change to `extractRetryAfter` knows this is
+intentional, not a bug.
+
+#### Test-suite delta for Task 5.1
+
+No new unit tests added. Rationale:
+
+- `computeBackoff` is fully pinned by `backoff.test.ts`
+  (13 cases, including the Retry-After priority + negative
+  cases, full-jitter boundary cases, exponential growth,
+  and Infinity-guarded cap).
+- `extractRetryAfter` is pinned by `useSSE.test.ts` (Phase
+  7 / 14 will own those tests; they are already in place
+  per recent commits).
+- The reducer's `rate_limited` / `resume_cooldown` contract
+  is pinned by `useLoopState.test.ts` (the Phase 3 audit
+  added comprehensive state-machine tests).
+- The `enterCooldown` exhaust-vs-cooldown branch and the
+  counter reset sites are best covered by integration tests
+  that drive a real cooldown sequence; the unit test for
+  the pure formula and the reducer already constrains the
+  observable contracts. Adding a mock-heavy
+  `enterCooldown.test.ts` would re-state the source.
+
+`bun test` → **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
+
+---
