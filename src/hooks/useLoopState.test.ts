@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { loopReducer } from "./useLoopState"
+import { getActiveSessionId, loopReducer } from "./useLoopState"
 import type { LoopState, LoopAction } from "../types"
 
 describe("loopReducer", () => {
@@ -1052,6 +1052,51 @@ describe("loopReducer", () => {
       const state: LoopState = { type: "error", source: "pty", message: "x", recoverable: false }
       const result = loopReducer(state, { type: "retry" })
       expect(result).toEqual(state)
+    })
+  })
+
+  // --- getActiveSessionId truth table (Task 6.2) ---
+  // The watchdog `isActive` probe in App.tsx:242-247 inlines this same
+  // predicate. Pin the truth table here so any future refactor that touches
+  // either side will fail this test, not the watchdog.
+  describe("getActiveSessionId", () => {
+    it("returns '' for non-guarded states (starting, ready, paused, cooldown, stopping, stopped, complete, error)", () => {
+      const states: LoopState[] = [
+        { type: "starting" },
+        { type: "ready" },
+        { type: "paused", iteration: 0 },
+        {
+          type: "cooldown",
+          iteration: 0,
+          reason: "x",
+          resumeAt: 0,
+          attempt: 1,
+        },
+        { type: "stopping" },
+        { type: "stopped" },
+        { type: "complete", iterations: 0, summary: { summary: "" } },
+        { type: "error", source: "api", message: "x", recoverable: true },
+      ]
+      for (const s of states) {
+        expect(getActiveSessionId(s)).toBe("")
+      }
+    })
+
+    it("returns '' for running/pausing with empty sessionId (pre-iteration_start window)", () => {
+      expect(getActiveSessionId({ type: "running", iteration: 0, sessionId: "" })).toBe("")
+      expect(getActiveSessionId({ type: "pausing", iteration: 0, sessionId: "" })).toBe("")
+    })
+
+    it("returns the sessionId for running/pausing with a non-empty sessionId", () => {
+      expect(getActiveSessionId({ type: "running", iteration: 3, sessionId: "abc" })).toBe("abc")
+      expect(getActiveSessionId({ type: "pausing", iteration: 3, sessionId: "abc" })).toBe("abc")
+    })
+
+    it("returns '' for debug (debug is user-driven, not watchdog-guarded)", () => {
+      expect(getActiveSessionId({ type: "debug", sessionId: "" })).toBe("")
+      // Even with a session attached, debug is NOT a guarded state. This
+      // matches the inlined probe at App.tsx:244-246, which excludes debug.
+      expect(getActiveSessionId({ type: "debug", sessionId: "abc" })).toBe("")
     })
   })
 })

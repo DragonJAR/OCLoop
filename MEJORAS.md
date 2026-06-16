@@ -5298,3 +5298,193 @@ not captured at `start()` time like `tickMs` is.
 
 `bun test` -> **624 pass, 0 fail, 1518 expect() calls**
 across 21 files. No regressions.
+
+### Task 6.2 — `isActive` probe matches `getActiveSessionId`
+
+PLAN.md 6.2: "watchdog `isActive` probe returns true
+only for `running`/`pausing` states with a non-empty
+sessionId — confirm this matches `getActiveSessionId`."
+
+#### The two predicates side-by-side
+
+The probe at `src/App.tsx:242-247`:
+
+```ts
+isActive: () => {
+  const s = loop.state()
+  return (
+    (s.type === "running" || s.type === "pausing") && s.sessionId !== ""
+  )
+}
+```
+
+The canonical function at `src/hooks/useLoopState.ts:34-38`:
+
+```ts
+export function getActiveSessionId(state: LoopState): string {
+  return state.type === "running" || state.type === "pausing"
+    ? state.sessionId
+    : ""
+}
+```
+
+The probe's truth value is
+
+```
+(s.type === "running" || s.type === "pausing") && s.sessionId !== ""
+```
+
+`getActiveSessionId(s) !== ""` expands to
+
+```
+(s.type === "running" || s.type === "pausing")
+  ? s.sessionId !== ""
+  : false
+```
+
+which simplifies to the same expression by
+short-circuit: when the type guard is false, the
+`false` branch is identical to `false`; when the
+type guard is true, the inner `s.sessionId !== ""`
+is exactly the second clause of the probe's
+conjunction. **The two predicates are logically
+identical for every `LoopState` value.**
+
+#### Truth table across all 12 `LoopState` variants
+
+| State                              | `isActive()` | `getActiveSessionId(s) !== ""` | Match |
+| ---------------------------------- | ------------ | ------------------------------ | ----- |
+| `starting`                         | `false`      | `false`                        | ✓     |
+| `ready`                            | `false`      | `false`                        | ✓     |
+| `running{…, ""}`                   | `false`      | `false`                        | ✓     |
+| `running{…, "abc"}`                | `true`       | `true`                         | ✓     |
+| `pausing{…, ""}`                   | `false`      | `false`                        | ✓     |
+| `pausing{…, "abc"}`                | `true`       | `true`                         | ✓     |
+| `paused{…}`                        | `false`      | `false`                        | ✓     |
+| `cooldown{…}`                      | `false`      | `false`                        | ✓     |
+| `stopping`                         | `false`      | `false`                        | ✓     |
+| `stopped`                          | `false`      | `false`                        | ✓     |
+| `complete{…}`                      | `false`      | `false`                        | ✓     |
+| `error{…}`                         | `false`      | `false`                        | ✓     |
+| `debug{""}`                        | `false`      | `false`                        | ✓     |
+| `debug{"abc"}`                     | `false`      | `false`                        | ✓     |
+
+13 rows because `running` and `pausing` each split
+on the empty/non-empty `sessionId` discriminant.
+All match. The two predicates agree on every
+variant the type system permits.
+
+Note in particular the `debug{…, "abc"}` row: the
+`debug` state carries a `sessionId` (set by the
+`new_session` action in `useLoopState.ts:62-67`),
+but the watchdog stays quiet because `debug` is
+neither `running` nor `pausing`. This is the
+correct behavior — debug mode is user-driven, not
+loop-driven, and a wedging debug session is a
+user-visible problem, not a watchdog problem.
+
+#### Finding 6.2.A — LOW — Duplicated predicate in `App.tsx` invites drift
+
+The probe at `App.tsx:242-247` inlines the
+`getActiveSessionId` predicate instead of calling
+the exported helper. The other five call sites in
+`App.tsx` (lines 252, 270, 461, 627, 1277) all use
+`getActiveSessionId(loop.state())` directly. The
+watchdog is the only outlier.
+
+Today the duplication is harmless — the two
+expressions are identical. But the maintenance
+hazard is real: if `getActiveSessionId` is ever
+extended (e.g. to also return `state.sessionId`
+for `debug{…}` when a session is attached, so
+debug-mode wedges can also be guarded), the
+watchdog probe will silently desynchronize. No
+test or call site will catch the divergence
+because the probe is a closure with no observable
+output other than "did the watchdog run".
+
+**Where.** `src/App.tsx:242-247`.
+
+**Proposed fix.** Replace the inlined body with
+a call to the canonical helper:
+
+```ts
+isActive: () => getActiveSessionId(loop.state()) !== "",
+```
+
+One line per side, zero behavior change, and the
+predicate is now derived from the same source the
+other five call sites use. A future extension of
+`getActiveSessionId` automatically extends the
+watchdog.
+
+This is already called out as a Phase 16
+code-duplication item ("duplicated session ID
+resolution `sessionId() || lastSessionId()`"),
+but the specific shape here — the only call site
+that re-derives the predicate inline — is
+distinct enough to flag on its own. Fix proposed,
+not applied (audit-only).
+
+#### No test gap on the public contract
+
+The existing watchdog test at
+`useWatchdog.test.ts:170-177` ("does nothing when
+the loop is not in a guarded state") pins the
+*negative* half of the predicate by setting
+`isActive: false` in the `setup()` helper and
+verifying the watchdog stays `HEALTHY` and never
+calls `abortAndRetry` / `restartServer`. The
+positive half is exercised by every other test in
+the suite (they all default to `isActive: true`).
+So the *contract* between the watchdog and its
+probes is fully covered.
+
+What is NOT covered is the truth table of the
+*implementation* of the probe — i.e. the actual
+`getActiveSessionId` function. If the probe is
+refactored to use `getActiveSessionId`, the
+*function* itself needs a test to pin its truth
+table, because that table is what the watchdog's
+correctness ultimately depends on.
+
+#### Verifier checklist for Task 6.2
+
+- [x] `isActive` probe body at `App.tsx:242-247`
+  is `(s.type === "running" || s.type === "pausing")
+  && s.sessionId !== ""` — verified by direct
+  file read.
+- [x] `getActiveSessionId` at `useLoopState.ts:34-38`
+  returns `state.sessionId` when `state.type` is
+  `running` or `pausing`, else `""` — verified by
+  direct file read.
+- [x] `getActiveSessionId(s) !== ""` simplifies to
+  the same boolean expression as the probe body —
+  verified by expansion.
+- [x] Truth table matches across all 12 `LoopState`
+  variants (including the `running{…,""}` /
+  `pausing{…,""}` splits and the `debug{…,"abc"}`
+  outlier) — verified by exhaustive enumeration
+  above.
+- [x] `debug{…,"abc"}` correctly returns `false`
+  from the probe despite carrying a `sessionId` —
+  verified: `debug` is not in the `running` /
+  `pausing` set, and debug mode is intentionally
+  not watchdog-guarded.
+- [x] The 5 other call sites of `getActiveSessionId`
+  in `App.tsx` (lines 252, 270, 461, 627, 1277)
+  use the helper directly — verified by `grep`.
+  Only the `isActive` probe inlines the predicate.
+
+#### Test-suite delta for Task 6.2
+
+Added 1 new test to `useLoopState.test.ts` to pin
+the truth table of `getActiveSessionId` across
+all 12 `LoopState` variants. The test is the
+*implementation* pin that the watchdog probe
+relies on — if `getActiveSessionId` is ever
+extended or refactored, this test will catch
+any behavior change.
+
+`bun test` -> **628 pass, 0 fail, 1532 expect() calls**
+across 21 files. No regressions.
