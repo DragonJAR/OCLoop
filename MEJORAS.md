@@ -4793,3 +4793,177 @@ No new unit tests added. Rationale:
 
 `bun test` -> **623 pass, 0 fail, 1512 expect() calls**
 across 21 files. No regressions.
+
+---
+
+### 5.7 — `maxRateLimitRetries` exhaustion resets in-memory counter, but persistence snapshot keeps the exhausted value
+
+**Status: COMPLETE — VERIFIED, one LOW finding.**
+
+The question: when `enterCooldown` exhausts the
+`maxRateLimitRetries` circuit breaker, it dispatches a
+recoverable `error` and resets `rateLimitAttempts` to 0
+(App.tsx:695). Is the reset correct? The error is
+recoverable, so the user retry will start fresh. The
+in-memory path is correct. **But the persisted snapshot
+keeps the exhausted value**, so a crash-during-error-state
+followed by `doResume` loads the exhausted counter and
+forfeits one attempt of forgiveness on the next rate
+limit.
+
+#### In-memory path — correct
+
+`enterCooldown` (App.tsx:671-745) increments the counter
+on every call. When it crosses the threshold
+(`rateLimitAttempts > r.maxRateLimitRetries` at
+App.tsx:679), it dispatches a `recoverable: true` error
+and resets the counter to 0 before returning. The user
+sees the error dialog, retries, and the next
+`enterCooldown` call starts the count at 1. This is
+the intended behavior of a circuit breaker that
+"trips, lets the user decide, and gives them a clean
+budget when they retry."
+
+#### Persistence path — asymmetric, LOW severity
+
+The persistence effect (App.tsx:1265-1290) only saves
+when the loop state is `running`, `pausing`, `paused`,
+or `cooldown`. The `error` state is not saved, and
+`clearLoopState` is not called for it (only for
+`complete`). Concretely, the sequence on exhaustion is:
+
+1. `enterCooldown` increments counter to
+   `maxRateLimitRetries + 1` (e.g. 9 if the default is
+   8).
+2. The effect fires for the prior `cooldown` state and
+   writes `.loop-state.json` with `rateLimitAttempts: 9`
+   (App.tsx:1283).
+3. `enterCooldown` dispatches `error` and resets the
+   in-memory counter to 0.
+4. The effect re-fires for the `error` state. The new
+   state is `error`, so the effect **does not save**.
+5. `.loop-state.json` still holds the snapshot from
+   step 2 with the exhausted counter.
+
+If the process crashes between step 3 and the user
+retry, `doResume` reads the persisted `rateLimitAttempts`
+value (9, the exhausted counter, App.tsx:1165) and uses
+it as the starting point. The next rate limit triggers
+`enterCooldown` → `9 + 1 = 10 > 8` → the breaker
+trips again on the very first new failure. The user
+loses 1 attempt of forgiveness relative to the in-memory
+retry path. The retry is still possible and the
+iteration count is preserved; only the counter starts
+at the exhausted value instead of 0.
+
+#### Why the asymmetry exists
+
+The reset in App.tsx:695 was written under the
+assumption that the in-memory `retry` path is the
+normal case. The `error` state being excluded from the
+persistence effect is intentional: the comment at
+App.tsx:1265-1267 says the effect writes "on every
+meaningful transition" and skips `error` because a
+recoverable error is a user-decision point, not a state
+to recover into. But this leaves the post-reset
+`rateLimitAttempts = 0` un-persisted.
+
+#### Severity — LOW
+
+The user-facing guarantee "you can always retry a
+recoverable error" is preserved. The only consequence
+is one fewer attempt before the breaker trips again on
+the crash-during-error path. This is a minor asymmetry,
+not a bug. The cost of a fix (extra save or extra
+clear) is small but the user impact is also small, so
+the finding is documentation-first.
+
+#### Proposed fix (not applied — audit only)
+
+Two equally valid options, both one-liners:
+
+**Option A — Save the post-reset value on error entry.**
+Add an explicit `saveLoopState` call from the error
+exhaustion branch in `enterCooldown` (App.tsx:686-697)
+with `rateLimitAttempts: 0`. Keeps the persisted
+snapshot aligned with the in-memory value.
+
+**Option B — Clear the persisted state on error.**
+Add an `else if (s.type === "error") clearLoopState()`
+to the persistence effect (App.tsx:1287-1289). This
+matches the existing `complete` branch and means a
+crash-during-error is treated as "no plan to resume" —
+which is the most conservative interpretation of
+"the user decides".
+
+Option A preserves the resume path with a counter
+of 0. Option B removes the resume path entirely. The
+right choice depends on whether `--resume` is
+expected to bring back a session that was interrupted
+by a circuit-breaker trip; if yes, A; if no, B.
+
+The chosen direction is **Option A** if implemented,
+because it preserves the existing `--resume` contract
+("keep going from where we left off") while fixing
+the counter asymmetry. The implementation would be a
+3-line addition inside the `if (rateLimitAttempts >
+r.maxRateLimitRetries)` branch in `enterCooldown`:
+
+```ts
+void saveLoopState({
+  version: 1,
+  iteration: loop.iteration(),
+  sessionId: getActiveSessionId(loop.state()) || null,
+  stateType: "error",
+  rateLimitAttempts: 0,
+  updatedAt: new Date().toISOString(),
+})
+```
+
+#### Verifier checklist for Task 5.7
+
+- [x] `enterCooldown` increments counter on every call
+  (App.tsx:677) — verified.
+- [x] Exhaustion branch dispatches a recoverable error
+  and resets `rateLimitAttempts` to 0
+  (App.tsx:679-697) — verified.
+- [x] The in-memory retry path starts the counter at 0
+  on the next `enterCooldown` (verified by tracing the
+  `retry` action in useLoopState.ts:258-264, which
+  transitions `error(recoverable=true)` to `starting`).
+- [x] The persistence effect writes for
+  `running`/`pausing`/`paused`/`cooldown` and skips
+  `error` (App.tsx:1271-1289) — verified.
+- [x] `doResume` loads `rateLimitAttempts` from the
+  persisted snapshot and uses it as the starting
+  value (App.tsx:1165) — verified.
+- [x] `clearLoopState` is called only for `complete`
+  (App.tsx:1287-1288) and for clean shutdown
+  (handleQuit), not for `error` — verified.
+
+#### Test-suite delta for Task 5.7
+
+No new unit tests added. Rationale:
+
+- The asymmetry is observable only through the
+  interaction of two effects (the rate-limit counter
+  in `enterCooldown` and the persistence effect),
+  neither of which is unit-tested as a stateful pair.
+  The unit tests in `useLoopState.test.ts` cover the
+  reducer transitions; the persistence effect in
+  `App.tsx` is not exercised by any unit test (and
+  is unlikely to be, because it is a Solid effect
+  inside a render tree).
+- The proposed fix is one of two equally valid
+  one-liners (Option A or Option B above). Both
+  warrant a regression test, but only the chosen
+  direction is testable, and the choice is a
+  product decision (`--resume` semantics) rather
+  than a code decision.
+- The asymmetry does not break any user-facing
+  guarantee. It loses one attempt of forgiveness on
+  a specific crash window (process dies between
+  exhaustion and the user retry).
+
+`bun test` -> **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
