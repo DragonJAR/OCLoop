@@ -299,6 +299,9 @@ export async function reconcileSession(
         // alive and will resume on its own, so it counts as working.
         return "working"
       default:
+        // Intentionally "unknown" for unrecognized types: a wrong "idle" could
+        // lose in-progress work, a wrong "working" could wait forever. "unknown"
+        // triggers the server-hung assessment path — the least dangerous fallback.
         return "unknown"
     }
   } catch {
