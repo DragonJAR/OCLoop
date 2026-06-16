@@ -664,10 +664,47 @@ en el conteo (era 680 antes del clear). Commit `cac737d`.
 
 ### Mejora 22 — Finding 5.3.A — LOW — `cooldownTicker` is not explicitly cleared on the regular resume path
 
-- [ ] Evaluar la mejora 22 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 22 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 22 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 22 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 22 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 22 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 22 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 22 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es de simetría: el callback
+del `cooldownTimer` setTimeout (`App.tsx:788-793`) nulificaba
+`cooldownTimer` (línea 789) pero NO limpiaba su timer hermano
+`cooldownTicker`. La defensa funcional ya estaba en su sitio
+(self-stop en `remaining <= 0`, líneas 779-782), pero el camino
+de "user requested a manual resume mid-cooldown" o "wake
++ handleWake + the late-fired setTimeout" dejaba el interval
+vivo hasta su self-stop, escribiendo un signal stale que el
+Dashboard ya no mostraba. La opción del fix propuesta en
+`MEJORAS.md:4102-4110` (añadir `clearCooldownTimers()` justo
+después de `cooldownTimer = null`) es estrictamente la
+mínima útil: 1 línea de código + 7 líneas de comentario que
+nombran los call sites homólogos
+(`handleWake:220`, exhaustión:`725`, regular clear-then-dispatch
+de `enterCooldown`:760, `handleQuit`:1048, server-error:1295).
+Implementación: commit `391d083`. Cero impacto en el camino
+feliz (el `clearCooldownTimers` dentro del callback de un
+timer que ya disparó es observable-equivalente — el `if
+(cooldownTimer)` interno short-circuita en `null`, y el
+`clearInterval(cooldownTicker)` + `cooldownTicker = null`
+produce el mismo estado final que el self-stop de las
+líneas 779-782 pero ANTES del dispatch, no después).
+Cero impacto en la rama de exhaustión (su `clearCooldownTimers`
+línea 725 ya estaba antes del return). Cero impacto en
+`handleWake` (su `clearCooldownTimers` línea 220 ya estaba
+antes del dispatch). Cero impacto en el Dashboard (el
+memo `cooldownText` ya short-circuita en
+`state.type !== "cooldown"`, Dashboard.tsx:96). Sin nuevos
+tests — el audit `MEJORAS.md:4133-4161` ya justificó que
+el contract del reducer `resume_cooldown` está pineado por
+3 tests en `useLoopState.test.ts` (líneas 568, 738, 1037-1072)
+y que añadir un `App.test.tsx` que verifique "ticker ref es
+null tras el dispatch" re-establece la fuente: el ref es
+closure-private, efímero, y se sobrescribe en el próximo
+`enterCooldown`. `bun test` verde: 680 pass / 0 fail (sin
+cambio en el conteo).
 
 ### Mejora 23 — Finding 5.6.A — MEDIUM — Dashboard `cooldownText` always shows "Rate limited" even for transient cooldowns
 
