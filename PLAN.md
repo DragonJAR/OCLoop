@@ -1615,10 +1615,80 @@ sin cambio en el conteo (era 694 antes del fix). Commit `475b082`.
 
 ### Mejora 41 — Finding 11.4.C — LOW — Call sites do not check `ClipboardResult`; success toast shown on failure
 
-- [ ] Evaluar la mejora 41 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 41 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 41 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 41 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 41 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 41 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 41 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 41 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:13975-13980`): los 3 call sites de
+`copyToClipboard(cmd)` en `App.tsx` (líneas 1553, 1564, 1654)
+disparaban el success toast **sincrónicamente** en la línea
+siguiente, antes de que el comando de clipboard fuera siquiera
+spawneado. En macOS/Windows (Findings 11.4.A + 11.4.B) el usuario
+veía "Copied to clipboard" con el pasteboard vacío — el peor UX
+posible para una operación de clipboard, porque el usuario pega y
+obtiene nada, sin pista de por qué. La opción del fix propuesta
+en `MEJORAS.md:13981-14000` ("await + branch on
+`result.success`") es estrictamente la mínima útil y reusa el
+patrón ya establecido en el codebase para errores con
+interpolación: `toastSendPromptFailed` (`App.tsx:1031`,
+`i18n.ts:263`/`565`). Implementación mínima:
+
+- `src/lib/i18n.ts:264` (en) + `i18n.ts:567` (es) — nueva
+  key `toastCopyFailed: (p) => `Copy failed: ${p.error}`` (en)
+  / `Fallo al copiar: ${p.error}` (es). El `MessageKey` type
+  es `keyof typeof en` (`i18n.ts:374`) y `es: Record<MessageKey,
+  Msg>` (`i18n.ts:377`), así que el compilador **forzó** la
+  mirror es al editar — exactamente la garantía pineada en el
+  header del módulo.
+- `src/App.tsx:1548-1564` (`onConfigCopy`) — `() =>` →
+  `async () =>`, `copyToClipboard(cmd)` (floating promise) →
+  `const result = await copyToClipboard(cmd)`, branch
+  `if (result.success)` con success toast intacto + else con
+  `toast.show({ variant: "error", message: t("toastCopyFailed",
+  { error: result.error ?? "" }) })`. `dialog.clear()` queda
+  al final (era la última línea del if anterior; el await
+  no lo afecta observablemente — el `dialog.clear()` corría
+  después del `copyToClipboard` floating promise y ahora corre
+  después del `await` resuelto, misma semántica para el usuario).
+- `src/App.tsx:1566-1581` (`onErrorCopy`) — mismo cambio.
+- `src/App.tsx:1665-1681` (`copy_attach` command) — el
+  `onSelect: () =>` se convierte a `onSelect: async () =>`,
+  mismo branch + comment block que nombra la causa raíz
+  específica de este call site ("success toast on the next
+  line, before the clipboard command was even spawned").
+
+El `result.error ?? ""` mantiene el contrato del i18n: si por
+algún motivo `copyToClipboard` retornara `{ success: false,
+error: undefined }` (defensivo, no se observa en la práctica
+porque las 4 ramas de retorno de `clipboard.ts:89-92, 113-115,
+121-123` siempre setea `error`), el toast diría "Copy failed: "
+en vez de "Copy failed: undefined".
+
+Cero cambios a `copyToClipboard` (la función ya retornaba el
+`ClipboardResult` correcto — el problema era puramente de los
+call sites), cero cambios a `detectClipboardTool`, cero cambios
+al reducer, cero impacto en la TUI, cero impacto en el lifecycle
+de iteración, cero impacto en la ruta de error del clipboard
+(Mejora 39/40 ya detectan pbcopy/clip.exe; ahora la failure de
+esa detection surface al usuario en vez de mentirse con un
+"Copied to clipboard").
+
+Cero impacto en tests: el audit (`MEJORAS.md:14005-14028`)
+ya justificó que `App.tsx` no tiene test suite (per
+`docs/testing.md`, `@opentui/solid` mocks via `mock.module`
+rompen el JSX transform, y la alternativa integration test
+requeriría fake SSE stream + Solid render — el territory de
+Mejora 95/96, no de este finding). La cobertura de
+`clipboard.ts` per se es Finding 11.4.D (Mejora 42, próxima).
+El shape del `ClipboardResult` está type-checked en el call
+site (TypeScript garantiza `result.success: boolean` y
+`result.error?: string`), así que un test "awaited and
+branched" sería tautológico — pinea que el archivo contiene
+las líneas que acabamos de escribir. `bun test` verde: 694
+pass / 0 fail, 1714 expect() calls, 23 files, 312 ms — sin
+cambio en el conteo (era 694 antes del fix). Commit `04e7829`.
 
 ### Mejora 42 — Finding 11.4.D — LOW — `clipboard.ts` has no test coverage
 
