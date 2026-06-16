@@ -820,4 +820,238 @@ describe("loopReducer", () => {
       }
     })
   })
+
+  // ==========================================================================
+  // Phase 3.1 — Full state machine matrix audit
+  // ==========================================================================
+  // 11 states × 13 actions = 143 combinations. The matrix below systematically
+  // covers the FULL (state, action) grid. The earlier tests cover the "happy
+  // path" for each action; the new tests below pin down the "no-op" (or
+  // transition) cases for every OTHER state so the contract is explicit and
+  // not silently lost in a future refactor.
+  // --------------------------------------------------------------------------
+  describe("Phase 3.1 — full state machine matrix audit", () => {
+    // Reference states — one per LoopState variant. The "starting" state is
+    // the initial state and "stopped"/"stopping" are reached via the
+    // `stopped` action which is not dispatched by the reducer (handleQuit
+    // does process.exit) but they exist in the type system and must be
+    // covered.
+    const reference: Record<LoopState["type"], LoopState> = {
+      starting: { type: "starting" },
+      ready: { type: "ready" },
+      running: { type: "running", iteration: 3, sessionId: "ses-3" },
+      pausing: { type: "pausing", iteration: 3, sessionId: "ses-3" },
+      paused: { type: "paused", iteration: 3 },
+      cooldown: { type: "cooldown", iteration: 3, reason: "r", resumeAt: 1, attempt: 1 },
+      stopping: { type: "stopping" },
+      stopped: { type: "stopped" },
+      complete: { type: "complete", iterations: 3, summary: { summary: "x" } },
+      error: { type: "error", source: "server", message: "x", recoverable: true },
+      debug: { type: "debug", sessionId: "ses-3" },
+    }
+
+    /**
+     * For an action, verify that the specified set of state types is a
+     * deep-equal no-op. Used to pin the contract for "this action only
+     * affects these states, everything else is ignored".
+     */
+    function expectNoOp(action: LoopAction, types: LoopState["type"][]) {
+      for (const t of types) {
+        const result = loopReducer(reference[t], action)
+        expect(result).toEqual(reference[t])
+      }
+    }
+
+    // --- server_ready: only "starting" transitions ---
+    it("server_ready: from ready, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "server_ready" },
+        ["ready", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- server_ready_debug: only "starting" transitions ---
+    it("server_ready_debug: from ready, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "server_ready_debug" },
+        ["ready", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+    it("server_ready_debug: from starting → debug (success case)", () => {
+      const result = loopReducer(reference.starting, { type: "server_ready_debug" })
+      expect(result.type).toBe("debug")
+      if (result.type === "debug") expect(result.sessionId).toBe("")
+    })
+
+    // --- new_session: only "debug" transitions ---
+    it("new_session: from starting, ready, running, pausing, paused, cooldown, stopping, stopped, complete, error → no-op", () => {
+      expectNoOp(
+        { type: "new_session", sessionId: "new" },
+        ["starting", "ready", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error"],
+      )
+    })
+    it("new_session: from debug → debug (success case, with new sessionId)", () => {
+      const result = loopReducer(reference.debug, { type: "new_session", sessionId: "new" })
+      expect(result.type).toBe("debug")
+      if (result.type === "debug") expect(result.sessionId).toBe("new")
+    })
+
+    // --- start: only "ready" transitions ---
+    it("start: from starting, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "start" },
+        ["starting", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- iteration_started: only "running" and "paused" transition ---
+    it("iteration_started: from starting, ready, pausing, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "iteration_started", sessionId: "ses-new" },
+        ["starting", "ready", "pausing", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+    it("iteration_started: from running(empty session) increments from state.iteration (3 → 4)", () => {
+      const before: LoopState = { type: "running", iteration: 3, sessionId: "" }
+      const result = loopReducer(before, { type: "iteration_started", sessionId: "ses-4" })
+      if (result.type !== "running") throw new Error("expected running")
+      expect(result.iteration).toBe(4)
+      expect(result.sessionId).toBe("ses-4")
+    })
+    it("iteration_started: from paused(3) → running(4) with new sessionId (matches startIteration contract)", () => {
+      const result = loopReducer(
+        { type: "paused", iteration: 3 },
+        { type: "iteration_started", sessionId: "ses-4" },
+      )
+      if (result.type !== "running") throw new Error("expected running")
+      expect(result.iteration).toBe(4)
+      expect(result.sessionId).toBe("ses-4")
+    })
+
+    // --- toggle_pause: only "running", "pausing", "paused" transition ---
+    it("toggle_pause: from starting, ready, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "toggle_pause" },
+        ["starting", "ready", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- session_idle: only "running", "pausing", "debug" transition ---
+    it("session_idle: from starting, ready, paused, cooldown, stopping, stopped, complete, error → no-op", () => {
+      expectNoOp(
+        { type: "session_idle" },
+        ["starting", "ready", "paused", "cooldown", "stopping", "stopped", "complete", "error"],
+      )
+    })
+    it("session_idle: from debug → debug (clears sessionId, ready for new session)", () => {
+      const result = loopReducer(reference.debug, { type: "session_idle" })
+      expect(result.type).toBe("debug")
+      if (result.type === "debug") expect(result.sessionId).toBe("")
+    })
+
+    // --- rate_limited: only "running" and "pausing" transition ---
+    it("rate_limited: from starting, ready, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "rate_limited", reason: "x", resumeAt: 1, attempt: 1 },
+        ["starting", "ready", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+    it("rate_limited: from pausing → cooldown (preserves iteration, drops sessionId)", () => {
+      const result = loopReducer(
+        { type: "pausing", iteration: 5, sessionId: "ses-5" },
+        { type: "rate_limited", reason: "429", resumeAt: 999, attempt: 2 },
+      )
+      if (result.type !== "cooldown") throw new Error("expected cooldown")
+      expect(result.iteration).toBe(5)
+      expect(result.reason).toBe("429")
+      expect(result.resumeAt).toBe(999)
+      expect(result.attempt).toBe(2)
+    })
+
+    // --- resume_cooldown: only "cooldown" transitions ---
+    it("resume_cooldown: from starting, ready, running, pausing, paused, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "resume_cooldown" },
+        ["starting", "ready", "running", "pausing", "paused", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- resume_session: only "ready" transitions ---
+    it("resume_session: from starting, running, pausing, paused, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+      expectNoOp(
+        { type: "resume_session", iteration: 1, sessionId: "x" },
+        ["starting", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+      )
+    })
+
+    // --- quit: from "ready", "running", "pausing", "paused", "cooldown", "debug" → stopping ---
+    it("quit: from starting, stopping, stopped, complete, error → no-op", () => {
+      expectNoOp(
+        { type: "quit" },
+        ["starting", "stopping", "stopped", "complete", "error"],
+      )
+    })
+    it("quit: from error is a no-op (canQuit=true in UI, but reducer is no-op; actual quit happens via process.exit in handleQuit)", () => {
+      const state: LoopState = { type: "error", source: "server", message: "x", recoverable: false }
+      const result = loopReducer(state, { type: "quit" })
+      expect(result).toEqual(state)
+    })
+
+    // --- plan_complete: from "ready", "running", "paused", "cooldown", "error" → complete ---
+    it("plan_complete: from starting, pausing, stopping, stopped, complete, debug → no-op", () => {
+      expectNoOp(
+        { type: "plan_complete", summary: { summary: "x" } },
+        ["starting", "pausing", "stopping", "stopped", "complete", "debug"],
+      )
+    })
+    it("plan_complete: from running(7, 'ses-7') → complete(7, summary)", () => {
+      const result = loopReducer(
+        { type: "running", iteration: 7, sessionId: "ses-7" },
+        { type: "plan_complete", summary: { summary: "all done" } },
+      )
+      if (result.type !== "complete") throw new Error("expected complete")
+      expect(result.iterations).toBe(7)
+      expect(result.summary.summary).toBe("all done")
+    })
+    it("plan_complete: from cooldown(4) preserves iteration (does NOT reset to 0)", () => {
+      const result = loopReducer(
+        { type: "cooldown", iteration: 4, reason: "r", resumeAt: 1, attempt: 1 },
+        { type: "plan_complete", summary: { summary: "x" } },
+      )
+      if (result.type !== "complete") throw new Error("expected complete")
+      expect(result.iterations).toBe(4)
+    })
+    it("plan_complete: from error ALWAYS sets iterations to 0 (KNOWN BUG: loses progress if plan was running before error)", () => {
+      const result = loopReducer(
+        { type: "error", source: "api", message: "x", recoverable: true },
+        { type: "plan_complete", summary: { summary: "plan done anyway" } },
+      )
+      if (result.type !== "complete") throw new Error("expected complete")
+      // This is the current behavior, but it IS a bug: error state has no
+      // iteration field, so the plan-complete summary loses the iteration
+      // count. See MEJORAS.md 3.8.
+      expect(result.iterations).toBe(0)
+    })
+
+    // --- error: from "starting", "ready", "running", "pausing", "paused", "cooldown", "debug" → error ---
+    it("error: from stopping, stopped, complete, error → no-op", () => {
+      expectNoOp(
+        { type: "error", source: "server", message: "x", recoverable: true },
+        ["stopping", "stopped", "complete", "error"],
+      )
+    })
+
+    // --- retry: from "error (recoverable)" → starting ---
+    it("retry: from starting, ready, running, pausing, paused, cooldown, stopping, stopped, complete, debug → no-op", () => {
+      expectNoOp(
+        { type: "retry" },
+        ["starting", "ready", "running", "pausing", "paused", "cooldown", "stopping", "stopped", "complete", "debug"],
+      )
+    })
+    it("retry: from error(recoverable=false) is a no-op (non-recoverable errors are permanent)", () => {
+      const state: LoopState = { type: "error", source: "pty", message: "x", recoverable: false }
+      const result = loopReducer(state, { type: "retry" })
+      expect(result).toEqual(state)
+    })
+  })
 })

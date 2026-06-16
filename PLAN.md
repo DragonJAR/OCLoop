@@ -36,7 +36,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 ## Phase 3 — State Machine (useLoopState)
 
-- [ ] Audit every state transition in `loopReducer` for every possible current state + action combination
+- [x] Audit every state transition in `loopReducer` for every possible current state + action combination
 - [ ] Verify: `server_ready` from non-starting states is a no-op (correct)
 - [ ] Verify: `start` from `running`/`paused`/`cooldown`/`debug` states is a no-op (correct)
 - [ ] Verify: `toggle_pause` from `cooldown`, `error`, `stopped`, `starting`, `complete` states is a no-op

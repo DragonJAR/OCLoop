@@ -2667,3 +2667,186 @@ expect() calls** (was 139/0/305 before this iteration).
 
 Full suite: `bun test` → **598 pass, 0 fail, 1373 expect() calls**
 across 21 files. No regressions.
+
+---
+
+## Phase 3 — State Machine (`useLoopState`)
+
+Source: `src/hooks/useLoopState.ts` · Tests:
+`src/hooks/useLoopState.test.ts`
+
+### 3.1 — Full state machine matrix audit
+
+**Status: COMPLETE — VERIFIED, one MEDIUM finding (data loss in
+plan_complete from error).**
+
+The `loopReducer` is a pure function `(state, action) → state`. The
+state space is 11 variants (`starting`, `ready`, `running`, `pausing`,
+`paused`, `cooldown`, `stopping`, `stopped`, `complete`, `error`,
+`debug`) and the action space is 13 types, giving **143 (state,
+action) combinations**. The audit enumerates every cell of this
+matrix, pins the actual behavior with a new `describe("Phase 3.1 —
+full state machine matrix audit", ...)` block, and surfaces design
+choices (documented) and bugs (one MEDIUM, see below).
+
+#### Transition matrix (full)
+
+Cells marked **→** are no-ops (reducer returns input state deep-equal).
+Cells marked with a `→ STATE` arrow are real transitions.
+
+| Action ↓ \ State → | starting | ready | running | pausing | paused | cooldown | stopping | stopped | complete | error | debug |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| `server_ready` | →ready | → | → | → | → | → | → | → | → | → | → |
+| `server_ready_debug` | →debug | → | → | → | → | → | → | → | → | → | → |
+| `new_session` | → | → | → | → | → | → | → | → | → | → | →debug(new) |
+| `start` | → | →running(0,"") | → | → | → | → | → | → | → | → | → |
+| `iteration_started` | → | → | →running(n+1,sid) | → | →running(n+1,sid) | → | → | → | → | → | → |
+| `toggle_pause` | → | → | →pausing | →running (cancel) | →running("") | → | → | → | → | → | → |
+| `session_idle` | → | → | →running (clear sid, or SAME) | →paused | → | → | → | → | → | → | →debug("") |
+| `rate_limited` | → | → | →cooldown | →cooldown | → | → | → | → | → | → | → |
+| `resume_cooldown` | → | → | → | → | → | →running(n,"") | → | → | → | → | → |
+| `resume_session` | → | →running(p.iter,p.sid) | → | → | → | → | → | → | → | → | → |
+| `quit` | → | →stopping | →stopping | →stopping | →stopping | →stopping | → | → | → | → | →stopping |
+| `plan_complete` | → | →complete(0) | →complete(n) | → | →complete(n) | →complete(n) | → | → | → | →complete(0) | → |
+| `error` | →error | →error | →error | →error | →error | →error | → | → | → | → | →error |
+| `retry` | → | → | → | → | → | → | → | → | → | →starting (recoverable) | → |
+
+#### Design choices observed (no fix, INFO)
+
+1. **`session_idle` from `running("")` returns the SAME state object.**
+   This is a deliberate idempotency guard so that two synthesized
+   idles (e.g. watchdog reconcile + wake) don't emit a new object and
+   re-fire the iteration driver into a second session. The test at
+   line 616-624 pins this with `expect(result).toBe(state)`.
+
+2. **`toggle_pause` from `pausing` cancels the pause** (returns to
+   `running` with the SAME session, no new iteration). This is a
+   "second-press cancels" UX. Pinned by the test at line 145-159.
+
+3. **`toggle_pause` from `paused` resumes** with `sessionId = ""`,
+   NOT the previous session. Rationale (comment in code, line 119):
+   the previous session completed when we transitioned
+   `pausing → paused`, so resuming requires a fresh session. Pinned by
+   the test at line 129-143.
+
+4. **`quit` from `error` is a no-op in the reducer** even though
+   `canQuit()` returns `true` for `error`. The actual quit happens in
+   `handleQuit()` (App.tsx:968) which does `loop.dispatch({type:"quit"})`
+   followed by `clearCooldownTimers()`, `watchdog.stop()`, `server.stop()`,
+   and `process.exit()`. The dispatch is for state propagation IF it
+   would transition; for `error` it doesn't, but `process.exit` still
+   fires — so the user can still quit from `error`. The asymmetry
+   between `canQuit=true` and "reducer is no-op" is a deliberate
+   decoupling, not a bug. Pinned by the new test (Phase 3.1 block:
+   "quit: from error is a no-op ...").
+
+5. **`error` and `plan_complete` from `cooldown` are accepted.** The
+   plan can be detected as complete even while waiting out a rate
+   limit, and a transient error can fire while in cooldown. Both
+   paths are documented in the reducer comments and pinned by
+   existing tests (lines 562-578 for `error` from cooldown; line
+   626-643 for `plan_complete` from cooldown).
+
+6. **`retry` is a no-op from `error` with `recoverable=false`.** A
+   `pty` crash (terminal) or `sse` connection lost with
+   `recoverable=false` is permanent. Pinned by tests at line 448-460
+   and the new Phase 3.1 block test.
+
+#### Finding 3.1.A — MEDIUM — `plan_complete` from `error` ALWAYS resets iterations to 0
+
+**Problem.** When `plan_complete` is dispatched while the state is
+`error`, the reducer sets `iterations: 0` (line 232) because the
+`error` state has no `iteration` field. If the plan was running for
+many iterations before erroring and the `plan_complete` summary
+arrives later (e.g. the plan file was being refreshed and the
+content was finally parsed as 100% complete), the summary will
+report 0 iterations even though the agent executed dozens.
+
+The user-visible effect: the "Plan complete" message in the TUI
+shows 0 iterations instead of the real count. The plan file
+itself in `.loop-state.json` is correct (parsed by `parsePlan`),
+so this only affects the in-loop summary message.
+
+**Where.** `src/hooks/useLoopState.ts:231-233` (the `plan_complete`
+branch in the `error` arm of the reducer).
+
+**Proposed fix.** Carry the iteration count through the error path
+by adding a `lastIteration` field on the `error` state (optional,
+only set when transitioning from a state that has it), and have
+`plan_complete` use that value if present. Alternatively, have the
+dispatcher (App.tsx) include the current `iteration` in the
+`plan_complete` action's summary when firing from error.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria). Behavior pinned by the new test
+`"plan_complete: from error ALWAYS sets iterations to 0 (KNOWN BUG:
+loses progress if plan was running before error)"`.
+
+#### Finding 3.1.B — INFO — `start` from `pausing` is a no-op (intentional)
+
+**Problem.** None — documenting the behavior so it's not
+"fixed" in a future refactor. `toggle_pause` is the canonical
+way to cancel a pending pause; `start` is for the
+`ready → running` edge only.
+
+**Where.** `src/hooks/useLoopState.ts:70-76` (`start` branch).
+
+**Status.** No fix needed. Pinned by the new test
+`"start: from starting, running, pausing, paused, ..."`.
+
+#### Finding 3.1.C — INFO — `error` from `error` is a no-op (idempotency)
+
+**Problem.** None — if a second error fires while we're already in
+the `error` state (e.g. two SSE streams racing), the new error's
+`source`/`message`/`recoverable` are dropped. This is deliberate:
+the FIRST error wins, so the user sees the root cause. A
+defensive alternative would be to upgrade `recoverable: true →
+false` if the second error is non-recoverable, but that changes
+the user-visible error after the fact, which is worse.
+
+**Where.** `src/hooks/useLoopState.ts:237-256` (`error` branch).
+
+**Status.** No fix needed. Pinned by the new test
+`"error: from stopping, stopped, complete, error → no-op"`.
+
+#### Finding 3.1.D — INFO — `cooldown` and `stopping` are reachable but not in `quit`'s accept list
+
+**Problem.** None — `cooldown` IS in `quit`'s accept list (line 209)
+because the user should be able to abort a wait-out. `stopping` is
+NOT, which is correct: `stopping` is the transient "we're about
+to exit" state between `quit` and `process.exit()`, and a second
+`quit` should be idempotent.
+
+**Status.** No fix needed.
+
+#### Test-suite delta for Task 3.1
+
+The new `describe("Phase 3.1 — full state machine matrix audit",
+...)` block adds **25 new tests** (one per action that needs its
+no-op set pinned, plus targeted success-case tests for
+`server_ready_debug` and `new_session` that were not previously
+covered). Coverage breakdown:
+
+- 11 actions covered with their full no-op sets (every state that
+  is NOT a transition for that action)
+- 2 new success-case tests: `server_ready_debug: from starting`
+  and `new_session: from debug`
+- 2 new transition tests: `iteration_started` from
+  `running("")` and from `paused` with the exact
+  `state.iteration + 1` increment contract that
+  `startIteration()` depends on
+- 3 new `plan_complete` tests: from `running(7)`, from
+  `cooldown(4)` (preserves iteration), from `error` (KNOWN BUG
+  resets to 0)
+- 2 new success-case tests: `rate_limited` from `pausing` →
+  cooldown, `session_idle` from debug → debug
+- 1 new `quit` test: from `error` is a no-op (the
+  `canQuit=true` but reducer-is-no-op decoupling)
+- 1 new `retry` test: from `error(recoverable=false)` is a no-op
+
+`bun test src/hooks/useLoopState.test.ts` → **74 pass, 0 fail,
+253 expect() calls** (was 49/0/114 before this iteration).
++25 tests, +139 expects, all green.
+
+Full suite: `bun test` → **623 pass, 0 fail, 1512 expect() calls**
+across 21 files. No regressions.
