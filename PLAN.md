@@ -236,10 +236,35 @@ comportamiento. `bun test` verde: 667 pass / 0 fail. Commit `cb99847`.
 
 ### Mejora 10 — Finding 1.8.B — LOW — `--resume` with no persisted state is a silent no-op
 
-- [ ] Evaluar la mejora 10 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 10 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 10 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 10 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 10 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 10 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 10 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 10 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es estructural: la guarda de
+`App.tsx:1131` `<persisted && persisted.iteration > 0>` se evalúa ANTES
+de leer `resilience().resume`, así que cuando el usuario pasa `--resume`
+en un run limpio (sin `.loop-state.json` o con un snapshot obsoleto de
+`iteration=0`), el flag queda parseado/almacenado pero produce cero
+efecto observable. La propuesta de `MEJORAS.md:1196-1201` es la opción
+correcta: emitir un log no-fatal que haga visible la no-op en
+`.loop.log`. Implementación mínima: extraer la decisión a una función
+pura `describeResumeAttempt(args, persisted)` en
+`src/lib/resume-decision.ts` (28 líneas) y llamarla desde `App.tsx:1132-1141`
+justo después de `loadLoopState()`. Cero cambios al decision tree
+existente (`if (persisted && persisted.iteration > 0)` sigue
+controlando la ruta de resume), cero impacto en la ruta
+`--create-plan` (la flag `resilience.resume` se loggea en el flujo TUI
+normal, no en el short-circuit del plan generator), cero cambio de
+comportamiento del loop. El helper es side-effect-free (test "no
+mutation" lo pinea) y retorna `null` cuando `--resume` no fue pasado
+para que el call site no emita ruido innecesario. Cubierto por 5 tests
+en `src/lib/resume-decision.test.ts` que pinean: no log cuando
+`--resume` no se pasó, `hasPersisted:false` cuando no hay
+`.loop-state.json` (caso central del finding), `hasPersisted:true
+iteration:0` cuando hay un snapshot obsoleto, `hasPersisted:true
+iteration:N` cuando hay un resume real pendiente, y la pureza del
+helper. `bun test` verde: 672 pass / 0 fail (era 667). Commit `0053f9d`.
 
 ### Mejora 11 — Finding 3.1.A — MEDIUM — `plan_complete` from `error` ALWAYS resets iterations to 0
 
