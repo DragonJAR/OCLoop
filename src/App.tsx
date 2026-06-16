@@ -1284,6 +1284,16 @@ function AppContent(props: AppProps) {
   // Server error effect - transition to error state
   createEffect(() => {
     if (server.status() === "error" && server.error()) {
+      // The server-error effect is the only `error` dispatch site that can
+      // fire from `cooldown` (all other sites are state-gated). Without this
+      // clear, the closure-bound cooldownTimer/setInterval would keep
+      // running with a stale `resumeAt` and only self-stop after the
+      // original `delayMs` window. Clear before dispatch, mirroring
+      // handleWake (line 220) and enterCooldown regular path (line 760).
+      // Source: MEJORAS.md Finding 5.2.A.
+      if (loop.state().type === "cooldown") {
+        clearCooldownTimers()
+      }
       loop.dispatch({
         type: "error",
         source: "server",
