@@ -2546,10 +2546,80 @@ pass / 1 skip / 0 fail, 1784 expect() calls, 25 files, 333 ms
 
 ### Mejora 56 — Finding 15.5.A — LOW — No debounce on rapid-fire `file.edited` events for PLAN.md
 
-- [ ] Evaluar la mejora 56 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 56 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 56 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 56 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 56 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 56 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 56 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 56 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la descrita en
+`MEJORAS.md:19372-19445`: cada `file.edited` SSE event sobre
+PLAN.md dispara un ciclo independiente
+`refreshPlan()` → `parsePlanFile()` → `Bun.file().text()` →
+`setPlanProgress`. Un multi-edit tool call (e.g. el agent
+flipping varios `- [ ]` a `- [x]`) emite N eventos en pocos ms,
+y los N ciclos de read+parse corren en paralelo, racing en
+`setPlanProgress` y produciendo flicker transitorio en la
+progress bar. La opción (1) del fix propuesto en
+`MEJORAS.md:19402-19413` (timeout-based debounce de 6 líneas)
+es estrictamente la correcta vs. la opción (2) (counter-based
+version, ~15 líneas): la primera cierra el problema con cero
+overhead de mantenimiento (un `clearTimeout` + `setTimeout` es
+estructuralmente trivial), y el audit mismo nombra que
+"the simpler option is sufficient because `refreshPlan` is a
+pure read+parse — no side effects beyond `setPlanProgress` and
+the activity log". Implementación mínima, siguiendo el patrón
+closure-bound `let` ya establecido por `cooldownTimer` (línea
+168), `startingIteration` (línea 178), e `isShuttingDown`
+(línea 191, Mejora 55):
+
+- `src/App.tsx:170-181` — declaración de
+  `let refreshPlanTimer: ReturnType<typeof setTimeout> | null = null`
+  con un comment block de 12 líneas que nombra el source
+  `MEJORAS.md Finding 15.5.A`, el rational (multi-edit tool
+  calls emiten N eventos en pocos ms), la elección de 150ms
+  (suficiente para coalesce un multi-edit burst, corto para
+  sentirse real-time), y la invariante "closure-bound; reset
+  por process death".
+- `src/App.tsx:555-578` — el `onFileEdited` handler ahora
+  hace `if (refreshPlanTimer) clearTimeout(refreshPlanTimer)`
+  + `refreshPlanTimer = setTimeout(..., 150)` cuando el path
+  resuelto coincide con `absolutePlanPath`. La entrada al
+  activity log (`activityLog.addEvent("file_edit", file)`) se
+  mantiene **fuera** del debounce, así que el usuario ve el
+  edit en tiempo real; solo el read+parse+setter está
+  debounceado, exactamente como el audit prescribe.
+- `src/App.tsx:1843-1846` — extensión del `onCleanup` block
+  existente para limpiar el timer pendiente en unmount, así
+  un refresh de hot-reload o un SIGINT durante los 150ms no
+  dispara un `setPlanProgress` con un `setPlanProgress` ya
+  disposed.
+
+Cero cambios a la firma de `onFileEdited` (sigue siendo
+`(file: string) => void`), cero cambios a `refreshPlan` /
+`refreshCurrentTask` (siguen siendo `async () => Promise<void>`),
+cero cambios al reducer, cero cambios al SSE handler
+(`useSSE.ts:402-405` sigue invocando `handlers.onFileEdited?.()`
+sincrónicamente — el debounce vive en el consumer, donde
+conoce la semántica de "PLAN.md", no en el producer
+genérico), cero impacto en la ruta "file no es PLAN.md" (el
+path paralelo al `if` queda intacto). Cero impacto en el
+camino feliz: un single edit a PLAN.md produce un
+`setPlanProgress` 150ms después del evento, en vez de
+sincrónicamente. El race window observable (los ms entre el
+event y el `setPlanProgress`) pasa de 0 a 150ms, lo cual es
+invisible al usuario y exactamente lo que el audit
+prescribe. Cero impacto en tests — `App.tsx` es
+integration territory per `docs/testing.md` y el audit ya
+justificó que un test del debounce requeriría un fake SSE
+stream + Solid render (Mejora 95/96 territory, no de este
+finding). El test preexistente de la shape "rapid-fire
+refreshPlan produce el último setPlanProgress" sigue
+implícito (Solid's setter es naturalmente last-write-wins
+para el mismo key, exactamente lo que el debounce
+explícitamente garantiza antes del setter). `bun test`
+verde: 750 pass / 1 skip / 0 fail, 1784 expect() calls,
+25 files, 340 ms — sin cambio en el conteo (era 750 / 1 / 0
+antes del fix). Commit `7cee5ee`.
 
 ### Mejora 57 — Finding 15.7.A — HIGH — `server.restart()` aborts in-flight launches and leaks server processes
 
