@@ -32,11 +32,12 @@ export interface DashboardProps {
 /**
  * Dashboard component
  *
- * Fixed 4-row header that displays:
- * - Row 1: State badge + Iteration + Tasks progress bar
- * - Row 2: Timer (current) + Average + Estimated total
- * - Row 3: Current task (truncated if needed)
+ * Header that displays:
+ * - Row 1 (live state): State badge + Tasks progress + Iteration + Health
+ * - Row 2 (details): Model + Agent + Task time + Avg + Remaining
+ * - Row 3 (conditional): cooldown countdown when rate-limited / debug
  * - Row 4: Keybind hints
+ * (the full current task lives in the BottomPanel, not here)
  *
  * Uses theme colors and indicates active/inactive state via border styling.
  *
