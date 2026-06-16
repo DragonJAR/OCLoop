@@ -207,3 +207,25 @@ describe("parseArgs — pairwise combinations of interacting params", () => {
     expect(c.args?.resilience).toEqual({ backoffBaseMs: 100, backoffMaxMs: 200 })
   })
 })
+
+describe("parseArgs — value flags reject a following flag as their value", () => {
+  for (const flag of ["--prompt", "--plan", "--agent"]) {
+    it(`${flag} --debug errors instead of swallowing the flag`, () => {
+      const r = runParse([flag, "--debug"])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain("requires a value")
+    })
+  }
+  it("still accepts legitimate values", () => {
+    expect(runParse(["--prompt", "my.md"]).args?.promptFile).toBe("my.md")
+    expect(runParse(["--agent", "plan"]).args?.agent).toBe("plan")
+  })
+})
+
+describe("parseArgs — planTimeoutMs resilience override", () => {
+  it("accepts --resilience planTimeoutMs=<ms>", () => {
+    const { args, exitCode } = runParse(["--resilience", "planTimeoutMs=600000"])
+    expect(exitCode).toBeNull()
+    expect(args?.resilience?.planTimeoutMs).toBe(600000)
+  })
+})

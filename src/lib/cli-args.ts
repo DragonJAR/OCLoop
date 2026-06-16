@@ -124,6 +124,19 @@ function parsePort(portStr: string | undefined): number {
   return port
 }
 
+/**
+ * Consume the next token as a flag's value. Errors if it's missing OR looks like
+ * another flag (starts with `-`, except a lone `-`), so `--prompt --debug` fails
+ * loudly instead of setting promptFile to "--debug" and silently dropping --debug.
+ */
+function requireValue(value: string | undefined, flag: string): string {
+  if (!value || (value.startsWith("-") && value !== "-")) {
+    console.error(`Error: ${flag} requires a value`)
+    process.exit(1)
+  }
+  return value
+}
+
 function parseModel(model: string | undefined): string {
   if (!model) {
     console.error("Error: --model requires an argument")
@@ -176,30 +189,15 @@ export function parseArgs(argv: string[]): CLIArgs {
 
       case "-a":
       case "--agent":
-        const agent = argv[++i]
-        if (!agent) {
-          console.error("Error: --agent requires an argument")
-          process.exit(1)
-        }
-        args.agent = agent
+        args.agent = requireValue(argv[++i], "--agent")
         break
 
       case "--prompt":
-        const promptPath = argv[++i]
-        if (!promptPath) {
-          console.error("Error: --prompt requires a file path argument")
-          process.exit(1)
-        }
-        args.promptFile = promptPath
+        args.promptFile = requireValue(argv[++i], "--prompt")
         break
 
       case "--plan":
-        const planPath = argv[++i]
-        if (!planPath) {
-          console.error("Error: --plan requires a file path argument")
-          process.exit(1)
-        }
-        args.planFile = planPath
+        args.planFile = requireValue(argv[++i], "--plan")
         break
 
       case "-r":
