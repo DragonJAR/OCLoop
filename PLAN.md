@@ -2623,10 +2623,74 @@ antes del fix). Commit `7cee5ee`.
 
 ### Mejora 57 — Finding 15.7.A — HIGH — `server.restart()` aborts in-flight launches and leaks server processes
 
-- [ ] Evaluar la mejora 57 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 57 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 57 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 57 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 57 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 57 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 57 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 57 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20044-20113`): dos llamantes concurrentes de
+`server.restart()` (watchdog recovery + SSE-exhaustion effect,
+o dos comandos rápidos del usuario) pasan por
+`closeCurrent()` + `launch()` en paralelo, el segundo resuelve
+y sobrescribe `serverRef`, dejando el handle del primer
+server en el piso (proceso leaked, port retenido, URL flip
+mid-recovery, false "restart_failed" log on success, lost
+`setError`). La propuesta del audit
+(`MEJORAS.md:20077-20095`, "module-scoped `restartInProgress`
+boolean + try/finally") es estrictamente la mínima útil y la
+opción correcta del propio audit (que descarta el
+"coalesce" como "the skip semantic is sufficient because all
+three call sites already have their own retry/heartbeat
+logic"). El guard de in-flight ya está implementado en
+`useServer.ts:213` (commit `eeaf2fb`, Mejora 27, Finding
+7.5.A) — usa el patrón `if (status() === "starting") return`
+que reusa el `setStatus("starting")` que la propia función
+escribe en la línea 221. Esa es exactamente la misma
+protección que el `restartInProgress` boolean del audit
+propone, implementado sobre el signal `status()` que ya
+existe como fuente de verdad del lifecycle del server: el
+signal flipea a `"starting"` en la entrada (síncrono, sin
+await entre el guard y el set), y vuelve a `"ready"` /
+`"error"` / `"stopped"` en la salida — un segundo caller
+que llegue durante la ventana ve `status() === "starting"` y
+retorna con `log.health("server", "restart_in_flight_noop")`
+para visibilidad post-mortem. La diferencia mecánica
+(boolean dedicado vs read del signal) es invisible al
+comportamiento observable que el audit exige prevenir: el
+segundo caller nunca llega a `closeCurrent()`, `setUrl(null)`,
+`launch()` ni al catch-path, así que los 4 síntomas del
+finding (process leak, URL flip, false "restart_failed",
+lost `setError`) quedan cerrados por el guard preexistente.
+Mejora 27 cubre el mismo race para el mismo `restart()`;
+Finding 15.7.A es la versión verbose del mismo root cause,
+re-auditada bajo el lens de "server process leak" en Phase
+15. Implementación mínima: extender el comment block de
+`useServer.ts:194-216` (6 líneas → 22 líneas) para (a)
+nombrar explícitamente que el mismo guard cubre
+Finding 15.7.A además de Finding 7.5.A, (b) listar los 4
+síntomas user-facing del finding (process leak, URL flip,
+false "restart_failed" log, lost `setError`), y (c)
+explicar la equivalencia funcional entre el `status()
+=== "starting"` preexistente y el `restartInProgress`
+boolean + try/finally que el audit propone. Cero cambios
+al flow del restart, cero cambios al reducer, cero cambios
+a `startServer()` (sigue usando su propio `status() !==
+"starting" && status() !== "stopped"` guard en línea 120,
+que es estructuralmente diferente y debe quedarse como
+está), cero cambios a `closeCurrent()` / `launch()` /
+`ping()` / `stop()`, cero impacto en la TUI, cero impacto
+en el watchdog, cero impacto en el SSE handler. Sin nuevos
+tests — la cobertura del guard es territory de Mejora 89
+(Finding 18.2.A, `useServer.test.ts` aún no existe; el
+audit `MEJORAS.md:20171-20189` lo nombra explícitamente
+como "INFO-level test-coverage note" + "worth adding in a
+future coverage pass"). El guard es estructural (un `if`
+con un `return`), no computacional, y code review cubre
+el gap de cobertura. `bun test` verde: 750 pass / 1 skip /
+0 fail, 1784 expect() calls, 25 files, 334 ms — sin cambio
+en el conteo (era 750 / 1 / 0 antes del comment block
+extendido). Commit pendiente.
 
 ### Mejora 58 — Finding 15.7.B — MEDIUM — App-level `restartServer()` has no re-entry guard
 
