@@ -22,6 +22,14 @@ All notable changes to OCLoop are documented here. Format based on
   remaining), so neither row is overloaded.
 
 ### Fixed
+- **The run now ends reliably when the plan is done, instead of looping forever at 100%.**
+  Completion no longer depends on the executing model emitting a `<plan-complete>` tag
+  (which it could omit or mis-format — e.g. the closing tag glued to the end of the last
+  line, which the parser rejected, leaving the loop spawning empty iterations). OCLoop now
+  detects completion structurally (no automatable tasks remain) and appends the
+  `<plan-complete>` summary to the plan itself; the completion parser also accepts the
+  closing tag in any position. The execution prompt now tells the agent to mark a task
+  `[x]` only when it is verified and committed — never preemptively.
 - **Transient connection errors at iteration start now auto-retry with backoff.**
   A dropped/reset socket (e.g. "The socket connection was closed unexpectedly")
   while creating the session stopped the loop with a manual-retry dialog. It now
