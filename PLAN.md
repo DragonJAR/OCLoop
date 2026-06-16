@@ -126,7 +126,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 - [x] Audit `detectInstalledTerminals` for: platform differences (macOS/Linux/Windows), PATH detection, terminal name matching
 - [x] Verify: `launchTerminal` correctly constructs commands for each terminal type and handles launch failures
 - [x] Verify: `getAttachCommand` produces valid commands for different server URLs (localhost, 127.0.0.1, custom ports)
-- [ ] Verify: `copyToClipboard` works on macOS, Linux, and Windows — falls back gracefully if no clipboard utility is available
+- [x] Verify: `copyToClipboard` works on macOS, Linux, and Windows — falls back gracefully if no clipboard utility is available
 
 ## Phase 12 — Configuration & i18n
 

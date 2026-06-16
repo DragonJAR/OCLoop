@@ -13771,4 +13771,318 @@ The current data flow is safe, but the function has no defensive escaping in cas
 
 ---
 
-**Combined tally for Phase 11 (1.1 + 1.2 + 1.3):** 2 MEDIUM (Windows path detection, no macOS-native terminals — both from 11.1) + 1 MEDIUM (missing `detached: true` — 11.2.A) = **3 MEDIUM**; 2 LOW (from 11.1) + 3 LOW (from 11.2) + 2 LOW (from 11.3) = **7 LOW**; 2 INFO (from 11.1) + 4 INFO (from 11.2) + 3 INFO (from 11.3) = **9 INFO**; no CRITICAL or HIGH. The MEDIUMs are real gaps on supported platforms (Windows + stock macOS) and a signal-propagation hardening (detached spawn). The LOWs are silent-no-op-launch variants (11.2.B/C/D) and defensive empty-input guards (11.3.A/B). The INFOs document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+### 11.4 — Verify `copyToClipboard` works on macOS, Linux, and Windows; falls back gracefully when no clipboard utility is available
+
+**Status: COMPLETE — VERIFIED, two MEDIUM (macOS `pbcopy` not detected, Windows `clip.exe` not detected), two LOW (no result-check at call sites, no test coverage), three INFO findings; no CRITICAL or HIGH.** The implementation is small and clean (97 lines including types), uses the same `commandExists` helper as the terminal launcher, and the Linux (X11 + Wayland) happy path is correct. The MEDIUM findings are real functional gaps on the two platforms the audit does not explicitly target with `KNOWN_TERMINALS` entries (Phase 11.1.B macOS, 11.1.A Windows) — clipboard silently fails on stock macOS and stock Windows.
+
+The function under audit is `src/lib/clipboard.ts:53-95`:
+
+```ts
+export async function copyToClipboard(text: string): Promise<ClipboardResult> {
+  const tool = await detectClipboardTool();
+
+  if (!tool) {
+    return {
+      success: false,
+      error:
+        "No clipboard tool found. Install wl-copy (Wayland) or xclip/xsel (X11).",
+    };
+  }
+
+  try {
+    const proc = Bun.spawn([tool.command, ...tool.args], {
+      stdin: "pipe",
+      stdout: "ignore",
+      stderr: "pipe",
+    });
+
+    // Write text to stdin, awaiting the flush + close so the child receives
+    // the full payload before we wait on its exit (avoids truncation/hangs).
+    if (proc.stdin) {
+      await proc.stdin.write(text);
+      await proc.stdin.end();
+    }
+
+    const exitCode = await proc.exited;
+
+    if (exitCode !== 0) {
+      const stderr = await new Response(proc.stderr).text();
+      return {
+        success: false,
+        error: stderr.trim() || `Clipboard command exited with code ${exitCode}`,
+      };
+    }
+
+    return { success: true };
+  } catch (err) {
+    return {
+      success: false,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+```
+
+And the detection helper, `src/lib/clipboard.ts:23-48`:
+
+```ts
+export async function detectClipboardTool(): Promise<ClipboardTool | null> {
+  const isWayland = !!process.env.WAYLAND_DISPLAY;
+
+  if (isWayland) {
+    if (await commandExists("wl-copy")) {
+      return { command: "wl-copy", args: [] };
+    }
+  }
+
+  if (await commandExists("xclip")) {
+    return { command: "xclip", args: ["-selection", "clipboard"] };
+  }
+
+  if (await commandExists("xsel")) {
+    return { command: "xsel", args: ["--clipboard", "--input"] };
+  }
+
+  if (await commandExists("wl-copy")) {
+    return { command: "wl-copy", args: [] };
+  }
+
+  return null;
+}
+```
+
+**Call sites** (verified by grep — three call sites, all in `src/App.tsx`):
+
+| Line | Caller | Guard before call | Result-handling |
+|------|--------|-------------------|-----------------|
+| App.tsx:1427 | `onConfigCopy` (terminal config dialog → "Copy attach command") | `if (sid && url)` | `copyToClipboard(cmd)` (no `await`, no check) → `toast.show({ variant: "success", message: t("toastCopied") })` (line 1428) — success toast shown unconditionally |
+| App.tsx:1438 | `onErrorCopy` (error dialog → "Copy attach command") | `if (sid && url)` | `copyToClipboard(cmd)` (no `await`, no check) → `toast.show({ variant: "success", message: t("toastCopied") })` (line 1439) — success toast shown unconditionally |
+| App.tsx:1528 | Command palette `copy_attach` command | `if (sid && url)` | `copyToClipboard(cmd)` (no `await`, no check) → `toast.show({ variant: "success", message: t("toastCopied") })` (line 1529) — success toast shown unconditionally |
+
+All three call sites **discard the `ClipboardResult`** and immediately show a success toast. This compounds with the platform gaps below: on macOS or Windows, the user sees a "Copied to clipboard" toast while the clipboard is empty, with no error feedback.
+
+#### Per-platform behavior
+
+I traced `detectClipboardTool` -> `copyToClipboard` for each supported platform by following the platform-specific env vars / installed binaries:
+
+| Platform | Env check | Tool detection order (from `detectClipboardTool`) | Stock-install result | Functional? |
+|----------|-----------|---------------------------------------------------|----------------------|-------------|
+| **macOS (Aqua)** | `WAYLAND_DISPLAY` unset | 1. `wl-copy` (skipped — Wayland check fails) 2. `xclip` 3. `xsel` 4. `wl-copy` | None of the four are installed by default. macOS ships `pbcopy` (in `/usr/bin/pbcopy`, on `$PATH` for every user), but it is **not in the detection list**. | **NO** — `detectClipboardTool` returns `null` → `copyToClipboard` returns `{ success: false, error: "No clipboard tool found. Install wl-copy (Wayland) or xclip/xsel (X11)." }` on every stock macOS install. The error message does not even mention `pbcopy`, so the user does not know what to install. |
+| **Linux (X11)** | `WAYLAND_DISPLAY` unset | 1. Wayland branch skipped 2. `xclip` 3. `xsel` 4. `wl-copy` (XWayland fallback) | `xclip` is a common package (`xclip` on Debian/Ubuntu, `xclip` on Fedora/Arch); `xsel` is a smaller alternative; `wl-copy` works as XWayland. | **YES** — at least one of the three is almost always installed on a desktop Linux. |
+| **Linux (Wayland)** | `WAYLAND_DISPLAY` set | 1. `wl-copy` (Wayland check passes) | `wl-copy` is the standard Wayland clipboard tool (`wl-clipboard` on Debian/Ubuntu, `wl-clipboard` on Fedora, `wl-clipboard` on Arch). | **YES** — `wl-copy` is the canonical tool on Wayland. |
+| **Linux (headless server)** | depends on display | Same as X11 or Wayland above | Neither `xclip`, `xsel`, nor `wl-copy` is typically installed on a headless server. | **NO** — `detectClipboardTool` returns `null`. This is correct: there is no clipboard to write to. The error message is accurate, but the user has no way to "install" a clipboard on a headless box. (This is the intended behavior; the picker shows the error.) |
+| **Windows** | n/a (no `WAYLAND_DISPLAY`) | 1. Wayland branch skipped 2. `xclip` 3. `xsel` 4. `wl-copy` | **None** of the three are installed by default. Windows ships `clip.exe` (in `C:\Windows\System32\clip.exe`, on `%PATH%` for every user), but it is **not in the detection list**. | **NO** — same as macOS, except the gap is compounded by Phase 11.1.A: `commandExists` uses `which` which is **also** missing on stock Windows, so every probe returns `false` regardless of whether the tool is installed. `detectClipboardTool` returns `null` even if the user has Git Bash or WSL on `$PATH`. The fix needs both the `where.exe` fallback in `commandExists` (11.1.A) AND adding `clip.exe` to the detection list (this finding). |
+
+**Net result:** the function is correct on Linux (both X11 and Wayland), but silently fails on every stock macOS and stock Windows install — the two platforms the README and the OCLoop website primarily target (the developer is on macOS per the `KNOWN_TERMINALS` list, which is Linux-only and has no macOS-specific entries, see Phase 11.1.B).
+
+#### Per-edge-case behavior
+
+| # | Input / env | Expected | Actual | Verdict |
+|---|-------------|----------|--------|---------|
+| 1 | Linux + `xclip` installed | Copy succeeds | `detectClipboardTool` returns `{ command: "xclip", args: ["-selection", "clipboard"] }` → spawn with stdin text → exit 0 → `{ success: true }` | ✓ |
+| 2 | Linux + `wl-copy` installed (Wayland) | Copy succeeds | Wayland branch matches → `wl-copy` with no args → text goes to primary+clipboard selection → `{ success: true }` | ✓ |
+| 3 | Linux + neither tool installed | Graceful error | All four probes fail → `null` → error message mentions Wayland + X11 | ✓ — but error message is misleading on a headless box (see Finding 11.4.G). |
+| 4 | macOS + no Homebrew | Copy should succeed (via `pbcopy`) | `WAYLAND_DISPLAY` unset → `wl-copy` skipped → `xclip`/`xsel`/`wl-copy` all `false` → `null` → error | ✗ — Finding 11.4.A. |
+| 5 | macOS + `xclip` installed (e.g. via Homebrew) | Copy succeeds | Detection order: Wayland skipped → `xclip` matches → spawn with stdin text → `{ success: true }` | ✓ — but uses an off-platform tool. |
+| 6 | Windows + stock install | Copy should succeed (via `clip.exe`) | `which` missing (Phase 11.1.A) → all probes return `false` regardless → `null` → error | ✗ — Finding 11.4.B (compounded with 11.1.A). |
+| 7 | `text = ""` (empty) | No-op or `{ success: true }` | Spawn runs with empty stdin → tool exits 0 → `{ success: true }` | ✓ — but wastes a process (see Finding 11.4.E). |
+| 8 | `text = "opencode attach http://localhost:8080 --session ses_abc"` (typical, ~60 bytes) | Copy succeeds | Small text fits pipe buffer, `stdin.write` resolves immediately, `stdin.end()` closes cleanly, child reads to EOF, exits 0 | ✓ |
+| 9 | `text` of 1 MB | Copy should still succeed | `stdin.write(1MB)` may exceed pipe buffer (64KB on Linux) but Bun's WritableStream handles backpressure; `stdin.end()` waits for the stream to close; child reads to EOF | ✓ — works in practice; see Finding 11.4.F for a theoretical concern. |
+| 10 | `text` containing `\n` or other control chars | Copy succeeds; newlines preserved | `wl-copy` and `xclip` both treat stdin as opaque text; newlines round-trip through the clipboard MIME | ✓ |
+| 11 | Tool exists but crashes (e.g., `xclip` invoked with no `$DISPLAY`) | Graceful error with stderr | `proc.exited` resolves with non-zero → `stderr` read → return `{ success: false, error: <stderr> }` | ✓ |
+| 12 | `Bun.spawn` throws synchronously (e.g., `EACCES` on the binary) | Graceful error | Caught by outer `try/catch` (line 89-94) → `{ success: false, error: <message> }` | ✓ |
+| 13 | Caller does not await (App.tsx:1427, 1438, 1528) | Result is lost; toast is shown | The toast is shown immediately on the same tick (line 1428 follows line 1427 synchronously) regardless of whether the copy actually succeeded. The result is discarded. | ✗ — Finding 11.4.C. |
+| 14 | Caller awaits but ignores the result | Result is lost; toast is not shown (since none is wired) | n/a — no current caller awaits. | n/a |
+| 15 | Two concurrent `copyToClipboard` calls | Both should succeed independently | Each spawns its own child; stdins are independent; no shared state | ✓ |
+
+#### Finding 11.4.A — MEDIUM — macOS `pbcopy` is not detected; copy silently fails on every stock macOS install
+
+**Problem.** `detectClipboardTool` (`src/lib/clipboard.ts:23-48`) probes only `wl-copy`, `xclip`, and `xsel`. On macOS (the OCLoop developer's primary platform per the README + `KNOWN_TERMINALS` shape), the system ships `/usr/bin/pbcopy` (always on `$PATH`, always present since Mac OS X 10.0). None of the three probed tools is installed by default on macOS — `xclip`/`xsel`/`wl-copy` are X11/Wayland tools and require Homebrew + XQuartz/Wayland setup, which the average macOS user does not have. As a result, `detectClipboardTool()` returns `null` on every stock macOS install, and `copyToClipboard` returns `{ success: false, error: "No clipboard tool found. Install wl-copy (Wayland) or xclip/xsel (X11)." }`. The error message does not mention `pbcopy`, so the user has no way to know what to install (and the answer is "nothing — pbcopy should have been detected").
+
+This is a real functional gap on the project's primary target platform, not a corner case. The three call sites (App.tsx:1427, 1438, 1528) all show a success toast unconditionally, so the user sees "Copied to clipboard" while the clipboard is empty.
+
+**Where.** `src/lib/clipboard.ts:23-48` (the `detectClipboardTool` function).
+
+**Proposed fix.** Branch on `process.platform === "darwin"` first and return `pbcopy` if present (it is always present on macOS, but the probe is cheap). Same for Windows (Finding 11.4.B) and Linux:
+
+```ts
+export async function detectClipboardTool(): Promise<ClipboardTool | null> {
+  // macOS — pbcopy is always present
+  if (process.platform === "darwin") {
+    if (await commandExists("pbcopy")) {
+      return { command: "pbcopy", args: [] };
+    }
+    return null;
+  }
+
+  // Windows — clip.exe is always present
+  if (process.platform === "win32") {
+    if (await commandExists("clip")) {
+      return { command: "clip", args: [] };
+    }
+    return null;
+  }
+
+  // Linux / BSD — prefer Wayland, fall back to X11
+  const isWayland = !!process.env.WAYLAND_DISPLAY;
+  if (isWayland) {
+    if (await commandExists("wl-copy")) {
+      return { command: "wl-copy", args: [] };
+    }
+  }
+  if (await commandExists("xclip")) {
+    return { command: "xclip", args: ["-selection", "clipboard"] };
+  }
+  if (await commandExists("xsel")) {
+    return { command: "xsel", args: ["--clipboard", "--input"] };
+  }
+  if (await commandExists("wl-copy")) {
+    return { command: "wl-copy", args: [] };
+  }
+  return null;
+}
+```
+
+The early `return null` for `darwin`/`win32` is important: even if the user has `xclip` installed via Homebrew on macOS, we should prefer the platform-native `pbcopy` (which talks to the Aqua pasteboard, not a fake X11 selection). The macOS error message in the no-tool path also needs updating:
+
+```ts
+if (!tool) {
+  const hint =
+    process.platform === "darwin" ? "pbcopy (built-in)"
+    : process.platform === "win32" ? "clip.exe (built-in)"
+    : "wl-copy (Wayland) or xclip/xsel (X11)";
+  return {
+    success: false,
+    error: `No clipboard tool found. ${hint} should be available.`,
+  };
+}
+```
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md acceptance criteria).
+
+#### Finding 11.4.B — MEDIUM — Windows `clip.exe` is not detected; copy silently fails on every stock Windows install
+
+**Problem.** Same root cause as 11.4.A but for Windows. `clip.exe` ships with every Windows install since Windows 95 (`C:\Windows\System32\clip.exe`, on `%PATH%` for every user). `detectClipboardTool` does not probe for it. The gap is compounded by Phase 11.1.A: `commandExists` uses `which`, which is also missing on stock Windows, so even if we add `clip` to the detection list, the probe returns `false` until the `where.exe` fallback is added to `commandExists`. The fix is the platform branch in 11.4.A above; the `where.exe` fallback is the Phase 11.1.A fix; both are needed for Windows to work end-to-end.
+
+**Where.** `src/lib/clipboard.ts:23-48` (the `detectClipboardTool` function) and `src/lib/command-exists.ts:10` (the `which` literal).
+
+**Proposed fix.** See 11.4.A (the `win32` branch). The `where.exe` fallback is the Phase 11.1.A fix; both changes must ship together for Windows to work.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.4.C — LOW — Call sites do not check the `ClipboardResult`; success toast is shown even on failure
+
+**Problem.** The three call sites in `src/App.tsx` (lines 1427, 1438, 1528) call `copyToClipboard(cmd)` **without `await`** and **without `.then()` / `.catch()`**. The success toast `toast.show({ variant: "success", message: t("toastCopied") })` fires on the next line, synchronously, before the clipboard command has even been spawned. On macOS (11.4.A) or Windows (11.4.B), the user sees "Copied to clipboard" while the clipboard is empty — the worst possible UX for a clipboard operation (the user pastes and gets nothing, with no clue why).
+
+The same pattern is fine for the success path (no error toast needed) but it must check the result on failure. The function is async and never rejects (the inner `try/catch` swallows everything), so the floating-promise anti-pattern is technically safe — but the result is lost, which is the real bug.
+
+**Where.** `src/App.tsx:1427-1428`, `1438-1439`, `1528-1529`.
+
+**Proposed fix.** Await the call and branch on `result.success`:
+
+```ts
+const onConfigCopy = async () => {
+  const sid = sessionId() || lastSessionId()
+  const url = server.url()
+  if (sid && url) {
+    const cmd = getAttachCommand(url, sid)
+    const result = await copyToClipboard(cmd)
+    if (result.success) {
+      toast.show({ variant: "success", message: t("toastCopied") })
+    } else {
+      toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
+    }
+  }
+  dialog.clear()
+}
+```
+
+This requires adding a new i18n key (`toastCopyFailed`) in both English and Spanish, or reusing an existing error-toast key. The pattern is the same for all three call sites.
+
+**Status.** Fix proposed, not applied.
+
+#### Finding 11.4.D — LOW — `clipboard.ts` has no test coverage
+
+**Problem.** The implementation file `src/lib/clipboard.ts` (97 lines) has no companion `clipboard.test.ts` (verified by `find src -name "clipboard*"` — only the implementation file). The two MEDIUM findings above (macOS + Windows) and the LOW result-checking finding could all be caught by a small mockable test suite that injects the `commandExists` result and the `Bun.spawn` exit code, e.g.:
+
+```ts
+it("returns pbcopy on darwin", async () => {
+  // Mock commandExists to return true for "pbcopy"
+  // Mock process.platform === "darwin"
+  // Assert detectClipboardTool returns { command: "pbcopy", args: [] }
+})
+
+it("returns null on linux with no tools installed", async () => {
+  // Mock commandExists to return false for all probes
+  // Assert detectClipboardTool returns null
+})
+
+it("returns { success: false } when no tool is available", async () => {
+  // Mock detectClipboardTool to return null
+  // Assert copyToClipboard returns { success: false, error: /pbcopy|wl-copy|xclip/ }
+})
+```
+
+**Where.** `src/lib/clipboard.ts` (97 lines, 0 tests).
+
+**Status.** Test coverage gap, not a bug.
+
+#### Finding 11.4.E — INFO — Empty `text` is allowed; wastes a process but produces the right outcome
+
+**Problem.** `copyToClipboard("", ...)` runs the full detection + spawn path; the child exits 0 with empty stdin; the function returns `{ success: true }`. The user-visible behavior is correct ("nothing was copied, success") but a wasted process for a no-op. None of the current call sites ever pass an empty `text` (they all build `getAttachCommand(url, sid)` which is always non-empty), so this is defensive only.
+
+**Where.** `src/lib/clipboard.ts:53-95`.
+
+**Proposed fix.** Optional micro-optimization: short-circuit at the top of the function:
+
+```ts
+if (!text) return { success: true }
+```
+
+Not worth doing unless the function is ever called from a user-typed-input flow.
+
+**Status.** No fix recommended.
+
+#### Finding 11.4.F — INFO — Stdin write is awaited but not drained for backpressure; theoretical risk on very large text
+
+**Problem.** `await proc.stdin.write(text)` resolves when the data is **buffered** by Bun's WritableStream, not necessarily when the child has consumed it. For a 60-byte `opencode attach …` string this is invisible — the whole thing fits in the pipe buffer (64KB on Linux, 16KB on macOS) and resolves instantly. For a multi-megabyte payload (e.g., a future "copy log to clipboard" feature), `write` returns immediately, `end()` is called, and the child may have only consumed a fraction of the input before EOF. The child would then process a truncated payload. The current use case is bounded to < 1KB, so the risk is theoretical.
+
+**Where.** `src/lib/clipboard.ts:73-76`.
+
+**Proposed fix.** If the function is ever used for large payloads, drain the WritableStream before calling `end()`:
+
+```ts
+const writer = proc.stdin.getWriter()
+await writer.write(new TextEncoder().encode(text))
+await writer.close() // awaits drain + close
+```
+
+For the current use case, the existing `await proc.stdin.write(text); await proc.stdin.end()` is correct.
+
+**Status.** No fix recommended for the current use case; flagged for any future "copy large text" feature.
+
+#### Finding 11.4.G — INFO — "No clipboard tool found" error message does not mention `pbcopy` or `clip.exe`
+
+**Problem.** When `detectClipboardTool` returns `null`, the error message is hard-coded to `"No clipboard tool found. Install wl-copy (Wayland) or xclip/xsel (X11)."` (clipboard.ts:58-61). On macOS or Windows the user sees the same message even though the correct fix is "use the built-in `pbcopy` / `clip.exe` (which is what the code SHOULD have detected)". The fix in 11.4.A includes a per-platform error message; this INFO documents why.
+
+**Where.** `src/lib/clipboard.ts:58-61`.
+
+**Status.** Resolved by 11.4.A's fix.
+
+#### Summary of Phase 11.4 findings
+
+| #     | Severity | One-liner |
+|-------|----------|-----------|
+| 11.4.A | MEDIUM   | `detectClipboardTool` does not probe `pbcopy`; on stock macOS the clipboard copy always fails. Add a `process.platform === "darwin"` branch. |
+| 11.4.B | MEDIUM   | `detectClipboardTool` does not probe `clip.exe`; on stock Windows the clipboard copy always fails. Add a `process.platform === "win32"` branch (also requires the `where.exe` fallback in `commandExists` from 11.1.A). |
+| 11.4.C | LOW      | Call sites (App.tsx:1427, 1438, 1528) do not check the `ClipboardResult`; success toast is shown even on failure. Await + branch on `result.success`. |
+| 11.4.D | LOW      | `clipboard.ts` has no test coverage; add a mockable test suite that exercises the platform branches and the no-tool path. |
+| 11.4.E | INFO     | Empty `text` is allowed; wastes a process but produces the right outcome. Short-circuit if needed. |
+| 11.4.F | INFO     | Stdin write is not drained for backpressure; theoretical risk on multi-megabyte payloads (current use is < 1KB). |
+| 11.4.G | INFO     | "No clipboard tool found" error message does not mention `pbcopy` / `clip.exe`; resolved by 11.4.A's per-platform message. |
+
+**Net severity tally for Phase 11.4: 2 MEDIUM, 2 LOW, 3 INFO; no CRITICAL or HIGH.** The two MEDIUM findings are real functional gaps on the platforms the OCLoop project targets (macOS per the README, Windows per the install instructions in the README's badges) — the Linux happy path (X11 + Wayland) is correct, and the tool-detection order matches the standard Linux clipboard hierarchy. The LOW findings are a UX gap (the success toast is shown even on failure, which silently lies to the user) and a coverage gap (no tests). The INFO findings document minor defensive improvements. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+
+---
+
+**Combined tally for Phase 11 (11.1 + 11.2 + 11.3 + 11.4):** 3 MEDIUM (Windows path detection, no macOS-native terminals, missing `detached: true`) + 2 MEDIUM (macOS `pbcopy` not detected, Windows `clip.exe` not detected) = **5 MEDIUM**; 2 LOW (from 11.1) + 3 LOW (from 11.2) + 2 LOW (from 11.3) + 2 LOW (from 11.4) = **9 LOW**; 2 INFO (from 11.1) + 4 INFO (from 11.2) + 3 INFO (from 11.3) + 3 INFO (from 11.4) = **12 INFO**; no CRITICAL or HIGH. The MEDIUMs are real gaps on supported platforms (Windows, stock macOS) and a signal-propagation hardening (detached spawn). The LOWs are silent-no-op-launch variants (11.2.B/C/D), defensive empty-input guards (11.3.A/B), a result-discard UX gap (11.4.C), and a coverage gap (11.4.D). The INFOs document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
