@@ -17537,3 +17537,308 @@ assertions to make the gap explicit.
 
 No code changes were made. The audit produces documentation only,
 per PLAN.md acceptance criteria.
+
+---
+
+## Phase 14.3 — Auth errors (401/403) are NOT recoverable
+
+PLAN.md 14.3: "Verify: Auth errors (401/403) are NOT recoverable —
+they surface as permanent errors requiring user intervention."
+
+**Status: PARTIALLY VERIFIED — one HIGH finding, one INFO observation,
+one MEDIUM test-coverage gap. The SSE `onSessionError` path correctly
+classifies auth errors as `recoverable: false`, but the
+`handleIterationError` (iteration-start) path hardcodes
+`recoverable: true` for any non-rate-limit, non-transient error,
+including auth — so an auth error during the very first session
+creation (or after a server restart that re-validates credentials)
+will offer a Retry button that cannot succeed.**
+
+### Verification — SSE path: VERIFIED, correct
+
+The SSE `onSessionError` handler in `App.tsx:454-489` is the primary
+code path for mid-iteration session errors (errors that fire after a
+session has been created and the prompt sent). The branch for
+non-rate-limit, non-aborted errors (lines 479-489) dispatches
+`{ type: "error", recoverable: error.kind === "transient" }`.
+
+For an auth error, `classifySessionError` returns
+`kind: "auth"` (`useSSE.ts:122-126`; the `AUTH_RE` matches `401`,
+`403`, `unauthorized`, `forbidden`, `invalid api key`,
+`authentication failed`, `invalid x-api-key`). `recoverable: false`
+follows from `error.kind === "transient"` evaluating to `false`.
+
+The reducer (useLoopState.ts:237-256) accepts the `error` action
+from `running`, `pausing`, and `debug` states and stores the
+`recoverable` flag verbatim. The `retry` action (line 258-264) is
+guarded by `state.type === "error" && state.recoverable` — when
+`recoverable` is `false`, retry is a no-op. The `DialogError`
+component (`components/DialogError.tsx:25-28` and `:65-69`) only
+shows the `[R]etry` action when `props.recoverable` is `true`.
+
+**End-to-end flow for an SSE auth error:**
+
+1. `useSSE.ts:369-386` — `session.error` event with a 401/403
+   payload arrives, `classifySessionError` returns `kind: "auth"`.
+2. `App.tsx:454-489` — `onSessionError` callback fires the
+   non-aborted, non-rate-limit branch; `recoverable: false`
+   because `error.kind !== "transient"`.
+3. `App.tsx:482-487` — `loop.dispatch({ type: "error", ...,
+   recoverable: false })` transitions the loop to the `error`
+   state.
+4. `App.tsx:1319` (or equivalent in `ErrorDialog` mount) — the
+   `DialogError` component receives `recoverable: false`, so the
+   R key does nothing (line 25-28), and the UI shows only
+   `[Q]uit`.
+5. `useLoopState.ts:258-264` — even if the user (or a stale hotkey)
+   dispatches `retry`, the reducer is a no-op for
+   `recoverable: false` errors.
+
+**This half of the contract is correct and matches the PLAN.md
+14.3 statement.**
+
+### Finding 14.3.A — HIGH — `handleIterationError` hardcodes `recoverable: true` for auth/fatal errors
+
+**Problem.** `App.tsx:754-771`:
+
+```ts
+function handleIterationError(err: unknown): void {
+  const classified = classifySessionError(err)
+  if (classified.kind === "rate_limit") {
+    enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+    return
+  }
+  if (classified.kind === "transient") {
+    enterCooldown(classified.message, undefined, "transient")
+    return
+  }
+  const message = err instanceof Error ? err.message : String(err)
+  loop.dispatch({
+    type: "error",
+    source: "api",
+    message: t("errIterationStart", { message }),
+    recoverable: true,                                // <-- hardcoded
+  })
+}
+```
+
+For any error that classifies as `auth` or `fatal` (the third arm
+of the cascade is reached when `kind` is neither `rate_limit` nor
+`transient` — which includes `auth` and `fatal`), the function
+dispatches `recoverable: true`. The reducer accepts it, the dialog
+shows the R key, and pressing R calls `retry`, which transitions
+to `starting` — the iteration driver then re-runs, fails the
+session creation with the same auth error, and lands back in
+`error (recoverable: true)`. The user can press R indefinitely
+with no progress; the only escape is Q.
+
+The function's own header comment (line 747-753) is internally
+contradictory:
+
+```
+   * Route an iteration-start failure. Rate limits AND transient
+   * connection blips (dropped socket, reset, timeout, 5xx) both
+   * back off and retry the same iteration automatically — an
+   * unattended harness shouldn't stop on a flaky network. Only
+   * auth/fatal errors (and exhausted retries) surface as a
+   * recoverable error needing the user.
+```
+
+The comment says "Only auth/fatal errors … surface", but the
+implementation does not distinguish auth/fatal from any other
+non-rate-limit, non-transient kind (there are only three return
+paths, and the third lumps `auth` and `fatal` together with the
+correct behavior of "surface as an error" but the wrong behavior
+of "recoverable: true").
+
+The asymmetry with the SSE `onSessionError` path (which sets
+`recoverable: error.kind === "transient"`) is the bug. The
+iteration-start path should mirror the SSE path for any
+non-rate-limit, non-transient error:
+
+```ts
+recoverable: classified.kind === "transient",
+```
+
+This makes `auth` and `fatal` non-recoverable (matching
+`onSessionError`), and keeps `transient` recoverable — but
+`transient` is already intercepted by the second arm of the
+cascade, so the third arm is reached only by `auth` and `fatal`.
+A simpler equivalent is:
+
+```ts
+recoverable: false,                                   // auth + fatal
+```
+
+**Where.** `src/App.tsx:754-771` (`handleIterationError`).
+
+**Severity.** HIGH — produces wrong behavior on a plausible input.
+An invalid/expired API key, an unauthorized provider account, or
+any other 401/403 response from the OpenCode SDK at
+session-create time (or send-prompt time) lands the user on a
+dialog with a Retry button that cannot succeed. There is no
+way to reach the correct behavior without the user finding and
+fixing the credential issue and then closing the dialog
+(Quit) and restarting the harness. Today the dialog is the only
+"symptom" — there is no log line that says "this error was
+recoverable so we offered R; the underlying cause is permanent
+so R won't help", which makes the misbehavior harder to diagnose.
+
+**Why this is observable end-to-end.** The iteration-start error
+path is reachable on every iteration:
+
+- The very first session creation in a fresh run (`createSession`
+  in `startIteration`, line 818).
+- The session creation that follows a `session_idle` dispatch
+  (line 504 triggers `startIteration` via the `running + empty
+  sessionId` effect at line 1217-1222).
+- The session creation that follows a rate-limit cooldown resume
+  (same effect).
+- The session creation that follows a `reconcileAndAdvance` cycle
+  after a watchdog recovery.
+
+In each of these, a 401/403 from the SDK (e.g. an expired key)
+flows into `handleIterationError` and is mis-marked recoverable.
+
+**Proposed fix.** Mirror the SSE path's policy:
+
+```ts
+function handleIterationError(err: unknown): void {
+  const classified = classifySessionError(err)
+  if (classified.kind === "rate_limit") {
+    enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+    return
+  }
+  if (classified.kind === "transient") {
+    enterCooldown(classified.message, undefined, "transient")
+    return
+  }
+  // auth + fatal: surface as a permanent error so the user is not
+  // offered a Retry button that cannot succeed. Mirrors the SSE
+  // onSessionError path (App.tsx:486).
+  const message = err instanceof Error ? err.message : String(err)
+  loop.dispatch({
+    type: "error",
+    source: "api",
+    message: t("errIterationStart", { message }),
+    recoverable: false,
+  })
+}
+```
+
+Fix proposed, not applied (audit-only per PLAN.md acceptance
+criteria).
+
+### Finding 14.3.B — INFO — The same hardcoded `recoverable: true` pattern appears at two other call sites
+
+The `recoverable: true` literal appears at three locations in
+`App.tsx`, and at least two of them are *intentional* (not bugs):
+
+| Line | Context | Recoverable? | Intentional? |
+| --- | --- | --- | --- |
+| 293 | Watchdog circuit-breaker escalation | true | yes — after the watchdog exhausts its recovery budget, a manual retry is the intended path (Phase 6 audit) |
+| 486 | SSE `onSessionError` non-aborted, non-rate-limit | `error.kind === "transient"` | yes — dynamic per-kind |
+| 693 | `enterCooldown` exhaustion (rate-limit retries) | true | yes — the user can manually retry; the loop simply gave up on its own |
+| 769 | `handleIterationError` third arm | **true (hardcoded)** | **no — see Finding 14.3.A** |
+| 911 | Debug session creation failure | true | partial — debug mode should arguably also distinguish auth, but this is debug-only and a user-started session, not auto-iteration; less critical |
+| 1206 | Server startup error | true | yes — server restart can succeed without credential change, so retry is meaningful |
+
+The line-293 / 693 / 1206 cases are correct because the underlying
+cause is *transient by nature* (a server we can restart, a
+rate-limit budget we can refresh, a watchdog we can re-arm). The
+line-911 case is debug-mode-only and is judged tolerable for now.
+Only the line-769 case is a real bug.
+
+**Status.** Observation, no fix proposed. The audit was originally
+prompted by Phase 14.3; cross-checking the other call sites here
+documents the asymmetry that explains why line-769 was missed
+during the original design: every other dispatch uses either a
+dynamic `recoverable` (line 486) or a defensible hardcoded `true`
+(lines 293, 693, 1206).
+
+### Finding 14.3.C — MEDIUM — No test pins the `recoverable: false` policy for auth errors at the dispatch boundary
+
+**Problem.** The auth-error → non-recoverable policy is split
+across three layers:
+
+1. `useSSE.ts:117-132` — the `classifyKind` cascade (unit-tested
+   for all five kinds in `useSSE.test.ts:1-198`, with the
+   auth/401/403 cases at lines 65-72 and 85-94).
+2. `App.tsx:482-487` — the `onSessionError` dispatch with
+   `recoverable: error.kind === "transient"` (no direct test
+   pins this expression; the integration test at
+   `resilience-integration.test.ts:90-116` only exercises the
+   rate-limit path).
+3. `useLoopState.ts:258-264` — the `retry` reducer guard
+   `state.type === "error" && state.recoverable` (tested in
+   `useLoopState.test.ts:1051` for the no-op case, but the test
+   only asserts the state is unchanged; it does not pin the
+   contract that *auth-classified* errors arriving via the SSE
+   path produce a `recoverable: false` state).
+
+There is no end-to-end test that says "if I call
+`onSessionError` with an `auth`-classified error, the loop
+ends in `error (recoverable: false)`". The bug at Finding 14.3.A
+is the iteration-start counterpart, and there is *also* no test
+for "if `handleIterationError` is called with an auth-classified
+error, the loop ends in `error (recoverable: false)`".
+
+**Why this is a MEDIUM, not a HIGH.** The dispatch boundary
+(`App.tsx:486` and `:769`) is two lines of trivial conditional
+logic. It is not the kind of code that tends to regress
+spontaneously. But:
+
+- The function header comment on `handleIterationError`
+  (`App.tsx:747-753`) is wrong (Finding 14.3.A). Wrong comments
+  are how bugs are introduced in the next iteration.
+- The bug at 14.3.A was *missed* by the unit test surface
+  because no test calls `handleIterationError` at all — the
+  function is module-private to App.tsx. The integration test
+  harness in `resilience-integration.test.ts` only tests the
+  rate-limit path through `enterCooldown`; the auth path is
+  unreachable from the harness as currently written.
+
+**Where.** `src/App.tsx:482-487`, `src/App.tsx:754-771`. Test
+gap at `src/resilience-integration.test.ts:89-176`.
+
+**Proposed fix.** Two options, in order of cost-effectiveness:
+
+(a) **Add a unit test for `classifySessionError` + the
+`recoverable` policy** — the cheapest pin. The classifier is
+already exported and unit-tested, but a *combined* assertion
+("an auth error from `classifySessionError` plus the SSE
+`onSessionError` policy expression evaluates to
+`recoverable: false`") is missing. This is a one-liner that
+documents the policy.
+
+(b) **Add an integration test that runs the auth path through
+the reducer** — mirrors the rate-limit case at
+`resilience-integration.test.ts:90-116`, but with a 401 payload
+and an assertion that the dispatched `error` action has
+`recoverable: false`. This requires the `harness()` helper to
+expose `handleIterationError` (or a small refactor to extract
+the dispatch logic into a pure function that takes a classified
+error and returns the action object).
+
+**Status.** Both options proposed, neither applied (audit-only
+per PLAN.md acceptance criteria).
+
+### Verification result
+
+**PARTIALLY VERIFIED.**
+
+- The SSE `onSessionError` path correctly honors the policy:
+  auth errors are classified as `kind: "auth"`, dispatched with
+  `recoverable: false`, and the dialog hides the Retry key.
+- The `handleIterationError` path **does not** honor the policy:
+  auth errors are dispatched with `recoverable: true` and the
+  dialog shows a Retry key that cannot succeed.
+
+PLAN.md 14.3 is therefore **half-true**: the policy exists and
+works on the SSE path, but a parallel implementation in
+`handleIterationError` (which is reachable on every iteration's
+session-create step) is inconsistent with it. This is captured
+as Finding 14.3.A (HIGH).
+
+No code changes were made. The audit produces documentation only,
+per PLAN.md acceptance criteria.
