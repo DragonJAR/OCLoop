@@ -18751,3 +18751,204 @@ blast radius is bounded by the watchdog's recovery ladder
 - ONE LOW finding (15.2.B — duplicate activity-log entry).
 - ONE INFO finding (test coverage gap for the App-level
   race).
+
+---
+
+## Phase 15.3 — Double `session_idle` events (watchdog reconcile + SSE) don't create duplicate iterations
+
+Source: `src/App.tsx`, `src/hooks/useLoopState.ts`, `src/hooks/useWatchdog.ts`.
+Tests: `src/hooks/useLoopState.test.ts` (line 615-624 — reducer
+idempotency), `src/hooks/useWatchdog.test.ts` (line 765-792 — notifyIdle
+mid-recovery).
+
+### 15.3 — Verification: double session_idle is correctly handled
+
+**Status: COMPLETE — VERIFIED, no new findings (one cross-reference to
+15.2.B).**
+
+PLAN.md 15.3 asks: "Verify: Double `session_idle` events (from
+watchdog reconcile AND from SSE) don't create duplicate iterations —
+the `running("")` check prevents this."
+
+There are THREE call sites in App.tsx that can dispatch
+`{ type: "session_idle" }`:
+
+1. **SSE `onSessionIdle`** — `src/App.tsx:504`. Fires when the
+   OpenCode server emits `session.idle` for the active session.
+2. **Watchdog `synthesizeIdle`** — `src/App.tsx:265` (called from
+   `useWatchdog.ts:262`). Fires when the watchdog's reconcile probe
+   reports the session is `idle` or `missing` (we missed the SSE
+   event).
+3. **`reconcileAndAdvance`** — `src/App.tsx:640`. Fires from
+   `restartServer`, `handleWake`, and `--resume` startup.
+
+Two primary defenses prevent duplicate iterations:
+
+**Defense 1 — Reducer idempotency guard**
+(`useLoopState.ts:130-136`):
+
+```ts
+case "session_idle": {
+  if (state.type === "running") {
+    // Already between iterations: return the SAME state so a
+    // redundant idle (e.g. watchdog reconcile + wake both
+    // synthesizing idle) doesn't emit a new object and re-fire the
+    // iteration driver into a second session.
+    if (state.sessionId === "") return state
+    return { type: "running", iteration: state.iteration, sessionId: "" }
+  }
+  ...
+}
+```
+
+When the first `session_idle` clears `sessionId` to `""`, the
+reducer returns the SAME state object on any subsequent
+`session_idle` dispatch. Solid's `createSignal` performs
+referential equality — `setState(prev => prev)` is a no-op for
+subscribers. The iteration-driver effect at `App.tsx:1217-1222`
+(reads `loop.state()`) does NOT re-fire. **This is the comment-
+anchored contract referenced by the PLAN.md 15.3 task.**
+
+**Defense 2 — startIteration in-flight guard**
+(`src/App.tsx:172, 781, 787, 854`):
+
+```ts
+let startingIteration = false  // module-level flag
+
+async function startIteration(): Promise<void> {
+  if (startingIteration) return        // ← guard
+  ...
+  startingIteration = true
+  try { await createSession(client); ... }
+  finally { startingIteration = false } // ← always cleared
+}
+```
+
+If the iteration driver DOES re-fire while `createSession` is
+in flight (e.g. via the narrower race window in 15.2.A where
+state advanced to `running(N+1, "ses-Y")` and was clobbered back
+to `running(N+1, "")`), the guard returns immediately. No second
+`createSession` call, no orphan session.
+
+**Trace of the canonical double-dispatch scenario:**
+
+1. `running(N, "ses-X")`, session is genuinely done.
+2. SSE `session.idle` arrives → `App.tsx:504` dispatches
+   `session_idle`.
+3. Reducer: `running(N, "ses-X")` → `running(N, "")` (new object,
+   iteration-driver effect fires once).
+4. `startIteration()` called, sets `startingIteration = true`,
+   awaits `createSession`.
+5. Meanwhile, the watchdog's `CONFIRMING` tick completes its
+   reconcile probe → `verdict === "idle"`.
+6. Watchdog `useWatchdog.ts:262` calls `synthesizeIdle()` →
+   `App.tsx:265` dispatches `session_idle`.
+7. Reducer: state is `running(N, "")` → returns SAME state object
+   (idempotency guard at line 136). No effect re-fire.
+8. `createSession` returns. `iteration_started` dispatched →
+   `running(N+1, "ses-Y")`. `startingIteration = false` in
+   `finally`.
+
+Result: exactly ONE new session. No duplicate.
+
+**Trace of the interleaved "watchdog leads, SSE follows"
+scenario:**
+
+1. `running(N, "ses-X")`, session is done but SSE event was
+   dropped during a network blip.
+2. Watchdog tick: `dt ≥ suspectMs`, `pingServer()` returns true,
+   `reconcile()` returns `"idle"`.
+3. Watchdog `useWatchdog.ts:262` calls `synthesizeIdle()` →
+   `App.tsx:265` dispatches `session_idle`.
+4. Reducer: `running(N, "ses-X")` → `running(N, "")` (new
+   object). Iteration driver fires. `startIteration` sets guard.
+5. SSE reconnects, replays buffered events, finally emits
+   `session.idle` for `ses-X`.
+6. `App.tsx:498` filter: `eventSessionId === currentSession` is
+   FALSE (current is `""` — there is no active session until
+   `iteration_started` lands; in the brief window between step 4
+   and `iteration_started`, `currentSession` is `undefined`). The
+   event is dropped at the filter, not at the reducer.
+7. `iteration_started` lands → `running(N+1, "ses-Y")`.
+
+Result: exactly ONE new session. The SSE event from the
+already-completed session is filtered out, not idempotency-
+collapsed. This is the better path: the filter discards the
+event before any side effects (`rateLimitAttempts = 0`,
+`watchdog.notifyIdle()`, activity-log entry) can fire twice.
+
+**Edge case — double SSE event for the same session.idle:**
+
+OpenCode can deliver the same `session.idle` twice if the SSE
+stream reconnects and replays the tail of the event log. Both
+events pass the `App.tsx:498` filter (same `eventSessionId`).
+The first one transitions `running(N, "ses-X")` →
+`running(N, "")`. The second one hits the reducer idempotency
+guard and returns the same state object. No duplicate iteration.
+
+**Edge case — session_idle dispatched during pausing:**
+
+If the user pressed P (pause) and the session.idle event arrives
+before the toggle_pause transition completes, the reducer takes
+the `pausing` branch: `running(N, "ses-X")` → `paused(N)` (new
+state, no `running("")` window). The iteration driver effect
+does NOT fire (state is `paused`, not `running`). No duplicate
+iteration.
+
+#### Cross-reference — 15.2.B (duplicate activity-log entry)
+
+The activity-log side effects in `synthesizeIdle` (App.tsx:263)
+and `onSessionIdle` (App.tsx:505) fire UNCONDITIONALLY before
+the reducer, so a true double dispatch produces TWO log entries
+even when the reducer collapses the state. This is already
+documented as **Finding 15.2.B (LOW)** with a proposed fix that
+moves the log entry inside a "did the dispatch actually advance
+state" guard. No new finding here.
+
+#### Test coverage
+
+- `useLoopState.test.ts:615-624` — explicit
+  "session_idle on running with sessionId === '' returns the
+  SAME state object (idempotency guard)" test. Pins the
+  referential-equality contract.
+- `useLoopState.test.ts:939-944` — `session_idle` no-op from all
+  non-running/pausing/debug states.
+- `useWatchdog.test.ts:765-792` — `notifyIdle` mid-RECOVERING
+  pins that the watchdog's recovery counter resets on idle even
+  if a recovery is in flight (the "watchdog leads, SSE follows"
+  scenario).
+- `useWatchdog.test.ts:796-901` — full end-to-end
+  `abortAndRetry → session_idle → startIteration` chain,
+  including the in-flight guard via the simulate-via-API
+  pattern.
+
+No new test required for Phase 15.3 — the three primary paths
+(reducer idempotency, iteration-driver effect, in-flight guard)
+are all pinned. The App-level integration of "two simultaneous
+`session_idle` dispatches in the same microtask" is not directly
+tested, but the underlying mechanism (referential equality on
+`createSignal`) is a Solid framework guarantee, and the reducer
+test pins the only state-shape contract that depends on it.
+
+#### Verification result
+
+Double `session_idle` events from any combination of
+{SSE `onSessionIdle`, watchdog `synthesizeIdle`,
+`reconcileAndAdvance`} are correctly handled by the reducer
+idempotency guard at `useLoopState.ts:136`, backed by the
+`startIteration` in-flight guard at `App.tsx:172, 781`. The
+`running("")` check in the iteration-driver effect
+(`App.tsx:1217-1222`) is a third layer that fires exactly once
+per transition into the `running("")` state and is itself
+protected by Solid's referential equality on the reducer's
+output.
+
+The only observable artifact of a true double dispatch is a
+duplicate activity-log entry — already documented as
+**Finding 15.2.B (LOW)**.
+
+- No CRITICAL findings.
+- No HIGH findings.
+- No MEDIUM findings.
+- No new LOW findings (15.2.B already covers the duplicate
+  activity-log entry).

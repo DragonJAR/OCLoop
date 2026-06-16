@@ -158,7 +158,7 @@ Audit all execution flows (with/without parameters, edge cases, invalid inputs, 
 
 - [x] Verify: No race between `startIteration` guard and effect re-trigger — `startingIteration` is set before async work and cleared in `finally`
 - [x] Verify: No race between `session_idle` SSE event and `reconcileAndAdvance` — both can trigger the same dispatch
-- [ ] Verify: Double `session_idle` events (from watchdog reconcile AND from SSE) don't create duplicate iterations — the `running("")` check prevents this
+- [x] Verify: Double `session_idle` events (from watchdog reconcile AND from SSE) don't create duplicate iterations — the `running("")` check prevents this
 - [ ] Verify: `handleQuit` is idempotent — called from both SIGINT handler and Q key; confirm it doesn't double-abort or double-disconnect
 - [ ] Verify: Plan file edits by OpenCode trigger `refreshPlan()` — what if the edit is in-progress (partial file)?
 - [ ] Verify: `sse.reconnect()` called from multiple places (wake, watchdog, SSE exhaustion) — no double-connection
