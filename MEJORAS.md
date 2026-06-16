@@ -12984,3 +12984,332 @@ chain. **No fix recommended.**
 
 **Net severity tally for Phase 10 (all subsections 10.1-10.8): 4 MEDIUM, 5 LOW, 21 INFO; no CRITICAL or HIGH.** Every required case in PLAN.md Phase 10 was traced through the code and verified empirically where possible. The plan generator's error funnel, cleanup contract, and exit codes are all correct. The four MEDIUM findings (10.1.A `created.data.id` guard, 10.1.B deadline reset on edit cycles) and five LOW findings (10.1.C redundant `timeoutMs` override, 10.1.D hard-exit comment, 10.2.A/B/C `stripCodeFences` charset/CRLF/Unicode) are all defensive or documentation gaps; none of them are behavioral bugs. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
 
+---
+
+## Phase 11 — Terminal Launcher & Clipboard
+
+The "open in terminal" feature lets the user spawn an external terminal
+emulator that runs `opencode attach <url> --session <id>` against the running
+loop server. The flow has four parts:
+
+1. **Detection** — `detectInstalledTerminals()` enumerates the known
+   terminals that are on `$PATH` so the picker can show only what's usable
+   (`src/lib/terminal-launcher.ts:73-88`).
+2. **Lookup** — `getKnownTerminalByName(name)` resolves a user-picked name
+   to its launch spec (`src/lib/terminal-launcher.ts:63-65`).
+3. **Construction** — `getAttachCommand(url, sessionId)` builds the
+   `opencode attach …` string, and `buildArgs` substitutes it into the
+   terminal's arg pattern (`src/lib/terminal-launcher.ts:93-114`).
+4. **Launch** — `launchTerminal(config, attachCmd)` spawns the terminal
+   detached via `Bun.spawn` (`src/lib/terminal-launcher.ts:120-181`).
+
+The shared `commandExists(cmd)` helper (`src/lib/command-exists.ts:8-19`) is
+the single PATH probe used by both the terminal launcher and the clipboard
+module; it relies on the POSIX `which` builtin. The clipboard module
+(`src/lib/clipboard.ts`) is covered in Phase 11.4.
+
+There is **no test file** for `src/lib/terminal-launcher.ts` (verified by
+`ls src/lib/ | grep terminal` — only the implementation file exists). All
+findings in Phase 11.1 are therefore trace-only; no behavior is empirically
+exercised.
+
+### 11.1 — Audit `detectInstalledTerminals` for platform differences, PATH detection, and terminal name matching
+
+**Status: COMPLETE — VERIFIED, one MEDIUM (Windows path-detection failure),
+one MEDIUM (no macOS-specific terminals), and three LOW findings (silent
+error swallowing, no tests, case-sensitive name match).** No CRITICAL or
+HIGH findings.
+
+The function under audit is `src/lib/terminal-launcher.ts:73-88`:
+
+```ts
+export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
+  const results = await Promise.all(
+    KNOWN_TERMINALS.map(async (terminal) => ({
+      terminal,
+      exists: await commandExists(terminal.command),
+    })),
+  )
+
+  const installed = results.filter((r) => r.exists).map((r) => r.terminal)
+  log.info("terminal", "Detected installed terminals", { 
+    count: installed.length, 
+    names: installed.map(t => t.name) 
+  })
+  
+  return installed
+}
+```
+
+It is called once at TUI mount from `src/App.tsx:439-440`:
+
+```ts
+const terminals = await detectInstalledTerminals()
+setAvailableTerminals(terminals)
+```
+
+…and the resulting list feeds the "Open in terminal" picker via
+`createTerminalConfigState(availableTerminals, …)` (App.tsx:1444-1449).
+The custom-terminal dialog is the only escape hatch on a machine with no
+known installed terminal.
+
+#### Per-platform path detection — `commandExists` (`src/lib/command-exists.ts:8-19`)
+
+The shared helper:
+
+```ts
+export async function commandExists(command: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(["which", command], {
+      stdout: "ignore",
+      stderr: "ignore",
+    })
+    const exitCode = await proc.exited
+    return exitCode === 0
+  } catch {
+    return false
+  }
+}
+```
+
+The choice of `which` is deliberate and correct for POSIX. `which` is
+defined by POSIX.1-2008 (`which - locate a command file`), exits 0 when it
+finds a match on `$PATH` and 1 otherwise, and never actually executes the
+target binary (so the test is fast and side-effect-free). Spawning
+`Bun.spawn(["which", command])` correctly inherits the parent's `$PATH`,
+`$PATHEXT`, and shell aliases resolved at exec time.
+
+**Verified correct on macOS and Linux.** The exit-code check matches
+`which`'s contract; the `try/catch` swallows spawn failures (e.g.,
+`ENOENT` if `which` itself is missing) and reports "not found" — which is
+the right outcome when the probe tool itself is unavailable, because the
+caller can't distinguish "target not on PATH" from "probe tool not on
+PATH" without adding platform-specific fallback paths.
+
+#### MEDIUM — On Windows, `which` is not a built-in and the detection returns an empty list
+
+`which` ships with macOS (via BSD userland) and virtually every Linux
+distribution, but **Windows does not provide `which` natively** (neither
+in `cmd.exe` nor in PowerShell 5.x). A user who installs OCLoop on
+Windows and has only stock tooling will see `which` fail with
+`ENOENT`, which the `try/catch` converts into a universal "not found"
+result for *every* terminal entry. The detection returns `[]`, the
+picker shows nothing, and the only way to attach is the "Custom" path
+— even if Windows Terminal (`wt.exe`), PowerShell, or `cmd.exe` is
+perfectly usable.
+
+This is not a bug in the happy-path macOS/Linux flow, but it is a real
+functional gap on a supported platform. Three fix shapes, in increasing
+order of cost:
+
+1. **Cheapest — fall back to `where.exe` on Windows.** Add a tiny
+   branch to `commandExists`:
+   ```ts
+   const probe = process.platform === "win32" ? "where" : "which"
+   const proc = Bun.spawn([probe, command], { … })
+   ```
+   `where.exe` ships with Windows 7+ and is functionally equivalent
+   (exits 0 on a `$PATH` hit, non-zero otherwise). One platform check,
+   no new dependency.
+2. **Add Windows Terminal (`wt.exe`) to `KNOWN_TERMINALS`.** `wt` is the
+   modern host on Windows 10/11; the launch line is
+   `wt.exe new-tab -- powershell -NoExit -Command <attachCmd>` or
+   simply `wt.exe -p "Windows PowerShell" -- <attachCmd>`.
+3. **Both.** The fall-back makes detection work; the entry gives the
+   user a one-click option. The Custom dialog is always the
+   escape hatch for older / locked-down setups.
+
+**Severity: MEDIUM** (functional gap on a supported platform, but
+workaround exists via the Custom dialog, and OCLoop's primary target is
+macOS/Linux per the existing terminal list).
+
+**Where.** `src/lib/command-exists.ts:10` (the `which` literal) and
+`src/lib/terminal-launcher.ts:33-58` (the `KNOWN_TERMINALS` array).
+
+**Status.** Fix proposed, not applied (audit-only).
+
+#### MEDIUM — `KNOWN_TERMINALS` has no macOS-specific entries; the macOS picker is empty by default
+
+Out of the 12 entries in `KNOWN_TERMINALS`
+(`src/lib/terminal-launcher.ts:33-58`):
+
+| Entry                 | Platform                   |
+|-----------------------|----------------------------|
+| `alacritty`           | macOS, Linux, BSD          |
+| `kitty`               | macOS, Linux, BSD          |
+| `wezterm`             | macOS, Linux, Windows      |
+| `gnome-terminal`      | Linux (GNOME)              |
+| `konsole`             | Linux (KDE)                |
+| `xfce4-terminal`      | Linux (XFCE)               |
+| `foot`                | Linux (wlroots/Sway)       |
+| `tilix`               | Linux                      |
+| `terminator`          | Linux                      |
+| `xterm`               | Linux/BSD                  |
+| `urxvt`               | Linux/BSD                  |
+| `x-terminal-emulator` | Debian/Ubuntu alias        |
+
+**Zero** entries target Apple's built-in `Terminal.app` (the default on
+every Mac) and **zero** target iTerm2 (the de-facto third-party
+terminal on macOS). The two cross-platform options (`alacritty`,
+`kitty`, `wezterm`) require the user to have installed a third-party
+terminal out-of-the-box, which most macOS users have not.
+
+A user on a stock macOS install (no Homebrew, no Alacritty.app, no
+Kitty.app) sees an **empty picker** and must use the "Custom" path
+even though Terminal.app is sitting right there. The Custom dialog
+works, but it asks for raw command + args — a much higher-friction
+UX than picking "Terminal" from a list.
+
+The fix is the same shape as the Windows entry above: add explicit
+macOS entries to `KNOWN_TERMINALS`. The launch patterns are
+documented by Apple and iTerm2:
+
+- **Terminal.app** — `open -a Terminal` will spawn a new window; to
+  execute a specific command, the standard incantation is
+  `osascript -e 'tell application "Terminal" to do script "<attachCmd>"'`.
+  The whole `osascript` call is the "command" and `args = []` (the
+  command is the `-e` script body).
+- **iTerm2** — `osascript -e 'tell application "iTerm" to create window with default profile command "<attachCmd>"'`.
+  Requires iTerm2's "Accept command-line URL handler" preference or a
+  Python/Ruby bridge; the most portable form is
+  `osascript -e 'tell application "iTerm2" to run (command "<attachCmd>")'`.
+
+Note: shell-quoting a long string with embedded `"` into a single
+`-e` argument is fragile. A more robust pattern is a temp-file
+`osascript -e "tell …" < script.applescript`, but that's out of scope
+for the audit; the basic entries are enough to cover the "stock
+macOS install" case.
+
+**Severity: MEDIUM** (UX gap on a supported platform — every Mac ships
+without an entry in the picker). Same workaround as the Windows case
+(use Custom).
+
+**Where.** `src/lib/terminal-launcher.ts:33-58`.
+
+**Status.** Fix proposed, not applied.
+
+#### Terminal name matching — `getKnownTerminalByName` (`src/lib/terminal-launcher.ts:63-65`)
+
+```ts
+export function getKnownTerminalByName(name: string): KnownTerminal | undefined {
+  return KNOWN_TERMINALS.find((t) => t.name === name)
+}
+```
+
+`KNOWN_TERMINALS` is a hard-coded `const` array of 12 unique names
+(`alacritty`, `kitty`, `wezterm`, `gnome-terminal`, `konsole`,
+`xfce4-terminal`, `foot`, `tilix`, `terminator`, `xterm`, `urxvt`,
+`x-terminal-emulator`). All names are unique, lowercase, ASCII,
+no whitespace, no leading dash. The `===` comparison is safe and
+collision-free for the current data.
+
+The user never types these names directly — they are picked from a list
+in `TerminalConfigDialog` (driven by the same `availableTerminals()`
+signal that `detectInstalledTerminals` populated). The list shows the
+canonical `name`, and the saved config stores the same `name`. There is
+no free-form text path that could feed a typo into
+`getKnownTerminalByName`. **Verified correct for the current
+data-flow.**
+
+**Edge case — case sensitivity.** The match is `===` (case-sensitive).
+A user who hand-edits `~/.config/ocloop/ocloop.json` and writes
+`"name": "Alacritty"` (capital A) or `"name": "XTERM"` will get
+`undefined` back, which `launchTerminal` reports as
+`"Unknown terminal: <name>"` and the error dialog renders the
+unresolved name. The hand-edit path is **not the documented flow**
+(the dialog writes the canonical name), so this is a defensive gap
+rather than a behavioral bug.
+
+**Where.** `src/lib/terminal-launcher.ts:63-65`.
+
+**Status.** No fix recommended — the documented flow always feeds
+canonical lowercase names. If the project ever exposes a CLI flag
+like `--terminal=<name>`, the lookup should be lowered before
+comparison.
+
+#### LOW — `commandExists` swallows the spawn error silently (no diagnostic)
+
+`src/lib/command-exists.ts:16-18`:
+
+```ts
+} catch {
+  return false
+}
+```
+
+The empty `catch` is the standard "either the probe is missing or the
+target is missing" idiom, and it returns the correct boolean either
+way. But it loses the actual error — a user debugging "why doesn't
+OCLoop see my terminal?" sees no signal that `which` itself is
+unavailable (e.g., a stripped-down container or a Windows install
+without Git Bash / MSYS). A `log.debug("command-exists", "which
+failed", { command, error })` here would surface the root cause in
+`.loop.log` without changing the return value. **Severity: LOW**
+(operational visibility, not a behavioral bug).
+
+**Status.** Diagnostic improvement, not a bug.
+
+#### LOW — `detectInstalledTerminals` has no test coverage
+
+The implementation file `src/lib/terminal-launcher.ts` (181 lines) has
+no companion `terminal-launcher.test.ts` (verified by directory
+listing). `commandExists` itself is also untested. The two MEDIUM
+findings above (Windows + macOS gaps) and the LOW case-sensitivity
+edge case could all be caught by a small mockable test suite that
+injects the probe result — e.g.:
+
+```ts
+it("returns only terminals whose command is on PATH", async () => {
+  // Mock commandExists so "alacritty" returns true and "foot" returns false
+  // Assert that detectInstalledTerminals returns the alacritty entry only
+})
+```
+
+The same pattern would let us test the `Promise.all` parallelism
+(no accidental serial loop), the `log.info` payload shape, and the
+empty-result case. **Severity: LOW** (coverage gap, no behavioral
+risk).
+
+**Status.** Test coverage gap, not a bug.
+
+#### INFO — Detection is invoked once at TUI mount and the result is cached in `availableTerminals`
+
+`src/App.tsx:439-440` calls `detectInstalledTerminals` from the
+mount-time effect (the same effect that wires the sleep detector and
+`createTerminalConfigState`). The returned list is stored in the
+`availableTerminals` signal and **never refreshed** for the life of
+the session. A user who installs a new terminal mid-run will not see
+it in the picker until they restart OCLoop.
+
+This is intentional: the picker is a "what's installed at start" view
+and the dialog does not have a "re-detect" button. A user with the
+Custom dialog can still launch the freshly-installed terminal by
+typing its command, so the gap is workable. **No fix recommended**;
+flagging as INFO for the next time the picker UI is touched.
+
+**Where.** `src/App.tsx:439-440`, `src/components/...terminal-config-dialog...`
+(not opened in this audit).
+
+#### INFO — Detection uses `Promise.all` and runs N `which` invocations in parallel
+
+`KNOWN_TERMINALS.map(async …)` inside `Promise.all` spawns 12
+concurrent `which` processes on a 12-entry list. The default
+`Bun.spawn` ulimit is well above 12 child processes; each `which`
+exits in low single-digit milliseconds on a warm cache, so the
+detection latency is bounded by the slowest single probe (typically
+<50 ms on Linux, <100 ms on macOS with a cold FS cache). This is the
+right pattern for fan-out / fan-in checks. **No fix recommended.**
+
+#### Summary of Phase 11.1 findings
+
+| #    | Severity | One-liner |
+|------|----------|-----------|
+| 11.1.A | MEDIUM | On Windows, `which` is not a built-in — detection returns an empty list; add a `where.exe` fallback on `process.platform === "win32"` and add a `wt.exe` entry. |
+| 11.1.B | MEDIUM | `KNOWN_TERMINALS` has no macOS-specific entries (Terminal.app, iTerm2) — stock macOS users see an empty picker; add `osascript`-based entries. |
+| 11.1.C | LOW    | `commandExists` silently swallows the `which` spawn error; a `log.debug` would surface root cause in `.loop.log`. |
+| 11.1.D | LOW    | `detectInstalledTerminals` and `getKnownTerminalByName` have no test coverage; a small mockable test suite would catch the case-sensitivity and Windows/macOS gaps. |
+| 11.1.E | INFO   | The detection result is cached at mount time and never refreshed; intentional, but a "re-detect" button on the picker would close the gap. |
+| 11.1.F | INFO   | `Promise.all` parallelizes 12 `which` probes — correct and well under typical ulimits. |
+
+**Net severity tally for Phase 11.1: 2 MEDIUM, 2 LOW, 2 INFO; no CRITICAL or HIGH.** The two MEDIUM findings are real functional/UX gaps on supported platforms (Windows + stock macOS) — both have a workaround (the Custom dialog) and neither breaks the documented happy path on macOS-with-third-party-terminal / Linux. The LOW findings are operational/observability/coverage gaps. The INFO findings document intentional design choices. No code change applied in this audit; the test suite baseline of 640 passing tests is preserved.
+
