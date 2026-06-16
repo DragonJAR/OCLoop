@@ -41,6 +41,23 @@ describe("model normalization", () => {
     expect(toSdkModel("claude-sonnet-4")).toBeUndefined()
   })
 
+  it("returns undefined for 'provider/' (empty modelID)", () => {
+    expect(toSdkModel("anthropic/")).toBeUndefined()
+  })
+
+  it("returns undefined for '/model' (empty providerID)", () => {
+    expect(toSdkModel("/claude-sonnet-4")).toBeUndefined()
+  })
+
+  it("returns undefined for '/' alone", () => {
+    expect(toSdkModel("/")).toBeUndefined()
+  })
+
+  it("returns undefined for empty and whitespace-only strings", () => {
+    expect(toSdkModel("")).toBeUndefined()
+    expect(toSdkModel("  ")).toBeUndefined()
+  })
+
   it("passes the normalized model through promptAsync", async () => {
     let seen: unknown
     const client = {
