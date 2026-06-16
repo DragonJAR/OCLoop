@@ -1544,17 +1544,74 @@ expect() calls, 23 files, 310 ms — sin cambio en el conteo
 
 ### Mejora 39 — Finding 11.4.A — MEDIUM — macOS `pbcopy` is not detected; copy silently fails on stock macOS
 
-- [ ] Evaluar la mejora 39 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 39 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 39 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 39 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 39 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 39 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 39 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 39 y corregir cualquier regresión causada por el cambio.
 
 ### Mejora 40 — Finding 11.4.B — MEDIUM — Windows `clip.exe` is not detected; copy silently fails on stock Windows
 
-- [ ] Evaluar la mejora 40 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 40 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 40 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 40 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 40 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 40 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 40 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 40 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Mejora 39 y Mejora 40 se implementaron acopladas en un solo
+cambio (`clipboard.ts`) porque comparten causa raíz (un único `switch`
+de platform al inicio de `detectClipboardTool`) y porque el split sería
+puro overhead sin valor — la guard `if (process.platform === "darwin")` y
+`if (process.platform === "win32")` son trivialmente separables pero el
+paréntesis de error per-platform es único y no se puede partir sin
+dejar una rama de error con copy de un solo platform. El audit
+(`MEJORAS.md:13720-13726` y `MEJORAS.md:13946-13956`) es claro al
+respecto: el fix de 11.4.A "includes the Windows branch", y el de
+11.4.B "is the platform branch in 11.4.A above; the `where.exe`
+fallback is the Phase 11.1.A fix; both changes must ship together for
+Windows to work". La propuesta del audit es estrictamente la mínima
+útil:
+
+1. **`darwin` branch** (`clipboard.ts:30-36`) — `commandExists("pbcopy")`
+   antes de cualquier probe de X11/Wayland. El early-return es
+   deliberado: incluso si el usuario tiene `xclip` instalado vía
+   Homebrew, preferimos `pbcopy` porque habla con la pasteboard
+   nativa de Aqua, no con un X11 selection emulado por XQuartz.
+2. **`win32` branch** (`clipboard.ts:38-44`) — `commandExists("clip")`
+   análogo. Funciona end-to-end solo si el `where.exe` fallback
+   de `commandExists` (Mejora 11.1.A, fuera del scope de esta fix)
+   también está aplicado, lo cual es la precondición que el audit
+   nombra explícitamente ("both must ship together for Windows to
+   work"). En este repo el fallback ya está integrado en
+   `commandExists` (verificado por la rama `process.platform ===
+   "win32"` que ya devuelve `true` con `where clip`).
+3. **Error per-platform** (`clipboard.ts:80-92`) — la rama no-tool
+   ahora nombra el tool built-in del platform (`pbcopy (built-in)`,
+   `clip.exe (built-in)`, o `wl-copy (Wayland) or xclip/xsel (X11)`
+   en Linux/BSD). Esto cierra Finding 11.4.G como side-effect:
+   el audit lo nombra explícitamente como "Resolved by 11.4.A's fix"
+   (`MEJORAS.md:14070`).
+
+Cero cambios al path Linux/BSD (la detección existente de Wayland
+→ wl-copy / X11 → xclip → xsel → wl-copy-fallback queda intacta
+debajo del early-return de `darwin`/`win32`). Cero impacto en la
+firma de `detectClipboardTool` (`Promise<ClipboardTool | null>`
+intacta). Cero impacto en `copyToClipboard` (la `try/catch` exterior
+y la lógica de `proc.stdin.write/end` quedan igual). Cero impacto en
+los call sites (`App.tsx:1427, 1438, 1528` siguen recibiendo un
+`Promise<ClipboardResult>` con la misma shape; el behaviour
+observable para el usuario es "ahora el copy funciona en macOS y
+Windows" — Mejora 41 cerrará el gap paralelo del toast shown-on-failure).
+
+Cero impacto en tests: `clipboard.test.ts` no existe (Mejora 42, Finding
+11.4.D, lo cubrirá cuando llegue su turno). La lógica de las dos
+ramas nuevas es estructural (un `if` con un `return`), no
+computacional, y los path de fallo (`commandExists` que retorna
+`false` en un sistema donde el tool SÍ está instalado) ya están
+cubiertos por el contract pineado en `command-exists.test.ts`. El
+happy path (macOS con pbcopy, Windows con clip.exe) es
+trivially-equivalent al happy path actual de Linux: un `if` pasa,
+se retorna el tool, el código existente hace el spawn. `bun test`
+verde: 694 pass / 0 fail, 1714 expect() calls, 23 files, 309 ms —
+sin cambio en el conteo (era 694 antes del fix). Commit `475b082`.
 
 ### Mejora 41 — Finding 11.4.C — LOW — Call sites do not check `ClipboardResult`; success toast shown on failure
 
