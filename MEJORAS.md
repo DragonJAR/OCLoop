@@ -15946,3 +15946,355 @@ The MEDIUM is a test-coverage gap, not a behavior defect. The audit
 walked the wiring manually and confirmed it is correct today. The
 proposed 15-line test in 13.1.B would close the gap. No code change
 required for correctness.
+
+---
+
+### 13.3 — Debug mode skips plan file validation, creates sessions without prompts, and allows manual interaction
+
+**Status: COMPLETE — VERIFIED, no HIGH/CRITICAL findings. One LOW (test-coverage gap on App.tsx debug effects) and three INFO observations.**
+
+PLAN.md requires the audit to confirm three behaviors of `--debug`:
+
+1. Plan file (and loop-prompt) validation is **skipped**.
+2. The initial session is **created without a prompt** (no `sendPromptAsync`
+   call in the create-session path).
+3. The user can **manually interact** with the session via on-screen
+   keybindings (no autonomous iteration).
+
+The audit walked every `props.debug` and `loop.isDebug()` site in
+`src/App.tsx`, `src/index.tsx`, and `src/hooks/useLoopState.ts` to
+confirm each behavior is gated correctly and is the *only* path the
+debug mode takes.
+
+#### 13.3.A — Plan validation is skipped at every call site: VERIFIED
+
+The `validatePrerequisites` helper at `src/index.tsx:28-57` is the
+gatekeeper for a fresh OCLoop launch. Its first action is an early
+return when `args.debug` is true:
+
+```ts
+async function validatePrerequisites(args: CLIArgs): Promise<void> {
+  // Skip validation in debug mode
+  if (args.debug) {
+    return
+  }
+  // Check PLAN.md exists
+  const planFile = Bun.file(args.planFile)
+  ...
+  // Loop prompt file. When the DEFAULT path is missing, auto-create it…
+  const promptFile = Bun.file(args.promptFile)
+  ...
+}
+```
+
+A debug-mode launch therefore:
+
+- Does **not** require `PLAN.md` to exist.
+- Does **not** require (or auto-create) `.loop-prompt.md`.
+- Does **not** call `process.exit(1)` for a missing plan/prompt.
+
+Inside the TUI, three more call sites are gated on `props.debug` and
+silently no-op when debug is active, preventing the renderer from
+attempting to parse a non-existent plan file:
+
+| File:line | Function | Behavior in debug |
+|-----------|----------|-------------------|
+| `src/App.tsx:572` | `refreshPlan` | Returns immediately (no `parsePlanFile` call) |
+| `src/App.tsx:588` | `refreshCurrentTask` | Returns immediately (no `getCurrentTask` call) |
+| `src/App.tsx:606` | `checkPlanComplete` | Returns `false` unconditionally |
+
+`checkPlanComplete` returning `false` is the load-bearing piece: it
+prevents the `startIteration` flow from short-circuiting with
+`plan_complete` when the plan is missing. In debug mode there is no
+plan to check, so the only iteration path (the one driven by `N` and
+`P` keybindings) must be free to run unimpeded.
+
+**Verdict: VERIFIED.** All four `props.debug` early-return sites form
+a single consistent contract: in debug mode, PLAN.md and the loop
+prompt are not required to exist, are not read, and are not parsed.
+
+#### 13.3.B — Initial debug session is created without a prompt: VERIFIED
+
+The `initializeSession` function at `src/App.tsx:1098-1157` branches
+on `props.debug` at the very top, before any plan or resilience logic:
+
+```ts
+async function initializeSession(): Promise<void> {
+  // In debug mode, create a session immediately and return
+  if (props.debug) {
+    await createDebugSession()
+    return
+  }
+
+  try {
+    // Ensure .loop* is in .gitignore
+    await ensureGitignore()
+    ...
+    if (persisted && persisted.iteration > 0) { ... }
+    if (props.run) { loop.dispatch({ type: "start" }) }
+  } catch (err) { ... }
+}
+```
+
+The `createDebugSession` helper at `src/App.tsx:879-914` is the
+contractual mirror of the production `startIteration`: it calls
+`createSession(client)` and dispatches `new_session`, but **never**
+calls `sendPromptAsync`:
+
+```ts
+async function createDebugSession(): Promise<void> {
+  ...
+  const client = createClient(url)
+  // Create a new session
+  const session = await createSession(client)
+  const newSessionId = session.id
+  ...
+  // Dispatch new_session to update debug state with session ID
+  loop.dispatch({ type: "new_session", sessionId: newSessionId })
+  setLastSessionId(newSessionId)
+  ...
+}
+```
+
+Grep for `sendPromptAsync` in `App.tsx` confirms only one call site
+exists: inside `sendDebugPrompt` at `src/App.tsx:933`, gated behind
+the `P` keybinding. There is no other code path that auto-sends a
+prompt after the debug session is created.
+
+`createDebugSession` also dispatches the `new_session` reducer action
+which the state machine at `src/hooks/useLoopState.ts:62-68` accepts
+*only* from the `debug` state:
+
+```ts
+case "new_session": {
+  if (state.type === "debug") {
+    return { type: "debug", sessionId: action.sessionId }
+  }
+  return state
+}
+```
+
+This means the debug session is also gated from accidentally
+transitioning out of debug state. The state machine refuses to
+`new_session` from a non-debug state — the audit walked every
+`new_session` call in the codebase and `createDebugSession` at
+`App.tsx:899` is the only producer.
+
+**Verdict: VERIFIED.** The debug-mode initial session is created
+without a prompt, the new_session action only fires from the debug
+state, and `sendPromptAsync` is never reached automatically.
+
+#### 13.3.C — Manual interaction is enabled and bounded to debug state: VERIFIED
+
+The `useKeyboard` handler at `src/App.tsx:1637-1806` gates a block of
+debug-only keybindings on `loop.isDebug()` at line 1662:
+
+```ts
+if (loop.isDebug()) {
+  if (key.name === "n") { createDebugSession(); ... }
+  if (key.name === "q") { showQuitConfirmation(); ... }
+  if (key.name === "i") { insertSampleActivity(); ... }
+  if (key.name === "p") { /* DialogPrompt → sendDebugPrompt */ }
+  if (key.name === "t") { /* launch terminal */ }
+  key.preventDefault()
+  return
+}
+```
+
+`loop.isDebug()` at `src/hooks/useLoopState.ts:324-326` is true iff
+`state.type === "debug"`. The `server_ready_debug` reducer at
+`useLoopState.ts:54-60` only transitions from `starting`, so the only
+way to reach `isDebug() === true` is via the debug launch path — no
+production state can accidentally enable these keybindings.
+
+The iteration driver at `src/App.tsx:1217-1222` is gated on
+`state.type === "running"`, so a debug session is **never**
+auto-iterated:
+
+```ts
+createEffect(() => {
+  const state = loop.state()
+  if (state.type === "running" && state.sessionId === "") {
+    startIteration()
+  }
+})
+```
+
+This is the third leg of the "manual interaction" contract: in debug
+mode, the only way to advance a session is via `N` (new session),
+`P` (manual prompt), or `T` (attach external terminal). The
+iteration driver does not run, the watchdog does not start
+(`isRunning()` returns false for `debug`, so `watchdog.start()` at
+`App.tsx:1253` is skipped), and `power.start()` at `App.tsx:1259` is
+also skipped — debug mode does not keep the system awake and does
+not auto-recover hung sessions. The user is in full control.
+
+**Verdict: VERIFIED.** Debug mode is a fully manual harness: the
+iteration driver is silent, the watchdog is silent, caffeinate is
+silent, and the only way to make progress is via the on-screen
+keybindings.
+
+#### 13.3.D — LOW — No test exercises the App.tsx debug-only effects (refreshPlan, refreshCurrentTask, checkPlanComplete, createDebugSession, sendDebugPrompt, persistence)
+
+**Problem.** The state-machine test file
+`src/hooks/useLoopState.test.ts` (lines 705-1014) thoroughly covers
+every reducer transition involving the `debug` state, including
+`server_ready_debug`, `new_session`, `session_idle` from debug,
+`error` from debug, and the negative cases (no-ops). That covers
+*what the state machine does* with debug actions.
+
+It does not, however, cover the *side effects* gated on
+`props.debug` in `App.tsx`:
+
+- `refreshPlan` returning early when `props.debug` is true
+  (`App.tsx:572`).
+- `refreshCurrentTask` returning early when `props.debug` is true
+  (`App.tsx:588`).
+- `checkPlanComplete` returning `false` when `props.debug` is true
+  (`App.tsx:606`).
+- `initializeSession` short-circuiting to `createDebugSession`
+  (`App.tsx:1100`).
+- The persistence effect returning early when `props.debug` is true
+  (`App.tsx:1269`).
+- The `handleQuit` branch that skips `clearLoopState` in debug
+  (`App.tsx:980`).
+
+A regression that, e.g., inverted the `if (props.debug)` early-return
+at `App.tsx:572` to `if (!props.debug)`, would not be caught by any
+existing test. The audit walked the wiring manually and confirmed
+all six sites are correct, but nothing in CI guards them.
+
+**Where.** `src/App.tsx` lines 572, 588, 606, 980, 1100, 1269.
+
+**Proposed fix.** Add a small smoke test that mounts the App with
+`debug: true` and asserts that `Bun.file("PLAN.md").exists()` is
+never consulted. The simplest shape is a render of the App
+component with the `debug` prop set and a stub `parsePlanFile` that
+throws if called, then asserting the App's `refreshPlan` does not
+throw. A lighter alternative: a unit test that imports the six
+functions (currently methods on App, would need extraction) and
+asserts the early-return behavior directly. The latter requires a
+small refactor (extract the six functions out of the App component
+closure) and is therefore higher-cost; the former requires a
+`@opentui/solid` test harness that does not exist yet.
+
+**Status.** Fix proposed, not applied (audit-only per PLAN.md
+acceptance criteria).
+
+#### 13.3.E — INFO — `sessionId` memo includes the `debug` state, so SSE events are delivered to the debug session
+
+**Observation.** The `sessionId` memo at `src/App.tsx:402-414` reads:
+
+```ts
+const sessionId = createMemo(() => {
+  const state = loop.state()
+  if (state.type === "running" && state.sessionId) return state.sessionId
+  if (state.type === "pausing" && state.sessionId) return state.sessionId
+  if (state.type === "debug" && state.sessionId) return state.sessionId
+  return undefined
+})
+```
+
+This is what makes the debug session "live" from the SSE perspective:
+events for the debug session's id are delivered (and the
+`onSessionError` / `onSessionIdle` filters at lines 460-461 and
+495-498 explicitly include the `debug` sessionId as a valid target).
+Without the `debug` branch here, SSE events for the debug session
+would be dropped and the user would see no streaming output. The
+three branches mirror exactly the three states that carry a live
+session in the state machine.
+
+**Where.** `src/App.tsx:402-414`.
+
+**Proposed action.** None. The three-branch memo is the right shape.
+
+**Status.** Documented as intentional.
+
+#### 13.3.F — INFO — `handleQuit` skips `clearLoopState` in debug mode (defense-in-depth, no state to clear)
+
+**Observation.** `handleQuit` at `src/App.tsx:968-1010` has a debug
+gate around the persisted-state cleanup:
+
+```ts
+// Clean exit: drop the persisted state so we don't offer to resume next time.
+if (!props.debug) {
+  await clearLoopState()
+}
+```
+
+In debug mode the persistence effect at `App.tsx:1268-1269` already
+returns early:
+
+```ts
+createEffect(() => {
+  if (props.debug) return
+  ...
+  // write to .loop-state.json
+})
+```
+
+So there is no `.loop-state.json` to clear in debug mode. The
+`if (!props.debug)` guard around `clearLoopState` is therefore
+**defense-in-depth** — it ensures that even if a future change
+accidentally enabled persistence in debug mode, the quit path would
+still leave the on-disk state untouched. This is the right shape:
+a quiet, additive safety net that does not affect current behavior.
+
+**Where.** `src/App.tsx:980` and `src/App.tsx:1269`.
+
+**Proposed action.** None.
+
+**Status.** Documented as intentional.
+
+#### 13.3.G — INFO — Sleep detector runs in debug mode, but the watchdog does not
+
+**Observation.** The `onMount` block at `src/App.tsx:421-441`
+unconditionally starts the sleep detector:
+
+```ts
+sleepDetector = createSleepDetector({ ... })
+sleepDetector.start()
+```
+
+The watchdog, in contrast, is gated on `loop.isRunning()` at
+`src/App.tsx:1251-1263`. In debug mode the watchdog is silent (as
+documented in 13.3.C), but the sleep detector is active. This is the
+correct shape: even a manually-controlled debug session benefits
+from wake-up reconnect (SSE reconnection on wake is wired at
+`App.tsx:207`), so the sleep detector should keep running. The
+watchdog, on the other hand, is an autonomous-recovery mechanism and
+should be silent in manual mode.
+
+**Where.** `src/App.tsx:432-437` (sleep detector unconditional) vs
+`src/App.tsx:1251-1256` (watchdog gated on `isRunning`).
+
+**Proposed action.** None.
+
+**Status.** Documented as intentional.
+
+#### Summary of Phase 13.3 findings
+
+| #       | Severity | One-liner |
+|---------|----------|-----------|
+| 13.3.A  | VERIFIED | Plan validation is skipped at all four `props.debug` early-return sites (`index.tsx:30`, `App.tsx:572`, `588`, `606`). |
+| 13.3.B  | VERIFIED | `initializeSession` short-circuits to `createDebugSession`, which never calls `sendPromptAsync`. |
+| 13.3.C  | VERIFIED | Iteration driver, watchdog, and caffeinate are all gated on `running`/`cooldown`, not `debug` — debug is fully manual. |
+| 13.3.D  | LOW      | No test exercises the six `App.tsx` debug-only effects; a regression in any `if (props.debug)` early-return would not be caught by CI. |
+| 13.3.E  | INFO     | `sessionId` memo includes the `debug` state, so SSE events reach the debug session. |
+| 13.3.F  | INFO     | `handleQuit` skips `clearLoopState` in debug mode (defense-in-depth; persistence is already gated). |
+| 13.3.G  | INFO     | Sleep detector runs unconditionally; watchdog is silent in debug. |
+
+**Net severity tally for Phase 13.3: 1 LOW; no CRITICAL, HIGH, or MEDIUM.**
+
+The LOW is a test-coverage gap on the App.tsx debug effects, not a
+behavior defect. The audit walked the six call sites manually and
+confirmed each is correct. The proposed smoke test in 13.3.D would
+close the gap (and depends on a `solid-js` test harness that does
+not yet exist in this repo). No code change required for
+correctness.
+
+Phase 13.3 satisfies the three PLAN.md requirements (skip plan
+validation, create sessions without prompts, allow manual
+interaction). The remaining Phase 13 items (13.4 — keybindings,
+13.5 — persistence gate) are listed separately and will be audited
+in subsequent passes.
