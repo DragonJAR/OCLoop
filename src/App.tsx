@@ -762,14 +762,21 @@ function AppContent(props: AppProps) {
     // if the renderer stalls between this set and the first 250ms tick.
     // Source: MEJORAS.md Finding 5.1.C.
     setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
-    cooldownTicker = setInterval(() => {
+    // Capture the interval ID locally so the self-stop branch clears the
+    // exact timer it was scheduled by, independent of any concurrent
+    // `clearCooldownTimers` that may have nulled the outer `cooldownTicker`
+    // reference. The outer `cooldownTicker` is only needed for
+    // `clearCooldownTimers` to know there is a live interval to clear.
+    // Source: MEJORAS.md Finding 5.1.D.
+    const tickerId = setInterval(() => {
       const remaining = Math.max(0, resumeAt - monotonicNow())
       setCooldownRemainingMs(remaining)
-      if (remaining <= 0 && cooldownTicker) {
-        clearInterval(cooldownTicker)
+      if (remaining <= 0) {
+        clearInterval(tickerId)
         cooldownTicker = null
       }
     }, 250)
+    cooldownTicker = tickerId
 
     // Resume after the backoff. The idle effect (running + empty session) then
     // re-creates the session and re-sends the prompt for the same iteration.
