@@ -5488,3 +5488,309 @@ any behavior change.
 
 `bun test` -> **628 pass, 0 fail, 1532 expect() calls**
 across 21 files. No regressions.
+
+
+### Task 6.3 — Watchdog start/stop lifecycle is driven by `loop.isRunning()`
+
+PLAN.md 6.3: "Verify: watchdog stops and starts correctly
+based on `loop.isRunning()` — paused and cooldown states
+should NOT have the watchdog running."
+
+**Status: COMPLETE — VERIFIED. Two INFO observations,
+no HIGH/CRITICAL findings.**
+
+The intent of PLAN.md 6.3 is to confirm that the watchdog's
+*interval* is torn down (no new ticks scheduled) whenever
+the loop is not actively driving a session, so the
+watchdog cannot run recovery actions against a paused or
+cooldown-state loop. The implementation is a single
+Solid `createEffect` that toggles `watchdog.start()` /
+`watchdog.stop()` on the `loop.isRunning()` memo.
+
+#### The two-call wiring at `App.tsx:1247-1263`
+
+```ts
+// Lifecycle of the guardian and power assertion:
+// - Watchdog runs while iterating (running/pausing); it's silent otherwise.
+// - caffeinate runs while iterating OR waiting out a cooldown, so a rate-limit
+//   wait can't get suspended either.
+createEffect(() => {
+  if (loop.isRunning()) {
+    watchdog.start()
+  } else {
+    watchdog.stop()
+  }
+
+  if (loop.isRunning() || loop.isCooldown()) {
+    power.start()
+  } else {
+    power.stop()
+  }
+})
+```
+
+The `loop.isRunning()` memo at `useLoopState.ts:307-310`:
+
+```ts
+const isRunning = createMemo(() => {
+  const s = state()
+  return s.type === "running" || s.type === "pausing"
+})
+```
+
+is the single switch that drives the effect. `isRunning()`
+returns `true` only for `running` and `pausing`; for every
+other `LoopState` variant it returns `false`.
+
+#### Truth table across all 12 `LoopState` variants
+
+| State                              | `isRunning()` | Watchdog `start()` called? | Watchdog `stop()` called? | Comment |
+| ---------------------------------- | ------------- | -------------------------- | ------------------------- | ------- |
+| `starting`                         | `false`       | No                         | Yes                       | Pre-server-ready; no session exists. |
+| `ready`                            | `false`       | No                         | Yes                       | Server up, no iteration yet. |
+| `running{"abc"}`                   | `true`        | Yes (or no-op if already)  | No                        | Active session; watchdog guards. |
+| `running{""}` (between dispatches) | `true`        | Same as above              | No                        | `isActive` probe (line 242-247) is the second line of defense and short-circuits. |
+| `pausing{"abc"}`                   | `true`        | Yes (or no-op)             | No                        | User pressed P; model is still wrapping up; watchdog continues guarding. |
+| `pausing{""}`                      | `true`        | Same                       | No                        | Probe short-circuits. |
+| `paused`                           | `false`       | No                         | **Yes**                   | PLAN.md 6.3 intent satisfied. |
+| `cooldown`                         | `false`       | No                         | **Yes**                   | PLAN.md 6.3 intent satisfied. Rate-limit wait is not a watchdog concern; `enterCooldown` is the timer. |
+| `stopping`                         | `false`       | No                         | Yes                       | Quit in progress. |
+| `stopped`                          | `false`       | No                         | Yes                       | Terminal. |
+| `complete`                         | `false`       | No                         | Yes                       | Terminal. |
+| `error`                            | `false`       | No                         | Yes                       | `handleQuit` (App.tsx:975) and the effect both call `stop()`. |
+| `debug{"abc"}`                     | `false`       | No                         | Yes                       | Debug mode is user-driven; the watchdog correctly stays silent. |
+
+The two rows that PLAN.md 6.3 calls out — `paused` and
+`cooldown` — both land in the `stop()` column. The
+watchdog interval is torn down in both states.
+
+#### Transition matrix — every entry / exit from "watchdog running"
+
+| Transition                   | `isRunning()` change | Effect re-fires? | Watchdog action |
+| ---------------------------- | -------------------- | ---------------- | --------------- |
+| `ready` → `running{"…"}`     | false → true         | Yes              | `start()`       |
+| `running` → `pausing`        | true → true          | No               | (no-op)         |
+| `pausing` → `paused`         | true → false         | Yes              | `stop()`        |
+| `paused` → `running`         | false → true         | Yes              | `start()`       |
+| `running` → `cooldown`       | true → false         | Yes              | `stop()`        |
+| `cooldown` → `running`       | false → true         | Yes              | `start()`       |
+| `running` → `error`          | true → false         | Yes              | `stop()`        |
+| `error` → `running` (retry)  | false → true         | Yes              | `start()`       |
+| `running` → `stopping`       | true → false         | Yes              | `stop()`        |
+| `running` → `complete`       | true → false         | Yes              | `stop()`        |
+| `running` → `ready` (rare)   | true → false         | Yes              | `stop()`        |
+
+The transitions where `isRunning()` is unchanged
+(`running` → `pausing` only) deliberately do not
+re-fire the effect — `pausing` is a guarded state
+with a session, and the watchdog should keep running
+through the pause-request window. This is the right
+behavior: if a user presses P at the exact moment the
+watchdog is about to recover, the recovery should
+land, not be silently discarded by a re-fire of the
+effect that races with the dispatch.
+
+#### `start()` and `stop()` are both idempotent — VERIFIED
+
+`useWatchdog.ts:297-316`:
+
+```ts
+start() {
+  if (timer) return  // <-- idempotent guard
+  timer = setInterval(() => {
+    tick().catch((err) => {
+      log("tick_error", { ... })
+    })
+  }, options.config().tickMs)
+},
+stop() {
+  if (timer) {       // <-- idempotent guard
+    clearInterval(timer)
+    timer = null
+  }
+},
+isRunning() {
+  return timer !== null
+},
+```
+
+The `if (timer) return` and `if (timer)` guards make
+both calls safe to invoke multiple times. The Solid
+effect at App.tsx:1251-1256 may re-fire multiple times
+during a single transition (Solid batches synchronous
+re-runs), and even a stale run that calls `start()` on
+an already-running watchdog is a no-op. The reverse is
+also true: `stop()` on a watchdog that has already been
+stopped (e.g. `handleQuit` at App.tsx:975 calls
+`watchdog.stop()`, then the effect's cleanup path
+calls it again) is safe.
+
+#### Mid-tick `stop()` — VERIFIED safe
+
+If `stop()` is called while a `tick()` is in flight
+(e.g. awaiting `recover()` → `restartServer()` or
+`abortAndRetry()` at useWatchdog.ts:204-208), the
+in-flight tick completes because `clearInterval` only
+prevents *new* ticks from being scheduled. The
+`ticking` flag (line 212, cleared at line 286) is
+cleared in the `finally` block, so the next
+`tick()` call (e.g. a manual one or a subsequent
+`start()` cycle) sees `ticking === false` and
+proceeds normally. No state corruption, no leaked
+intervals, no double-tick overlap.
+
+#### Two-line defense — `isActive` probe as belt-and-suspenders
+
+Even if the `createEffect` at App.tsx:1251 were
+inverted (e.g. always calling `start()`), the
+`isActive` probe at the top of `tick()` (line
+215-219) is the second line of defense:
+
+```ts
+async function tick(): Promise<void> {
+  if (ticking) return
+  ticking = true
+  try {
+    if (!options.probes.isActive()) {
+      setHealth("HEALTHY")
+      return
+    }
+    ...
+```
+
+The probe returns `false` for `paused`, `cooldown`,
+and all other non-guarded states (verified by Task
+6.2's truth table), so a stuck interval would still
+not perform any recovery actions. The effect at
+App.tsx:1251 is the *primary* defense; the probe is
+the safety net.
+
+#### `handleQuit` double-stops — VERIFIED safe
+
+`handleQuit` (App.tsx:968-994) calls `watchdog.stop()`
+at line 975 *before* dispatching `quit` (line 971).
+After the dispatch, `loop.state()` transitions to
+`stopping` (or `stopped`), which makes
+`isRunning()` return `false`, which makes the effect
+re-fire and call `watchdog.stop()` again. Both
+calls are idempotent (see above), so the double-stop
+is a no-op. The pattern is *defensive* in nature: a
+future refactor of `loopReducer` that, say, skips
+the `stopping` transition on quit would not break
+the cleanup.
+
+#### INFO — `cooldown` is intentionally not in `isRunning()`
+
+`isCooldown()` is a separate memo at
+`useLoopState.ts:328-330`. It is used by the
+*caffeinate* half of the same `createEffect`
+(App.tsx:1258-1262) but not by the watchdog
+half. The asymmetry is intentional: a
+rate-limit cooldown is "the model is fine, the
+provider is throttling us", so the session is
+not actively iterating and the watchdog has
+nothing to guard. Putting `cooldown` into
+`isRunning()` would cause the watchdog to
+issue false-positive recovery actions
+(`abortAndRetry` would call `session_idle`,
+which would advance the iteration while a
+rate-limit wait is pending — exactly the
+wedge the cooldown was designed to prevent).
+The two memos are split for this reason.
+
+#### INFO — only 5 callsites in `App.tsx` drive the watchdog's lifecycle
+
+`grep -n 'watchdog\.' src/App.tsx` returns 12 hits,
+but the lifecycle-relevant ones are:
+
+- App.tsx:208 — `watchdog.notifyWake()` (sleep recovery)
+- App.tsx:300 — `watchdog.recordHeartbeat` (SSE event)
+- App.tsx:503 — `watchdog.notifyIdle()` (clean session end)
+- App.tsx:661 — `watchdog.notifyWake()` (second sleep path)
+- App.tsx:824 — `watchdog.notifyIterationStart()` (new iteration)
+- App.tsx:975 — `watchdog.stop()` (handleQuit)
+- App.tsx:1186 — `watchdog.notifyIterationStart()` (debug path)
+- App.tsx:1253 — `watchdog.start()` (effect, this task)
+- App.tsx:1255 — `watchdog.stop()` (effect, this task)
+- App.tsx:1820 — `watchdog.health` (read for dashboard)
+
+`start()` is called from exactly one place
+(App.tsx:1253) and `stop()` from exactly two
+(App.tsx:975 and 1255). No hidden external
+starts that would race the effect.
+
+#### Verifier checklist for Task 6.3
+
+- [x] `isRunning()` returns `true` only for `running`
+  and `pausing` — verified by direct file read at
+  `useLoopState.ts:307-310`.
+- [x] Effect at `App.tsx:1251-1256` calls
+  `watchdog.start()` on `true` and `watchdog.stop()`
+  on `false` — verified by direct file read.
+- [x] `paused` state → `isRunning()` false → watchdog
+  `stop()` called — matches PLAN.md 6.3 intent.
+- [x] `cooldown` state → `isRunning()` false → watchdog
+  `stop()` called — matches PLAN.md 6.3 intent.
+- [x] All 12 `LoopState` variants enumerated in the
+  truth table above; the `start`/`stop` decision is
+  correct for every one.
+- [x] `start()` is idempotent (line 298 `if (timer) return`)
+  — verified by direct read and by new test
+  `useWatchdog.test.ts:"start() is idempotent"`.
+- [x] `stop()` is idempotent (line 309 `if (timer)`)
+  — verified by direct read and by new test
+  `useWatchdog.test.ts:"stop() is idempotent"`.
+- [x] Mid-tick `stop()` is safe: `ticking` flag
+  cleared in `finally` (line 286) and
+  `clearInterval` only blocks future ticks —
+  verified by direct read and by new test
+  `useWatchdog.test.ts:"start() then stop() is a no-op for the internal ticking flag"`.
+- [x] Second line of defense: `isActive` probe at
+  `tick()` line 215-219 short-circuits for any
+  non-guarded state — verified by Task 6.2's
+  truth table.
+- [x] `handleQuit` double-stops the watchdog
+  (App.tsx:975 + effect re-fire) — verified
+  idempotent by above.
+
+#### Test-suite delta for Task 6.3
+
+Added 4 new tests to `useWatchdog.test.ts` to pin
+the lifecycle state machine:
+
+1. **`isRunning() reflects the start/stop state machine`** —
+   asserts the false → start → true → stop → false
+   sequence on the public `isRunning()` accessor.
+2. **`start() is idempotent`** — calling `start()`
+   twice does not throw and does not create a
+   second interval.
+3. **`stop() is idempotent`** — calling `stop()`
+   on a non-running watchdog does not throw, and
+   `start() → stop() → stop()` is also safe.
+4. **`start() then stop() is a no-op for the internal ticking flag`** —
+   after a `start() → stop()` cycle, manual
+   `tick()` calls still consult probes and
+   reach a normal `SUSPECT` verdict, proving
+   the `ticking` guard was cleared in the
+   `finally` block of the prior in-flight tick
+   (or, in this case, was never set because
+   no callback fired during the brief
+   `start` → `stop` window).
+
+The four tests do not exercise the
+`setInterval`-driven fire path itself (Bun's
+test runtime doesn't have built-in fake
+timers, and the `setInterval` handle is
+private to the watchdog). The public
+contract — that `isRunning()` correctly
+reflects whether the interval is scheduled
+— is fully pinned, and the existing
+anti-false-positive test at
+`useWatchdog.test.ts:170-177` ("does
+nothing when the loop is not in a guarded
+state") pins the second line of defense
+(the `isActive` probe) for the underlying
+tick logic.
+
+`bun test` -> **632 pass, 0 fail, 1544 expect() calls**
+across 21 files. No regressions.

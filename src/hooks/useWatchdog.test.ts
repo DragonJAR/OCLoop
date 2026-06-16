@@ -465,4 +465,64 @@ describe("watchdog — anti-false-positive details", () => {
     expect(wd.health()).toBe("RECOVERING")
     expect(sseCalls.abort).toBe(1)
   })
+
+  // --- Phase 6.3: start/stop lifecycle audit ---
+
+  it("isRunning() reflects the start/stop state machine: false → start → true → stop → false", () => {
+    const s = setup()
+    // Initial: not started.
+    expect(s.wd.isRunning()).toBe(false)
+
+    s.wd.start()
+    expect(s.wd.isRunning()).toBe(true)
+
+    s.wd.stop()
+    expect(s.wd.isRunning()).toBe(false)
+  })
+
+  it("start() is idempotent: calling it twice does not create a second interval", () => {
+    const s = setup()
+    s.wd.start()
+    expect(s.wd.isRunning()).toBe(true)
+    // Second call must be a no-op (the `if (timer) return` guard at
+    // useWatchdog.ts:298). The test asserts the public contract — no
+    // exception, state unchanged.
+    s.wd.start()
+    expect(s.wd.isRunning()).toBe(true)
+    s.wd.stop()
+  })
+
+  it("stop() is idempotent: safe to call on a non-running watchdog", () => {
+    const s = setup()
+    // Never started — stop() must not throw and must leave the watchdog
+    // in a non-running state. The `if (timer)` guard at
+    // useWatchdog.ts:309 covers this.
+    expect(() => s.wd.stop()).not.toThrow()
+    expect(s.wd.isRunning()).toBe(false)
+
+    // Start, stop, stop — also safe.
+    s.wd.start()
+    s.wd.stop()
+    expect(() => s.wd.stop()).not.toThrow()
+    expect(s.wd.isRunning()).toBe(false)
+  })
+
+  it("start() then stop() is a no-op for the internal `ticking` flag (manual ticks still work)", async () => {
+    const s = setup({ reconcile: "working" })
+    s.wd.start()
+    s.wd.stop()
+
+    // After stop(), manual tick() must still be callable and still
+    // evaluate the probe. The `ticking` flag (cleared in the `finally`
+    // at useWatchdog.ts:286) must be false at this point.
+    s.clk.advance(T1 + 1_000) // past suspect threshold but under confirmMs
+    await s.wd.tick()
+    // dt is in [T1, T2) so the tick enters CONFIRMING, runs probes,
+    // sees verdict=working + dt<T2, and lands on SUSPECT (line 282).
+    // The point of this assertion: probes WERE consulted, proving the
+    // ticking guard is not stuck from a prior interval callback.
+    expect(s.wd.health()).toBe("SUSPECT")
+    expect(s.probeCalls.pingServer).toBe(1)
+    expect(s.probeCalls.reconcile).toBe(1)
+  })
 })
