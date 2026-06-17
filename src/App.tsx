@@ -21,6 +21,7 @@ import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
 import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
+import { resolvePlanFile } from "./lib/plan-file"
 import { getToolPreview } from "./lib/format"
 import { shutdownManager } from "./lib/shutdown"
 import {
@@ -613,7 +614,7 @@ function AppContent(props: AppProps) {
         // trailing-debounced to coalesce rapid-fire edits from a
         // single multi-edit tool call. Source: MEJORAS.md
         // Finding 15.5.A.
-        const planFile = props.planFile || DEFAULTS.PLAN_FILE
+        const planFile = resolvePlanFile(props.planFile)
         const absolutePlanPath = path.resolve(planFile)
         const absoluteFilePath = path.resolve(file)
 
@@ -672,7 +673,7 @@ function AppContent(props: AppProps) {
       return
     }
     try {
-      const progress = await parsePlanFile(props.planFile || DEFAULTS.PLAN_FILE)
+      const progress = await parsePlanFile(resolvePlanFile(props.planFile))
       setPlanProgress(progress)
     } catch (err) {
       log.error("plan", "Failed to parse plan file", err)
@@ -688,7 +689,7 @@ function AppContent(props: AppProps) {
       return
     }
     try {
-      const task = await getCurrentTask(props.planFile || DEFAULTS.PLAN_FILE)
+      const task = await getCurrentTask(resolvePlanFile(props.planFile))
       if (task) {
         setCurrentTask(task)
       }
@@ -705,7 +706,7 @@ function AppContent(props: AppProps) {
     if (props.debug) return false
 
     try {
-      const planPath = props.planFile || DEFAULTS.PLAN_FILE
+      const planPath = resolvePlanFile(props.planFile)
       const file = Bun.file(planPath)
       if (!(await file.exists())) return false
       const content = await file.text()
@@ -964,7 +965,7 @@ function AppContent(props: AppProps) {
     try {
       // Check for plan completion first
       if (await checkPlanComplete()) {
-        const planPath = props.planFile || DEFAULTS.PLAN_FILE
+        const planPath = resolvePlanFile(props.planFile)
         // We know it's complete, but getPlanCompleteSummary returns string | null
         const summaryContent = await getPlanCompleteSummary(planPath)
 
@@ -1007,7 +1008,7 @@ function AppContent(props: AppProps) {
 
       const promptContent = await promptFile.text()
       // Replace {{PLAN_FILE}} placeholder with actual plan file path
-      const prompt = promptContent.replaceAll("{{PLAN_FILE}}", props.planFile || DEFAULTS.PLAN_FILE)
+      const prompt = promptContent.replaceAll("{{PLAN_FILE}}", resolvePlanFile(props.planFile))
       // Guard: an empty / whitespace-only prompt would either 4xx the server
       // (classified fatal) or, worse, idle the session and re-fire the same
       // empty prompt in a tight loop. Fail fast with the same path the

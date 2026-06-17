@@ -6,6 +6,7 @@ import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
 import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
+import { resolvePlanFile } from "./lib/plan-file"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
 import { parseArgs } from "./lib/cli-args"
@@ -135,7 +136,7 @@ function buildRefinePrompt(previousPlan: string, feedback: string): string {
  * refine, or cancel before writing the file. Runs instead of the TUI.
  */
 async function runCreatePlan(args: CLIArgs): Promise<void> {
-  const planPath = args.planFile || DEFAULTS.PLAN_FILE
+  const planPath = resolvePlanFile(args.planFile)
   const modelStr = args.model || DEFAULT_PLAN_MODEL
   const agent = args.agent || DEFAULT_PLAN_AGENT
   const model = toSdkModel(modelStr)
@@ -345,7 +346,7 @@ async function main(): Promise<void> {
   })
 
   // Log plan file status
-  const planPath = args.planFile || DEFAULTS.PLAN_FILE
+  const planPath = resolvePlanFile(args.planFile)
   const planFileExists = await Bun.file(planPath).exists()
   log.info("startup", "Plan file check", { path: planPath, exists: planFileExists })
 
