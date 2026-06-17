@@ -3762,10 +3762,35 @@ del memo). `bun run build` verde. Commit `a576a66`.
 
 ### Mejora 73 — Finding 16.5.C — LOW — `ActivityLog.displayEvents` is a no-op memo
 
-- [ ] Evaluar la mejora 73 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 73 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 73 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 73 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 73 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 73 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 73 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 73 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21652-21688`): `displayEvents = createMemo(() => props.events)`
+en `src/components/ActivityLog.tsx:63` era un wrapper de identidad — el
+memo leía `props.events`, lo devolvía sin transformación y se usaba en
+`<For each={displayEvents()}>` (línea 116). El memo agregaba 3 líneas
+de código + un tracking cell + un result cell por valor cero: acceder
+a `props.events` directamente en la JSX produce la misma suscripción
+reactiva (la prop es un tracking cell de Solid), y `For` keya por
+identidad del array — misma referencia, mismo skip. La propuesta del
+audit (`MEJORAS.md:21674-21684`) es estrictamente la mínima útil:
+inline `props.events`, eliminar el memo, eliminar `createMemo` del
+import. Implementación: 3 cambios de 1 línea cada uno en
+`src/components/ActivityLog.tsx` (import línea 1, memo línea 63, JSX
+línea 116). Cero cambios al comportamiento observable (Solid sigue
+suscribiéndose a `props.events` cuando el JSX lo lee), cero impacto
+en la TUI, cero impacto en el renderer, cero impacto en el scrollbox
+auto-hide effect, cero impacto en `colorOf` o `contentWidth` (todos
+siguen operando igual). Sin nuevos tests — el contract de
+`<For each={...}>` con un array reactivo está pineado por el
+test suite del codebase, y el cambio es observable-equivalente (el
+memo de identidad no afectaba el render, solo agregaba una capa
+invisible de tracking). `bun test` verde: 788 pass / 1 skip / 0
+fail, 1831 expect() calls, 28 files, 354 ms — sin cambio en el
+conteo. `bun run build` verde. Commit `161842d`.
 
 ### Mejora 74 — Finding 16.5.D — LOW — `BottomPanel.rate()` and `compactLine()` re-evaluate on every tick
 
