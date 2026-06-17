@@ -4644,10 +4644,51 @@ del wrap). `bun run build` verde. Commit `9e6ac0a`.
 
 ### Mejora 87 — Finding 17.7.B — LOW — `finally { clearTimeout(failsafe) }` is unreachable from the catch-exit path
 
-- [ ] Evaluar la mejora 87 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 87 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 87 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 87 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 87 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 87 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 87 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 87 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:23959-24004`): la `process.exit(1)` en línea 73
+termina el proceso sincrónicamente, así que la
+`finally { clearTimeout(failsafe) }` en líneas 74-76 nunca
+corre en el catch-path — el `clearTimeout` es dead code en esa
+ruta. No es un bug (el proceso está saliendo de todas formas y
+el runtime descarta el timer), pero la falta de comentario
+puede confundir a un futuro mantenedor haciéndole creer que la
+`finally` es la red de seguridad del catch-path (no lo es;
+`process.exit(1)` lo es). La opción del fix propuesta en
+`MEJORAS.md:23976-23986` es estrictamente la mínima útil y la
+única correcta (vs. un "drop el `finally`" — la rama
+normal-completion path en líneas 81-83 sí lo necesita para
+limpiar el failsafe antes del `process.exit(0)`; vs. refactor
+a `try/catch` sin finally + cleanup manual en ambos branches
+— overhead sin valor agregado para 1 línea de comentario).
+Implementación mínima: 4 líneas de comment block dentro del
+`finally` (3 líneas de rationale + 1 línea de source
+attribution), siguiendo el patrón establecido por Mejoras
+17-22 (Finding 5.1.B-F) y Mejora 19-22: cada fix nombra el
+source `MEJORAS.md Finding N` en el comment block. Cero
+cambios al behavior, cero cambios a la firma de
+`handleSignal` (`(string) => Promise<void>` intacta), cero
+cambios al `isShuttingDown` guard (línea 51-54), cero
+cambios al `setTimeout` del failsafe (línea 58-63), cero
+cambios al `unref` (línea 65), cero impacto en el
+normal-completion path (el `clearTimeout` ya corría ahí), cero
+impacto en el catch-exit path (la `process.exit(1)` sigue
+corrádo antes del `finally`, así que el comment block nuevo
+es observable-equivalente al previous code). Cero impacto en
+tests — el audit (`MEJORAS.md:23991-24007`) verificó que el
+race condition del catch-path está cubierto por las
+single-threaded event loop semantics de Node, y que el
+contract de `handleSignal` no es unit-testable sin forked
+process (Mejora 90, Finding 18.2.B, queda como territory
+separado). El cambio es estructural (un comment block, no
+computacional), y code review cubre el gap de cobertura.
+`bun test` verde: 795 pass / 1 skip / 0 fail, 1839 expect()
+calls, 28 files — sin cambio en el conteo (era 795 / 1 / 0
+antes del comment block). Commit `a2c1dcd`.
 
 ### Mejora 88 — Finding 17.8.B — LOW — `require()` is a CommonJS primitive in an ESM-first project
 
