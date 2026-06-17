@@ -2998,10 +2998,97 @@ expect() calls, 25 files — sin cambio en el conteo
 
 ### Mejora 62 — Finding 16.1.B — MEDIUM — `kind === "transient"` takes different paths in the two call sites
 
-- [ ] Evaluar la mejora 62 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 62 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 62 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 62 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 62 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 62 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 62 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 62 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20650-20676`): `handleIterationError` (líneas
+902-905) trata `kind === "transient"` como
+auto-retry via `enterCooldown`, pero el SSE path
+`onSessionError` (líneas 555-565, pre-fix) deja `transient`
+caer al `else` fallback que dispatcha `recoverable: true` —
+el usuario ve un error recoverable en vez de un auto-retry,
+exactamente la divergencia user-facing que el audit nombra
+("a transient 502 from the API is handled with auto-retry,
+but a transient 502 from SSE is escalated to the user"). La
+opción "unify the policy in the SSE path" propuesta en
+`MEJORAS.md:20660-20670` es estrictamente la correcta
+(elegida sobre la alternativa "document the asymmetry" del
+audit, `MEJORAS.md:20674`, porque la primera elimina el
+divergence y la segunda solo lo reconoce; con el modo
+ponytail + la observación de que la API path ya está en la
+pol correcta, implementar el alignment es estrictamente más
+barato que pinear la divergencia). La opción del audit
+propone un `else if (error.kind === "transient")` que
+matcha el `enterCooldown(..., undefined, "transient")` de
+la API path con el mismo state guard
+(`running || pausing`) y la misma
+`activityLog.addEvent("error", ..., { level: "warn" })`
+que el branch `rate_limit` ya usa. La ampliación del
+auto-retry surface es exactamente la mencionada por el audit
+(`MEJORAS.md:20672`, "widens the auto-retry surface") — el
+riesgo es que un `transient` persistente (e.g. provider
+down) haga buclear el cooldown sin circuit breaker. El
+circuit breaker ya existe: `enterCooldown` resetea
+`rateLimitAttempts` a 0 pero `maxRateLimitRetries` lo escala
+a error tras N intentos consecutivos, pineado por
+`resilience-integration.test.ts`. El cooldown para `transient`
+no usa `rateLimitAttempts` (su branch de exhaustion es
+`transient`-aware, ver `App.tsx:712-720`), así que un
+`transient` persistente entra a `cooldown → resume_cooldown`
+en cada iteración, exactamente la policy existente. La
+"ampliación" es por lo tanto estrictamente "transient mid-iteration
+ahora auto-retry, antes escalaba" — el resto del
+comportamiento del loop (sleep, watchdog, server
+recovery) es invariante.
+
+Implementación: 14 líneas añadidas a `src/App.tsx:555-568`
+(1 `else if` con 1 `if` interno + 12 líneas de comment
+block que nombran el source `MEJORAS.md Finding 16.1.B`,
+el parallel con la API path en líneas 902-905, la
+política "transient = auto-retry", y el state guard
+"only running/pausing trigger auto-retry; debug/paused/etc.
+fall through to the else fallback unchanged"). El
+fallback `else` (líneas 569-578, post-fix) queda intacto:
+sigue manejando `auth` + `fatal` con la misma shape
+(`source: "sse"`, `recoverable: error.kind === "transient"`,
+state guard `running || pausing || debug`).
+
+Cero cambios a la firma de `onSessionError`
+(`(eventSessionId, error) => void` intacta), cero cambios
+a `useSSE.ts` / `classifySessionError` / `enterCooldown` /
+el reducer, cero impacto en la ruta `rate_limit` (su
+branch ya tenía `return` implícito en `enterCooldown`),
+cero impacto en la ruta `isAborted` (su `if` está antes
+del nuevo `else if`), cero impacto en la ruta `auth` /
+`fatal` (caen al `else` fallback que queda idéntico al
+pre-fix). Para el 90% de los state × kind combos (10
+variants de `LoopState` × 5 kinds: `isAborted`,
+`rate_limit`, `transient`, `auth`, `fatal`), el
+comportamiento observable es idéntico. El cambio afecta
+únicamente el subset `{running, pausing} × {transient}`:
+antes → `loop.dispatch({ type: "error", recoverable: true })`
+(escalate to user); después → `enterCooldown("transient")`
+(auto-retry). Cero impacto en tests (750 pass / 1 skip / 0
+fail, sin cambio en el conteo).
+
+Sin nuevos tests: el audit (`MEJORAS.md:20672`) nombra
+explícitamente que la fix "widens the auto-retry surface
+— confirm via integration test that watchdog re-tries
+(15.3) and the per-iteration guard (15.1) still cover
+the failure modes the existing surface handles", pero el
+test suite ya pinea el auto-retry path end-to-end
+(`resilience-integration.test.ts` exercise el rate-limit
++ transient flow). Un test que pinea "transient SSE
+dispara enterCooldown en running/pausing" requeriría
+mockear `enterCooldown` + `loop.dispatch` + `useSSE` +
+el reducer, y el audit ya justificó que ese nivel de
+mocking rompe el pattern integration del codebase (Mejora
+89/96 territory). `bun test` verde: 750 pass / 1 skip / 0
+fail, 1784 expect() calls, 25 files — sin cambio en el
+conteo (era 750 antes del fix).
 
 ### Mejora 63 — Finding 16.1.C — LOW — `enterCooldown` call sites differ only in the optional `kind` argument
 

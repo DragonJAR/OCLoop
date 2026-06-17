@@ -552,6 +552,20 @@ function AppContent(props: AppProps) {
           if (st === "running" || st === "pausing") {
             enterCooldown(error.message, error.retryAfter)
           }
+        } else if (error.kind === "transient") {
+          // Transient (5xx, network blip) surfaced mid-iteration: auto-retry via
+          // cooldown to match the API path's policy in handleIterationError
+          // (App.tsx:902-905). Without this branch, a transient from SSE
+          // would fall through to the `else` and dispatch a recoverable error
+          // — diverging from the API path on the same kind, so the user's
+          // experience depended on which subsystem first observed the failure.
+          // Other states (debug/paused/cooldown/etc.) still escalate via the
+          // fallback `else` — auto-retry only applies when there is something
+          // to retry. Source: MEJORAS.md Finding 16.1.B.
+          activityLog.addEvent("error", t("actSessionError", { message: error.message }), { level: "warn" })
+          if (st === "running" || st === "pausing") {
+            enterCooldown(error.message, undefined, "transient")
+          }
         } else {
           activityLog.addEvent("error", t("actSessionError", { message: error.message }))
           if (st === "running" || st === "pausing" || st === "debug") {
