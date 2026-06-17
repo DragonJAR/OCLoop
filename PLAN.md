@@ -5544,7 +5544,39 @@ verde.
 
 ## Fase 3 — Consolidación
 
-- [ ] Revisar los cambios acumulados para eliminar duplicación introducida durante las implementaciones.
+- [x] Revisar los cambios acumulados para eliminar duplicación introducida durante las implementaciones.
+
+_Evaluación_: la revisión de los 172 commits de Fase 2 identificó un
+solapamiento de código de tests introducido en el commit `16bfa65`
+(Mejora 92, Finding 18.2.D). Los archivos `terminal-launcher.test.ts`
+y `power.test.ts` compartían el mismo patrón de mock de `Bun.spawn`
+(realBunSpawn save, override, reset per-test) — 15 líneas idénticas
+por archivo, con `power.test.ts:48` llevando ya un comment
+"See terminal-launcher.test.ts for the rationale on the cast" que
+reconocía el cross-reference. La revisión cubrió también el código
+de producción: la Fase 2 fue disciplinada con DRY y extrajo helpers
+para los patrones duplicados pre-existentes (`resolveActiveSessionId`
+para los 11 call sites de `sessionId() || lastSessionId()`,
+`tryGetClient` para el `server.url() + createClient(url)` pattern,
+`resolvePlanFile` para los 8 call sites de `props.planFile ||
+DEFAULTS.PLAN_FILE`, `routeSessionError` para el kind→action routing,
+`describeResumeAttempt` para la decisión de resume, `pickDefined`
+mejorado, etc.). El único candidato significativo de duplicación
+nueva era el mock de tests. Implementación mínima: extraer el
+helper compartido a `src/lib/test-helpers/bun-spawn-mock.ts` con
+la API `setupBunSpawnMock()` + `spawnState` (const wrapper con
+`calls` y `impl` mutables — necesario porque los ES module
+bindings son read-only desde el import site, así que `export
+let` no permite reassign desde un test body). 52 líneas
+removidas de los dos test files, +86 en el helper (de las
+cuales ~50 son JSDoc explicando el rationale, los tests
+actuales, y los contratos del mock). Sin cambios al production
+code, sin nuevos tests (el helper es reuso, no funcionalidad).
+`bun test` verde: 908 pass / 1 skip / 0 fail (sin cambio en
+el conteo, era 908 antes del refactor). `bun run build`: green.
+Helper NO bundleado en `dist/index.js` (no hay import transitivo
+desde `src/index.tsx`). Commit `9e1cb8a`.
+
 - [ ] Confirmar que ninguna mejora implementada contradice patrones existentes del proyecto.
 - [ ] Confirmar que no quedaron cambios parciales, archivos temporales ni código muerto.
 - [ ] Ejecutar la suite completa de verificación disponible para el proyecto.
