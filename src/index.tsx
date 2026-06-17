@@ -238,8 +238,27 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
       let messages: SessionMessage[] = []
       for (;;) {
         await Bun.sleep(1500)
+        // reconcileSession never throws (it returns "unknown" on any error),
+        // but fetchMessages can throw on a transient localhost blip — a 5xx
+        // momentáneo, a GC pause in the opencode child, or assertResponse
+        // failing on a half-formed reply. A generation can run up to
+        // planTimeoutMs (default 10 min); aborting the whole run on a single
+        // flaky poll would discard minutes of model work. Swallow the failure
+        // for this tick and retry next interval; the deadline below is the
+        // real backstop. Matches the resilience already built into
+        // reconcileSession and the SSE reconnect path in the TUI.
         const verdict = await reconcileSession(client, sessionID)
-        messages = await fetchMessages(client, sessionID)
+        try {
+          messages = await fetchMessages(client, sessionID)
+        } catch (err) {
+          log.warn("create-plan", "Transient fetchMessages failure, will retry", {
+            message: err instanceof Error ? err.message : String(err),
+          })
+          if (Date.now() > deadline) {
+            throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
+          }
+          continue
+        }
         // Done only when the session is idle AND a new non-empty assistant
         // reply landed. Counting assistant messages avoids mistaking the newly
         // added user prompt for a completed generation.
