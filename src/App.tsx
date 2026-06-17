@@ -2128,6 +2128,28 @@ function AppContent(props: AppProps) {
     }
 
     // Detached - handle our keybindings
+    if (key.name === "c") {
+       // C — copy the attach command. The palette declares keybind "C" for
+       // cmdCopyAttach; this wires the direct key so the advertised shortcut
+       // actually works (it previously fell through to opentui and no-op'd).
+       const sid = resolveActiveSessionId(sessionId(), lastSessionId())
+       const url = server.url()
+       if (sid && url) {
+          const cmd = getAttachCommand(url, sid)
+          copyToClipboard(cmd).then((result) => {
+            if (result.success) {
+              toast.show({ variant: "success", message: t("toastCopied") })
+            } else {
+              toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
+            }
+          })
+       } else {
+          toast.show({ variant: "info", message: t("toastNoSessionAttach") })
+       }
+       key.preventDefault()
+       return
+    }
+
     if (key.name === "t") {
        const sid = resolveActiveSessionId(sessionId(), lastSessionId())
        if (sid) {
