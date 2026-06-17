@@ -3892,10 +3892,64 @@ sin cambio en el conteo. `bun run build` verde. Commit
 
 ### Mejora 76 — Finding 16.6.B — MEDIUM — Test at `api.test.ts:196-209` is fragile due to module-level cache state
 
-- [ ] Evaluar la mejora 76 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 76 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 76 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 76 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 76 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 76 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 76 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 76 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21971-22031`): el `clientCache` de `api.ts:32` es un
+`Map` closure-private que se acumula entre tests en el mismo
+proceso de `bun test`. El test original de eviction
+(`api.test.ts:196-209`) confiaba en **unicidad de URL**
+(12 puertos distintos) para evitar colisiones, así que su
+aserción "el newest está cacheado" era
+necesaria-pero-no-suficiente: si un test futuro reordenaba la
+ejecución o si dos runs compartían el mismo rango de puertos,
+el path de eviction podía no dispararse y el test seguiría
+verde. La opción del fix propuesta en
+`MEJORAS.md:21993-22002` (export gated a `NODE_ENV === "test"`
++ `beforeEach` que resetea) es estrictamente la mínima útil y
+es la única opción correcta (vs. exponer el cache como API
+pública, que filtraría un detalle de implementación; vs. mockear
+`Map` global, que rompe el patrón de tests del codebase).
+Implementación:
+
+- `src/lib/api.ts:50-69` — nueva export
+  `__resetClientCacheForTests()` con guard
+  `if (process.env.NODE_ENV !== "test") return` y comment block
+  que nombra el source `MEJORAS.md Finding 16.6.B`, el patrón
+  homólogo de Bun (que setea `NODE_ENV=test` automáticamente),
+  y la garantía "production builds no pueden limpiar el cache
+  vivo por accidente".
+- `src/lib/api.test.ts:1-2` — import `beforeEach` de `bun:test`
+  y del nuevo helper.
+- `src/lib/api.test.ts:196-218` — `beforeEach` que resetea el
+  cache, restructuración del test para pinear **dos** hechos
+  (el newest sigue cacheado Y el oldest fue evictado), y
+  comment block de 8 líneas que nombra el source
+  `MEJORAS.md Finding 16.6.B` y la diferencia entre "URL
+  unique" y "eviction deterministic".
+
+Cero cambios al contract de `createClient` (la firma
+`(url: string) => OpencodeClient` queda intacta), cero cambios
+a `tryGetClient` / `assertResponse` / `reconcileSession`, cero
+cambios al reducer del state, cero cambios a la TUI, cero
+impacto en el camino feliz (la función nueva es export-gated
+y no-op fuera de `NODE_ENV=test`). El gating cierra el
+riesgo de que production bundle exponga un vector para limpiar
+el cache vivo.
+
+Cubierto por el test actualizado que ahora pinea
+explícitamente la asimetría: `newest === clients[11]` (hit
+post-eviction) y `originalFirst !== clients[0]` (miss de la
+URL evictada). Si el path de eviction se rompiera en el
+futuro (e.g. alguien borra el `>= MAX_CACHE_SIZE` check),
+`originalFirst` sería idéntico a `clients[0]` y el test
+fallaría con un mensaje claro. `bun test` verde: 788 pass /
+1 skip / 0 fail, 1832 expect() calls, 28 files, 370 ms (era
+1831 expects antes del fix — +1 expect del assertion
+`originalFirst`). `bun run build` verde. Commit `94440c6`.
 
 ### Mejora 77 — Finding 16.6.C — LOW — `clientCache` could grow across `bun test` runs in the same process
 
