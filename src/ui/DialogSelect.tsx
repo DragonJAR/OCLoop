@@ -15,6 +15,10 @@ export interface DialogSelectOption {
   description?: string
   footer?: string
   category?: string
+  /** Direct keyboard shortcut for this option, shown as a dim right-aligned
+   * badge so the palette teaches the shortcuts. Optional; only command-palette
+   * options set it. */
+  keybind?: string
   disabled?: boolean
   onSelect?: () => void
 }
@@ -277,13 +281,26 @@ export function DialogSelect(props: DialogSelectProps) {
                       </span>
                     </text>
 
-                    <Show when={option.category}>
-                      <text>
-                        <span style={{ fg: styles().fgMuted }}>
-                          {option.category}
-                        </span>
-                      </text>
-                    </Show>
+                    {/* Right-aligned group: the direct keybind (if any) as a
+                        dim bold badge, then the category. Showing the keybind
+                        here teaches the shortcut exactly where users look for
+                        features. */}
+                    <box style={{ flexDirection: "row", gap: 1 }}>
+                      <Show when={option.keybind}>
+                        <text>
+                          <span style={{ fg: styles().fgMuted, bold: true }}>
+                            {option.keybind}
+                          </span>
+                        </text>
+                      </Show>
+                      <Show when={option.category}>
+                        <text>
+                          <span style={{ fg: styles().fgMuted }}>
+                            {option.category}
+                          </span>
+                        </text>
+                      </Show>
+                    </box>
                   </box>
                 </box>
               )

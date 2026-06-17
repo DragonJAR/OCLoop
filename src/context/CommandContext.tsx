@@ -4,9 +4,12 @@ import { DialogSelect, type DialogSelectOption } from "../ui/DialogSelect"
 import { t } from "../lib/i18n"
 import { useKeyboard } from "@opentui/solid"
 
-export interface CommandOption extends DialogSelectOption {
-  keybind?: string
-}
+/**
+ * A command-palette option. `keybind` (inherited from DialogSelectOption) is
+ * now rendered as a dim badge in the palette row, so the direct shortcut is
+ * taught exactly where users discover features. No extra fields today.
+ */
+export interface CommandOption extends DialogSelectOption {}
 
 export interface CommandContextValue {
   register: (factory: () => CommandOption[]) => void
