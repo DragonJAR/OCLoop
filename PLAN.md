@@ -3333,10 +3333,64 @@ fix), 1814 expect() calls, 26 files, ~340 ms — +5 tests, +5 expects.
 
 ### Mejora 66 — Finding 16.2.B — LOW — Inconsistent inline vs variable form across call sites
 
-- [ ] Evaluar la mejora 66 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 66 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 66 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 66 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 66 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 66 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 66 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 66 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: el propio audit cierra el finding en `MEJORAS.md:20974`
+como "**One LOW finding** (16.2.B — inconsistent inline vs variable
+form; **resolved as a side-effect of 16.2.A**)" y la sección
+"Proposed fix" del finding (líneas 20940-20948) prescribe
+exactamente la forma que Mejora 65 (commit `bc595da`, Finding
+16.2.A) ya dejó: el `tryGetClient` helper en `src/lib/api.ts:63-66`
+retorna `OpencodeClient | null`, así que todo call site se ve
+forzado a la forma variable:
+
+```ts
+const client = tryGetClient(server.url)
+if (!client) return
+await reconcileSession(client, sid)
+```
+
+Los 3 call sites específicos que el audit nombra como
+inline-form (`MEJORAS.md:20933`):
+
+- `reconcileSession(createClient(url), sid)` (línea 254 original) →
+  `App.tsx:313-315` (`const client = tryGetClient(server.url)` +
+  `return reconcileSession(client, sid)`).
+- `abortSession(createClient(url), sid)` (línea 273 original) →
+  `App.tsx:332-335` (mismo patrón).
+- `reconcileSession(createClient(url), p.sessionId)` (línea 1169
+  original) → `App.tsx:1394-1398` (mismo patrón, dentro de
+  `doResume`).
+
+Verificación empírica post-Mejora 65: `grep -n "createClient(url)"
+src/` retorna 0 hits en `src/App.tsx` (los 3 matches en el repo son
+en `src/lib/api.ts:53` — el docstring del helper — y
+`src/lib/api.test.ts:214` — el test que lo documenta). Los 3
+call sites `reconcileSession(...)` y los 3 `abortSession(...)` que
+quedaron en `App.tsx` (líneas 315, 335, 747, 1039, 1199, 1398) usan
+todos la forma variable — el `grep "reconcileSession(client"`
+retorna 3 matches, `grep "abortSession(client"` retorna 3 matches,
+cero inline forms. La divergencia inline-vs-variable queda cerrada
+estructuralmente: la única forma posible ahora es variable, porque
+el helper retorna `OpencodeClient` (no `Promise<OpencodeClient>`),
+así que el consumidor necesita nombrarlo si quiere referenciarlo
+más de una vez en la misma expresión.
+
+El test pineado en `api.test.ts:211-246` cubre el contrato del
+helper (null URL → null, empty string URL → null, valid URL → client
+no-null, cache hit en llamada repetida, single getter invocation), y
+los 11 call sites migrados quedan visiblemente
+`// tryGetClient collapses the url-read + createClient pair (Finding
+16.2.A).` en cada uno (`App.tsx:312, 331, 948, 1074, 1111, 1196, 1238,
+1265, 1394`), con la doble cross-reference "16.2.A cubre también
+16.2.B" implícita en el tag del comment. Implementación mínima:
+anotación en este plan; cero cambios de código. `bun test` verde:
+778 pass / 1 skip / 0 fail, 1814 expect() calls, 26 files, 328 ms
+— sin cambio en el conteo (era 778 / 1 / 0 antes de la
+anotación). Commit `docs(plan)`.
 
 ### Mejora 67 — Finding 16.3.A — LOW — `props.planFile || DEFAULTS.PLAN_FILE` repeated at 8 sites
 
