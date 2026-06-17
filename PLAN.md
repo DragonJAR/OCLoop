@@ -5311,10 +5311,114 @@ verde.
 
 ### Mejora 95 — Finding 18.3.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook (carried from 18.1.A)
 
-- [ ] Evaluar la mejora 95 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 95 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 95 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 95 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 95 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 95 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 95 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 95 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del
+audit (`MEJORAS.md:24453-24483`): el
+`useSSE.test.ts` existente (199 líneas) es una suite
+**del classifier** — `classifySessionError` y la
+extracción de `retryAfter` — pero el cuerpo del hook
+(`useSSE.ts:300-660`, 360 líneas) tiene 14 behaviors
+sin cobertura que el audit enumera uno por uno
+(`MEJORAS.md:24457-24470`): connection lifecycle,
+status transitions, reconnection backoff, session-id
+filter en 6 event types, dispatch wiring para 9 event
+types, `seenPartIds` dedup, `messageRoles` map,
+superseded-controller guard, `reconnect()` state
+reset, `disconnect()` cancellation + idempotent,
+`onAnyEvent` callback, non-AbortError error path,
+stream-ended-naturally, y `session.created`
+dedup-map reset. La propuesta del audit
+(`MEJORAS.md:24474-24481`) es estrictamente la
+correcta: añadir un `useSSE.hook.test.ts` (nombre
+paralelo al suite existente, para no romper el
+classifier suite) que usa un fake `createOpencodeClient`
+con un push-based `AsyncIterable<Event>`, y drive el
+hook a través de 4 fases
+(connect → stream 9 events → disconnect → reconnect).
+Reusa el patrón ya establecido por
+`useServer.test.ts:46-74` (mock.module de
+`@opencode-ai/sdk/v2` con closure mutable).
+
+Implementación mínima: un nuevo file
+`src/hooks/useSSE.hook.test.ts` con 23 tests en 4
+`describe` blocks:
+
+- `connection lifecycle` (6 tests) — initial
+  state, empty URL no-op, status transitions
+  disconnected→connecting→connected, `disconnect()`
+  aborta el signal, `reconnect()` desde un
+  connected state triggerea un fresh subscribe (la
+  reconnect-wedge fix de §15.6), `reconnect()` resetea
+  `reconnectAttempts` a 0 antes de la nueva connect
+  (pinea que el streak se limpia incluso cuando la
+  reconnect subsiguiente también falla).
+- `event dispatch (onX wiring)` (8 tests) — uno por
+  cada onX: `onSessionCreated`, `onSessionIdle`,
+  `onTodoUpdated`, `onFileEdited`, `onSessionError`
+  con un error de `classifySessionError` integrado
+  (rate_limit, no del propio classifier), `onToolUse`
+  con dedup en `part.id`, `onMessageText` con role
+  default a `"assistant"`, `onMessageText` con role
+  leído de `messageRoles` después de un `message.updated`,
+  `onSessionDiff`.
+- `filtering and dedup` (4 tests) — session.idle
+  con filter mismatch es dropped, session.idle con
+  match es dispatched, `session.created` clears
+  `seenPartIds` (un tool-use con el mismo part.id
+  re-emite después del reset), `onAnyEvent` fires
+  para todos los events antes del switch.
+- `error and end-of-stream paths` (5 tests) —
+  non-AbortError throw en subscribe → status=error +
+  onError + reconnectAttempts++, AbortError (vía
+  signal abort) → status queda en disconnected
+  (sin onError), stream ends naturally →
+  status=disconnected + reconnectAttempts++,
+  superseded-controller guard (un segundo reconnect
+  durante un connect in-flight no permite que el
+  connect stale clobber status).
+
+El mock pattern es idéntico al de
+`useServer.test.ts:63-72`: `mock.module` al
+top-level con closure mutable sobre `subscribeImpl`.
+El fake retorna
+`{ stream: AsyncIterable<Event> }` con un push
+controller (`push(event)` / `close()`). Un
+`abort` listener en el signal cierra el stream
+para que `disconnect()` unblockee el `for await`.
+
+## Por qué se driva connections vía `reconnect()` (no `onMount`)
+
+`useSSE` registra su autoStart vía
+`onMount` (línea 646-650), que **no fire** dentro
+de un `createRoot` sin `render` (verificado
+empiricamente en `docs/solid-hook-testing.md:6-23`).
+`bun:test` no expone un DOM
+(`globalThis.document === undefined`) y
+`solid-js/web`'s `render` requiere DOM. Cada test
+usa `autoConnect: false` y llama a `reconnect()`
+(público) que invoca el mismo `connect()` helper
+internamente. El estado resultante es observably
+equivalente a un autoStart exitoso: status
+"connected", handlers firean, etc. El path
+`autoConnect: true` queda como integration-territory
+y se documenta en el file-level comment.
+
+Cero cambios al production code (test-only).
+Cero impacto en el classifier suite
+(`useSSE.test.ts:1-199` permanece intacto, sigue
+en 24 tests). Cero impacto en `useSSE.ts`. Cero
+impacto en `App.tsx`. Cero nuevos types
+exportados, cero nuevas funciones en el
+production code. El commit `f199691` (1 file
+changed, 975 insertions). `bun test` verde:
+901 pass / 1 skip / 0 fail (era 878 / 1 / 0
+antes del fix), 2082 expect() calls (era
+2036), 37 files (era 36), 905 ms — +23 tests,
++46 expects, +1 file. `bun run build` verde.
 
 ### Mejora 96 — Finding 18.3.B — MEDIUM — `useServer.test.ts` does not exist (cross-reference a 18.2.A)
 
