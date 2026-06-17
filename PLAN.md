@@ -4747,10 +4747,107 @@ del comment block). `bun run src/index.tsx --version` →
 
 ### Mejora 89 — Finding 18.2.A — HIGH — `useServer.ts` has no test (carried from 18.1.B)
 
-- [ ] Evaluar la mejora 89 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 89 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 89 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 89 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 89 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 89 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 89 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 89 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:24373-24381`): los 286 líneas de
+`src/hooks/useServer.ts` no tenían `*.test.ts` asociado, y la
+garantía del in-flight guard de `restart()` (Mejora 27 / Finding
+7.5.A) dependía de un file-read de `useServer.ts:213`. La
+propuesta del audit (8 tests cubriendo startServer guard, ping
+happy/failure, restart preferred/ephemeral/error, stop, y
+closeCurrent swallow) es estrictamente la correcta y se
+implementó con una variante **adaptada** del plan original por
+una limitación de la harness de Solid:
+
+1. **`mock.module` para `createOpencodeServer` y
+   `createOpencodeClient`** — mismo patrón que
+   `clipboard.test.ts:21-23` usa para `command-exists`. La
+   factory closure lee de un par de variables mutables
+   (`serverImpl`, `clientAgentsImpl`) reasignables per-test. El
+   `docs/testing.md` warning sobre `mock.module` es
+   JSX-transform-específico (muerde `@opentui/solid`); ni
+   `@opencode-ai/sdk/server` ni `@opencode-ai/sdk/v2` tienen
+   JSX, así que el mock es seguro.
+
+2. **Boot via `stop()` + `restart()` en lugar de `onMount`** —
+   Solid's `onMount` solo dispara cuando el hook está attached
+   a un componente rendered (requiere un owner "mounted" a un
+   DOM). En un `createRoot` sin `render` (que es lo que
+   `useActivityLog.test.ts:7` y `useSessionStats.test.ts:7`
+   usan para hooks sin onMount), `onMount` se queuea en el
+   owner pero nunca corre — verificado empíricamente (un
+   `console.log` dentro del callback nunca aparece después de
+   200ms de espera). `bun:test` no expone un DOM
+   (`globalThis.document === undefined`), así que
+   `solid-js/web`'s `render` / `renderToString` tampoco son
+   usables (ambos requieren DOM o JSX — JSX no es opción porque
+   el tsconfig usa `@opentui/solid`). El `stop()` + `restart()`
+   exercises el mismo `launch(preferredPort)` que la cadena
+   `autoStart → startServer → launch` ejecuta — la única
+   diferencia es el trigger, no el código que corre.
+
+3. **El guard de `startServer` (audit test #1) no es
+   directamente testable desde la API pública** —
+   `startServer` es una función local no expuesta, y el único
+   trigger público (`restart`) tiene su propio guard
+   (`status() === "starting"`). Testear el guard de
+   `startServer` requeriría un `useServer` ya con status
+   `ready`/`error`/`unhealthy` y un segundo `startServer` call,
+   lo cual solo es posible vía `onMount` (que no fire en
+   `createRoot`). Es integration-territory: queda cubierto por
+   la inspección del código y por el hecho de que el guard de
+   `restart` (testable) usa el mismo `setStatus("starting")`
+   pre-launch que el guard de `startServer` previene.
+
+9 tests en `src/hooks/useServer.test.ts`:
+
+1. **Initial state with autoStart=false** — pines
+   `status="starting"`, `url=null`, `port=null`, `error=undefined`,
+   `lastHealthyAt=0`.
+2. **stop+restart reaches ready on preferred port** — exercises
+   el launch path, pinea `url=http://127.0.0.1:4096`,
+   `port=4096`, `lastHealthyAt>0`.
+3. **ping happy path** — `ping()` returns `true`,
+   `lastHealthyAt` updated, status stays `ready`.
+4. **ping failure → unhealthy** — pinea el branch de
+   `App.tsx:182-184` (status flips from `ready` to `unhealthy`
+   on a failed ping).
+5. **restart reuses preferred port** — pinea `useServer.ts:227`
+   (`await launch(preferredPort)` donde `preferredPort =
+   serverPort() ?? port ?? 0 = 4096` después del primer
+   launch exitoso).
+6. **restart ephemeral fallback** — pinea el branch de
+   `useServer.ts:236-243` (preferred port throws → second
+   `launch(0)` succeeds → status returns to `ready` with the
+   ephemeral URL).
+7. **restart both ports fail → error** — pinea el branch de
+   `useServer.ts:244-250` (inner `catch` sets `setError(err)`,
+   `setStatus("error")`, `serverRef = null`).
+8. **stop sets status=stopped and nulls state** — pinea
+   `useServer.ts:257-262` (`closeCurrent()`,
+   `setUrl(null)`, `setServerPort(null)`, `setStatus("stopped")`).
+9. **closeCurrent swallows close() throw** — pinea el `try/catch
+   {}` vacío de `useServer.ts:147-151` (un `close()` que
+   tira no propaga, y el siguiente launch continúa).
+
+Cero cambios al production code de `useServer.ts` (la
+funcionalidad queda pineada, no modificada). Cero cambios a
+los call sites de `App.tsx:1180-1257` (su guard de
+`resilienceReady()` (Mejora 59) sigue siendo el primer gate, y
+`server.restart()` (Mejora 58) sigue siendo idempotente bajo
+concurrent calls). Cero impacto en runtime, cero impacto en
+la TUI. Sin nuevos archivos en `src/lib/`, sin nuevos tipos,
+sin nuevas funciones públicas. El test file es read-only sobre
+`useServer` y los mocks del SDK.
+
+`bun test` verde: 804 pass / 1 skip / 0 fail (era 795 / 1 / 0
+antes del fix), 1877 expect() calls (era 1839), 29 files (era
+28) — +9 tests, +38 expects, +1 file. `bun run build` verde.
+Commit `dfef30c`.
 
 ### Mejora 90 — Finding 18.2.B — HIGH — `shutdown.ts` has no test (failsafe race verified by file read only)
 
