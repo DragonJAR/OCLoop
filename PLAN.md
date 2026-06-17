@@ -4397,10 +4397,68 @@ Commit `f2546a4`.
 
 ### Mejora 84 — Finding 17.4.B — LOW — `validatePrerequisites` propagates `exists()` exceptions to `main().catch()`
 
-- [ ] Evaluar la mejora 84 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 84 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 84 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 84 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 84 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 84 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 84 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 84 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:23287-23333`): los 2 calls
+`await Bun.file(path).exists()` en
+`validatePrerequisites` (`src/index.tsx:36, 47`) no defendían
+su precondición — un EACCES, EISDIR o ENOENT-parent propaga
+out de la función y es capturado por `main().catch()`
+(`src/index.tsx:368-372`), que imprime `"Fatal error: <stack>"`
+y `process.exit(1)`. La propuesta del audit
+(`MEJORAS.md:23315-23324`, helper `fileExists` que try/catch el
+`exists()` y print+exit con un mensaje localized) es
+estrictamente la mínima útil y reusa el patrón ya establecido
+en el codebase: `getIgnoredCreatePlanFlags` (Mejora 7, Finding
+1.7.A) extrae lógica CLI a un helper testable, y los 3
+`process.exit(1)` preexistentes en `validatePrerequisites`
+(líneas 41, 56, 160) ya establish que el side-effect de "exit on
+hard error" es load-bearing en este flow. Implementación mínima:
+
+- `src/lib/i18n.ts:142-152` (en) + `:478-485` (es) — nueva
+  key `errCannotReadFile: (p) => "Error: Cannot read <path>:
+  <message>\n\n<diagnóstico>"`. La shape `es: Record<MessageKey,
+  Msg>` (línea 383) forzó la mirror es al editar — exactamente
+  la garantía pineada en el header del módulo.
+- `src/index.tsx:27-49` — helper `fileExists(path)` con
+  try/catch + `process.exit(1)` (typed `never` en @types/node,
+  TypeScript acepta `Promise<boolean>` sin return explícito en
+  el catch). El docstring nombra el source `MEJORAS.md Finding
+  17.4.B`, los 3 triggers del throw (EACCES, ENOENT-parent,
+  EISDIR), y el rationale del exit (`main().catch` es la
+  alternativa user-facing actual, y queremos
+  estrictamente mejorar, no replace, ese path).
+- `src/index.tsx:66` y `:75` — los 2 calls
+  `Bun.file(path).exists()` se reemplazan por
+  `fileExists(path)`. Las 3 líneas de `Bun.file()` constructor
+  allocation se eliminan (el helper las crea internamente).
+
+Cero cambios a la firma de `validatePrerequisites`
+(`(CLIArgs) => Promise<void>` intacta), cero cambios a
+`main()`, cero cambios al reducer, cero cambios al path TUI,
+cero impacto en el camino feliz (el happy-path de un file
+readable sigue retornando `true` en el mismo microtask que
+antes), cero impacto en la ruta `--create-plan` (no entra a
+`validatePrerequisites`), cero impacto en `--debug` (el
+early-return de `args.debug` sigue corto-circuitando antes
+de cualquier I/O).
+
+Cero impacto en tests: el audit (`MEJORAS.md:23331-23333`)
+reconoce la rareza del path ("Rare in practice"), y un test
+de "exists() throws → friendly error → exit 1" requeriría
+o `chmod 555` cross-platform-frágil (mismo patrón que
+`loop-state-store.test.ts:71-92`, Mejora 30) o mock de
+`Bun.file` + `process.exit` (harness pesado para un helper
+de 9 líneas). La garantía del fix es estructural (un
+try/catch + `log.error` que code review cubre sin gap de
+cobertura). Cero cambios en el conteo de tests: 788 pass /
+1 skip / 0 fail (era 788 antes del fix, mismo número — el
+test preexistente sigue verde). `bun run build` verde.
+Commit `c99d946`.
 
 ### Mejora 85 — Finding 17.4.C — LOW — TOCTOU window between `exists()` and `text()` in `isPlanComplete` / `getPlanCompleteSummary`
 
