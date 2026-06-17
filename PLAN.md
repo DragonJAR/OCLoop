@@ -5696,8 +5696,29 @@ de cambios parciales) y task 4 (suite de verificación)
 sin findings pendientes. Commit pendiente.
 
 - [x] Confirmar que no quedaron cambios parciales, archivos temporales ni código muerto.
-- [ ] Ejecutar la suite completa de verificación disponible para el proyecto.
-- [ ] Corregir cualquier fallo causado por las mejoras implementadas.
+- [x] Ejecutar la suite completa de verificación disponible para el proyecto.
+
+_Ejecutado_: `bun test` corre 909 tests en 37 files en ~856 ms. Resultado:
+**908 pass / 1 skip / 0 fail / 2091 expect() calls**. El único skip es
+`clipboard.test.ts:43` "returns clip on win32" (gateado por
+`skipIf(process.platform !== "win32")`, per Mejora 42 / Finding 11.4.D).
+La suite cubre los 8 hooks (`useSSE`, `useServer`, `useSSE.hook`,
+`useActivityLog`, `useSessionStats`, `useLoopState`, `useLoopStats`,
+`useWatchdog`), los 12 lib modules con `*.test.ts` adyacente
+(`cli-args`, `plan-file`, `create-plan-warning`, `resume-decision`,
+`loop-state-store`, `config`, `plan-parser`, `clipboard`,
+`terminal-launcher`, `power`, `shutdown`, `theme-resolver`,
+`active-session-id`, `api`, `error-router`), y los 3 contexts
+(`dialog`, `toast`, `theme-context`). Total: 37 files, 909 tests,
+2091 expects, 0 fails. Cero fixes necesarios.
+
+- [x] Corregir cualquier fallo causado por las mejoras implementadas.
+
+_No-op_: la tarea anterior (`bun test`) terminó con 0 fails. No hay
+regresiones que corregir; la precondición "cualquier fallo" es falsa.
+Las 97 mejoras se aplicaron sin romper el comportamiento existente.
+Cero cambios de código.
+
 - [ ] Preparar un resumen final con mejoras implementadas, mejoras adaptadas, mejoras descartadas y motivo de cada descarte.
 
 ## Fase 4 — Revisión manual
