@@ -5,6 +5,7 @@ import {
   createMemo,
   onMount,
   onCleanup,
+  untrack,
 } from "solid-js"
 import {
   useRenderer,
@@ -1549,9 +1550,15 @@ function AppContent(props: AppProps) {
   createEffect(() => {
     const state = loop.state()
     if (state.type === "complete") {
-      // Calculate total time from stats
-      const totalTime = stats.totalActiveTime()
-      
+      // Calculate total time from stats.
+      // `totalActiveTime` subscribes transitively to the per-second `tick`
+      // signal (via `elapsedTime`); we want a one-shot snapshot here, not a
+      // live subscription, otherwise the effect re-fires every second and
+      // `dialog.show` piles a new entry onto the dialog stack (the user's
+      // active button + focus get reset on every re-mount). Source:
+      // MEJORAS.md Finding 16.5.A.
+      const totalTime = untrack(() => stats.totalActiveTime())
+
       dialog.show(() => (
         <DialogCompletion
           iterations={state.iterations}
