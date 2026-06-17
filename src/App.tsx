@@ -64,6 +64,7 @@ import {
   type KnownTerminal 
 } from "./lib/terminal-launcher"
 import { copyToClipboard } from "./lib/clipboard"
+import { routeSessionError } from "./lib/error-router"
 import { ThemeProvider, useTheme } from "./context/ThemeContext"
 import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
 import { CommandProvider, useCommand, type CommandOption } from "./context/CommandContext"
@@ -539,44 +540,41 @@ function AppContent(props: AppProps) {
         }
         const st = state.type
         if (error.isAborted) {
+          // Abort is call-site specific: SSE toggles pause, the API path
+          // (handleIterationError) does not abort through this path. The
+          // shared `routeSessionError` helper returns null for `isAborted`
+          // so the abort policy stays here. Source: MEJORAS.md Finding
+          // 16.1.D.
           activityLog.addEvent("task", t("actSessionAborted"))
           if (st === "running") {
             loop.dispatch({ type: "toggle_pause" })
           }
-        } else if (error.kind === "rate_limit") {
-          // Provider rate limit surfaced mid-iteration: wait + retry, don't fail.
-          // Cover `pausing` too (the reducer accepts it) so a rate limit while
-          // pausing can't wedge the loop waiting for a session.idle that the
-          // errored session will never emit.
-          activityLog.addEvent("error", t("actRateLimit", { message: error.message }), { level: "warn" })
-          if (st === "running" || st === "pausing") {
-            enterCooldown(error.message, error.retryAfter)
-          }
-        } else if (error.kind === "transient") {
-          // Transient (5xx, network blip) surfaced mid-iteration: auto-retry via
-          // cooldown to match the API path's policy in handleIterationError
-          // (App.tsx:902-905). Without this branch, a transient from SSE
-          // would fall through to the `else` and dispatch a recoverable error
-          // — diverging from the API path on the same kind, so the user's
-          // experience depended on which subsystem first observed the failure.
-          // Other states (debug/paused/cooldown/etc.) still escalate via the
-          // fallback `else` — auto-retry only applies when there is something
-          // to retry. Source: MEJORAS.md Finding 16.1.B.
-          activityLog.addEvent("error", t("actSessionError", { message: error.message }), { level: "warn" })
-          if (st === "running" || st === "pausing") {
-            enterCooldown(error.message, undefined, "transient")
-          }
-        } else {
-          activityLog.addEvent("error", t("actSessionError", { message: error.message }))
-          if (st === "running" || st === "pausing" || st === "debug") {
-            loop.dispatch({
-              type: "error",
-              source: "sse",
-              message: t("actSessionError", { message: error.message }),
-              recoverable: error.kind === "transient",
-            })
-          }
+          return
         }
+        // The "kind → action" policy lives in routeSessionError
+        // (src/lib/error-router.ts). The helper returns a typed action;
+        // this handler still owns the activity-log write and the i18n
+        // message key, which differ per source. Source: MEJORAS.md
+        // Finding 16.1.D.
+        const action = routeSessionError(error, st, "sse")
+        if (!action) return
+        if (action.type === "cooldown") {
+          // Per-kind copy: rate_limit uses `actRateLimit` (warn), transient
+          // uses `actSessionError` (warn). Both are recoverable, so a
+          // `level: "warn"` is correct.
+          const logKey = action.kind === "rate_limit" ? "actRateLimit" : "actSessionError"
+          activityLog.addEvent("error", t(logKey, { message: action.message }), { level: "warn" })
+          enterCooldown(action.message, action.retryAfter, action.kind)
+          return
+        }
+        // action.type === "error" — auth/fatal surfaced mid-iteration.
+        activityLog.addEvent("error", t("actSessionError", { message: action.errorMessage }))
+        loop.dispatch({
+          type: "error",
+          source: "sse",
+          message: t("actSessionError", { message: action.errorMessage }),
+          recoverable: action.recoverable,
+        })
       },
       onSessionIdle: (eventSessionId) => {
         // Only handle if it's our current session
@@ -909,29 +907,30 @@ function AppContent(props: AppProps) {
    */
   function handleIterationError(err: unknown): void {
     const classified = classifySessionError(err)
-    if (classified.kind === "rate_limit") {
-      // Omit the `kind` arg — the default is `"rate_limit"`, matching the
-      // SSE path's call form (App.tsx:561). `transient` below stays explicit
-      // because the default would be wrong for that branch.
-      // Source: MEJORAS.md Finding 16.1.C.
-      enterCooldown(classified.message, classified.retryAfter)
+    // The "kind → action" policy lives in routeSessionError
+    // (src/lib/error-router.ts) and is shared with the SSE path's
+    // onSessionError handler. The API path's call site only runs while
+    // the loop is `running` (startIteration's catch is in the
+    // in-flight-iteration window), so the helper's state gate always
+    // passes here. The helper returns `null` for `isAborted` because
+    // the API path does not abort through this surface; the original
+    // code dispatched a non-recoverable error for an aborted createSession
+    // and the helper preserves that via the auth/fatal branch. Source:
+    // MEJORAS.md Finding 16.1.D.
+    const action = routeSessionError(classified, loop.state().type, "api")
+    if (!action) return
+    if (action.type === "cooldown") {
+      enterCooldown(action.message, action.retryAfter, action.kind)
       return
     }
-    if (classified.kind === "transient") {
-      enterCooldown(classified.message, undefined, "transient")
-      return
-    }
-    const message = err instanceof Error ? err.message : String(err)
+    // action.type === "error" — auth/fatal. The i18n key differs from
+    // the SSE path (`errIterationStart` vs `actSessionError`) so the
+    // formatting stays at the call site.
     loop.dispatch({
       type: "error",
       source: "api",
-      message: t("errIterationStart", { message }),
-      // Honor the classified kind the same way SSE onSessionError does
-      // (App.tsx:562): transient is recoverable, auth/fatal are not. A 401
-      // surfaced through the iteration-start path would otherwise advertise
-      // Retry as a one-click fix and waste an iteration on the same failure.
-      // Source: MEJORAS.md Finding 16.1.A.
-      recoverable: classified.kind === "transient",
+      message: t("errIterationStart", { message: action.errorMessage }),
+      recoverable: action.recoverable,
     })
   }
 
