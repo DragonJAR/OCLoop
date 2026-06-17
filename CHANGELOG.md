@@ -30,6 +30,10 @@ All notable changes to OCLoop are documented here. Format based on
   `<plan-complete>` summary to the plan itself; the completion parser also accepts the
   closing tag in any position. The execution prompt now tells the agent to mark a task
   `[x]` only when it is verified and committed — never preemptively.
+- **The activity-log scrollbar no longer splits the screen or reserves an empty column.**
+  It auto-hides when the log fits and sits flush on the right while scrolling. Previously it
+  was forced always-visible (painting an empty vertical strip), and a `flexDirection:"column"`
+  override on the scroll box stacked the bar *below* the log instead of beside it.
 - **Transient connection errors at iteration start now auto-retry with backoff.**
   A dropped/reset socket (e.g. "The socket connection was closed unexpectedly")
   while creating the session stopped the loop with a manual-retry dialog. It now
