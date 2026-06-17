@@ -1,4 +1,4 @@
-import { For, createMemo, Show, createEffect } from "solid-js";
+import { For, Show, createEffect } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme } from "../context/ThemeContext";
@@ -60,8 +60,6 @@ export function ActivityLog(props: ActivityLogProps) {
     }
   };
 
-  const displayEvents = createMemo(() => props.events);
-
   // Scrollbar auto-hide: OpenTUI shows the vertical bar only when the log
   // overflows (built-in recalculateVisibility). We must NOT force `visible` —
   // that pins the bar on and reserves an empty right column. The user's toggle
@@ -113,7 +111,7 @@ export function ActivityLog(props: ActivityLogProps) {
           overflow: "hidden",
         }}
       >
-        <For each={displayEvents()}>
+        <For each={props.events}>
           {(event, index) => {
             const f = formatActivityLine(
               {
