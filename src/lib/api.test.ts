@@ -218,6 +218,24 @@ describe("Phase 4 — API layer edge cases", () => {
       expect(newest).toBe(clients[11])
       expect(originalFirst).not.toBe(clients[0])
     })
+
+    it("returns the cached client on a HIT even when the cache is full (no eviction on HIT)", () => {
+      // Regression guard: a cache HIT must never trigger eviction. Previously
+      // eviction ran BEFORE the cache lookup, so asking for an already-cached
+      // URL with a full cache would delete the oldest half (and rebuild the
+      // requested URL if it was among the old ones). Now eviction only runs on
+      // a MISS, so a HIT returns the same instance untouched.
+      const first = createClient("http://localhost:30000")
+      // Fill the rest up to MAX_CACHE_SIZE so the cache is full.
+      for (let i = 1; i < 10; i++) {
+        createClient(`http://localhost:${30000 + i}`)
+      }
+      // The very first URL is the oldest entry. On a full cache, a HIT for it
+      // must return the exact same client — not a rebuilt one, and eviction
+      // must not have touched it.
+      const hit = createClient("http://localhost:30000")
+      expect(hit).toBe(first)
+    })
   })
 
   describe("tryGetClient — server.url() + createClient() collapse", () => {

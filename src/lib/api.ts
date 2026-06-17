@@ -31,6 +31,15 @@ export type { OpencodeClient, SessionStatus }
 const MAX_CACHE_SIZE = 10
 const clientCache = new Map<string, OpencodeClient>()
 export function createClient(url: string): OpencodeClient {
+  // Check for a cache HIT first. A HIT must never trigger eviction — otherwise
+  // asking for an already-cached URL when the cache is full would delete the
+  // oldest half (potentially including the requested URL itself if it's old,
+  // forcing a needless rebuild), even though we're not inserting anything new.
+  // Eviction only makes room for an insertion, so it belongs on the MISS path.
+  const cached = clientCache.get(url)
+  if (cached) return cached
+
+  // MISS: make room before inserting so the cache stays bounded.
   if (clientCache.size >= MAX_CACHE_SIZE) {
     // Evict the oldest half. Map preserves insertion order, so the first
     // entries are the stalest (from previous server URLs).
@@ -39,11 +48,8 @@ export function createClient(url: string): OpencodeClient {
       clientCache.delete(key)
     }
   }
-  let client = clientCache.get(url)
-  if (!client) {
-    client = createOpencodeClient({ baseUrl: url })
-    clientCache.set(url, client)
-  }
+  const client = createOpencodeClient({ baseUrl: url })
+  clientCache.set(url, client)
   return client
 }
 
