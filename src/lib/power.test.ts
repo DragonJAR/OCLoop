@@ -20,47 +20,23 @@
  * - `isActive()` reflects the proc state across full
  *   start / stop / start cycles.
  *
- * `Bun.spawn` is stubbed via direct property assignment, the same
- * pattern `cli-args.test.ts:16-43` uses for `process.exit`. The
- * global `Bun` is not an importable module so `mock.module` does
- * not intercept it. The mock provides only the three fields the
- * production code touches: `pid`, `unref`, `kill` (power.ts:43-53).
+ * `Bun.spawn` is stubbed via the shared helper at
+ * `./test-helpers/bun-spawn-mock` (same pattern that
+ * `terminal-launcher.test.ts` uses). The global `Bun` is not an
+ * importable module so `mock.module` does not intercept it. The
+ * mock provides only the three fields the production code touches:
+ * `pid`, `unref`, `kill` (power.ts:43-53).
  */
 
-import { afterEach, beforeEach, describe, expect, it } from "bun:test"
+import { describe, expect, it } from "bun:test"
 
-type FakeProc = {
-  unref: () => void
-  kill: () => void
-  pid: number
-}
-type SpawnCall = { cmd: string[]; opts: unknown }
-let spawnCalls: SpawnCall[] = []
-let spawnImpl: (cmd: string[], opts: unknown) => FakeProc = () => ({
-  unref: () => {},
-  kill: () => {},
-  pid: 1234,
-})
-let realBunSpawn: typeof Bun.spawn
+import {
+  setupBunSpawnMock,
+  spawnState,
+  type FakeProc,
+} from "./test-helpers/bun-spawn-mock"
 
-beforeEach(() => {
-  realBunSpawn = Bun.spawn
-  // See terminal-launcher.test.ts for the rationale on the cast.
-  Bun.spawn = ((cmd: string[], opts: unknown) => {
-    spawnCalls.push({ cmd, opts })
-    return spawnImpl(cmd, opts)
-  }) as typeof Bun.spawn
-})
-
-afterEach(() => {
-  Bun.spawn = realBunSpawn
-  spawnCalls = []
-  spawnImpl = () => ({
-    unref: () => {},
-    kill: () => {},
-    pid: 1234,
-  })
-})
+setupBunSpawnMock()
 
 const { createPowerManager } = await import("./power")
 
@@ -69,8 +45,8 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     const pm = createPowerManager({ enabled: () => true, platform: "darwin" })
     pm.start()
     expect(pm.isActive()).toBe(true)
-    expect(spawnCalls).toHaveLength(1)
-    expect(spawnCalls[0].cmd).toEqual(["caffeinate", "-dimsu"])
+    expect(spawnState.calls).toHaveLength(1)
+    expect(spawnState.calls[0].cmd).toEqual(["caffeinate", "-dimsu"])
   })
 
   it("a second start() is a no-op while a proc is already running (line 35 guard)", () => {
@@ -78,28 +54,28 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     pm.start()
     pm.start()
     pm.start()
-    expect(spawnCalls).toHaveLength(1)
+    expect(spawnState.calls).toHaveLength(1)
   })
 
   it("start() is a no-op on a non-darwin platform (line 37-40 guard)", () => {
     const pm = createPowerManager({ enabled: () => true, platform: "linux" })
     pm.start()
     expect(pm.isActive()).toBe(false)
-    expect(spawnCalls).toHaveLength(0)
+    expect(spawnState.calls).toHaveLength(0)
   })
 
   it("start() is a no-op on win32 (the documented non-darwin path)", () => {
     const pm = createPowerManager({ enabled: () => true, platform: "win32" })
     pm.start()
     expect(pm.isActive()).toBe(false)
-    expect(spawnCalls).toHaveLength(0)
+    expect(spawnState.calls).toHaveLength(0)
   })
 
   it("start() is a no-op when enabled() returns false (line 36 guard)", () => {
     const pm = createPowerManager({ enabled: () => false, platform: "darwin" })
     pm.start()
     expect(pm.isActive()).toBe(false)
-    expect(spawnCalls).toHaveLength(0)
+    expect(spawnState.calls).toHaveLength(0)
   })
 
   it("start() re-evaluates the lazy enabled() on each call", () => {
@@ -117,12 +93,12 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     enabled = true
     pm.start()
     expect(pm.isActive()).toBe(true)
-    expect(spawnCalls).toHaveLength(1)
+    expect(spawnState.calls).toHaveLength(1)
   })
 
   it("stop() on a started manager calls kill and resets isActive to false", () => {
     let killCalls = 0
-    spawnImpl = () => {
+    spawnState.impl = () => {
       const proc: FakeProc = {
         unref: () => {},
         kill: () => {
@@ -142,7 +118,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
 
   it("stop() without start is a no-op (does not call kill)", () => {
     let killCalls = 0
-    spawnImpl = () => ({
+    spawnState.impl = () => ({
       unref: () => {},
       kill: () => {
         killCalls++
@@ -160,7 +136,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     // empty catch: ESRCH from a child that already exited. Pin the
     // no-throw contract so a future refactor that adds a throw does
     // not regress the property.
-    spawnImpl = () => ({
+    spawnState.impl = () => ({
       unref: () => {},
       kill: () => {
         throw new Error("ESRCH")
@@ -177,7 +153,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     // The contract from the source comment (line 55): "caffeinate
     // missing or spawn failed — degrade gracefully." isActive must
     // stay false and the manager must remain re-startable.
-    spawnImpl = () => {
+    spawnState.impl = () => {
       throw new Error("caffeinate not on PATH")
     }
     const pm = createPowerManager({ enabled: () => true, platform: "darwin" })
@@ -186,7 +162,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
 
     // A subsequent successful start still works (the catch sets
     // proc = null, not proc = sentinel; the next call proceeds).
-    spawnImpl = () => ({
+    spawnState.impl = () => ({
       unref: () => {},
       kill: () => {},
       pid: 1,
@@ -201,7 +177,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     // count so a refactor that drops the unref or moves it does
     // not silently regress.
     let unrefCalls = 0
-    spawnImpl = () => ({
+    spawnState.impl = () => ({
       unref: () => {
         unrefCalls++
       },
@@ -227,6 +203,6 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     // proc, not a stale handle).
     pm.start()
     expect(pm.isActive()).toBe(true)
-    expect(spawnCalls).toHaveLength(2)
+    expect(spawnState.calls).toHaveLength(2)
   })
 })

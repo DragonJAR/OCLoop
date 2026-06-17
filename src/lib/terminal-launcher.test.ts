@@ -16,14 +16,17 @@
  *   throw (Finding 11.2.D).
  *
  * `commandExists` is mocked at the module boundary (same pattern as
- * `clipboard.test.ts:19-23`). `Bun.spawn` is stubbed via direct
- * property assignment (same pattern as `cli-args.test.ts:16-43` for
- * `process.exit`) because the global `Bun` is not an importable
- * module. The mock only needs to provide the fields the production
- * code actually touches (`unref` at line 254).
+ * `clipboard.test.ts:19-23`). `Bun.spawn` is stubbed via the shared
+ * helper at `./test-helpers/bun-spawn-mock` (same `Bun` global
+ * limitation as `cli-args.test.ts:16-43` for `process.exit`).
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterEach, describe, expect, it, mock } from "bun:test"
+
+import {
+  setupBunSpawnMock,
+  spawnState,
+} from "./test-helpers/bun-spawn-mock"
 
 // Mutable impl for `commandExists` so individual tests can swap
 // behavior. `mock.module` MUST be called before the module under test
@@ -35,6 +38,8 @@ mock.module("./command-exists", () => ({
   commandExists: (cmd: string) => commandExistsImpl(cmd),
 }))
 
+setupBunSpawnMock()
+
 const {
   KNOWN_TERMINALS,
   getKnownTerminalByName,
@@ -43,41 +48,8 @@ const {
   launchTerminal,
 } = await import("./terminal-launcher")
 
-// Capture Bun.spawn calls for the current test. The production code
-// only uses `proc.unref()` after spawn, so the mock just needs an
-// `unref` method (plus a `pid` for log payloads).
-type SpawnCall = { cmd: string[]; opts: unknown }
-let spawnCalls: SpawnCall[] = []
-let spawnImpl: (cmd: string[], opts: unknown) => {
-  unref: () => void
-  kill: () => void
-  pid: number
-} = () => ({
-  unref: () => {},
-  kill: () => {},
-  pid: 1234,
-})
-let realBunSpawn: typeof Bun.spawn
-
-beforeEach(() => {
-  realBunSpawn = Bun.spawn
-  // The cast is needed because the mock's return type is a structural
-  // subset of `Bun.Subprocess`. Only `unref` is used by the launch path.
-  Bun.spawn = ((cmd: string[], opts: unknown) => {
-    spawnCalls.push({ cmd, opts })
-    return spawnImpl(cmd, opts)
-  }) as typeof Bun.spawn
-})
-
 afterEach(() => {
-  Bun.spawn = realBunSpawn
   commandExistsImpl = async () => true
-  spawnCalls = []
-  spawnImpl = () => ({
-    unref: () => {},
-    kill: () => {},
-    pid: 1234,
-  })
 })
 
 describe("getKnownTerminalByName (Finding 18.2.D)", () => {
@@ -146,8 +118,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       "opencode attach http://127.0.0.1:4096 --session ses_abc",
     )
     expect(result).toEqual({ success: true })
-    expect(spawnCalls).toHaveLength(1)
-    expect(spawnCalls[0].cmd).toEqual([
+    expect(spawnState.calls).toHaveLength(1)
+    expect(spawnState.calls[0].cmd).toEqual([
       "alacritty",
       "-e",
       "opencode",
@@ -184,8 +156,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       "opencode attach http://127.0.0.1:4096 --session ses_abc",
     )
     expect(result).toEqual({ success: true })
-    expect(spawnCalls).toHaveLength(1)
-    expect(spawnCalls[0].cmd).toEqual([
+    expect(spawnState.calls).toHaveLength(1)
+    expect(spawnState.calls[0].cmd).toEqual([
       "my-term",
       "-e",
       "opencode",
@@ -205,7 +177,7 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       "opencode attach http://127.0.0.1:4096 --session ses_abc",
     )
     expect(result).toEqual({ success: true })
-    expect(spawnCalls[0].cmd).toEqual([
+    expect(spawnState.calls[0].cmd).toEqual([
       "my-term",
       "-e",
       "opencode",
@@ -246,7 +218,7 @@ describe("launchTerminal (Finding 18.2.D)", () => {
 
   it("swallows Bun.spawn failures as { success: false, error }", async () => {
     commandExistsImpl = async () => true
-    spawnImpl = () => {
+    spawnState.impl = () => {
       throw new Error("spawn exploded")
     }
     const result = await launchTerminal(
@@ -277,8 +249,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       { type: "known", name: "alacritty" },
       "opencode attach http://127.0.0.1:4096 --session ses_abc",
     )
-    expect(spawnCalls).toHaveLength(1)
-    const opts = spawnCalls[0].opts as {
+    expect(spawnState.calls).toHaveLength(1)
+    const opts = spawnState.calls[0].opts as {
       detached?: boolean
       windowsHide?: boolean
     }
