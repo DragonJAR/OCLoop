@@ -5193,10 +5193,121 @@ expects, +1 file. `bun run build` verde. Commit
 
 ### Mejora 94 — Finding 18.2.F — LOW — `context/*.tsx` and `components/*.tsx` have no test
 
-- [ ] Evaluar la mejora 94 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 94 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 94 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 94 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 94 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 94 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 94 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 94 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:24240-24444`: el guard
+estricto de `docs/testing.md` ("mockear
+`@opentui/solid` vía `mock.module` rompe el JSX
+transform") hace que cualquier `import` desde un
+`.tsx` file falle en `bun:test` con
+`SyntaxError: Export named 'jsxDEV' not found in
+module '@opentui/solid/jsx-runtime.d.ts'` — incluso
+cuando el test solo lee una función pura. La
+solución correcta es **mover la lógica testeable
+a archivos `.ts` puros** y dejar el JSX en los
+archivos `.tsx`. La opción (a) del audit
+("`mock.module` de `@opentui/solid`") está
+explícitamente descartada por `docs/testing.md`; la
+opción (b) (dejar el código como está y pinear la
+cobertura con integration tests) está descartada
+por Mejora 89 (Finding 18.2.A) que demuestra que
+los hooks con `onMount` no se pueden testear sin
+DOM. La opción adoptada es estrictamente la
+mínima útil y la única correcta.
+
+Implementación (commit `9af9a0c`):
+
+- `src/lib/theme-resolver.ts` (extendido): añade
+  `selectedForeground(theme: ThemeColors): string`,
+  la función pura que pinea la regla "luminance >
+  0.5 → `#000000`, else `#FFFFFF`". Encaja
+  naturalmente junto a las otras helpers de
+  `theme-resolver.ts` (`resolveTheme`,
+  `getResolvedTheme`, `isValidTheme`,
+  `toMonochrome`).
+- `src/context/dialog-controller.ts` (nuevo):
+  extrae `createDialogController()` +
+  `DialogComponent` type + `DialogContextValue`
+  interface. Sin JSX, sin dependencias de
+  `@opentui/solid`. `DialogContext.tsx` re-exporta
+  la API pública y mantiene el JSX de
+  `DialogProvider` / `useDialog` / `DialogStack`.
+- `src/context/toast-controller.ts` (nuevo):
+  extrae `createToastController()` +
+  `ToastOptions` / `ToastVariant` /
+  `ToastContextValue`. El `5000ms` default del
+  auto-hide ahora es `DEFAULT_TOAST_DURATION_MS`
+  pineado. `ToastContext.tsx` re-exporta y
+  mantiene el JSX de `ToastProvider` / `useToast`
+  / `Toast`.
+- 3 call sites de `selectedForeground` en
+  `DialogCompletion.tsx`, `DialogControls.tsx`,
+  `DialogSelect.tsx` actualizados para importar
+  desde `../lib/theme-resolver` en vez de
+  `../context/ThemeContext`.
+
+Cubierto por 19 tests nuevos en 3 archivos
+nuevos (`src/context/*.test.ts`):
+
+- `dialog.test.ts` (6 tests): empty stack +
+  `hasDialogs=false` initial, `show` push,
+  `pop` remove top, `pop` on empty no-op,
+  `replace` empties + pushes single, `clear`
+  empties. Usa `createRoot` + `dispose()` para
+  limpiar el owner.
+- `toast.test.ts` (6 tests): starts empty, `show`
+  sets the toast, `show` con `duration` auto-hides
+  tras el duration, `show` llamado dos veces
+  reemplaza y resetea el timer previo (pinea el
+  contrato `clearTimeout` del bloque original),
+  `error` crea variant=error con title i18n, `error`
+  coerce non-Error a string. Usa
+  `createRoot` + `dispose()` en `finally` para
+  asegurar que el `onCleanup` corre antes de que
+  el próximo test arranque.
+- `theme-context.test.ts` (7 tests): `selectedForeground`
+  con `#FFFFFF` (luminance 1.0), `#000000` (0.0),
+  `#808080` (boundary, ≈0.5019 → `#000000`),
+  `#7F7F7F` (≈0.4980 → `#FFFFFF`),
+  `#00FF00` (luminance 0.587 → `#000000`),
+  `#FF0000` (0.299 → `#FFFFFF`),
+  `#0000FF` (0.114 → `#FFFFFF`). Los
+  boundary cases pinean la dirección del `>` en
+  el threshold comparison.
+
+El "top-only render contract" de `<DialogStack />`
+(mencionado en Mejora 97 / Finding 18.3.C) NO está
+cubierto por estos tests — es structural JSX
+render code que requiere un DOM, y está pineado por
+el comment block de `DialogContext.tsx:122-126` y
+code review. Mejora 97 lo cerrará cuando llegue su
+turno.
+
+Cero impacto en la API pública: las firmas
+originales (`useDialog()`, `useToast()`,
+`useTheme()`) quedan intactas, y los `.tsx`
+re-exportan las nuevas funciones puras para que
+los call sites externos (`App.tsx`,
+`CommandContext.tsx`, etc.) sigan funcionando sin
+cambios. Cero impacto en el `useKeyboard`
+sibling-listener collision concern (el audit
+nombra que el `top()` de `DialogStack` ya
+previene la collision; este finding no cambia
+ese code path). Cero impacto en el
+auto-hide/previous-timer-clear de
+`ToastContext` (Mejora ya estaba in place, los
+tests pinean el comportamiento que ya era
+correcto).
+
+Cero impacto en tests: 878 pass / 1 skip / 0
+fail (era 859 / 1 / 0 antes de la fix),
+2036 expect() calls, 36 files, 707 ms — +19
+tests, +33 expects, +3 files. `bun run build`
+verde.
 
 ### Mejora 95 — Finding 18.3.A — MEDIUM — `useSSE.test.ts` tests the classifier, not the hook (carried from 18.1.A)
 
