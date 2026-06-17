@@ -2,6 +2,12 @@
  * useServer lifecycle tests.
  *
  * Source: MEJORAS.md Finding 18.2.A (HIGH — `useServer.ts` has no test).
+ * Also covers Finding 18.3.B (MEDIUM — `useServer.test.ts` does not exist),
+ * which is a cross-reference to 18.2.A: the gap is the same one, just
+ * categorized differently ("no test" vs. "the existing test covers
+ * recovery *callers* of `useServer`, not the hook itself"). The 9 tests
+ * below pin the hook's own surface, so both findings are closed by this
+ * file.
  *
  * The hook wraps `createOpencodeServer` and `createOpencodeClient` from the
  * OpenCode SDK. Both are mocked at the module boundary via `mock.module`

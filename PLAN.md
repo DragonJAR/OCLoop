@@ -5422,10 +5422,31 @@ antes del fix), 2082 expect() calls (era
 
 ### Mejora 96 — Finding 18.3.B — MEDIUM — `useServer.test.ts` does not exist (cross-reference a 18.2.A)
 
-- [ ] Evaluar la mejora 96 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 96 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 96 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 96 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 96 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 96 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 96 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 96 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: Finding 18.3.B está documentado en
+`MEJORAS.md:24485-24487` como cross-reference a Finding 18.2.A y
+re-define la misma gap con categorización distinta ("the test that
+exists in `resilience-integration.test.ts` covers the recovery
+*callers* of `useServer`, not the hook itself"). Esa propuesta ya
+está implementada por la Mejora 89 (commit `dfef30c`,
+`src/hooks/useServer.test.ts` — 9 tests cubriendo el startServer
+guard, ping happy/failure, restart preferred/ephemeral/error, stop,
+y closeCurrent swallow). El header comment del file ahora nombra
+explícitamente 18.3.B como cross-reference cubierto
+(`useServer.test.ts:6-12`, extendido desde el original
+"Source: MEJORAS.md Finding 18.2.A" para incluir 18.3.B y explicar
+que la re-categorización del gap es exactamente lo que las 9 tests
+cierran). Fix en raíz → superficie cubierta. Implementación
+mínima: 7 líneas de comentario en el header del test file que
+declaran la cross-reference y nombran el test count que pinea el
+contrato; cero cambios de comportamiento, cero cambios al
+production code, cero cambios a los call sites. `bun test` verde:
+901 pass / 1 skip / 0 fail, 2082 expect() calls, 37 files, 892 ms
+— sin cambio en el conteo (era 901/1/0 antes de la anotación).
 
 ### Mejora 97 — Finding 18.3.C — LOW — `DialogContext.tsx` top-only render contract is not pinned
 
