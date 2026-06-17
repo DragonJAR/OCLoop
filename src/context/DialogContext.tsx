@@ -7,38 +7,28 @@
  * Note: Escape key handling should be implemented in the parent component
  * that manages the input handler (typically App.tsx). Use the `pop()` method
  * to dismiss the top dialog on Escape.
+ *
+ * The actual controller lives in `dialog-controller.ts` (a pure `.ts`
+ * module) so it can be unit-tested without the JSX transform getting
+ * in the way (see `docs/testing.md`).
  */
 
 import {
   createContext,
   useContext,
-  createSignal,
   Show,
   type JSX,
-  type Accessor,
 } from "solid-js"
+import {
+  createDialogController,
+  type DialogComponent,
+  type DialogContextValue,
+} from "./dialog-controller"
 
-/**
- * A dialog component in the stack
- */
-export type DialogComponent = () => JSX.Element
-
-/**
- * Value provided by the DialogContext
- */
-export interface DialogContextValue {
-  /** Push a dialog onto the stack */
-  show: (component: DialogComponent) => void
-  /** Clear all dialogs and push a new one */
-  replace: (component: DialogComponent) => void
-  /** Pop all dialogs from the stack */
-  clear: () => void
-  /** Pop the top dialog from the stack (use for Escape key handling) */
-  pop: () => void
-  /** Current dialog stack accessor */
-  stack: Accessor<DialogComponent[]>
-  /** Check if any dialogs are open */
-  hasDialogs: Accessor<boolean>
+export {
+  createDialogController,
+  type DialogComponent,
+  type DialogContextValue,
 }
 
 /**
@@ -71,52 +61,7 @@ export interface DialogProviderProps {
  * ```
  */
 export function DialogProvider(props: DialogProviderProps) {
-  const [stack, setStack] = createSignal<DialogComponent[]>([])
-
-  /**
-   * Push a dialog onto the stack
-   */
-  const show = (component: DialogComponent) => {
-    setStack((prev) => [...prev, component])
-  }
-
-  /**
-   * Clear all dialogs and push a new one
-   */
-  const replace = (component: DialogComponent) => {
-    setStack([component])
-  }
-
-  /**
-   * Pop all dialogs from the stack
-   */
-  const clear = () => {
-    setStack([])
-  }
-
-  /**
-   * Pop the top dialog from the stack
-   */
-  const pop = () => {
-    setStack((prev) => {
-      if (prev.length === 0) return prev
-      return prev.slice(0, -1)
-    })
-  }
-
-  /**
-   * Check if any dialogs are open
-   */
-  const hasDialogs = () => stack().length > 0
-
-  const value: DialogContextValue = {
-    show,
-    replace,
-    clear,
-    pop,
-    stack,
-    hasDialogs,
-  }
+  const value = createDialogController()
 
   return (
     <DialogContext.Provider value={value}>

@@ -11,7 +11,8 @@
  * their own markup — folding them in here would change their behavior.
  */
 
-import { useTheme, selectedForeground } from "../context/ThemeContext"
+import { useTheme } from "../context/ThemeContext"
+import { selectedForeground } from "../lib/theme-resolver"
 
 /**
  * Dialog header: bold title on the left, a muted key hint on the right.

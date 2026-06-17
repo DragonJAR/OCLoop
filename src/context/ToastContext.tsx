@@ -1,29 +1,23 @@
 import {
   createContext,
   useContext,
-  createSignal,
-  onCleanup,
   Show,
   type JSX,
-  type Accessor,
 } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "./ThemeContext"
-import { t } from "../lib/i18n"
+import {
+  createToastController,
+  type ToastContextValue,
+  type ToastOptions,
+  type ToastVariant,
+} from "./toast-controller"
 
-export type ToastVariant = "info" | "success" | "warning" | "error"
-
-export interface ToastOptions {
-  title?: string
-  message: string
-  variant: ToastVariant
-  duration?: number
-}
-
-export interface ToastContextValue {
-  show: (options: ToastOptions) => void
-  error: (err: unknown) => void
-  currentToast: Accessor<ToastOptions | null>
+export {
+  createToastController,
+  type ToastContextValue,
+  type ToastOptions,
+  type ToastVariant,
 }
 
 const ToastContext = createContext<ToastContextValue | undefined>(undefined)
@@ -33,39 +27,7 @@ export interface ToastProviderProps {
 }
 
 export function ToastProvider(props: ToastProviderProps) {
-  const [currentToast, setCurrentToast] = createSignal<ToastOptions | null>(null)
-  let timeoutId: ReturnType<typeof setTimeout> | null = null
-
-  const show = (options: ToastOptions) => {
-    setCurrentToast(options)
-
-    if (timeoutId) clearTimeout(timeoutId)
-
-    const duration = options.duration ?? 5000
-    timeoutId = setTimeout(() => {
-      setCurrentToast(null)
-    }, duration)
-  }
-
-  const error = (err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err)
-    show({
-      title: t("errorTitle"),
-      message,
-      variant: "error",
-    })
-  }
-
-  // Avoid firing a timer on a disposed signal if the provider unmounts.
-  onCleanup(() => {
-    if (timeoutId) clearTimeout(timeoutId)
-  })
-
-  const value: ToastContextValue = {
-    show,
-    error,
-    currentToast,
-  }
+  const value = createToastController()
 
   return (
     <ToastContext.Provider value={value}>
