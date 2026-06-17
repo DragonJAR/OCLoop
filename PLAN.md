@@ -4190,10 +4190,98 @@ en el conteo (era 788 / 1 / 0 antes del wrap). Commit
 
 ### Mejora 81 — Finding 17.3.B — MEDIUM — `await saveConfig(newConfig)` in four command `onSelect` callbacks is unguarded
 
-- [ ] Evaluar la mejora 81 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 81 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 81 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 81 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 81 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 81 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 81 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 81 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz del audit (`MEJORAS.md:22979-23047`)
+ya está parcialmente cerrada por Mejoras 46 + 50: el `await`
+fue removido (Mejora 50, Finding 12.2.E — `saveConfig` es
+síncrono) y el throw path fue removido (Mejora 46, Finding
+12.2.A — `saveConfig` ahora envuelve su I/O en `try/catch` y
+emite `log.warn` en vez de throw). Lo que sobrevive es la
+preocupación user-facing del audit: cuando el save falla, el
+in-memory state diverge del disk sin notificación al usuario
+(el dialog se cierra, el toast de "Language changed" se
+muestra, pero el cambio no se persistió). La opción (a) del
+fix propuesto en `MEJORAS.md:23012-23037` (try/catch + toast)
+no aplica directamente porque `saveConfig` ya no tira, así
+que la adaptación mínima útil es: cambiar el return type de
+`saveConfig` de `void` a `boolean` (true on success, false on
+failure) y que las 4 call sites en `App.tsx` chequeen el
+return value y muestren un error toast en el path de fallo.
+Esto preserva el contrato "synchronous, no Promise" de
+Mejora 50 (boolean es todavía síncrono — no requiere
+`await`); la única diferencia observable para el path
+feliz es que `saveConfig` ahora retorna `true` en vez de
+`undefined`, lo cual es invisible al call site que ignora
+el return.
+
+Implementación mínima:
+
+- `src/lib/config.ts:393` — `saveConfig(config: OcloopConfig): void` →
+  `saveConfig(config: OcloopConfig): boolean`. El `try` ahora
+  termina con `return true` (línea 421) y el `catch` con
+  `return false` (línea 434). El docstring se extiende para
+  documentar el nuevo contract (sigue siendo
+  "synchronous, not a Promise", sigue siendo
+  "never throws", pero ahora surface success/failure al
+  caller) y nombrar el source `MEJORAS.md Finding 17.3.B`.
+- `src/lib/i18n.ts:295` (en) + `src/lib/i18n.ts:598` (es) —
+  nuevo key `toastConfigSaveFailed: "Failed to save config —
+  change will not persist"` /
+  `"Fallo al guardar la configuración — el cambio no se
+  mantendrá"`. El type `es: Record<MessageKey, Msg>`
+  (`i18n.ts:378`) forzó la mirror es al editar — la
+  garantía pineada por el header del módulo.
+- `src/App.tsx:1673-1681` (`onConfigSelect`) — el save
+  ahora se chequea: `if (!saveConfig(newConfig)) {
+  toast.show({ variant: "error", message: t("toastConfigSaveFailed") });
+  return; }`. El `setOcloopConfig` y `launchConfiguredTerminal`
+  quedan en el path de éxito, y la propagación del in-memory
+  state (que el user ya vio visualmente en el dialog)
+  se preserva — el rollback sería confuso ("el user picks
+  Alacritty, la terminal vuelve a Terminal.app").
+- `src/App.tsx:1702-1710` (`onConfigCustom`) — mismo
+  patrón. El `setOcloopConfig` y `launchConfiguredTerminal`
+  se preservan.
+- `src/App.tsx:1871-1890` (`cmdToggleScrollbar`) — el
+  `saveConfig` se mueve antes del `setOcloopConfig`
+  (orden de la auditoría: "save first, setOcloopConfig
+  conditional on save success"). El path de fallo retorna
+  sin tocar el in-memory state.
+- `src/App.tsx:1895-1914` (`cmdToggleLanguage`) — el
+  `saveConfig` se mueve antes del `setOcloopConfig`, y el
+  path de fallo hace rollback del `setLocale` para que
+  el in-memory state matche el disk. Esto es estrictamente
+  necesario acá (vs. los otros 3 sites) porque el language
+  change es reactivo — el `setLocale` ya cambió el signal
+  global, y sin rollback la UI queda en un idioma que el
+  disk no soporta.
+
+Cero cambios a la firma de las 4 callbacks (siguen siendo
+`async`); cero cambios al `setOcloopConfig` / `setLocale` /
+`dialog.clear` / `launchConfiguredTerminal`; cero cambios
+al reducer; cero impacto en la ruta `--create-plan` (esa
+ruta bypasea `App.tsx` enteramente). Cubierto por 1 test
+nuevo en `src/lib/config.test.ts:524-528` (pinea el
+`false` return cuando el chmod 0o555 del config dir
+fuerza un EACCES — el test "does not throw" original se
+renombró a "returns false" porque el behavior pino ahora
+incluye el return value, no solo la falta de throw). El
+test pino del happy path (`config.test.ts:502-512`) se
+actualizó de `expect(result).toBeUndefined()` a
+`expect(result).toBe(true)` para pinear el nuevo contract.
+
+Cero impacto en el resto del file: 4 tests
+(`saveConfig — round-trip`) + 2 tests
+(`saveConfig — error swallowing`) + 5 tests
+(`saveConfig — atomic write`) se mantienen verdes, y la
+suite de 28 files + 1832 expects permanece estable.
+`bun test` verde: 788 pass / 1 skip / 0 fail, 1832 expect()
+calls, 28 files, 349 ms. `bun run build` verde. Commit
+`a775cae`.
 
 ### Mejora 82 — Finding 17.3.C — LOW — `handleQuit` calls `renderer.setTerminalTitle` and `renderer.destroy` without a try/catch
 
