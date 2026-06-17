@@ -134,35 +134,45 @@ export function Dashboard(props: DashboardProps) {
     const state = props.state
 
     switch (state.type) {
+      case "starting":
+        // The OpenCode server is booting (can take a few seconds). The footer
+        // was previously empty here, which read as "frozen, what do I do?".
+        return [{ key: "", desc: t("hintStartingMsg") }]
       case "ready":
         return [
           { key: "S", desc: t("hintStart") },
-          { key: "^P", desc: t("hintCommands") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       case "running":
         return [
+          { key: "C", desc: t("hintCopy") },
           { key: "T", desc: t("hintTerminal") },
           { key: "Space", desc: t("hintPause") },
-          { key: "^P", desc: t("hintCommands") },
+          { key: "↑/↓", desc: t("hintScroll") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       case "paused":
         return [
+          { key: "C", desc: t("hintCopy") },
           { key: "T", desc: t("hintTerminal") },
           { key: "Space", desc: t("hintResume") },
-          { key: "^P", desc: t("hintCommands") },
+          { key: "↑/↓", desc: t("hintScroll") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       case "pausing":
         return [
           { key: "", desc: t("hintPausingMsg") },
           { key: "Space", desc: t("hintCancel") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       case "cooldown":
         return [
           { key: "", desc: t("hintCooldownMsg") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       case "complete":
@@ -183,7 +193,7 @@ export function Dashboard(props: DashboardProps) {
             { key: "T", desc: t("hintTerminal") },
             { key: "N", desc: t("hintNewSession") },
             { key: "I", desc: t("hintSampleActivity") },
-            { key: "^P", desc: t("hintCommands") },
+            { key: "Ctrl+P", desc: t("hintCommands") },
             { key: "Q", desc: t("hintQuit") },
           ]
         }
@@ -191,7 +201,7 @@ export function Dashboard(props: DashboardProps) {
         return [
           { key: "N", desc: t("hintNewSession") },
           { key: "I", desc: t("hintSampleActivity") },
-          { key: "^P", desc: t("hintCommands") },
+          { key: "Ctrl+P", desc: t("hintCommands") },
           { key: "Q", desc: t("hintQuit") },
         ]
       default:
