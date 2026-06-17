@@ -5832,13 +5832,13 @@ recipe de migración cuando aplica, para no re-derivar del audit).
 
 ## Criterios de aceptación
 
-- [ ] Todas las mejoras de `MEJORAS.md` fueron evaluadas una por una.
-- [ ] Este `PLAN.md` fue expandido con tareas explícitas para cada mejora detectada en `MEJORAS.md`.
-- [ ] No quedó ninguna mejora cubierta solo por una tarea genérica de repetición.
-- [ ] Cada mejora quedó clasificada como implementada, adaptada o descartada.
-- [ ] Toda mejora implementada aporta valor real al proyecto actual.
-- [ ] Ninguna mejora implementada rompe comportamiento existente conocido.
-- [ ] Los cambios aplicados son mínimos, confiables, eficientes y siguen DRY.
-- [ ] Las mejoras inviables fueron descartadas o adaptadas con justificación técnica.
-- [ ] La verificación automatizada disponible finaliza correctamente.
-- [ ] El resumen final permite auditar qué se hizo y por qué.
+- [x] Todas las mejoras de `MEJORAS.md` fueron evaluadas una por una.
+- [x] Este `PLAN.md` fue expandido con tareas explícitas para cada mejora detectada en `MEJORAS.md`.
+- [x] No quedó ninguna mejora cubierta solo por una tarea genérica de repetición.
+- [x] Cada mejora quedó clasificada como implementada, adaptada o descartada.
+- [x] Toda mejora implementada aporta valor real al proyecto actual.
+- [x] Ninguna mejora implementada rompe comportamiento existente conocido.
+- [x] Los cambios aplicados son mínimos, confiables, eficientes y siguen DRY.
+- [x] Las mejoras inviables fueron descartadas o adaptadas con justificación técnica.
+- [x] La verificación automatizada disponible finaliza correctamente.
+- [x] El resumen final permite auditar qué se hizo y por qué.
