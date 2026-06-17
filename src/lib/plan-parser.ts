@@ -227,28 +227,42 @@ export function withPlanCompleteTag(content: string, summary: string): string {
 
 /**
  * Checks if a plan file contains the completion tag.
- * 
+ *
+ * Defensive against TOCTOU: rather than `await file.exists()` + `await file.text()`
+ * (two awaits with a window for the path to be removed, replaced with a directory,
+ * or have its permissions flipped between them), the read is wrapped in a single
+ * try/catch that returns `false` on any I/O failure. Source: MEJORAS.md Finding 17.4.C.
+ *
  * @param planPath - Path to the PLAN.md file
- * @returns true if the plan is marked complete
+ * @returns true if the plan is marked complete; false on missing file, EISDIR, EACCES, etc.
  */
 export async function isPlanComplete(planPath: string): Promise<boolean> {
-  const file = Bun.file(planPath)
-  if (!await file.exists()) return false
-  const content = await file.text()
-  return parsePlanComplete(content) !== null
+  try {
+    const content = await Bun.file(planPath).text()
+    return parsePlanComplete(content) !== null
+  } catch {
+    return false
+  }
 }
 
 /**
  * Gets the completion summary from a plan file.
- * 
+ *
+ * Defensive against TOCTOU: see `isPlanComplete` above for the rationale.
+ * Returns `null` on any I/O failure (missing file, EISDIR, EACCES) so the
+ * caller never has to wrap this in a try/catch for the read itself.
+ * Source: MEJORAS.md Finding 17.4.C.
+ *
  * @param planPath - Path to the PLAN.md file
- * @returns The summary text or null if not complete
+ * @returns The summary text or null if not complete / unreadable
  */
 export async function getPlanCompleteSummary(planPath: string): Promise<string | null> {
-  const file = Bun.file(planPath)
-  if (!await file.exists()) return null
-  const content = await file.text()
-  return parsePlanComplete(content)
+  try {
+    const content = await Bun.file(planPath).text()
+    return parsePlanComplete(content)
+  } catch {
+    return null
+  }
 }
 
 /**

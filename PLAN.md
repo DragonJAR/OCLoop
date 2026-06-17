@@ -4462,10 +4462,105 @@ Commit `c99d946`.
 
 ### Mejora 85 — Finding 17.4.C — LOW — TOCTOU window between `exists()` and `text()` in `isPlanComplete` / `getPlanCompleteSummary`
 
-- [ ] Evaluar la mejora 85 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 85 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 85 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 85 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 85 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 85 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 85 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 85 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la
+descrita en `MEJORAS.md:23335-23381`: la guarda
+secuencial `if (!await file.exists()) return false / null`
++ `await file.text()` en `isPlanComplete`
+(`plan-parser.ts:234-238`) y `getPlanCompleteSummary`
+(`plan-parser.ts:247-252`) abre una ventana TOCTOU
+microsegundos-ancha entre los dos `await`s. La opción
+(b) del fix propuesto en `MEJORAS.md:23364-23372`
+(wrap en try/catch local que retorna `false` / `null`
+en error) es estrictamente la mínima útil y la única
+correcta (vs. opción (a) "acepta el throw y confía en
+el caller's try/catch" — eso es lo que ya hace
+`App.tsx:991-995` para `getPlanCompleteSummary`, pero
+deja a cualquier call site futuro expuesto al throw;
+vs. un "exists() OR catch" — el doble-check es
+redundante porque `Bun.file().text()` ya cubre el
+ENOENT en su catch). Implementación mínima:
+sustituir el cuerpo de ambas funciones por
+`try { const content = await Bun.file(planPath).text(); return parsePlanComplete(...) } catch { return false / null }`,
+más JSDoc extendido en cada una que nombra la
+racionalidad defensiva y el source `MEJORAS.md
+Finding 17.4.C`.
+
+Cero cambios a la firma de `isPlanComplete`
+(`(string) => Promise<boolean>` intacta) ni a
+`getPlanCompleteSummary` (`(string) => Promise<string | null>`
+intacta), cero cambios a `parsePlanComplete` /
+`parsePlanFile` / `getCurrentTask` (sus contratos
+documentados en JSDoc — incluyendo el `@throws` de
+`parsePlanFile` y `getCurrentTask`, pineados por el
+test existente `plan-parser.test.ts:1731-1747` — se
+preservan exactamente), cero cambios a los call sites
+de `App.tsx:982` (`checkPlanComplete` es local y
+mantiene su propio try/catch) ni `:992`
+(`getPlanCompleteSummary` ya está envuelto en
+`try { … } catch (err) { log.warn(...) }` por Mejora
+83 / Finding 17.4.A, así que la nueva contract
+"never throws" es observable-equivalente: el catch
+externo nunca disparaba, ahora es doble-seguro). Cero
+cambio en el `getCurrentTask` que también hace
+`await file.text()` sin `exists()` — su JSDoc declara
+explícitamente `@throws Error if the file cannot be
+read` (`plan-parser.ts:295`) y la confianza en el
+caller es el contrato pineado por el test
+"throws on a non-existent file" (`plan-parser.test.ts:1731-1747`);
+tocar ese contrato sería una regresión del design
+intent (Finding 17.4.E, INFO, `MEJORAS.md:23395-23417`).
+Cero impacto en el camino feliz (un file readable
+sigue retornando el mismo `boolean` / `string | null`
+en el mismo microtask que antes). Cero impacto en
+`bun run build` (JSDoc + comment blocks, no JSX).
+
+Cubierto por 7 tests nuevos en
+`src/lib/plan-parser.test.ts`:
+
+- 1 mantiene el contract existente de
+  `isPlanComplete` (non-existent file → `false`).
+- 1 EISDIR path para `isPlanComplete`
+  (path es un directorio → `false`).
+- 1 EACCES path para `isPlanComplete`
+  (file con `chmod 0o000` → `false`,
+  `skipIf(win32 || root)`).
+- 1 non-existent file → `null` para
+  `getPlanCompleteSummary` (nuevo describe, antes no
+  había suite).
+- 1 happy path → summary text para
+  `getPlanCompleteSummary`.
+- 1 plan no complete → `null` para
+  `getPlanCompleteSummary`.
+- 1 EISDIR path para `getPlanCompleteSummary`
+  (path es un directorio → `null`).
+- 1 EACCES path para `getPlanCompleteSummary`
+  (file con `chmod 0o000` → `null`,
+  `skipIf(win32 || root)`).
+
+Los tests EACCES replican el patrón
+cross-platform-frágil ya establecido por Mejora 30
+(`loop-state-store.test.ts:71-92`, mismas guardas
+`skipIf(win32 || root)`) y Mejora 46
+(`config.test.ts:280-302`). Los `mkdtempSync` +
+`writeFileSync` + `chmodSync` + `rmSync` reusan
+los imports que ya están en
+`node:fs` / `node:os` / `node:path`; los 3 tests
+de `getPlanCompleteSummary` happy-path usan el
+mismo patrón `Bun.write` + `Bun.\$`rm -f\``.quiet()`
+que el test preexistente de
+`parsePlanFile` (`plan-parser.test.ts:1750-1758`).
+
+`bun test` verde: 795 pass / 1 skip / 0 fail (era
+788 / 1 / 0), 1839 expect() calls (era 1814), 28
+files (era 28 — los tests se agregaron al file
+existente, sin nuevos archivos), 360 ms — +7
+tests, +25 expects, sin cambio en el conteo de
+archivos. `bun run build` verde.
 
 ### Mejora 86 — Finding 17.5.A — LOW — `Bun.write()` in `validatePrerequisites` propagates errors to `main().catch()`
 
