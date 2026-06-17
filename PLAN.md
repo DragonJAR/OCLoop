@@ -3953,10 +3953,95 @@ fallaría con un mensaje claro. `bun test` verde: 788 pass /
 
 ### Mejora 77 — Finding 16.6.C — LOW — `clientCache` could grow across `bun test` runs in the same process
 
-- [ ] Evaluar la mejora 77 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 77 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 77 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 77 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 77 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 77 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 77 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 77 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: el audit mismo cierra el finding en
+`MEJORAS.md:22051-22053` con su veredicto explícito: "**Severity:
+LOW.** Not a bug. Fragility is contained to the eviction test;
+other tests use unique URLs or don't depend on cache state.
+**Documented for completeness.**" Su "Proposed fix"
+(`MEJORAS.md:22047-22049`) prescribe exactamente "Apply 16.6.B's
+`__resetClientCacheForTests` + `beforeEach` pattern" — el mismo
+patrón que Mejora 76 (commit `94440c6`, Finding 16.6.B) ya
+implementó:
+
+- `src/lib/api.ts:65-68` — `__resetClientCacheForTests()` exportado
+  y gateado a `NODE_ENV === "test"` (production builds no pueden
+  limpiar el cache vivo por accidente; Bun setea
+  `NODE_ENV=test` automáticamente).
+- `src/lib/api.test.ts:204` —
+  `beforeEach(() => __resetClientCacheForTests())` dentro del
+  `describe("createClient — cache eviction")` para que el
+  eviction path se ejerza determinísticamente entre tests del
+  mismo describe.
+
+Verificación empírica de la "cross-file accumulation" que el
+audit nombra como concern central:
+
+- `grep -n "createClient\|clientCache" src/ --include="*.test.ts"`
+  retorna 8 matches, **todos** en `src/lib/api.test.ts` (línea 2
+  del import + 7 call sites internos en los describe de
+  `createClient — cache eviction` y `tryGetClient`). Ningún
+  otro `*.test.ts` del repositorio importa ni usa `createClient`
+  ni toca `clientCache`, así que la cross-file pollution que el
+  audit enuncia es actualmente **dormant** — no hay productor
+  externo al `api.test.ts` que llene la cache entre test files
+  en el mismo proceso de `bun test`.
+- `MAX_CACHE_SIZE = 10` (`src/lib/api.ts:31`) acota cualquier
+  crecimiento accidental a un techo de 10 entries. Los 2 tests
+  que llaman `createClient` fuera del eviction describe
+  (`api.test.ts:233` `http://localhost:20001` y
+  `api.test.ts:244` `http://localhost:20002`) usan URLs
+  únicas — el test del medio (`api.test.ts:232`) hasta tiene
+  un comment explícito: *"Use a unique URL so we don't share
+  cache state with the eviction test"*. La práctica está
+  pineada por el comment, así que un futuro mantenedor que
+  agregue un test nuevo sigue el patrón sin re-derivar el
+  invariant.
+- El comment del `__resetClientCacheForTests` en
+  `api.test.ts:197-203` ya documenta la cobertura de 16.6.C:
+  *"entries from prior tests (or prior runs in the same
+  process) could fill the cache"* — el source attribution
+  del propio helper ya nombra el concern.
+
+El audit enuncia dos opciones de fix
+(`MEJORAS.md:22040-22042`):
+
+1. **"Use `beforeEach` to reset the cache (see Finding 16.6.B)"**
+   — ya en su sitio por Mejora 76 (scoped al eviction describe;
+   el audit lo confirma como "see Finding 16.6.B"). El scope
+   actual es suficiente para el caso central del finding
+   (eviction determinístico) y el audit no prescribe
+   explícitamente "lift to file scope".
+2. **"Run each test file in a forked process via
+   `bun test --isolate`"** — fuera de scope de esta mejora: es
+   un cambio de config project-wide (`package.json` test script
+   o `bunfig.toml`), no un cambio de `src/`. El
+   `package.json:34` actual mantiene `bun test` plain y
+   `bunfig.toml:1` solo carga `@opentui/solid/preload`. Si un
+   día otro test file empieza a tocar `clientCache` y la
+   in-file uniqueness no es suficiente, ese día se considera
+   el `--isolate` flag (o el file-scope lift del `beforeEach`)
+   como una nueva mejora.
+
+Cero cambios al production code (`api.ts:32-48` y el guard del
+helper en `api.ts:65-68` quedan idénticos). Cero cambios a la
+firma de `createClient` / `tryGetClient` / `reconcileSession` /
+`getSessionStatus` / `assertResponse` / `sendPromptAsync`. Cero
+cambios al `beforeEach` actual (`api.test.ts:204`), cero cambios
+a los 4 tests del eviction describe, cero cambios al
+`tryGetClient` describe, cero cambios al resto del file. Cero
+cambio en la TUI, cero impacto en el reducer, cero impacto en
+el lifecycle de iteración. El único delta observable es la
+presencia de esta nota de evaluación en el plan.
+
+Implementación mínima: anotación en este plan; cero cambios
+de código. `bun test` verde: 788 pass / 1 skip / 0 fail, 1832
+expect() calls, 28 files, 356 ms — sin cambio en el conteo
+(era 788 / 1 / 0 antes de la anotación). Commit `docs(plan)`.
 
 ### Mejora 78 — Finding 17.1.B — LOW — `main().catch()` does not call `restoreTerminal()` directly
 
