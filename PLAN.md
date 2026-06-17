@@ -5087,10 +5087,109 @@ tests vs. 750 baseline (Mejora 53), +2 files. El
 
 ### Mejora 93 — Finding 18.2.E — LOW — `theme-resolver.ts`, `i18n.ts`, `project.ts`, `command-exists.ts` have no test
 
-- [ ] Evaluar la mejora 93 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 93 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 93 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 93 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 93 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 93 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 93 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 93 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: el audit (`MEJORAS.md:24417-24425`) propone
+explícitamente la opción "Single `theme-resolver.test.ts`
+covering the depth cap and the 15-token mapping. Skip
+`i18n.ts`. Skip `project.ts`. Skip `command-exists.ts`." y
+esa propuesta es estrictamente la correcta — los 3 archivos
+omitidos tienen cobertura o cobertura-suficiente por
+construcción:
+
+- **`i18n.ts`** (747 líneas): el type constraint
+  `en: Record<MessageKey, Msg>` (`i18n.ts:380`) y el
+  `es: Record<MessageKey, Msg>` (línea 397) pinean la
+  paridad de keys EN/ES a compile-time. Cualquier desvío
+  rompe el build. El audit lo nombra: "**Skip `i18n.ts`
+  (compile-time coverage is sufficient).**" Test-by-test
+  re-derivaría la paridad que el type system ya enforce
+  gratis.
+- **`project.ts`** (43 líneas): el audit dice
+  "**Skip `project.ts` (covered by hand-test on first run).**"
+  Las 3 funciones de la API pública (`ensureGitignore`) son
+  thin wrappers sobre `fs/promises` + `log.info`, y su
+  contract es observable end-to-end en el primer `bun run
+  build` de cualquier repo (la `.gitignore` aparece con
+  `.loop*` después del primer run). Un unit test que
+  redrive `access()` + `writeFile()` re-establece la
+  fuente.
+- **`command-exists.ts`** (18 líneas): un único
+  `try { Bun.spawn(["which", cmd]) ; return exitCode === 0 }
+  catch { return false }`. La función es 8 líneas de
+  body, no hay state, no hay branches que valga la pena
+  pinear. Mejora 92 (commit `16bfa65`, Finding 18.2.D)
+  ya mockeó el module-level `Bun.spawn` para cubrir los
+  3 callers (`detectClipboardTool`, `detectInstalledTerminals`,
+  `getAttachCommand`) — la garantía transitiva es que
+  si algún caller depende de un path
+  `commandExists → true/false`, el test del caller
+  cubre el `which` exit-code, no la función per se.
+
+Implementación: 1 file nuevo, `src/lib/theme-resolver.test.ts`
+(204 líneas, 11 tests, 34 expects), siguiendo el patrón
+establecido por `plan-file.test.ts:1` y `active-session-id.test.ts:1`
+(un `import { describe, expect, it } from "bun:test"` + un
+describe por finding con comments inline que nombra la
+defensa per-test). Cubre:
+
+- **Depth cap** (`theme-resolver.ts:91-93`) — el caso
+  central del audit: `defs: { a: "b", b: "a" }` con
+  `theme: { primary: "a" }` resuelve a `"#808080"` (no
+  stack overflow). El companion test "long non-cyclic
+  chain resolves normally" verifica que un chain de 4
+  defs (`a→b→c→d→#deadbe`) sigue resolviendo al hex
+  final — pineando que el cap (8) no trunca legit
+  chains.
+- **15-token mapping** — un custom theme con un solo
+  token (`primary: "#abcdef"`) produce un `ThemeColors`
+  con `primary === "#abcdef"` y los 14 restantes
+  colapsados a `"#808080"` (el fallback de
+  `theme-resolver.ts:68`).
+- **Direct hex strings** — un token con valor
+  hex directo retorna el hex sin defs lookup.
+- **Def reference resolution** — un token con nombre
+  de def lookup-ea el def y retorna su hex (el
+  mecanismo que los 32 themes vendored usan).
+- **Missing def reference** — un token que nombra un
+  def que no existe trata igual que un token
+  faltante (`"#808080"`).
+- **Dark/light variant** — un token `{ dark: "...",
+  light: "..." }` resuelve al variant del mode
+  pedido.
+- **`getResolvedTheme` happy path** — el nombre
+  "dragonjar" + mode "dark" → primary "#c11b05"
+  (per brand-identity comment en `themes/index.ts:93`).
+- **`getResolvedTheme` fallback** — nombre
+  inexistente → fallback a DEFAULT_THEME (dragonjar).
+- **`isValidTheme`** — true para conocido, false para
+  desconocido (guard pública del theme-selection
+  command palette y del `theme:` field de
+  `ocloop.json`).
+- **`toMonochrome` collapse** — los 12 fg tokens
+  colapsan a `text`, los 3 bg tokens colapsan a
+  `background`. El test pinea el par exacto fg→text,
+  bg→background (load-bearing para NO_COLOR /
+  TERM=dumb — ver `term-caps.ts`).
+
+Cero cambios al production code de `theme-resolver.ts` —
+la funcionalidad queda pineada, no modificada. Cero
+cambios a `themes/index.ts`, a `i18n.ts`, a
+`project.ts`, ni a `command-exists.ts` (los 3
+intencionalmente skipped per audit). Cero impacto en
+los call sites (`App.tsx:1595-1596`,
+`ThemeContext.tsx:78-100`, `term-caps.ts`).
+Cero impacto en runtime, cero impacto en la TUI, cero
+impacto en el reducer.
+
+`bun test` verde: 859 pass / 1 skip / 0 fail (era 848
+/ 1 / 0 antes del test file), 2003 expect() calls
+(era 1969), 33 files (era 32) — +11 tests, +34
+expects, +1 file. `bun run build` verde. Commit
+`db43c1d`.
 
 ### Mejora 94 — Finding 18.2.F — LOW — `context/*.tsx` and `components/*.tsx` have no test
 
