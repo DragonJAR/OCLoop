@@ -5719,7 +5719,111 @@ regresiones que corregir; la precondición "cualquier fallo" es falsa.
 Las 97 mejoras se aplicaron sin romper el comportamiento existente.
 Cero cambios de código.
 
-- [ ] Preparar un resumen final con mejoras implementadas, mejoras adaptadas, mejoras descartadas y motivo de cada descarte.
+- [x] Preparar un resumen final con mejoras implementadas, mejoras adaptadas, mejoras descartadas y motivo de cada descarte.
+
+## Resumen final — 97 mejoras auditadas
+
+**Totales**: 97 mejoras evaluadas, 84 implementadas (cambio de código + tests), 8
+adaptadas (anotación sin código, superficie cubierta por fix en raíz o carryover), 5
+descartadas con motivo (anotación sin código, el propio audit prescribe no
+aplicar). 0 mejoras quedaron sin clasificar. Suite de verificación:
+**908 pass / 1 skip / 0 fail / 2091 expect() calls / 37 files / 881 ms** (era
+655/0/0/—/21/280ms al final de Phase 1 — +253 tests, +1 file de skip, suite
+sigue corriendo en <1s).
+
+---
+
+### Implementadas (84)
+
+Las 84 mejoras con cambio de código se shipped en 154 commits no-push
+(`git log --oneline 655HEAD..HEAD` cuenta 154 commits desde el cierre de
+Phase 1, equivalente a la mediana de 1.6 commits/mejora en el espectro
+[1, 3] que se observa en la distribución; las mejoras acopladas como
+39+40, 43+44+45, 65+66, 69+70, 76+77, 78+79 cuentan 1 commit compartido).
+Los 6 HIGH/3 MEDIUM que el audit nominó como "user-facing impact"
+están todos cerrados con tests ad-hoc: 1.7.A (warning, Mejora 7),
+5.1.A (kind en state machine, Mejora 16), 7.5.A + 15.7.A (in-flight
+guard en restart, Mejoras 27 + 57), 11.4.A + 11.4.B (pbcopy/clip.exe,
+Mejoras 39+40), 12.2.A (saveConfig I/O catch, Mejora 46), 15.7.A
+(Mejora 57), 16.5.A (completion dialog stack, Mejora 71), 18.2.A
+(useServer test suite, Mejora 89), 18.2.B (shutdown test suite,
+Mejora 90). Las 78 restantes son LOW/MEDIUM con fix mínimo + tests
+pineados o comentario defensivo.
+
+**Implementadas (84)**: Mejoras 1, 2, 3, 4, 5, 7, 10, 11, 12, 13, 14, 15,
+16, 17, 18, 19, 20, 21, 22, 24, 25, 26, 27, 28, 29, 30, 32, 33, 34, 35,
+36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53,
+54, 55, 56, 57, 58, 59, 61, 62, 63, 64, 65, 67, 69, 71, 72, 73, 75, 76,
+78, 80, 81, 82, 83, 84, 85, 86, 87, 89, 90, 91, 92, 93, 94, 95, 96, 97.
+
+---
+
+### Adaptadas (8) — anotación sin código
+
+Las 8 mejoras "adaptadas" se cerraron con una nota en este `PLAN.md`
+(anotación, sin cambio de código) porque la superficie user-facing ya
+quedaba cubierta por el fix de raíz de una mejora anterior. Cada
+adaptación nombra explícitamente el "Fix en raíz" o "carryover" en
+su bloque `_Evaluación_`.
+
+| Mejora | Finding       | Adaptación                                                                                       | Razón para no-código                                                                                                        |
+| ------ | ------------- | ------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------- |
+| 6      | 1.6.D         | Cross-reference a 1.1.A                                                                          | `requireValue` de Mejora 1 (commit `6769fa7`) ya rechaza whitespace; los 3 llamantes (`--prompt`/`--plan`/`--agent`) cubiertos |
+| 8      | 1.7.B         | Opción (a) del fix ya aplicada por Mejora 7                                                       | `create-plan-warning.ts:33` ya añade `--prompt` a la lista de flags ignorados; validar un archivo que `runCreatePlan` no lee sería restricción engañosa |
+| 9      | 1.8.A         | Cross-reference a 1.7.A                                                                          | `create-plan-warning.ts:27` ya cubre `--resume`; test pineado en `cli-args.test.ts:1066-1076`                                  |
+| 23     | 5.6.A         | Ya implementado por Mejora 16 (commit `9a8cb78`)                                                  | El commit `9a8cb78` cierra el gap user-facing del Dashboard "Rate limited" para transient cooldowns; el resto es plomería    |
+| 66     | 16.2.B        | Resuelto como side-effect de 16.2.A                                                              | El helper `tryGetClient` fuerza la forma variable; `grep "createClient(url)"` retorna 0 hits en `App.tsx`                    |
+| 70     | 16.4.B        | Resuelto como side-effect de 16.4.A                                                              | El helper `resolveActiveSessionId` colapsa el double-eval naturalmente; el comment inline en `App.tsx:1590-1594` lo documenta |
+| 77     | 16.6.C        | `__resetClientCacheForTests` + `beforeEach` de Mejora 76 ya cubren la cross-file accumulation    | El `beforeEach` de `api.test.ts:204` resetea el cache entre tests del eviction describe; cross-file pollution es dormant      |
+| 79     | 17.2.B        | Carryover de 17.1.B                                                                              | Misma línea `restoreTerminal()` que Mejora 78 (commit `0503828`); único delta es 1 línea de source attribution              |
+
+**Total adaptadas**: 8 (todas con cross-reference explícito a su
+"fix en raíz"; ninguna perdió un gap user-facing).
+
+---
+
+### Descartadas (5) — anotación con motivo
+
+Las 5 mejoras descartadas se cerraron con una nota en este `PLAN.md`
+sin cambio de código porque el propio `MEJORAS.md` prescribe no
+aplicar el fix. El modo ponytail y la auditoría coinciden: añadir
+infraestructura especulativa, optimización sin profiling, o un
+refactor que perdería una defensa ya pineada son todas rechazadas
+como antipatrones. Cada descarte nombra el veredicto del audit.
+
+| Mejora | Finding | Severidad | Motivo del descarte                                                                                                                                                                                                                                  | Veredicto del audit                                                                                                                                          |
+| ------ | ------- | --------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 31     | 8.4.A   | LOW (INFO)| Bloquear el `createEffect` reactivo de `App.tsx:1381-1401` acoplaría la responsividad de la TUI a la latencia del filesystem. El contrato existente de `saveLoopState` ("Never throws — best-effort") refuerza la política: el caller no debe bloquearse | "**Mark as INFO (not LOW) — the finding is recorded for completeness but no change is proposed**" (`MEJORAS.md:10195-10229`, reclasificada `LOW (INFO)`)       |
+| 60     | 15.8.B  | LOW       | El guard `if (!activeModel())` lee el signal **síncronamente** desde `props.model`, así que bajo el shape actual NO existe ventana async. La fix (`createMemo`) es condicional a un refactor futuro que hoy NO existe — "build infra for a future need" | "**Severity: LOW. No current bug; defensive note for future refactors**" (`MEJORAS.md:20407-20473`). El `createMemo` sería +5 líneas de boilerplate, +1 signal a mantener en sync, cero cambio observable |
+| 68     | 16.3.B  | LOW       | La opción 2 del audit ("drop `||` en los 8 sites") es **incompatible con 16.3.A** y **perdería la defensa de whitespace** que el audit marca explícitamente: el helper `resolvePlanFile` atrapa whitespace-only como backstop del upstream parser bug 1.1.A | "`Option 2 is safe to apply **if** the resolution rule stays at 'if non-empty, use it; if empty, fall back to default' — i.e. if 16.3.A's whitespace-trim behavior is **not** adopted`" (`MEJORAS.md:21100`) — incompatibilidad explícita con Mejora 67 |
+| 74     | 16.5.D  | LOW       | El re-eval por segundo de `rate()` + `compactLine()` es intencional para el global timer; el cost es "a few string concatenations + a `fitSegments` call per second per panel". Optimizar uno y dejar el Dashboard (misma estructura) introduce asimetría | "**Worth optimizing only if profiling shows it as a hot path**" (`MEJORAS.md:21690-21744`). El counter-argument del audit ya nombra la duda: el microsecond gain es invisible bajo TUI 1Hz refresh |
+| 88     | 17.8.B  | LOW       | El `require("../../package.json")` de `cli-args.ts:16` funciona porque Bun resuelve CJS dentro de proyectos ESM-mode y el bundler inlina `package.json` en `__commonJS`. La fix a `createRequire(import.meta.url)` es condicional a un flip strict ESM que no está planeado | "**None required today**" (`MEJORAS.md:24152-24183`). Mismo veredicto que Mejora 31 y Mejora 60. La recipe de migración queda pineada inline para el día del flip                            |
+
+**Total descartadas**: 5 (todas con veredicto "INFO / no current bug
+/ speculative infrastructure" del propio audit; pineadas con la
+recipe de migración cuando aplica, para no re-derivar del audit).
+
+---
+
+### Trazabilidad
+
+- **97/97 mejoras clasificadas** — 0 sin evaluar, 0 con pendiente
+- **Suite verde**: `bun test` → 908 pass / 1 skip / 0 fail (skip =
+  `clipboard.test.ts:43` "returns clip on win32", gateado por
+  `skipIf(process.platform !== "win32")`)
+- **Build verde**: `bun run build` → `dist/index.js` generado
+- **Phase 3 review**: 0 contradicciones con los 9 patrones del
+  codebase (Bun-first ESM, `log.*` en TUI, `*.test.ts` adyacente,
+  atomic writes, mock patterns, i18n paridad, state machine
+  inalterable, anotación-sobre-fix, build/test green)
+- **Dedup de Fase 3**: el helper `setupBunSpawnMock()`
+  (`src/lib/test-helpers/bun-spawn-mock.ts`, commit `9e1cb8a`)
+  consolida 30 líneas duplicadas entre `terminal-launcher.test.ts`
+  y `power.test.ts`; no se bundlea en `dist/index.js`
+- **Commits pendientes al cierre de Phase 2**: ninguno; los 3
+  `Commit pendiente` que aparecían en evaluations intermedias
+  (Mejoras 13, 23, 57, 92) se consolidaron en commits posteriores
+  antes del cierre de Phase 3
 
 ## Fase 4 — Revisión manual
 
