@@ -501,8 +501,21 @@ function AppContent(props: AppProps) {
     })
     sleepDetector.start()
 
-    const terminals = await detectInstalledTerminals()
-    setAvailableTerminals(terminals)
+    // `detectInstalledTerminals` shells out per entry in KNOWN_TERMINALS
+    // via `Bun.spawn`; a rejection here (FD exhaustion, weird $PATH, killed
+    // mid-spawn) would propagate out of this onMount body and trigger the
+    // unhandledRejection handler in `index.tsx:300-304`, exiting the process
+    // before the TUI ever renders. Wrapped following the pattern of
+    // `refreshPlan` (line 681) — degraded UX (empty terminal list) is
+    // strictly better than a crash. `loadConfig` keeps its internal
+    // try/catch (config.ts:351-361) and is sync with no I/O, so no outer
+    // wrap is needed. Source: MEJORAS.md Finding 17.3.A.
+    try {
+      const terminals = await detectInstalledTerminals()
+      setAvailableTerminals(terminals)
+    } catch (err) {
+      log.error("terminal", "Failed to detect installed terminals", err)
+    }
     // Finding 15.8.A: release the server-ready createEffect now that the
     // on-disk config layer has been merged into `resilience`. The order
     // matters — set AFTER both `setResilience(resolved)` (line 475) and
