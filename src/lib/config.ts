@@ -365,32 +365,34 @@ export function loadConfig(): OcloopConfig {
  * Save the configuration to disk.
  * Creates the config directory if it doesn't exist.
  *
- * Synchronous: the function returns `void` (not `Promise<void>`). Callers
+ * Synchronous: the function returns immediately (not a Promise). Callers
  * MUST NOT `await` it — there is nothing to await, and an `await` here
  * silently introduces a microtask delay that couples local-state updates
  * to the wrong tick. If this function is ever refactored to use
  * `fs/promises`, the four `App.tsx` call sites will need to be updated to
- * match the new `Promise<void>` shape.
+ * match the new `Promise<boolean>` shape.
  *
- * Never throws — persistence is best-effort and must not crash the app. The
+ * Returns `true` on a successful write, `false` on I/O failure. The function
+ * never throws — persistence is best-effort and must not crash the app. The
  * contract mirrors `saveLoopState` in `loop-state-store.ts`: any I/O failure
  * (EACCES on a read-only mount, ENOSPC on a full disk, EROFS on a sandbox,
- * EXDEV on a cross-device rename) is logged as a `warn` and the orphan tmp
- * file is best-effort cleaned up. The four `App.tsx` call sites (command
- * palette: `onConfigSelect`, `onConfigCustom`, `toggle_scrollbar`,
- * `toggle_language`) wrap `saveConfig` in a `dialog.clear()` follow-up that
- * would silently no-op on a thrown error — making this `void`-and-swallows
- * is strictly the minimum useful contract.
+ * EXDEV on a cross-device rename) is logged as a `warn`, the orphan tmp
+ * file is best-effort cleaned up, and the boolean return lets the four
+ * `App.tsx` call sites surface a user-visible error toast when persistence
+ * fails. Source: MEJORAS.md Finding 17.3.B.
  *
  * Source: MEJORAS.md Finding 12.2.A. Side effects: also closes Finding 12.2.C
  * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path,
  * Finding 12.2.D (the `mkdirSync({ recursive: true })` call is invoked
  * unconditionally — it is idempotent on an existing dir, so the previous
  * `existsSync` guard added a wasted syscall plus a TOCTOU window), and
- * Finding 12.2.E (the function returns `void`, not `Promise<void>` — see
- * the synchronous-contract paragraph above).
+ * Finding 12.2.E (the function is synchronous, not a Promise — see the
+ * synchronous-contract paragraph above). The `boolean` return (vs the
+ * previous `void`) is strictly additive; the four call sites that previously
+ * discarded the result continue to compile unchanged if they ignore the
+ * return value, but the Finding 17.3.B call sites now check it.
  */
-export function saveConfig(config: OcloopConfig): void {
+export function saveConfig(config: OcloopConfig): boolean {
   const configDir = getConfigDir()
   const configPath = getConfigPath()
   // Random hex suffix on the tmp file: two `ocloop` processes pointing at
@@ -416,6 +418,7 @@ export function saveConfig(config: OcloopConfig): void {
     writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
     renameSync(tmpPath, configPath)
     log.info("config", "Saved config", config)
+    return true
   } catch (err) {
     log.warn("config", "Failed to save config", err)
     // Best-effort cleanup of the orphan tmp file. The unlink can fail (the
@@ -428,6 +431,7 @@ export function saveConfig(config: OcloopConfig): void {
     } catch {
       // Nothing more we can do; the next saveConfig overwrites the tmp.
     }
+    return false
   }
 }
 

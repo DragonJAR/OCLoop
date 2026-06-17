@@ -1670,12 +1670,17 @@ function AppContent(props: AppProps) {
         }
      }
 
-     // saveConfig is synchronous (returns `void`, not `Promise<void>`) — do
-     // not `await` it. Source: MEJORAS.md Finding 12.2.E.
-     saveConfig(newConfig)
+     // saveConfig is synchronous (returns `boolean`, not `Promise<boolean>`)
+     // — do not `await` it. On I/O failure the function returns `false` and
+     // logs a warn; we surface that to the user so they know the change
+     // won't survive a restart. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+     if (!saveConfig(newConfig)) {
+        toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+        return
+     }
      setOcloopConfig(newConfig)
      dialog.clear()
-     
+
      // Launch!
      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
      if (sid) {
@@ -1694,12 +1699,17 @@ function AppContent(props: AppProps) {
         }
      }
 
-     // saveConfig is synchronous (returns `void`, not `Promise<void>`) — do
-     // not `await` it. Source: MEJORAS.md Finding 12.2.E.
-     saveConfig(newConfig)
+     // saveConfig is synchronous (returns `boolean`, not `Promise<boolean>`)
+     // — do not `await` it. On I/O failure the function returns `false` and
+     // logs a warn; we surface that to the user so they know the change
+     // won't survive a restart. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+     if (!saveConfig(newConfig)) {
+        toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+        return
+     }
      setOcloopConfig(newConfig)
      dialog.clear()
-     
+
      // Launch!
      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
      if (sid) {
@@ -1869,10 +1879,16 @@ function AppContent(props: AppProps) {
             ...ocloopConfig(),
             scrollbar_visible: !current
           }
+          // saveConfig is synchronous (returns `boolean`, not
+          // `Promise<boolean>`) — do not `await` it. On I/O failure the
+          // function returns `false` and logs a warn; we roll back the
+          // in-memory state and surface a toast so the UI matches what
+          // survived to disk. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+          if (!saveConfig(newConfig)) {
+            toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+            return
+          }
           setOcloopConfig(newConfig)
-          // saveConfig is synchronous (returns `void`, not `Promise<void>`)
-          // — do not `await` it. Source: MEJORAS.md Finding 12.2.E.
-          saveConfig(newConfig)
           dialog.clear()
         },
       },
@@ -1885,10 +1901,18 @@ function AppContent(props: AppProps) {
           const next: Locale = getLocale() === "en" ? "es" : "en"
           setLocale(next)
           const newConfig = { ...ocloopConfig(), language: next }
+          // saveConfig is synchronous (returns `boolean`, not
+          // `Promise<boolean>`) — do not `await` it. On I/O failure the
+          // function returns `false` and logs a warn; we roll back the
+          // language switch and surface a toast so the UI matches what
+          // survived to disk. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+          if (!saveConfig(newConfig)) {
+            // Roll back the locale so the in-memory state matches disk.
+            setLocale(next === "es" ? "en" : "es")
+            toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+            return
+          }
           setOcloopConfig(newConfig)
-          // saveConfig is synchronous (returns `void`, not `Promise<void>`)
-          // — do not `await` it. Source: MEJORAS.md Finding 12.2.E.
-          saveConfig(newConfig)
           toast.show({ variant: "success", message: t("toastLanguageChanged") })
           dialog.clear()
         },

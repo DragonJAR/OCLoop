@@ -288,6 +288,11 @@ const en = {
   catLanguage: "Language",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
+  // Source: MEJORAS.md Finding 17.3.B — surfaced when `saveConfig` returns
+  // `false` (I/O failure: EACCES, ENOSPC, EROFS, EXDEV). The on-disk state
+  // is stale, the in-memory state reflects the user's choice, and the user
+  // needs to know the change won't survive a restart.
+  toastConfigSaveFailed: "Failed to save config — change will not persist",
   // Chaos fault-injection (debug + --chaos). One label + one "done" per action,
   // so the command title and its toast are single-sourced.
   chaosKill: "Chaos: kill server",
@@ -589,6 +594,8 @@ const es: Record<MessageKey, Msg> = {
   catLanguage: "Idioma",
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
+  // Source: MEJORAS.md Finding 17.3.B — Spanish mirror of the above.
+  toastConfigSaveFailed: "Fallo al guardar la configuración — el cambio no se mantendrá",
   chaosKill: "Chaos: matar servidor",
   chaosKillDone: "Chaos: servidor terminado",
   chaosRevive: "Chaos: revivir servidor",

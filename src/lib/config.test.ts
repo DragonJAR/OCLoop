@@ -499,16 +499,19 @@ describe("saveConfig — round-trip (Finding 12.2.A)", () => {
     expect(tmps).toEqual([])
   })
 
-  it("returns void and does not throw on the happy path", () => {
-    // Pin the contract from Finding 12.2.E: the function is synchronous
-    // (returns `void`, i.e., `undefined`, not `Promise<void>`). Callers in
-    // `App.tsx` MUST NOT `await` it — an `await` on a `void` expression
-    // silently introduces a microtask delay that couples local-state updates
-    // to the wrong tick. If the function is ever refactored to use
-    // `fs/promises`, this test will need to be updated to assert the new
-    // shape and the four call sites will need to add `await` back.
+  it("returns true and does not throw on the happy path", () => {
+    // Pin the contract from Finding 12.2.E + Finding 17.3.B: the function is
+    // synchronous (returns immediately, not a Promise) and returns `true`
+    // on a successful write so the four `App.tsx` call sites can surface a
+    // user-visible error toast when persistence fails. Callers in `App.tsx`
+    // MUST NOT `await` it — an `await` on a `boolean` expression silently
+    // introduces a microtask delay that couples local-state updates to the
+    // wrong tick. If the function is ever refactored to use `fs/promises`,
+    // this test will need to be updated to assert the new
+    // `Promise<boolean>` shape and the four call sites will need to add
+    // `await` back.
     const result = saveConfig({})
-    expect(result).toBeUndefined()
+    expect(result).toBe(true)
   })
 })
 
@@ -522,16 +525,19 @@ describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
   it.skipIf(
     process.platform === "win32" ||
       (typeof process.getuid === "function" && process.getuid() === 0),
-  )("does not throw when the config dir is read-only (EACCES / EPERM)", () => {
-    // Pre-create the config dir (so the `mkdirSync` call inside `saveConfig`
-    // is a no-op) and then chmod it read-only. The inner `writeFileSync` will
-    // fail with EACCES (macOS) or EPERM (Linux); the `try/catch` in
-    // `saveConfig` must swallow it.
+  )("returns false (not throws) when the config dir is read-only (Finding 17.3.B)", () => {
+    // Pin the second half of the Finding 17.3.B contract: a failed save
+    // must surface a `false` to the caller so the call site can show a
+    // toast. Pre-create the config dir (so the `mkdirSync` call inside
+    // `saveConfig` is a no-op) and then chmod it read-only. The inner
+    // `writeFileSync` will fail with EACCES (macOS) or EPERM (Linux); the
+    // `try/catch` in `saveConfig` must return `false` (not throw).
     const configDir = join(dir, "ocloop")
     mkdirSync(configDir, { recursive: true })
     chmodSync(configDir, 0o555)
     try {
-      expect(() => saveConfig({ language: "es" })).not.toThrow()
+      const result = saveConfig({ language: "es" })
+      expect(result).toBe(false)
     } finally {
       // Restore so afterEach's rmSync can clean up the tempdir.
       chmodSync(configDir, 0o755)
