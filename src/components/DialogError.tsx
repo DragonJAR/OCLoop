@@ -28,22 +28,15 @@ export function DialogError(props: DialogErrorProps) {
     }
   })
 
-  // Calculate dialog height based on content
-  const dialogHeight = () => {
-    // Base: header + source badge + message + actions + padding
-    let height = 8
-
-    // Add extra height for longer messages (rough estimate)
-    const messageLines = Math.ceil(props.message.length / 50)
-    if (messageLines > 1) {
-      height += messageLines - 1
-    }
-
-    return Math.max(9, height)
-  }
+  // Fixed dialog height: header + source badge + a capped message area +
+  // actions + padding. The message lives in a scrollbox (below) that wraps and
+  // scrolls, so the height no longer depends on guessing wrap-line counts from
+  // message length — that guess previously inflated the box while the message
+  // rendered as a single unwrapped line that overflowed horizontally.
+  const dialogHeight = 14
 
   return (
-    <Dialog onClose={props.onQuit} width={60} height={dialogHeight()}>
+    <Dialog onClose={props.onQuit} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
@@ -55,11 +48,29 @@ export function DialogError(props: DialogErrorProps) {
           </text>
         </box>
 
-        {/* Source badge and message */}
+        {/* Source badge */}
         <text style={{ marginTop: 1 }}>
           <span style={{ fg: theme().backgroundElement, bg: theme().error }}> {props.source} </span>
-          <span style={{ fg: theme().text }}> {props.message}</span>
         </text>
+
+        {/* Message — scrollbox so a long error (API JSON, stack trace, SSE
+            body) wraps and scrolls instead of overflowing the dialog width
+            on a single line. Mirrors DialogCompletion's summary handling. */}
+        <scrollbox
+          marginTop={1}
+          maxHeight={6}
+          verticalScrollbarOptions={{
+            visible: true,
+            trackOptions: {
+              backgroundColor: theme().backgroundPanel,
+              foregroundColor: theme().borderSubtle,
+            },
+          }}
+        >
+          <text>
+            <span style={{ fg: theme().text }}>{props.message}</span>
+          </text>
+        </scrollbox>
 
         {/* Actions */}
         <text style={{ marginTop: 2 }}>

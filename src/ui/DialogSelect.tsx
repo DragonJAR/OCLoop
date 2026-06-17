@@ -136,6 +136,7 @@ export function DialogSelect(props: DialogSelectProps) {
 
     if (key.name === "pageup") {
       key.preventDefault()
+      if (filteredOptions().length === 0) return
       if (selectedIndex() === 0) {
         move(-1)  // wrap to last
       } else {
@@ -146,6 +147,12 @@ export function DialogSelect(props: DialogSelectProps) {
 
     if (key.name === "pagedown") {
       key.preventDefault()
+      // Guard the empty-list case: with 0 results, lastIndex = -1, so the
+      // non-wrap branch below would call moveTo(-1), setting selectedIndex=-1
+      // and invoking onMove(undefined). move() already early-returns on an
+      // empty list; the pageup/pagedown handlers must too (the useKeyboard
+      // handler stays live even though the list is hidden via <Show>).
+      if (filteredOptions().length === 0) return
       const lastIndex = filteredOptions().length - 1
       if (selectedIndex() === lastIndex) {
         move(1)  // wrap to first

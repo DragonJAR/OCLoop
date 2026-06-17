@@ -42,24 +42,18 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
     }
   })
 
-  // Calculate dialog height based on content
-  const dialogHeight = () => {
-    // Base: header + error line + config hint + command + footer + padding
-    let height = 11
-
-    // Add extra height for longer error messages
-    const messageLines = Math.ceil(props.errorMessage.length / 50)
-    if (messageLines > 1) {
-      height += messageLines - 1
-    }
-
-    return Math.max(11, height)
-  }
+  // Fixed dialog height: header + terminal badge + a capped error area +
+  // config hint + command + footer + padding. The error message lives in a
+  // scrollbox (below) that wraps and scrolls, so the height no longer depends
+  // on guessing wrap-line counts from message length — that guess previously
+  // inflated the box while the error rendered as a single unwrapped line that
+  // overflowed horizontally.
+  const dialogHeight = 16
 
   const configPath = getConfigPath()
 
   return (
-    <Dialog onClose={props.onClose} width={60} height={dialogHeight()}>
+    <Dialog onClose={props.onClose} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
@@ -71,11 +65,28 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
           </text>
         </box>
 
-        {/* Terminal name and error */}
+        {/* Terminal name */}
         <text style={{ marginTop: 1 }}>
           <span style={{ fg: theme().backgroundElement, bg: theme().error }}> {props.terminalName} </span>
-          <span style={{ fg: theme().text }}> {props.errorMessage}</span>
         </text>
+
+        {/* Error message — scrollbox so a long launch error wraps and scrolls
+            instead of overflowing the dialog width on a single line. */}
+        <scrollbox
+          marginTop={1}
+          maxHeight={5}
+          verticalScrollbarOptions={{
+            visible: true,
+            trackOptions: {
+              backgroundColor: theme().backgroundPanel,
+              foregroundColor: theme().borderSubtle,
+            },
+          }}
+        >
+          <text>
+            <span style={{ fg: theme().text }}>{props.errorMessage}</span>
+          </text>
+        </scrollbox>
 
         {/* Config hint */}
         <text style={{ marginTop: 1 }}>

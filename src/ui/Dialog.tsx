@@ -74,9 +74,14 @@ export function Dialog(props: DialogProps) {
   const dialogWidth = () => props.width ?? 50
   const dialogHeight = () => props.height ?? 10
 
-  // Calculate centered position
-  const left = () => Math.floor((dimensions().width - dialogWidth()) / 2)
-  const top = () => Math.floor((dimensions().height - dialogHeight()) / 2)
+  // Calculate centered position. Clamp to >= 0 so a dialog wider/taller than
+  // the terminal (a narrow tmux split, a small terminal) doesn't render at a
+  // negative offset — off the top-left corner and lost off-screen. When the
+  // dialog exceeds the viewport it is anchored to the origin and may clip on
+  // the right/bottom (the terminal truncates), which is strictly better than
+  // being invisible.
+  const left = () => Math.max(0, Math.floor((dimensions().width - dialogWidth()) / 2))
+  const top = () => Math.max(0, Math.floor((dimensions().height - dialogHeight()) / 2))
 
   // Handle backdrop click
   const handleBackdropClick = () => {
