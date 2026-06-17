@@ -22,6 +22,7 @@ import { log } from "./lib/debug-logger"
 import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
+import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
 import { shutdownManager } from "./lib/shutdown"
 import {
@@ -1108,7 +1109,7 @@ function AppContent(props: AppProps) {
    * Send a prompt in debug mode
    */
   async function sendDebugPrompt(text: string): Promise<void> {
-    const sid = sessionId() || lastSessionId()
+    const sid = resolveActiveSessionId(sessionId(), lastSessionId())
     // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
     const client = tryGetClient(server.url)
 
@@ -1588,8 +1589,12 @@ function AppContent(props: AppProps) {
    * Helper to show terminal error dialog
    */
   const showTerminalError = (name: string, error: string) => {
-    const attachCmd = (sessionId() || lastSessionId()) && server.url() 
-      ? getAttachCommand(server.url()!, (sessionId() || lastSessionId())!) 
+    // Finding 16.4.B: collapse the two-eval pattern of
+    // `sessionId() || lastSessionId()` into a single read; the helper
+    // (Finding 16.4.A) makes the natural shape "resolve once, use twice".
+    const sid = resolveActiveSessionId(sessionId(), lastSessionId())
+    const attachCmd = sid && server.url()
+      ? getAttachCommand(server.url()!, sid)
       : ""
     dialog.show(() => (
       <DialogTerminalError
@@ -1648,13 +1653,13 @@ function AppContent(props: AppProps) {
      dialog.clear()
      
      // Launch!
-     const sid = sessionId() || lastSessionId()
+     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
      if (sid) {
         launchConfiguredTerminal(sid, newConfig.terminal)
      }
   }
-  
-  const onConfigCustom = async (command: string, args: string) => {
+
+   const onConfigCustom = async (command: string, args: string) => {
      // Save config
      const newConfig: OcloopConfig = {
         ...ocloopConfig(),
@@ -1672,14 +1677,14 @@ function AppContent(props: AppProps) {
      dialog.clear()
      
      // Launch!
-     const sid = sessionId() || lastSessionId()
+     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
      if (sid) {
         launchConfiguredTerminal(sid, newConfig.terminal)
      }
-  }
-  
+   }
+
    const onConfigCopy = async () => {
-      const sid = sessionId() || lastSessionId()
+      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
       const url = server.url()
       if (sid && url) {
          const cmd = getAttachCommand(url, sid)
@@ -1697,7 +1702,7 @@ function AppContent(props: AppProps) {
    }
    
    const onErrorCopy = async () => {
-      const sid = sessionId() || lastSessionId()
+      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
       const url = server.url()
       if (sid && url) {
          const cmd = getAttachCommand(url, sid)
@@ -1726,7 +1731,7 @@ function AppContent(props: AppProps) {
   createEffect(() => {
     // Re-register commands when session ID changes so we can enable/disable them
     // and provide current session ID to callbacks
-    const sid = sessionId() || lastSessionId()
+    const sid = resolveActiveSessionId(sessionId(), lastSessionId())
     const url = server.url()
     const hasSession = !!sid
 
@@ -1976,7 +1981,7 @@ function AppContent(props: AppProps) {
 
       if (key.name === "p") {
         // P - prompt dialog
-        const sid = sessionId() || lastSessionId()
+        const sid = resolveActiveSessionId(sessionId(), lastSessionId())
         if (!sid) {
           toast.show({ variant: "info", message: t("toastNoSessionPrompt") })
           key.preventDefault()
@@ -1999,7 +2004,7 @@ function AppContent(props: AppProps) {
       }
 
       if (key.name === "t") {
-         const sid = sessionId() || lastSessionId()
+         const sid = resolveActiveSessionId(sessionId(), lastSessionId())
          if (sid) {
             const config = ocloopConfig()
             if (hasTerminalConfig(config)) {
@@ -2054,7 +2059,7 @@ function AppContent(props: AppProps) {
 
     // Detached - handle our keybindings
     if (key.name === "t") {
-       const sid = sessionId() || lastSessionId()
+       const sid = resolveActiveSessionId(sessionId(), lastSessionId())
        if (sid) {
           const config = ocloopConfig()
           if (hasTerminalConfig(config)) {

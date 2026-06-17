@@ -3537,17 +3537,91 @@ impacto en el build. Sin commit necesario.
 
 ### Mejora 69 — Finding 16.4.A — LOW — `sessionId() || lastSessionId()` repeated at 11 sites
 
-- [ ] Evaluar la mejora 69 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 69 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 69 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 69 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 69 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 69 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 69 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 69 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es la duplicación mecánica de la regla
+"live-or-last" en 10 call sites de `src/App.tsx` (líneas 1112,
+1591-1592, 1651, 1675, 1682, 1700, 1729, 1979, 2002, 2057 — la
+auditoría reportó 11 contando que `showTerminalError` evaluaba la
+expresión dos veces). La opción "pure helper" del audit
+(`MEJORAS.md:21236-21250`) es estrictamente la mínima útil y
+consistente con el patrón establecido por Mejora 67 (Finding
+16.3.A, `resolvePlanFile`) y Mejora 65 (Finding 16.2.A,
+`tryGetClient`): una función pura `resolveActiveSessionId` que
+recibe los **valores** y devuelve el resultado, dejando al caller
+la responsabilidad de leer los accessors (`sessionId()` y
+`lastSessionId()`) en su propio contexto reactivo (los callers
+son keybindings, dialogs y un `createEffect`, todos contextos
+reactivos que ya trackean las signals subyacentes). Esto evita
+introducir un `createMemo` solo para envolver la regla — los
+memos son el patrón cuando el helper DEBE ser reactivo
+internamente; aquí la reactividad ya viene del caller. La regla
+usa `??` (no `||`) tal como recomienda el audit
+(`MEJORAS.md:21252`): en la práctica ambos operadores producen
+el mismo resultado porque el `sessionId` memo y el `lastSessionId`
+signal nunca son `""`, pero `??` es el operador correcto para
+"el campo es null/undefined, no falsy" y pinea el contrato
+mediante un test específico.
+
+Implementación: 27 líneas en `src/lib/active-session-id.ts` (el
+helper con su docstring que nombra el source `MEJORAS.md Finding
+16.4.A`, el paralelo con `resolvePlanFile` / `tryGetClient`, y
+la racionalidad de `??` sobre `||`) + 6 tests nuevos en
+`src/lib/active-session-id.test.ts` que pinean: live-wins-over-last,
+fallback a last, undefined cuando ninguno, `??` trata `""` como
+valor (no como trigger de fallback), la pureza del helper, y la
+transparencia referencial. 1 import nuevo en `src/App.tsx:25`.
+10 sustituciones 1-a-1 en `App.tsx` (líneas 1112, 1595, 1656,
+1680, 1687, 1705, 1734, 1984, 2007, 2062) — la sustitución en
+`showTerminalError` (1591-1592) también cierra Mejora 70 (Finding
+16.4.B) como side-effect: el call site ahora asigna a un local
+`sid` y lo usa dos veces, eliminando la doble-evaluación
+explícita.
+
+Cero impacto en el camino feliz (el comportamiento es
+observable-equivalente: `live ?? last ?? undefined` y
+`live || last` dan el mismo resultado para los inputs reales).
+Cero impacto en el `createEffect` de command-registration
+(línea 1726-1734) — sigue re-ejecutando cuando `sessionId()` o
+`lastSessionId()` cambian, exactamente como antes. Cero impacto
+en los keybinding handlers (lectura 1-vez por keypress). Cero
+cambio en el reducer, cero cambio en la TUI, cero cambio en el
+Dashboard, cero cambio en el resto del flujo. El contract del
+helper está pineado por los 6 tests unitarios. `bun test`
+verde: 788 pass / 1 skip / 0 fail (era 782 / 1 / 0 antes del
+helper; +6 tests), 1831 expect() calls (era 1714; +117). `bun
+run build` verde.
 
 ### Mejora 70 — Finding 16.4.B — LOW — Site #2 + #3 evaluate the same expression twice
 
-- [ ] Evaluar la mejora 70 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 70 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 70 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 70 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 70 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 70 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 70 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 70 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21272-21297`): el call site de `showTerminalError`
+(`App.tsx:1591-1592`) evaluaba `sessionId() || lastSessionId()`
+dos veces en la misma línea, una como guard del ternario y
+otra como argumento de `getAttachCommand`. La propuesta del
+audit — "if 16.4.A is adopted, the duplication collapses
+naturally" — es estrictamente la mínima útil y la opción
+correcta: el helper de Mejora 69 habilita el shape natural
+"resolver una vez, asignar a local, usar dos veces". El
+comentario inline en `src/App.tsx:1590-1594` nombra el source
+`MEJORAS.md Finding 16.4.B` y explica que el collapse es
+"side-effect del helper de Finding 16.4.A". Cero impacto
+funcional (los dos reads eran observable-equivalentes porque
+ningún signal cambia entre las dos lecturas en un mismo
+microtask síncrono), cero impacto en el resto del flujo
+(el resto de los 9 call sites evaluaban la expresión una
+sola vez, sin double-eval). `bun test` verde: 788 pass /
+1 skip / 0 fail — el contract del helper cubre la
+semántica colapsada, así que no hacen falta tests nuevos
+específicos para el collapse.
 
 ### Mejora 71 — Finding 16.5.A — HIGH — Completion effect re-runs every second, pushing a new dialog onto the stack
 
