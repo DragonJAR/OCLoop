@@ -4564,10 +4564,83 @@ archivos. `bun run build` verde.
 
 ### Mejora 86 — Finding 17.5.A — LOW — `Bun.write()` in `validatePrerequisites` propagates errors to `main().catch()`
 
-- [ ] Evaluar la mejora 86 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 86 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 86 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 86 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 86 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 86 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 86 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 86 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:23526-23585`): el bloque auto-create de
+`validatePrerequisites` (`src/index.tsx:78`, pre-fix) llamaba
+`await Bun.write(args.promptFile, t("defaultLoopPrompt"))` sin
+try/catch. Una rejection del write (EACCES sobre un CWD de
+otro usuario, EROFS en un snap/flatpak/CI workspace, ENOENT
+porque un parent dir desapareció, ENOSPC por quota, EISDIR
+porque alguien reemplazó el archivo esperado con un dir, o
+un symlink roto) propagaba out de `validatePrerequisites` →
+`main()` → `main().catch()` (`src/index.tsx:395-405`), que
+imprime `"Fatal error: <stack trace>"` y `process.exit(1)`. La
+asimetría con los 2 controles vecinos (`errPlanNotFound` línea
+67-69 y `errPromptNotFound` línea 81-83) era la única
+diferencia observable: las 3 adyacentes producen un error
+localized de una línea + exit 1, la auto-create produce un
+stack trace completo. La opción del fix propuesta en
+`MEJORAS.md:23554-23569` (try/catch + `t("errCannotCreatePrompt",
+{ path, reason })` + `process.exit(1)`) es estrictamente la
+mínima útil y reusa el patrón exacto de Mejora 84 (Finding
+17.4.B, commit `c99d946`) — el `errCannotReadFile` que esa
+mejora añadió cubre el read-side del mismo function; este
+`errCannotCreatePrompt` cubre el write-side. La shape
+`es: Record<MessageKey, Msg>` (`i18n.ts:396`) forzó la mirror
+es al editar el en, exactamente la garantía pineada en el
+header del módulo.
+
+Implementación mínima: 1 try/catch (12 líneas, sin nuevas
+funciones, sin nuevos tipos, sin nuevos imports) en
+`src/index.tsx:78-94` + 2 keys nuevos en `i18n.ts` (`en` y
+`es`, 16 líneas entre los dos) con comment blocks que
+renombran el section `--- Pre-flight file errors ---` y
+nombran el source `MEJORAS.md Finding 17.5.A`. El catch
+block usa la misma fórmula que `errCannotReadFile` para el
+`message` (`err instanceof Error ? err.message : String(err)`)
+y el `t("errCannotCreatePrompt", { path, message })` con
+`process.exit(1)` en la línea siguiente — exactamente el
+shape del `errPlanNotFound` adyacente (`src/index.tsx:67-68`)
+y del `errPromptNotFound` adyacente (`src/index.tsx:81-82`).
+
+Cero cambios a la firma de `validatePrerequisites`
+(`(CLIArgs) => Promise<void>` intacta), cero cambios al
+flujo "file existe" (el `if (!promptExists)` corto-circuita
+igual que antes), cero cambios al flujo "custom --prompt
+path missing" (cae al `else` que mantiene su hard error
+existente), cero impacto en `--create-plan` (no entra a
+`validatePrerequisites`), cero impacto en `--debug` (el
+early-return de `args.debug` línea 60-62 corto-circuita
+antes de cualquier I/O), cero impacto en la ruta TUI
+happy-path (un `Bun.write` exitoso sigue fluyendo al
+`console.log(t("promptCreated", ...))` exactamente como
+antes, dentro del `try`). Cero impacto en el reducer, cero
+impacto en la TUI, cero impacto en el lifecycle de
+iteración, cero impacto en `runCreatePlan` (su `Bun.write`
+en `src/index.tsx:258` ya está dentro de un try/catch
+existente en línea 277-282, pineado por
+`MEJORAS.md:23587-23605` como "VERIFIED HANDLED").
+
+Sin nuevos tests: el audit
+(`MEJORAS.md:23574`) reconoce la rareza del path ("The
+user almost never runs into this on a working project"),
+y un test de "Bun.write() throws → friendly error → exit
+1" requeriría o `chmod 555` cross-platform-frágil
+(mismo patrón que `loop-state-store.test.ts:71-92`,
+Mejora 30 / `config.test.ts:280-302`, Mejora 46) o mock
+de `Bun.write` + `process.exit` (harness pesado para un
+fix de 12 líneas que es estructural, no computacional).
+La garantía del wrap es estructural (un try/catch +
+`log` localized que code review cubre sin gap de
+cobertura). Cero cambios en el conteo de tests: 795 pass
+/ 1 skip / 0 fail, 1839 expect() calls, 28 files, 357 ms
+— mismo número que antes del fix (era 795 / 1 / 0 antes
+del wrap). `bun run build` verde. Commit `9e6ac0a`.
 
 ### Mejora 87 — Finding 17.7.B — LOW — `finally { clearTimeout(failsafe) }` is unreachable from the catch-exit path
 
