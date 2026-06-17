@@ -4045,10 +4045,56 @@ expect() calls, 28 files, 356 ms — sin cambio en el conteo
 
 ### Mejora 78 — Finding 17.1.B — LOW — `main().catch()` does not call `restoreTerminal()` directly
 
-- [ ] Evaluar la mejora 78 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 78 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 78 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 78 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 78 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 78 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 78 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 78 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:22462-22492`): el `main().catch()` de
+`src/index.tsx:369-372` (pre-fix) llamaba `process.exit(1)`
+sin pasar primero por `restoreTerminal()`. El comportamiento
+observable hoy es correcto porque `process.on("exit",
+restoreTerminal)` (línea 296) es un backstop que dispara
+para CUALQUIER `process.exit()` del proceso — la garantía
+hard del event loop de Node. Pero la forma es
+**implícita**: un futuro refactor que mueva `restoreTerminal`
+fuera del `exit` listener dejaría el catch handler
+silenciosamente con un terminal en raw mode. La propuesta
+del audit (`MEJORAS.md:22478-22485`) es estrictamente la
+mínima útil: 1 línea de código (`restoreTerminal()` justo
+antes de `process.exit(1)`) + comment block que nombra el
+source `MEJORAS.md Finding 17.1.B`, el paralelo con los dos
+otros error handlers (`uncaughtException:297-300` y
+`unhandledRejection:302-305`) que ya tienen la forma
+explícita, y la racionalidad defensiva ("grep-friendly y
+self-documenting"). El `exit` handler queda como backstop
+— la fix no lo elimina, solo hace que el catch block sea
+explícitamente correcto por sí mismo.
+
+Cero cambios a la firma de `restoreTerminal`
+(`() => void` intacta), cero cambios al guard
+`if (!tuiStarted || !process.stdout.isTTY) return`
+(la función sigue siendo no-op en paths pre-TUI), cero
+cambios al backstop `process.on("exit", restoreTerminal)`,
+cero cambios a `uncaughtException` / `unhandledRejection`
+(ya eran explícitos), cero cambios a `parseArgs` /
+`validatePrerequisites` / `runCreatePlan` / `main()` /
+`render` / `App`, cero impacto en el reducer, cero
+impacto en la TUI, cero impacto en el lifecycle de
+iteración. Cero impacto en tests: el audit
+(`MEJORAS.md:22504-22510`) ya justificó que un test del
+catch handler requeriría forked-process harness
+(`bun test --isolate` o `child_process.spawn`) porque los
+handlers son globales al proceso, y el propio audit
+documenta que el chain es unambiguous by inspection:
+`process.on("exit", restoreTerminal)` línea 296,
+`restoreTerminal()` función línea 288, `main().catch()`
+línea 369, `process.exit(1)` línea 377.
+
+`bun test` verde: 788 pass / 1 skip / 0 fail, 1832 expect()
+calls, 28 files, 359 ms — sin cambio en el conteo (era 788
+/ 1 / 0 antes del fix). Commit `0503828`.
 
 ### Mejora 79 — Finding 17.2.B — LOW — `main().catch()` lacks an explicit `restoreTerminal()` call (carryover)
 
