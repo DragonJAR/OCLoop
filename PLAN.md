@@ -4139,10 +4139,54 @@ Commit `7609ab7`.
 
 ### Mejora 80 — Finding 17.3.A — MEDIUM — `onMount` awaits `detectInstalledTerminals()` without a try/catch
 
-- [ ] Evaluar la mejora 80 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 80 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 80 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 80 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 80 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 80 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 80 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 80 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:22894-22977`): el body del `onMount` en
+`src/App.tsx:486-513` no estaba envuelto en `try/catch`, así que
+una rejection de `detectInstalledTerminals()`
+(`terminal-launcher.ts:73-88` — `Promise.all` sobre
+`commandExists(command)` por cada entry de `KNOWN_TERMINALS`,
+que llama `Bun.spawn`) salía sin manejo y disparaba el
+`unhandledRejection` handler en `index.tsx:300-304` →
+`restoreTerminal()` + `process.exit(1)`, terminando el proceso
+antes de que la TUI renderizara. La propuesta del audit es
+estrictamente la mínima útil, pero solo la mitad es load-bearing:
+envolver `loadConfig()` es "belt-and-suspenders" porque la
+función es sync y ya tiene un `try/catch` interno que retorna
+`{}` en parse error (`config.ts:351-361`). El riesgo real es
+`detectInstalledTerminals()`. La fix sigue el patrón existente
+del codebase (Mejora de Fase 17, `refreshPlan:681` y
+`refreshCurrentTask:698` en el mismo archivo) — envolver solo
+la call que puede throw, loggear con `log.error("tag", "msg", err)`,
+permitir que el resto del body continúe (en este caso, el
+`setResilienceReady(true)` posterior corre igual, así que el
+`server-ready` effect sigue arrancando). Implementación mínima:
+13 líneas añadidas en `src/App.tsx:504-518` (1 `try` + 1 `catch`
++ 10 líneas de comentario que nombran el source
+`MEJORAS.md Finding 17.3.A`, el patrón homólogo de
+`refreshPlan:681`, y la racionalidad de no envolver
+`loadConfig`). Cero cambios a la firma de `onMount`, cero
+cambios a `detectInstalledTerminals`, cero cambios al reducer,
+cero impacto en el camino feliz (un `detectInstalledTerminals`
+exitoso sigue fluyendo al `setAvailableTerminals(terminals)`
+exactamente como antes, ahora sincrónicamente-equivalente
+dentro del `try`). Cero impacto en `loadConfig` (su
+`try/catch` interno se mantiene; un outer wrap sería puro
+overhead). Cero impacto en tests — el audit
+(`MEJORAS.md:23104-23126`, Finding 17.3.D) ya documentó que
+`Promise.all` en `detectInstalledTerminals` NO aborta las
+hermanas en rejection, así que la rama "fallo parcial → log
++ lista vacía" es observable-equivalente al path "all-success"
+en términos de UX, y el contract de `log.error` no necesita
+un test unitario (cubierto por la suite de
+`debug-logger.test.ts`). `bun test` verde: 788 pass / 1 skip
+/ 0 fail, 1832 expect() calls, 28 files, 358 ms — sin cambio
+en el conteo (era 788 / 1 / 0 antes del wrap). Commit
+`761db45`.
 
 ### Mejora 81 — Finding 17.3.B — MEDIUM — `await saveConfig(newConfig)` in four command `onSelect` callbacks is unguarded
 
