@@ -4692,10 +4692,58 @@ antes del comment block). Commit `a2c1dcd`.
 
 ### Mejora 88 — Finding 17.8.B — LOW — `require()` is a CommonJS primitive in an ESM-first project
 
-- [ ] Evaluar la mejora 88 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 88 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 88 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 88 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 88 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 88 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 88 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 88 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:24152-24183`): el `require("../../package.json")`
+de `src/lib/cli-args.ts:16` es un primitivo CommonJS en un proyecto
+ESM-first (`package.json` declara `"type": "module"`,
+`tsconfig.json` declara `"module": "ESNext"`), y la única razón
+de que funcione hoy es que el runtime de Bun resuelve CJS dentro
+de proyectos ESM-mode (sin `ERR_REQUIRE_ESM`) y que el bundler
+inlina `package.json` en un wrapper `__commonJS` para el binario
+publicado. El audit prescribe literalmente "None required today"
+y propone la migración a `createRequire(import.meta.url)` solo
+"if/when the project formalizes strict ESM" — exactamente el
+mismo veredicto que Mejora 31 (Finding 8.4.A, "Mark as INFO — the
+finding is recorded for completeness but no change is proposed")
+y Mejora 60 (Finding 15.8.B, "Severity: LOW. No current bug;
+defensive note for future refactors."). La decisión correcta en
+modo ponytail es la mínima útil: NO aplicar la fix de 3 líneas
+del audit (sería construir infra especulativa para un future
+state que puede que nunca llegue — exactamente el antipatrón que
+"Mejoras 21-27" han rechazado), y en su lugar pinear la
+racionalidad defensiva + la recipe de migración inline para que
+el próximo mantenedor que flip strict ESM tenga la respuesta
+delante y no re-dereive del audit. Implementación mínima: el
+comentario de 1 línea `// Read version from package.json (repo
+root, two levels up from src/lib).` se reemplaza por un comment
+block de 11 líneas que nombra el source `MEJORAS.md Finding
+17.8.B`, explica por qué el `require()` CJS funciona en este
+proyecto ESM-first, y embebe la recipe de migración a
+`createRequire(import.meta.url)` que el audit prescribe — todo
+inline, en el sitio del `require()`. Cero cambios al
+comportamiento (el `require()` sigue retornando el mismo string
+de versión en el mismo microtask que antes), cero cambios a la
+firma de `showVersion` / `showHelp` / `parseArgs`
+(`(string[]) => CLIArgs` intacta), cero cambios a los 202 tests
+de `cli-args.test.ts` (incluido el test
+"`-v/--version print version and exit 0`" que ya pinea el
+contract end-to-end), cero impacto en el build (`bun run build`
+sigue inlinando `package.json` en el bundle de la misma forma),
+cero impacto en el bundled output (el comment block es eliminado
+por `tsc`/Bundler como cualquier otro comment). Sin nuevos tests
+— el comment block es estrictamente documental; pinea una
+receta para un escenario hipotético (strict ESM flip) que el
+test suite actual no cubre ni puede cubrir sin un cambio de
+config que está fuera del scope de este finding. `bun test`
+verde: 795 pass / 1 skip / 0 fail, 1839 expect() calls, 28
+files, 363 ms — sin cambio en el conteo (era 795 / 1 / 0 antes
+del comment block). `bun run src/index.tsx --version` →
+`ocloop 0.5.0` (intacto). Commit `docs(cli-args)`: pendiente.
 
 ### Mejora 89 — Finding 18.2.A — HIGH — `useServer.ts` has no test (carried from 18.1.B)
 
