@@ -115,39 +115,45 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
  * malformed spawn argv. Source: MEJORAS.md Findings 11.3.A + 11.3.B.
  */
 export function getAttachCommand(url: string, sessionId: string): string {
+  return getAttachCommandArgs(url, sessionId).join(" ")
+}
+
+/**
+ * The argv tokens of the attach command, in order. Single source of truth:
+ * {@link getAttachCommand} (the user-facing string) is built by joining these
+ * with spaces, and {@link buildArgs} consumes them directly — so neither call
+ * site re-parses a pre-joined string (which would mis-split if a token ever
+ * contained a space). The url/sessionId here are localhost (`http://127.0.0.1:<port>`)
+ * and a hex/alnum session id, neither of which contains spaces, but building
+ * from the structured tokens is robust against any future change.
+ */
+function getAttachCommandArgs(url: string, sessionId: string): string[] {
   if (!url) {
     throw new Error("getAttachCommand: url is required")
   }
   if (!sessionId) {
     throw new Error("getAttachCommand: sessionId is required")
   }
-  return `opencode attach ${url} --session ${sessionId}`
+  return ["opencode", "attach", url, "--session", sessionId]
 }
 
 /**
  * Build the argument list for launching a terminal with a command.
  * Replaces {cmd} placeholder with the actual command parts.
+ *
+ * Takes the attach-command tokens directly (not a pre-joined string), so
+ * there is no `split(" ")` step that could mis-tokenize a value containing a
+ * space.
  */
-function buildArgs(argsPattern: string[], attachCmd: string): string[] {
-  // Split the attach command into parts for proper shell handling.
-  // Drop empty tokens so a stray/extra space never yields a blank argv entry.
-  const cmdParts = attachCmd.split(" ").filter((p) => p.length > 0)
-
-  // Defensive guard: an empty `attachCmd` produces `cmdParts = []`, so the
-  // `{cmd}` placeholder expands to no tokens and `flatMap` returns the
-  // literal pattern — for alacritty, `["-e"]` — and `Bun.spawn` launches
-  // the terminal with no command, so the user gets an empty shell rather
-  // than a clear error. The App-level `if (!url) return` at
-  // App.tsx:1356-1357 prevents this in the current call flow, but
-  // `buildArgs` does not defend itself: any future caller that bypasses
-  // the guard (or any test that passes `""` directly) gets a silent
-  // failure. Throwing here surfaces a clear error through the outer
-  // `try/catch` in `launchTerminal` (line 212). The known-terminal path
-  // is safe: every entry in `KNOWN_TERMINALS` carries a `{cmd}` token,
-  // so an empty `cmdParts` would always reach this throw on either call
-  // site. Source: MEJORAS.md Finding 11.2.D.
+function buildArgs(argsPattern: string[], cmdParts: string[]): string[] {
+  // Defensive guard: an empty `cmdParts` would expand `{cmd}` to no tokens and
+  // `flatMap` would return the literal pattern — for alacritty, `["-e"]` — and
+  // `Bun.spawn` would launch the terminal with no command (an empty shell).
+  // Throwing surfaces a clear error through the outer `try/catch` in
+  // `launchTerminal`. Every entry in KNOWN_TERMINALS carries a `{cmd}` token,
+  // so an empty `cmdParts` always reaches this throw.
   if (cmdParts.length === 0) {
-    throw new Error("attachCmd is empty; cannot construct terminal command")
+    throw new Error("attach command is empty; cannot construct terminal command")
   }
 
   return argsPattern.flatMap((arg) => {
@@ -166,9 +172,15 @@ function buildArgs(argsPattern: string[], attachCmd: string): string[] {
  */
 export async function launchTerminal(
   config: TerminalConfig,
-  attachCmd: string,
+  url: string,
+  sessionId: string,
 ): Promise<LaunchResult> {
   try {
+    // Build the attach-command tokens once, from structured inputs. Avoids the
+    // previous "join into a string, then split(" ") back into tokens" round
+    // trip, which mis-tokenized if a value contained a space.
+    const cmdParts = getAttachCommandArgs(url, sessionId)
+
     let command: string
     let args: string[]
 
@@ -181,7 +193,7 @@ export async function launchTerminal(
         }
       }
       command = terminal.command
-      args = buildArgs(terminal.args, attachCmd)
+      args = buildArgs(terminal.args, cmdParts)
     } else {
       // Custom terminal
       command = config.command
@@ -221,7 +233,7 @@ export async function launchTerminal(
           error: "Custom terminal args must include the {cmd} placeholder",
         }
       }
-      args = buildArgs(argsPattern, attachCmd)
+      args = buildArgs(argsPattern, cmdParts)
     }
 
     // Verify the command exists

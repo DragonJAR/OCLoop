@@ -258,6 +258,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     closeCurrent()
     setUrl(null)
     setServerPort(null)
+    setError(undefined)
     setStatus("stopped")
   }
 

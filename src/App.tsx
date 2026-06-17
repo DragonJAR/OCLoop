@@ -1661,15 +1661,15 @@ function AppContent(props: AppProps) {
      
      const url = server.url()
      if (!url) return
-     
+
      const attachCmd = getAttachCommand(url, sid)
-     log.info("terminal", "Launching", { 
-        sessionId: sid, 
-        terminal: terminalConfig, 
-        command: attachCmd 
+     log.info("terminal", "Launching", {
+        sessionId: sid,
+        terminal: terminalConfig,
+        command: attachCmd
      })
 
-     const result = await launchTerminal(terminalConfig, attachCmd)
+     const result = await launchTerminal(terminalConfig, url, sid)
      
      log.info("terminal", "Launch result", result)
 

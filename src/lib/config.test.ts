@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig } from "./config"
+import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 
 // `loadConfig` reads from `${XDG_CONFIG_HOME}/ocloop/ocloop.json` (or
 // `~/.config/ocloop/ocloop.json` when the env var is unset). Redirect
@@ -14,6 +14,10 @@ beforeEach(() => {
   prevXdg = process.env.XDG_CONFIG_HOME
   dir = mkdtempSync(join(tmpdir(), "ocloop-cfg-"))
   process.env.XDG_CONFIG_HOME = dir
+  // loadConfig caches its result process-wide; flush it so each test sees its
+  // own freshly-written file rather than a prior test's cached value. Mirrors
+  // api.test.ts's __resetClientCacheForTests usage.
+  __resetConfigCacheForTests()
 })
 
 afterEach(() => {

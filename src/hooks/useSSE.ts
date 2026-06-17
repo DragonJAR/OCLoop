@@ -2,6 +2,7 @@ import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { Event, Todo } from "@opencode-ai/sdk/v2"
 import { log } from "../lib/debug-logger"
+import { computeBackoff } from "../lib/backoff"
 
 /** Maximum length for individual string values in logged event data */
 const MAX_LOG_VALUE_LENGTH = 200
@@ -593,9 +594,14 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       return
     }
 
-    // Calculate delay with exponential backoff (max 30 seconds)
+    // Exponential backoff with full jitter (max 30 seconds). Reuses the
+    // project's shared computeBackoff helper (full jitter) instead of a
+    // deterministic formula, so multiple reconnecting clients don't all hit
+    // the server on the same schedule (thundering herd). Consistent with the
+    // rate-limit backoff path (App.tsx enterCooldown) which uses the same
+    // helper.
     const attempt = reconnectAttempts()
-    const delay = Math.min(1000 * Math.pow(2, attempt), 30000)
+    const delay = computeBackoff(attempt, { base: 1000, max: 30000 })
     setReconnectAttempts(attempt + 1)
     log.health("sse", "reconnect_scheduled", { attempt: attempt + 1, delayMs: delay })
 

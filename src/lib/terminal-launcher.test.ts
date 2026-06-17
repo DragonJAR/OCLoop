@@ -115,7 +115,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async (cmd) => cmd === "alacritty"
     const result = await launchTerminal(
       { type: "known", name: "alacritty" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result).toEqual({ success: true })
     expect(spawnState.calls).toHaveLength(1)
@@ -133,7 +134,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("returns { success: false, error } for an unknown terminal name", async () => {
     const result = await launchTerminal(
       { type: "known", name: "nope" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("Unknown terminal: nope")
@@ -143,7 +145,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async () => false
     const result = await launchTerminal(
       { type: "known", name: "alacritty" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("Terminal command not found: alacritty")
@@ -153,7 +156,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async (cmd) => cmd === "my-term"
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "-e {cmd}" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result).toEqual({ success: true })
     expect(spawnState.calls).toHaveLength(1)
@@ -174,7 +178,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async (cmd) => cmd === "my-term"
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "-e    {cmd}" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result).toEqual({ success: true })
     expect(spawnState.calls[0].cmd).toEqual([
@@ -191,7 +196,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("returns { success: false, error } for custom terminal with empty args (Finding 11.2.B)", async () => {
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("{cmd} placeholder")
@@ -200,7 +206,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("returns { success: false, error } for custom terminal args missing {cmd} (Finding 11.2.C)", async () => {
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "-e bash" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("{cmd} placeholder")
@@ -210,7 +217,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async () => false
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "-e {cmd}" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("Terminal command not found: my-term")
@@ -223,21 +231,23 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     }
     const result = await launchTerminal(
       { type: "known", name: "alacritty" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(result.success).toBe(false)
     expect(result.error).toContain("spawn exploded")
   })
 
-  it("surfaces buildArgs's empty-attachCmd throw (Finding 11.2.D) through the outer try/catch", async () => {
-    // The known-terminal path is safe: every entry in KNOWN_TERMINALS
-    // carries a {cmd} token, so an empty attachCmd reaches buildArgs,
-    // whose `cmdParts.length === 0` guard throws. The outer catch
-    // converts the throw into a { success: false, error } result.
+  it("surfaces getAttachCommandArgs's empty-url throw through the outer try/catch", async () => {
+    // An empty url reaches getAttachCommandArgs first (before buildArgs), whose
+    // `!url` guard throws. The outer catch converts the throw into a
+    // { success: false, error } result. (Previously this tested buildArgs's
+    // empty-attachCmd guard; the structured-tokens refactor moved the empty
+    // input check upstream to getAttachCommandArgs.)
     commandExistsImpl = async () => true
-    const result = await launchTerminal({ type: "known", name: "alacritty" }, "")
+    const result = await launchTerminal({ type: "known", name: "alacritty" }, "", "ses_abc")
     expect(result.success).toBe(false)
-    expect(result.error).toContain("attachCmd is empty")
+    expect(result.error).toContain("url is required")
   })
 
   it("spawns with detached: true and windowsHide: true (Finding 11.2.A)", async () => {
@@ -247,7 +257,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     commandExistsImpl = async () => true
     await launchTerminal(
       { type: "known", name: "alacritty" },
-      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+      "http://127.0.0.1:4096",
+      "ses_abc",
     )
     expect(spawnState.calls).toHaveLength(1)
     const opts = spawnState.calls[0].opts as {

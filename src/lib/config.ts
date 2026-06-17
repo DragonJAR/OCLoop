@@ -337,15 +337,37 @@ function validateConfigShape(raw: unknown): OcloopConfig {
 }
 
 /**
+ * Process-wide cache of the parsed config. `loadConfig()` is called from up to
+ * four places during a single startup (main() for the language, main() for
+ * --create-plan, App.onMount, and ThemeContext) — each doing existsSync +
+ * readFileSync + JSON.parse + validateConfigShape. Caching collapses them to a
+ * single disk read; `saveConfig` invalidates on write (write-through), so the
+ * round-trip contract (save → load sees the new value) holds.
+ *
+ * Gated reset for tests: `__resetConfigCacheForTests()` mirrors
+ * `api.ts:__resetClientCacheForTests` so config.test.ts (which writes files and
+ * re-reads) can flush the cache between cases. Bun sets NODE_ENV=test.
+ */
+let cachedConfig: OcloopConfig | null = null
+
+export function __resetConfigCacheForTests(): void {
+  if (process.env.NODE_ENV !== "test") return
+  cachedConfig = null
+}
+
+/**
  * Load and parse the configuration file.
  * Returns an empty config object if the file doesn't exist.
  */
 export function loadConfig(): OcloopConfig {
+  if (cachedConfig) return cachedConfig
+
   const configPath = getConfigPath()
 
   if (!existsSync(configPath)) {
     log.debug("config", "No config file found, using default")
-    return {}
+    cachedConfig = {}
+    return cachedConfig
   }
 
   try {
@@ -353,10 +375,12 @@ export function loadConfig(): OcloopConfig {
     const parsed = JSON.parse(content)
     const validated = validateConfigShape(parsed)
     log.info("config", "Loaded config", validated)
+    cachedConfig = validated
     return validated
   } catch (err) {
     // If parsing fails, return empty config
     log.warn("config", "Failed to load config, using default", err)
+    cachedConfig = {}
     return {}
   }
 }
@@ -417,6 +441,9 @@ export function saveConfig(config: OcloopConfig): boolean {
     // filesystem, so a reader never sees a half-written config).
     writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
     renameSync(tmpPath, configPath)
+    // Invalidate the load cache so a subsequent loadConfig() sees the new
+    // value (write-through). Round-trip (save → load) contract holds.
+    cachedConfig = config
     log.info("config", "Saved config", config)
     return true
   } catch (err) {

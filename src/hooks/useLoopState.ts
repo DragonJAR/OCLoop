@@ -252,25 +252,25 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     }
 
     case "plan_complete": {
-      // Transition to complete state with summary
-      if (state.type === "ready" || state.type === "running" || state.type === "paused") {
+      // The plan can be detected as complete from any active/waiting state
+      // (running/pausing/paused/ready/cooldown/error). Carry the iteration
+      // count forward so the completion summary reports real progress:
+      //   - running/pausing/paused/cooldown carry `iteration` directly
+      //   - error carries `lastIteration` (set when entering error; see below)
+      //   - ready never ran an iteration → 0
+      // `"iteration" in state` is the single DRY source of truth across the
+      // four iteration-bearing states, replacing the per-state ternary.
+      if (
+        state.type === "ready" ||
+        state.type === "running" ||
+        state.type === "paused" ||
+        state.type === "cooldown" ||
+        state.type === "error"
+      ) {
         const iterations =
-          state.type === "running" ? state.iteration : 
-          state.type === "paused" ? state.iteration : 0
+          "iteration" in state ? state.iteration :
+          state.type === "error" ? (state.lastIteration ?? 0) : 0
         return { type: "complete", iterations, summary: action.summary }
-      }
-      // Allow plan_complete from cooldown/error: the plan can be detected as
-      // complete even while waiting out a rate limit or after a transient error.
-      // In cooldown, preserve the iteration count for the summary.
-      if (state.type === "cooldown") {
-        return { type: "complete", iterations: state.iteration, summary: action.summary }
-      }
-      if (state.type === "error") {
-        // Finding 3.1.A: preserve the iteration count from the last state that
-        // had one. `lastIteration` is set by the `error` reducer when entering
-        // this state from running/pausing/paused/cooldown. If absent (e.g. error
-        // arrived from a state that never had an iteration), fall back to 0.
-        return { type: "complete", iterations: state.lastIteration ?? 0, summary: action.summary }
       }
       return state
     }

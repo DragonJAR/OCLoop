@@ -92,8 +92,14 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     };
   }
 
+  // Hoist proc out of the try so the catch can reap it. If `stdin.write`
+  // rejects (EPIPE — the child exited early and closed its stdin mid-write),
+  // the child process would otherwise be orphaned: the success path reaps
+  // via `await proc.exited`, but a throw before that line leaves the handle
+  // dangling until GC. Kill + await the exit best-effort so we never leak.
+  let proc: ReturnType<typeof Bun.spawn> | null = null
   try {
-    const proc = Bun.spawn([tool.command, ...tool.args], {
+    proc = Bun.spawn([tool.command, ...tool.args], {
       stdin: "pipe",
       stdout: "ignore",
       stderr: "pipe",
@@ -118,6 +124,14 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
 
     return { success: true };
   } catch (err) {
+    // Reap the child if it's still around (e.g. write threw before we awaited
+    // `exited`). kill() on an already-exited process throws in Bun, so guard
+    // it; the `await proc.exited` swallows its own rejection if it already
+    // exited. Both are best-effort and must never mask the original error.
+    if (proc) {
+      try { proc.kill(); } catch { /* already dead */ }
+      try { await proc.exited; } catch { /* already dead */ }
+    }
     return {
       success: false,
       error: err instanceof Error ? err.message : String(err),

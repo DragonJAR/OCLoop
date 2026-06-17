@@ -1,5 +1,8 @@
 
 export function formatTokenCount(n: number): string {
+  // NaN/Infinity would render as "NaN"/"∞" — fall back to "0" so a corrupted
+  // or missing token count shows a clean zero instead of a broken label.
+  if (!Number.isFinite(n)) return "0";
   return n.toLocaleString();
 }
 

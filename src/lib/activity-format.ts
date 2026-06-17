@@ -96,7 +96,10 @@ function progressSuffix(p?: FormatInput["progress"]): string {
   if (!p) return ""
   const parts: string[] = []
   if (typeof p.current === "number" && typeof p.total === "number" && p.total > 0) {
-    const pct = Math.round((p.current / p.total) * 100)
+    // Clamp the percentage to [0, 100] so an upstream bug (current > total)
+    // doesn't render a misleading "150%". The raw current/total counts are
+    // shown as-is for diagnosis.
+    const pct = Math.max(0, Math.min(100, Math.round((p.current / p.total) * 100)))
     parts.push(`${p.current}/${p.total} (${pct}%)`)
   }
   if (p.phase) parts.push(p.phase)
