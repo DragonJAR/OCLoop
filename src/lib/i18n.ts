@@ -66,7 +66,8 @@ const en = {
   cpAskGoal: "What do you want OCLoop to build? Describe your goal:\n> ",
   cpNoGoal: "No goal provided. Cancelled.",
   cpStartingServer: "Starting the OpenCode server…",
-  cpSessionFail: "Could not create the planning session",
+  cpSessionFail:
+    "Could not create the planning session. Make sure opencode is installed and the port isn't in use (try --port <number>).",
   cpGenerating: "Generating plan… (this may take a moment)\n",
   cpTimeout: (p: Params) =>
     `Plan generation timed out after ${p.secs}s. Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=900000 for 15 min), or set "resilience": { "planTimeoutMs": <ms> } in ~/.config/ocloop/ocloop.json — or simplify the goal.`,
@@ -128,6 +129,9 @@ const en = {
       "  - [ ] Task one description",
       "  - [ ] Task two description",
       "",
+      "Alternatively, generate one interactively with:",
+      "  ocloop -c          (or: ocloop --create-plan)",
+      "",
     ].join("\n"),
   errPromptNotFound: (p: Params) =>
     [
@@ -135,8 +139,12 @@ const en = {
       "",
       `OCLoop requires a prompt file (default: ${DEFAULTS.PROMPT_FILE}).`,
       "This file contains the prompt sent to opencode for each iteration.",
+      "Create it with, for example:",
       "",
-      "Create a prompt file with instructions for executing plan tasks.",
+      "    You run ONE iteration of this loop, then stop.",
+      "    Read {{PLAN_FILE}}, pick the first uncompleted task, do it, commit, and stop.",
+      "",
+      `Or omit --prompt to auto-generate a default ${DEFAULTS.PROMPT_FILE} in this folder.`,
       "",
     ].join("\n"),
   // Wraps `Bun.file().exists()` when the call itself throws (EACCES, ENOENT
@@ -277,17 +285,27 @@ const en = {
   actSessionError: (p: Params) => `Session error: ${p.message}`,
   actSessionIdle: "Session idle",
   actRateExhausted: (p: Params) =>
-    `Persistent rate limit after ${p.attempts} attempts`,
+    `Persistent rate limit after ${p.attempts} attempts — wait for quota to reset, then press R; if it recurs, lower the rate via --resilience or check your API key/plan`,
   errRatePersistent: (p: Params) =>
-    `Persistent rate limit after ${p.attempts} attempts: ${p.reason}`,
+    [
+      `Persistent rate limit after ${p.attempts} attempts: ${p.reason}`,
+      "Wait for your provider quota to reset, then press R to retry.",
+      "If this recurs, lower the iteration rate via --resilience, or verify your API key/plan.",
+      "",
+    ].join("\n"),
   actRetryExhausted: (p: Params) =>
-    `Persistent connection error after ${p.attempts} attempts`,
+    `Persistent connection error after ${p.attempts} attempts — the opencode server may have crashed; restart it from the palette (Ctrl+P) or press R`,
   errRetryPersistent: (p: Params) =>
-    `Persistent connection error after ${p.attempts} attempts: ${p.reason}`,
+    [
+      `Persistent connection error after ${p.attempts} attempts: ${p.reason}`,
+      "The opencode server may have crashed. Restart it from the command palette (Ctrl+P), or press R to retry.",
+      "",
+    ].join("\n"),
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
   errServerStart:
     "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
-  errUnknown: "Unknown error",
+  errUnknown:
+    "Unknown error — if this was a terminal launch, check your terminal command in ocloop.json (Ctrl+P → Choose default terminal) or pick an installed terminal.",
   dlgPlanCompleteFallback: "Plan marked as complete.",
   toastSendPromptFailed: (p: Params) => `Failed to send prompt: ${p.message}`,
   toastCopyFailed: (p: Params) => `Copy failed: ${p.error}`,
@@ -298,7 +316,12 @@ const en = {
   actGuardSynthIdle: "Guardian: session idle/missing, advancing",
   actGuardAbort: "Guardian: session wedged, aborting and retrying",
   errGuardExhausted: (p: Params) =>
-    `Guardian: recovery exhausted (${p.reason}) after ${p.attempts} attempts; no heartbeat for ${p.secs}s, last status ${p.verdict}`,
+    [
+      `OCLoop could not recover the stuck session after ${p.attempts} attempts.`,
+      `(No activity for ${p.secs}s; last status: ${p.verdict}; reason: ${p.reason})`,
+      "Restart the OpenCode server from the command palette (Ctrl+P), or press R, then resume.",
+      "",
+    ].join("\n"),
   actResuming: (p: Params) => `Resuming session ${p.id} (iter ${p.iteration})`,
   actContinuing: (p: Params) =>
     `Previous session ${p.verdict}; continuing the loop`,
@@ -321,7 +344,8 @@ const en = {
   // `false` (I/O failure: EACCES, ENOSPC, EROFS, EXDEV). The on-disk state
   // is stale, the in-memory state reflects the user's choice, and the user
   // needs to know the change won't survive a restart.
-  toastConfigSaveFailed: "Failed to save config — change will not persist",
+  toastConfigSaveFailed:
+    "Failed to save config — change will not persist. Check that ~/.config/ocloop/ocloop.json is writable.",
   // Chaos fault-injection (debug + --chaos). One label + one "done" per action,
   // so the command title and its toast are single-sourced.
   chaosKill: "Chaos: kill server",
@@ -418,7 +442,8 @@ const es: Record<MessageKey, Msg> = {
   cpAskGoal: "¿Qué quieres que OCLoop construya? Describe tu objetivo:\n> ",
   cpNoGoal: "No se indicó ningún objetivo. Cancelado.",
   cpStartingServer: "Arrancando el servidor OpenCode…",
-  cpSessionFail: "No se pudo crear la sesión de planificación",
+  cpSessionFail:
+    "No se pudo crear la sesión de planificación. Verifica que opencode esté instalado y que el puerto no esté en uso (usa --port <número>).",
   cpGenerating: "Generando plan… (esto puede tardar un momento)\n",
   cpTimeout: (p) =>
     `La generación del plan superó el tiempo límite (${p.secs}s). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=900000 para 15 min), o pon "resilience": { "planTimeoutMs": <ms> } en ~/.config/ocloop/ocloop.json — o simplifica el objetivo.`,
@@ -478,6 +503,9 @@ const es: Record<MessageKey, Msg> = {
       "  - [ ] Descripción de la tarea uno",
       "  - [ ] Descripción de la tarea dos",
       "",
+      "Alternativamente, genéralo de forma interactiva con:",
+      "  ocloop -c          (o: ocloop --create-plan)",
+      "",
     ].join("\n"),
   errPromptNotFound: (p) =>
     [
@@ -485,8 +513,12 @@ const es: Record<MessageKey, Msg> = {
       "",
       `OCLoop requiere un archivo de prompt (por defecto: ${DEFAULTS.PROMPT_FILE}).`,
       "Este archivo contiene el prompt que se envía a opencode en cada iteración.",
+      "Créalo, por ejemplo:",
       "",
-      "Crea un archivo de prompt con instrucciones para ejecutar las tareas del plan.",
+      "    Ejecutas UNA iteración de este loop y luego paras.",
+      "    Lee {{PLAN_FILE}}, elige la primera tarea sin completar, hazla, haz commit y para.",
+      "",
+      `O omite --prompt para generar un ${DEFAULTS.PROMPT_FILE} por defecto en esta carpeta.`,
       "",
     ].join("\n"),
   // Espejo de `errCannotReadFile` (en). Ver bloque en `en` para la nota de source.
@@ -604,16 +636,28 @@ const es: Record<MessageKey, Msg> = {
   actSessionAborted: "Sesión abortada por el usuario",
   actSessionError: (p) => `Error de sesión: ${p.message}`,
   actSessionIdle: "Sesión inactiva",
-  actRateExhausted: (p) => `Rate limit persistente tras ${p.attempts} intentos`,
+  actRateExhausted: (p) =>
+    `Rate limit persistente tras ${p.attempts} intentos — espera al reset de cuota y pulsa R; si reincide, baja el ritmo con --resilience o verifica tu API key/plan`,
   errRatePersistent: (p) =>
-    `Rate limit persistente tras ${p.attempts} intentos: ${p.reason}`,
-  actRetryExhausted: (p) => `Error de conexión persistente tras ${p.attempts} intentos`,
+    [
+      `Rate limit persistente tras ${p.attempts} intentos: ${p.reason}`,
+      "Espera a que se renueve la cuota de tu proveedor y pulsa R para reintentar.",
+      "Si se repite, baja el ritmo de iteraciones con --resilience, o verifica tu API key/plan.",
+      "",
+    ].join("\n"),
+  actRetryExhausted: (p) =>
+    `Error de conexión persistente tras ${p.attempts} intentos — el servidor de opencode pudo haber fallado; reníncialo desde la paleta (Ctrl+P) o pulsa R`,
   errRetryPersistent: (p) =>
-    `Error de conexión persistente tras ${p.attempts} intentos: ${p.reason}`,
+    [
+      `Error de conexión persistente tras ${p.attempts} intentos: ${p.reason}`,
+      "Puede que el servidor de opencode haya fallado. Reinícialo desde la paleta de comandos (Ctrl+P), o pulsa R para reintentar.",
+      "",
+    ].join("\n"),
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
   errServerStart:
     "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",
-  errUnknown: "Error desconocido",
+  errUnknown:
+    "Error desconocido — si fue un lanzamiento de terminal, revisa el comando de terminal en ocloop.json (Ctrl+P → Elegir terminal por defecto) o elige una terminal instalada.",
   dlgPlanCompleteFallback: "Plan marcado como completado.",
   toastSendPromptFailed: (p) => `Fallo al enviar el prompt: ${p.message}`,
   toastCopyFailed: (p) => `Fallo al copiar: ${p.error}`,
@@ -624,7 +668,12 @@ const es: Record<MessageKey, Msg> = {
   actGuardSynthIdle: "Guardián: sesión inactiva/ausente, avanzando",
   actGuardAbort: "Guardián: sesión bloqueada, abortando y reintentando",
   errGuardExhausted: (p) =>
-    `Guardián: recuperación agotada (${p.reason}) tras ${p.attempts} intentos; sin latido ${p.secs}s, último estado ${p.verdict}`,
+    [
+      `OCLoop no pudo recuperar la sesión atascada tras ${p.attempts} intentos.`,
+      `(Sin actividad ${p.secs}s; último estado: ${p.verdict}; motivo: ${p.reason})`,
+      "Reinicia el servidor OpenCode desde la paleta de comandos (Ctrl+P), o pulsa R, y luego reanuda.",
+      "",
+    ].join("\n"),
   actResuming: (p) => `Reanudando sesión ${p.id} (iter ${p.iteration})`,
   actContinuing: (p) => `Sesión previa ${p.verdict}; continuando el loop`,
 
@@ -642,7 +691,8 @@ const es: Record<MessageKey, Msg> = {
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
   // Source: MEJORAS.md Finding 17.3.B — Spanish mirror of the above.
-  toastConfigSaveFailed: "Fallo al guardar la configuración — el cambio no se mantendrá",
+  toastConfigSaveFailed:
+    "Fallo al guardar la configuración — el cambio no se mantendrá. Verifica que ~/.config/ocloop/ocloop.json sea escribible.",
   chaosKill: "Chaos: matar servidor",
   chaosKillDone: "Chaos: servidor terminado",
   chaosRevive: "Chaos: revivir servidor",
