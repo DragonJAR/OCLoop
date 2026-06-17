@@ -4098,10 +4098,44 @@ calls, 28 files, 359 ms — sin cambio en el conteo (era 788
 
 ### Mejora 79 — Finding 17.2.B — LOW — `main().catch()` lacks an explicit `restoreTerminal()` call (carryover)
 
-- [ ] Evaluar la mejora 79 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 79 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 79 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 79 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 79 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 79 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 79 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 79 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:22725-22751`): Finding 17.2.B es textualmente un
+**carryover** de Finding 17.1.B — la tabla inventario de
+`MEJORAS.md:22638` lo nombra explícitamente como "Backstop
+only (carryover from 17.1.B)" y la sección `MEJORAS.md:22725-22751`
+repite el mismo fix (una sola línea) y la misma severidad
+(LOW, not a bug). La fix ya está aplicada por Mejora 78
+(commit `0503828`): `src/index.tsx:376` tiene el
+`restoreTerminal()` explícito entre `console.error` y
+`process.exit(1)`, con comment block que nombra el source
+`MEJORAS.md Finding 17.1.B` y los call sites homólogos
+(`uncaughtException` y `unhandledRejection`). El único gap
+observable es la atribución: el comment apunta a 17.1.B pero
+no a 17.2.B, así que un futuro mantenedor que busque la
+implementación de 17.2.B vía grep del finding number no la
+encuentra. Implementación mínima: extender el comment con
+1 línea de source attribution adicional que nombre ambos
+findings y explique que 17.2.B es carryover. Cero cambios al
+behavior (la línea `restoreTerminal()` ya está en su sitio
+desde Mejora 78), cero cambios a la firma de `restoreTerminal`,
+cero cambios al backstop `process.on("exit", restoreTerminal)`,
+cero cambios al `main().catch()` body, cero cambios a la TUI,
+cero cambios al reducer. Cero impacto en tests — el audit
+(`MEJORAS.md:22753-22772`) ya justificó que un test del catch
+handler requeriría forked-process harness (`bun test --isolate`
+o `child_process.spawn`) porque los handlers son globales al
+proceso, y el chain es unambiguous by inspection: `process.on(
+"exit", restoreTerminal)` línea 294, `restoreTerminal()`
+función línea 286, `main().catch()` línea 369, `process.exit
+(1)` línea 377. `bun test` verde: 788 pass / 1 skip / 0 fail,
+1832 expect() calls, 28 files, 345 ms — sin cambio en el
+conteo (era 788 / 1 / 0 antes del comment block extendido).
+Commit `7609ab7`.
 
 ### Mejora 80 — Finding 17.3.A — MEDIUM — `onMount` awaits `detectInstalledTerminals()` without a try/catch
 
