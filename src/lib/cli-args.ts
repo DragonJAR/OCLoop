@@ -10,7 +10,7 @@
 import { DEFAULTS } from "./constants"
 import type { CLIArgs } from "../types"
 import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./config"
-import { isLocale } from "./i18n"
+import { isLocale, t } from "./i18n"
 
 // Read version from package.json (repo root, two levels up from src/lib).
 // ponytail: `require()` is a CommonJS primitive in this ESM-first project
@@ -148,12 +148,12 @@ export function applyResilienceOverride(
 
 function parsePort(portStr: string | undefined): number {
   if (!portStr || !PORT_RE.test(portStr)) {
-    console.error("Error: --port requires a full integer argument")
+    console.error(t("errArgPortInteger"))
     process.exit(1)
   }
   const port = Number(portStr)
   if (port < 0 || port > 65535) {
-    console.error("Error: --port must be in TCP range 0..65535")
+    console.error(t("errArgPortRange"))
     process.exit(1)
   }
   return port
@@ -170,7 +170,7 @@ function requireValue(value: string | undefined, flag: string): string {
     value.trim() === "" ||
     (value.startsWith("-") && value !== "-")
   ) {
-    console.error(`Error: ${flag} requires a value`)
+    console.error(t("errArgValueRequired", { flag }))
     process.exit(1)
   }
   return value
@@ -178,16 +178,37 @@ function requireValue(value: string | undefined, flag: string): string {
 
 function parseModel(model: string | undefined): string {
   if (!model) {
-    console.error("Error: --model requires an argument")
+    console.error(t("errArgModelArg"))
     process.exit(1)
   }
   if (!MODEL_RE.test(model)) {
-    console.error(
-      `Error: --model expects provider/model (for example openai/gpt-5), got "${model}"`,
-    )
+    console.error(t("errArgModelFormat", { model }))
     process.exit(1)
   }
   return model
+}
+
+/**
+ * Lightweight pre-scan for `--lang`/`--language` so the locale can be resolved
+ * BEFORE {@link parseArgs} runs. argparse errors are localized, but parseArgs
+ * itself runs before setLocale() in main() — without this pre-scan, a user who
+ * passes `--lang es` would still get every argparse error (including the
+ * `--lang` error itself) in English.
+ *
+ * Returns the locale value if `--lang <locale>` (or `--language <locale>`) is
+ * present and valid, else undefined. Does NOT validate the rest of argv, does
+ * NOT error on anything else — it's a best-effort peek, not a parser.
+ */
+export function preScanLang(argv: string[]): import("./i18n").Locale | undefined {
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i]
+    if (a === "--lang" || a === "--language") {
+      const v = argv[i + 1]
+      if (v !== undefined && isLocale(v)) return v
+      return undefined // present but invalid/missing — let parseArgs error properly
+    }
+  }
+  return undefined
 }
 
 /**
@@ -262,7 +283,7 @@ export function parseArgs(argv: string[]): CLIArgs {
       case "--language": {
         const lang = requireValue(argv[++i], "--lang")
         if (!isLocale(lang)) {
-          console.error("Error: --lang requires 'en' or 'es'")
+          console.error(t("errArgLang"))
           process.exit(1)
         }
         args.lang = lang
@@ -291,7 +312,7 @@ export function parseArgs(argv: string[]): CLIArgs {
         break
 
       default:
-        console.error(`Error: unknown argument "${arg}"`)
+        console.error(t("errArgUnknown", { arg }))
         process.exit(1)
     }
   }

@@ -9,7 +9,7 @@ import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
-import { parseArgs } from "./lib/cli-args"
+import { parseArgs, preScanLang } from "./lib/cli-args"
 import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
@@ -370,6 +370,14 @@ process.on("unhandledRejection", (reason) => {
  * Main entry point
  */
 async function main(): Promise<void> {
+  // Pre-scan --lang/--language so argparse errors localize correctly. Without
+  // this, a user passing `--lang es` still gets every parseArgs error
+  // (including the `--lang` error itself) in English, because parseArgs ran
+  // before setLocale. The full resolution (CLI > config > default) happens
+  // below; here we only need the CLI value to seed the locale early.
+  const cliLang = preScanLang(process.argv.slice(2))
+  if (cliLang) setLocale(cliLang)
+
   // Parse command line arguments
   const args = parseArgs(process.argv.slice(2))
 

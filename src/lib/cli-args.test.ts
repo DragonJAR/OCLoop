@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parseArgs } from "./cli-args"
+import { parseArgs, preScanLang } from "./cli-args"
 import { DEFAULTS } from "./constants"
 
 /**
@@ -1450,5 +1450,37 @@ describe("parseArgs — requireValue lone-dash and flag-shaped semantics (Phase 
     const { args, exitCode } = runParse(["--plan", "x--debug"])
     expect(exitCode).toBeNull()
     expect(args?.planFile).toBe("x--debug")
+  })
+})
+
+describe("preScanLang — locale peek before parseArgs", () => {
+  // preScanLang lets main() seed the locale BEFORE parseArgs runs, so argparse
+  // errors localize. It must be a best-effort peek: never throw, never validate
+  // anything but the --lang value itself, and let parseArgs own all erroring.
+
+  it("returns the locale when --lang <valid> is present", () => {
+    expect(preScanLang(["--lang", "es"])).toBe("es")
+    expect(preScanLang(["--lang", "en"])).toBe("en")
+  })
+
+  it("returns the locale when --language <valid> is present (alias)", () => {
+    expect(preScanLang(["--language", "es"])).toBe("es")
+  })
+
+  it("finds --lang regardless of position in argv", () => {
+    expect(preScanLang(["--run", "--lang", "es", "--debug"])).toBe("es")
+  })
+
+  it("returns undefined when --lang is absent", () => {
+    expect(preScanLang(["--run", "--debug"])).toBeUndefined()
+  })
+
+  it("returns undefined when --lang value is invalid (lets parseArgs error)", () => {
+    expect(preScanLang(["--lang", "fr"])).toBeUndefined()
+    expect(preScanLang(["--lang"])).toBeUndefined()
+  })
+
+  it("does not choke on other flags that look like values", () => {
+    expect(preScanLang(["--plan", "--lang", "es"])).toBe("es")
   })
 })

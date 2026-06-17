@@ -116,6 +116,18 @@ const en = {
       String(p.plan),
     ].join("\n"),
 
+  // --- argparse errors (cli-args.ts). Localized because the locale is now
+  // pre-scanned from --lang before parseArgs runs, so a user passing --lang es
+  // gets argparse errors in Spanish too. ---
+  errArgValueRequired: (p: Params) => `Error: ${p.flag} requires a value`,
+  errArgUnknown: (p: Params) => `Error: unknown argument "${p.arg}"`,
+  errArgLang: "Error: --lang requires 'en' or 'es'",
+  errArgPortInteger: "Error: --port requires a full integer argument",
+  errArgPortRange: "Error: --port must be in TCP range 0..65535",
+  errArgModelArg: "Error: --model requires an argument",
+  errArgModelFormat: (p: Params) =>
+    `Error: --model expects provider/model (for example openai/gpt-5), got "${p.model}"`,
+
   // --- Pre-flight file errors (CLI, after locale is resolved) ---
   // Checkbox markers ('- [ ]') stay literal — they're language-agnostic.
   errPlanNotFound: (p: Params) =>
@@ -502,6 +514,17 @@ const es: Record<MessageKey, Msg> = {
       "PLAN.md actual:",
       String(p.plan),
     ].join("\n"),
+
+  // --- errores de argparse (cli-args.ts). Localizados porque el locale se
+  // pre-scanea de --lang antes de que parseArgs corra. ---
+  errArgValueRequired: (p) => `Error: ${p.flag} requiere un valor`,
+  errArgUnknown: (p) => `Error: argumento desconocido "${p.arg}"`,
+  errArgLang: "Error: --lang requiere 'en' o 'es'",
+  errArgPortInteger: "Error: --port requiere un argumento entero",
+  errArgPortRange: "Error: --port debe estar en el rango TCP 0..65535",
+  errArgModelArg: "Error: --model requiere un argumento",
+  errArgModelFormat: (p) =>
+    `Error: --model espera proveedor/modelo (por ejemplo openai/gpt-5), se obtuvo "${p.model}"`,
 
   errPlanNotFound: (p) =>
     [
