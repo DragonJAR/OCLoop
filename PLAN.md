@@ -3625,10 +3625,74 @@ específicos para el collapse.
 
 ### Mejora 71 — Finding 16.5.A — HIGH — Completion effect re-runs every second, pushing a new dialog onto the stack
 
-- [ ] Evaluar la mejora 71 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 71 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 71 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 71 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 71 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 71 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 71 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 71 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21378-21529`): `stats.totalActiveTime()`
+(`useLoopStats.ts:204-208`) es un `createMemo` que se suscribe a
+`elapsedTime`, y `elapsedTime` se suscribe explícitamente al
+signal `tick` (`useLoopStats.ts:165-167`, "Subscribe to tick for
+reactive updates") que se actualiza cada segundo
+(`useLoopStats.ts:78`, `setInterval(..., 1000)`). El completion
+effect en `App.tsx:1548-1565` llama `stats.totalActiveTime()` y
+por transitividad se suscribe al `tick`, re-disparando cada
+segundo y apilando un nuevo `() => <DialogCompletion ... />` en
+el dialog stack (definido en
+`src/context/DialogContext.tsx:79-81`, sin guard de
+"ya-mostrado"). `<Show keyed>` (`DialogContext.tsx:175-193`)
+re-monta el componente en cada cambio de referencia, reseteando
+el `activeButton` de `DialogCompletion` (`DialogCompletion.tsx:18`)
+y perdiendo el foco. La opción "proper fix" del audit
+(`MEJORAS.md:21462-21483`, `untrack(() => stats.totalActiveTime())`)
+es estrictamente superior a la alternativa "shown flag"
+(`MEJORAS.md:21487-21502`): la primera expresa la intención
+semántica ("`totalTime` es un snapshot, no una suscripción
+viva") y es declarativa, mientras la segunda es un
+side-effect-laden flag que un mantenedor futuro podría borrar
+pensando que es dead code. La propuesta del audit coincide
+con el contrato de `loop.state` en el efecto hermano de
+`error` (`App.tsx:1567-1581`): ese efecto solo lee
+`loop.state()` (cambia una vez al llegar a `error`), no
+`ticks` transitivos, así que no tiene el bug — `untrack`
+alinea la firma del completion effect con la del error
+effect, lo cual también es una mejora de simetría.
+
+Implementación mínima: 1 import (`untrack` añadido a la
+lista de `solid-js` en `App.tsx:9`) + 1 línea modificada
+(`stats.totalActiveTime()` → `untrack(() =>
+stats.totalActiveTime())`) + 8 líneas de comentario que
+nombran el source `MEJORAS.md Finding 16.5.A`, explican la
+cadena de suscripción transitiva (`totalActiveTime →
+elapsedTime → tick`), y aclaran la garantía "one-shot
+snapshot del total time al momento de completar, no
+suscripción viva". Cero cambios a la firma del effect, cero
+cambios al reducer, cero cambios a `useLoopStats.ts`, cero
+cambios a `DialogContext.tsx`, cero cambios a
+`DialogCompletion.tsx`, cero impacto en el camino feliz
+(el valor de `totalTime` que llega a `DialogCompletion`
+sigue siendo `historySum + elapsedTime` capturado en el
+mismo microtask que el reducer `complete`; el delta es
+imperceptible para el usuario, del orden de microsegundos).
+Cero impacto en la rama de `error` (su effect ya no llama
+`totalActiveTime` y nunca tuvo el bug). Cero impacto en la
+rama de `cooldown` (ningún effect de App.tsx dispara
+`dialog.show` desde `cooldown`).
+
+Sin nuevos tests — el audit
+(`MEJORAS.md:21506-21525`) ya justificó que testear
+"el effect no re-dispara en cada tick" requeriría
+inyectar el setter interno de `tick` o usar un setInterval
+real con waits frágiles, lo cual es integration-territory
+más invasivo que la fix misma. La veracidad del `untrack`
+es una propiedad de `solid-js` (cubre la suscripción de
+cualquier read dentro de su callback), no del código de
+OCLoop; un test que pinea "`untrack` no suscribe" sería
+tautológico. `bun test` verde: 788 pass / 1 skip / 0
+fail, 1831 expect() calls, 28 files, 381 ms. `bun run
+build` verde. Commit `615568f`.
 
 ### Mejora 72 — Finding 16.5.B — MEDIUM — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each
 
