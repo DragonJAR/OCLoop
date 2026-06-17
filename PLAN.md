@@ -3149,10 +3149,115 @@ fix).
 
 ### Mejora 64 — Finding 16.1.D — LOW — `handleIterationError` and SSE `onSessionError` could share a "kind → action" helper
 
-- [ ] Evaluar la mejora 64 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 64 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 64 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 64 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 64 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 64 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 64 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 64 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la descrita en
+`MEJORAS.md:20693-20767`: la SSE handler y `handleIterationError`
+implementaban el mismo `kind → action` switch con dos asimerías
+detectadas por Mejoras 61 (Finding 16.1.A, `recoverable` flag) y
+62 (Finding 16.1.B, transient path). La propuesta del audit
+(`MEJORAS.md:20703-20766`) es estrictamente la correcta y se
+implementó con una variante **adaptada** del design original:
+en vez de inyectar `dispatch` / `enterCooldown` / `t` como un
+`ErrorRouterContext` y ejecutar side-effects desde el helper, el
+helper retorna un action descriptor tipado y el call site ejecuta
+los side-effects (loop.dispatch / enterCooldown / activity log /
+i18n key). Razones ponytail para la variante:
+
+1. **El helper queda puramente de policy** ("qué debería pasar"),
+   no de execution ("haz la cosa"). El call site retiene su
+   contexto (activityLog, t, enterCooldown, loop.dispatch) que de
+   otra forma tendría que ser inyectado a través del helper.
+2. **Los tests son más simples** — no hace falta mockear
+   `dispatch`/`enterCooldown`/`t`; basta con inspeccionar el
+   action descriptor retornado. Eso es lo que permite los 23
+   tests en `error-router.test.ts` (4 kinds × 4 gate states × 2
+   sources + edge cases como retryAfter strip para transient).
+3. **El side-effect que difiere (activity log + i18n key) queda
+   en el call site**. SSE loggea a activity log con `actRateLimit`
+   / `actSessionError` / `actSessionAborted`; el API path no
+   loggea en absoluto. La i18n key del dispatched error difiere
+   (`actSessionError` vs `errIterationStart`). El helper no
+   necesita conocer ninguna de estas decisiones.
+
+El helper vive en `src/lib/error-router.ts` (108 líneas con
+docstring) y exporta:
+- `RouteableErrorSource = "api" | "sse"` — narrowed del `ErrorSource`
+  union de `src/types.ts:11` (que es más amplio: `server | sse |
+  pty | api | plan`); el helper solo maneja los dos sources que
+  pasan por `classifySessionError`.
+- `RouteableState` — los 11 variants del `LoopState.type`
+  union. Necesario porque el helper hace state-gate.
+- `ErrorAction` — el descriptor: `toggle_pause` | `cooldown` |
+  `error` | `null`.
+- `routeSessionError(classified, stateType, source)` — la policy
+  function.
+
+Policy (pineada en el docstring del helper, 4 ramas):
+- `isAborted: true` → `null` (abort es call-site-specific; SSE
+  hace toggle_pause, API no aborta por este path).
+- `rate_limit` o `transient` + `running`/`pausing` → `cooldown`
+  action con `kind` propagado y `retryAfter` solo para
+  `rate_limit` (transient strippea retryAfter, igual que el
+  `enterCooldown(message, undefined, "transient")` original).
+- `rate_limit` o `transient` + otro state → `null` (no hay
+  iteración in-flight que reintentar; el error queda dormido
+  hasta que el usuario actúe).
+- `auth` o `fatal` + `running`/`pausing`/`debug` → `error`
+  action con `recoverable: false` (más la forma defensiva
+  `classified.kind === "transient"` que el SSE handler original
+  tenía, para que cualquier kind futuro recuperable compose
+  correctamente).
+- `auth` o `fatal` + otro state → `null`.
+
+Cambios en `src/App.tsx`:
+- `import { routeSessionError } from "./lib/error-router"` (1
+  línea).
+- SSE `onSessionError` (líneas 521-578): el `if/else if/else
+  else` chain de 40 líneas se reduce a: (a) guard
+  `isAborted` con `return`, (b) `routeSessionError()` + 2 ramas
+  (`cooldown` con logKey per-kind, `error` con log único).
+  La activity log policy y la i18n key del dispatch quedan
+  exactamente como antes.
+- `handleIterationError` (líneas 910-935): el `if/if/else`
+  chain se reduce a `routeSessionError()` + 2 ramas. La
+  i18n key `errIterationStart` queda en el call site.
+- Cero cambios al reducer, cero cambios al SSE hook, cero
+  cambios al classifier, cero cambios al `useLoopState` hook.
+- Cero cambios al `enterCooldown` o a la state machine.
+- Cero impacto en el camino feliz: el action descriptor
+  retornado es exactamente lo que el código original
+  hubiera hecho, byte por byte. La única diferencia
+  observable es para el edge case "API path recibe un
+  `isAborted: true`": antes caía en el `else` y despachaba
+  un error con `err.message`; ahora el helper lo manda al
+  branch `auth/fatal` con `classified.message`. En la
+  práctica `classified.message === err.message` para el
+  99% de los inputs (los que son `Error` instances); para
+  el caso raro "non-Error throw" el helper produce
+  `"Unknown error"` (estricto mejor que el `String(err)` =
+  `"[object Object]"` del original).
+
+23 tests en `src/lib/error-router.test.ts`:
+- 3 tests de `isAborted: true` × 3 states (todos `null`).
+- 6 tests de `rate_limit` × {running, pausing, paused, cooldown,
+  debug, retryAfter propagation}.
+- 4 tests de `transient` × {running, pausing, paused,
+  retryAfter-stripped}.
+- 5 tests de `auth` × {running, pausing, debug, paused,
+  cooldown}.
+- 3 tests de `fatal` × {running, debug, ready}.
+- 2 tests de `recoverable` flag (false para auth, false para
+  fatal).
+- 2 tests de `source` propagation (sse, api).
+
+`bun test` verde: 773 pass / 1 skip / 0 fail (era 750 / 1 / 0
+antes del fix), 1809 expect() calls, 26 files, 337 ms — +23
+tests, +33 expects, +1 file (era 25). `bun run build` verde.
+Commit `da4113b`.
 
 ### Mejora 65 — Finding 16.2.A — LOW — `server.url()` + null-check pattern repeated at every call site
 
