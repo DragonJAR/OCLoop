@@ -152,6 +152,22 @@ const en = {
       "Verify the path exists and is readable, then try again.",
       "",
     ].join("\n"),
+  // Wraps `Bun.write()` in the default-path auto-create branch of
+  // `validatePrerequisites` when the write itself throws (EACCES, EROFS,
+  // ENOENT on a missing parent dir, ENOSPC, EISDIR, etc.) so the user gets
+  // a clean, localized "Cannot create <path>: <message>" instead of a raw
+  // stack trace bubbled up through main().catch(). The non-default path
+  // (custom --prompt) keeps its hard error pre-create (errPromptNotFound)
+  // and never enters this branch.
+  // Source: MEJORAS.md Finding 17.5.A.
+  errCannotCreatePrompt: (p: Params) =>
+    [
+      `Error: Cannot create ${p.path}: ${p.message}`,
+      "",
+      "The file's directory may be inaccessible, on a read-only filesystem, or full.",
+      "Verify the path is writable, then try again.",
+      "",
+    ].join("\n"),
 
   // --- Default .loop-prompt.md (auto-created when missing) ---
   // Announced to the user; the body below is written to disk verbatim.
@@ -480,6 +496,15 @@ const es: Record<MessageKey, Msg> = {
       "",
       "El directorio del archivo puede ser inaccesible, o el archivo puede haber sido movido o eliminado.",
       "Verifica que la ruta exista y sea legible, luego inténtalo de nuevo.",
+      "",
+    ].join("\n"),
+  // Espejo de `errCannotCreatePrompt` (en). Ver bloque en `en` para la nota de source.
+  errCannotCreatePrompt: (p) =>
+    [
+      `Error: No se puede crear ${p.path}: ${p.message}`,
+      "",
+      "El directorio del archivo puede ser inaccesible, estar en un sistema de archivos de solo lectura, o estar lleno.",
+      "Verifica que la ruta sea escribible, luego inténtalo de nuevo.",
       "",
     ].join("\n"),
 

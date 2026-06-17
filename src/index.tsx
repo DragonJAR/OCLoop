@@ -75,8 +75,24 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   const promptExists = await fileExists(args.promptFile)
   if (!promptExists) {
     if (args.promptFile === DEFAULTS.PROMPT_FILE) {
-      await Bun.write(args.promptFile, t("defaultLoopPrompt"))
-      console.log(t("promptCreated", { path: args.promptFile }))
+      // Bun.write() can reject on EACCES, EROFS, ENOENT (parent dir missing),
+      // ENOSPC, EISDIR, etc. Without this wrapper the rejection propagates out
+      // of `validatePrerequisites` to `main().catch()` and the user sees a raw
+      // "Fatal error: SystemError: ..." stack trace. Mirrors the pattern used
+      // three lines above (`errPlanNotFound`) and below (`errPromptNotFound`).
+      // Source: MEJORAS.md Finding 17.5.A.
+      try {
+        await Bun.write(args.promptFile, t("defaultLoopPrompt"))
+        console.log(t("promptCreated", { path: args.promptFile }))
+      } catch (err) {
+        console.error(
+          t("errCannotCreatePrompt", {
+            path: args.promptFile,
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        )
+        process.exit(1)
+      }
     } else {
       console.error(t("errPromptNotFound", { path: args.promptFile }))
       process.exit(1)
