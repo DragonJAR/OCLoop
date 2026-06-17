@@ -3261,10 +3261,75 @@ Commit `da4113b`.
 
 ### Mejora 65 — Finding 16.2.A — LOW — `server.url()` + null-check pattern repeated at every call site
 
-- [ ] Evaluar la mejora 65 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 65 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 65 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 65 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 65 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 65 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 65 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 65 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20871-20927`): el preludio de 3 líneas
+`const url = server.url(); if (!url) ...; const client = createClient(url)`
+aparecía en 11 sitios de `App.tsx` (incluyendo los 3 inline
+`reconcileSession(createClient(url), sid)` /
+`abortSession(createClient(url), sid)` y el site
+`agentUrl` del server-ready effect, que el audit original contaba como
+10). La propuesta del audit (helper `tryGetClient(getUrl)` en
+`src/lib/api.ts`) es estrictamente la correcta y se implementó
+exactamente como prescribe `MEJORAS.md:20896-20899`. La firma del
+helper usa `() => string | null` (no `| undefined` como el audit) para
+matchear el tipo real de `server.url()` en `useServer.ts:26`
+(`url: () => string | null`); el falsy check de la implementación
+cubre los tres casos `null` / `undefined` / `""` sin ramificación
+adicional.
+
+Aplicado en 11 sitios de `App.tsx` (comentario inline en cada uno
+nombrando el source `MEJORAS.md Finding 16.2.A`):
+
+1. `probes.reconcile` (líneas 309-315)
+2. `actions.abortAndRetry` (líneas 327-340)
+3. `reconcileAndAdvance` (líneas 740-748)
+4. `startIteration` (líneas 940-953): el client se hoist al top del
+   try-block, reemplazando las dos llamadas separadas a
+   `createClient(url)` (línea 984 original) y
+   `abortSession(createClient(url), ...)` en el catch (línea 1036
+   original). Esto es una mejora de eficiencia incidental: el catch
+   reusa el mismo client cacheado en vez de re-resolver `server.url()`
+   + `createClient()` durante el error path.
+5. `createDebugSession` (líneas 1069-1080)
+6. `sendDebugPrompt` (líneas 1108-1121)
+7. `handleQuit` (líneas 1191-1203)
+8. `server-ready` effect, branch `!activeModel()` (líneas 1235-1249)
+9. `server-ready` effect, branch agent validation (líneas 1262-1304):
+   aquí se añade un `else { startOnce() }` al `if (client)` para
+   preservar el comportamiento original del
+   `if (props.agent && agentUrl)` (cuando `agentUrl` era null, se
+   llamaba `startOnce()` directamente sin validación; ahora la
+   decisión la toma el `!client` check del helper, con el mismo
+   fallback).
+10. `doResume` (líneas 1382-1390)
+
+El import de `createClient` se eliminó de `App.tsx` (sin usos
+restantes); el import de `tryGetClient` se añadió.
+
+Cero cambios al `createClient` (la cache per-URL sigue intacta — el
+helper solo colapsa el preludio, no la memoización), cero cambios al
+reducer, cero cambios a la state machine, cero cambios a la TUI.
+Cero impacto en el camino feliz: cada `tryGetClient(server.url)` con
+URL truthy retorna el mismo client cacheado que el código original
+obtenía con `createClient(url)`, byte por byte. Cero impacto en la
+ruta de error: el `null` return del helper se chequea exactamente
+igual que el `!url` del original (mismo short-circuit, mismo bailout
+log/toast/return).
+
+5 tests nuevos en `src/lib/api.test.ts:211-246` que pinean:
+`null` URL → `null`, URL válida → client no-null, empty string URL
+→ `null` (defensivo, matchea los `if (!url)` guards que reemplaza),
+memoización per-URL (cache hit en llamada repetida), y la
+invocación única del getter (no re-reads).
+
+`bun test` verde: 778 pass / 1 skip / 0 fail (era 773/1/0 antes del
+fix), 1814 expect() calls, 26 files, ~340 ms — +5 tests, +5 expects.
+`bun run build` verde. Commit `bc595da`.
 
 ### Mejora 66 — Finding 16.2.B — LOW — Inconsistent inline vs variable form across call sites
 
