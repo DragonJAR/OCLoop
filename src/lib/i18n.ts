@@ -139,6 +139,19 @@ const en = {
       "Create a prompt file with instructions for executing plan tasks.",
       "",
     ].join("\n"),
+  // Wraps `Bun.file().exists()` when the call itself throws (EACCES, ENOENT
+  // on a missing parent dir, EISDIR, etc.) so the user gets a clean,
+  // localized "Cannot read <path>: <reason>" instead of a raw stack trace
+  // bubbled up through main().catch().
+  // Source: MEJORAS.md Finding 17.4.B.
+  errCannotReadFile: (p: Params) =>
+    [
+      `Error: Cannot read ${p.path}: ${p.message}`,
+      "",
+      "The file's directory may be inaccessible, or the file may have been moved or removed.",
+      "Verify the path exists and is readable, then try again.",
+      "",
+    ].join("\n"),
 
   // --- Default .loop-prompt.md (auto-created when missing) ---
   // Announced to the user; the body below is written to disk verbatim.
@@ -458,6 +471,15 @@ const es: Record<MessageKey, Msg> = {
       "Este archivo contiene el prompt que se envía a opencode en cada iteración.",
       "",
       "Crea un archivo de prompt con instrucciones para ejecutar las tareas del plan.",
+      "",
+    ].join("\n"),
+  // Espejo de `errCannotReadFile` (en). Ver bloque en `en` para la nota de source.
+  errCannotReadFile: (p) =>
+    [
+      `Error: No se puede leer ${p.path}: ${p.message}`,
+      "",
+      "El directorio del archivo puede ser inaccesible, o el archivo puede haber sido movido o eliminado.",
+      "Verifica que la ruta exista y sea legible, luego inténtalo de nuevo.",
       "",
     ].join("\n"),
 

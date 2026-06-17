@@ -25,6 +25,34 @@ const DEFAULT_PLAN_AGENT = "plan"
 // (default in DEFAULT_RESILIENCE); resolved per-run in runCreatePlan.
 
 /**
+ * Check a file's existence, printing a localized error and exiting with code 1
+ * if the `Bun.file().exists()` call itself throws (EACCES, ENOENT on a missing
+ * parent dir, EISDIR, etc.). Without this wrapper, an `await ... .exists()`
+ * failure propagates out of `validatePrerequisites` and is caught by
+ * `main().catch()` (line 358-361), which prints "Fatal error: <stack trace>" —
+ * a confusing user-facing UX for a permission-denied or stale-mount case.
+ *
+ * `process.exit(1)` is a `never` return in @types/node, so TypeScript accepts
+ * the `Promise<boolean>` return type without the unreachable `return` in the
+ * catch path.
+ *
+ * Source: MEJORAS.md Finding 17.4.B.
+ */
+async function fileExists(path: string): Promise<boolean> {
+  try {
+    return await Bun.file(path).exists()
+  } catch (err) {
+    console.error(
+      t("errCannotReadFile", {
+        path,
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    )
+    process.exit(1)
+  }
+}
+
+/**
  * Validate that required files exist before starting
  */
 async function validatePrerequisites(args: CLIArgs): Promise<void> {
@@ -34,8 +62,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   }
 
   // Check PLAN.md exists
-  const planFile = Bun.file(args.planFile)
-  const planExists = await planFile.exists()
+  const planExists = await fileExists(args.planFile)
   if (!planExists) {
     console.error(t("errPlanNotFound", { path: args.planFile }))
     process.exit(1)
@@ -45,8 +72,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // starter template (in the active language) so a fresh project just works. A
   // user-supplied --prompt path that's missing stays a hard error — they meant
   // that specific file.
-  const promptFile = Bun.file(args.promptFile)
-  const promptExists = await promptFile.exists()
+  const promptExists = await fileExists(args.promptFile)
   if (!promptExists) {
     if (args.promptFile === DEFAULTS.PROMPT_FILE) {
       await Bun.write(args.promptFile, t("defaultLoopPrompt"))
