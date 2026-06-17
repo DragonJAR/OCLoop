@@ -4285,10 +4285,48 @@ calls, 28 files, 349 ms. `bun run build` verde. Commit
 
 ### Mejora 82 — Finding 17.3.C — LOW — `handleQuit` calls `renderer.setTerminalTitle` and `renderer.destroy` without a try/catch
 
-- [ ] Evaluar la mejora 82 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 82 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 82 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 82 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 82 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 82 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 82 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 82 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:23049-23102`): las dos llamadas sincrónicas
+`renderer.setTerminalTitle("")` + `renderer.destroy()`
+(`App.tsx:1229-1230`, pre-fix) pueden tirar si el renderer
+queda en un half-torn-down state. Sin el wrap, el throw
+escapa del `async handleQuit`, cae al `unhandledRejection`
+handler de `index.tsx:300-304`, que llama `restoreTerminal()` +
+`process.exit(1)`, reemplazando el exit code que el usuario
+pidió (default 0) con 1 — exactamente el caso user-facing que
+rompe `$?` checks en shell scripts / CI pipelines. La
+propuesta del audit (`MEJORAS.md:23085-23097`) es estrictamente
+la mínima útil: `try { setTerminalTitle; destroy } catch (err) {
+log.warn(...) }` + `process.exit(exitCode)` intacto. El
+contrato "somos about to exit anyway" se preserva: el
+`process.exit(exitCode)` corre en el happy path Y en el
+catch path, así que el exit code que el usuario pidió siempre
+llega. `log` ya estaba importado (línea 22). Implementación
+mínima: 15 inserciones / 3 deletions en `src/App.tsx:1228-1239`
+(1 `try` + 1 `catch` + 9 líneas de comentario que nombran el
+source `MEJORAS.md Finding 17.3.C`, el cross-reference al
+`unhandledRejection` handler de `index.tsx:300-304`, y la
+racionalidad "swallow + proceed to explicit exit"). Cero
+cambios a la firma de `handleQuit` (`(number?) => Promise<void>`
+intacta), cero cambios a la isShuttingDown guard de Mejora 55
+(Finding 15.4.A), cero cambios al reducer, cero cambios al
+SSE handler, cero cambios al watchdog, cero cambios al
+`process.exit` flow, cero impacto en el camino feliz (un
+renderer sano no tira; las dos llamadas observablemente
+idénticas). Cero impacto en tests: el audit ya justificó que
+un test del catch requeriría mockear `useRenderer()` de
+`@opentui/solid`, lo cual rompe el JSX transform per
+`docs/testing.md` y queda como territory de Mejora 94 (Finding
+18.2.F). La garantía del wrap es estructural (un `try/catch`
++ `log.warn` que code review cubre sin gap de cobertura).
+`bun test` verde: 788 pass / 1 skip / 0 fail, 1832 expect()
+calls, 28 files, 336 ms — sin cambio en el conteo. `bun run
+build` verde. Commit `20efc5e`.
 
 ### Mejora 83 — Finding 17.4.A — MEDIUM — `getPlanCompleteSummary` failure is misclassified as an iteration error
 
