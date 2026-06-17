@@ -3853,10 +3853,42 @@ Commit `docs(plan)`.
 
 ### Mejora 75 — Finding 16.5.E — LOW — `App.tsx` persistence effect reads `loop.state()` and `loop.iteration()` — double subscription
 
-- [ ] Evaluar la mejora 75 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 75 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 75 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 75 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 75 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 75 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 75 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 75 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21746-21797`): el persistence effect
+(`App.tsx:1525-1547`) leía `loop.state()` en línea 1527 (que
+suscribe al signal) Y `loop.iteration()` en línea 1537
+(que internamente es un `createMemo` sobre el mismo
+`state()` signal — `useLoopState.ts:421-429`). Solid
+mergea las dos suscripciones, así que el effect re-corre
+una sola vez por transición — el bug es **cosmético**, no
+de comportamiento. La propuesta del audit (leer
+`s.iteration` directamente, aprovechando que el `if` ya
+narrowea `s` a uno de los 4 states que llevan
+`iteration: number`: `running`, `pausing`, `paused`,
+`cooldown` — `src/types.ts:24-46`) es estrictamente la
+mínima útil: 1 línea de código + 4 líneas de comentario
+que renombran el header del effect y nombran el source
+`MEJORAS.md Finding 16.5.E` y el racional "el segundo
+read se ve como dependencia independiente cuando no lo
+es". Cero cambios a la firma del effect, cero cambios
+al shape de `PersistedLoopState`, cero cambios a
+`saveLoopState`/`clearLoopState`/`getActiveSessionId`, cero
+cambios a `useLoopState.iteration` (sigue siendo útil
+para los otros 7 call sites: `App.tsx:240, 275, 283, 466,
+767, 934, 1294` que sí leen el memo), cero impacto en el
+camino feliz (el valor persistido es idéntico: para los
+4 states que el effect captura, `s.iteration` es lo
+mismo que el memo retorna). Cero impacto en tests — la
+fix es local al effect y un test "leí el local en vez del
+memo" sería tautológico. `bun test` verde: 788 pass /
+1 skip / 0 fail, 1831 expect() calls, 28 files, 376 ms —
+sin cambio en el conteo. `bun run build` verde. Commit
+`ed933d8`.
 
 ### Mejora 76 — Finding 16.6.B — MEDIUM — Test at `api.test.ts:196-209` is fragile due to module-level cache state
 
