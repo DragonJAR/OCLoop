@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath } from "./config"
+import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig } from "./config"
 
 // `loadConfig` reads from `${XDG_CONFIG_HOME}/ocloop/ocloop.json` (or
 // `~/.config/ocloop/ocloop.json` when the env var is unset). Redirect
@@ -567,5 +567,49 @@ describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
     expect(existsSync(path)).toBe(false) // no main file created
     const tmps = readdirSync(configDir).filter((e) => e.endsWith(".tmp"))
     expect(tmps).toEqual([]) // no tmp left behind
+  })
+})
+
+describe("hasTerminalConfig (Finding 18.2.C items 12-13)", () => {
+  // The audit's 13-item test inventory for Finding 18.2.C had items 1-11
+  // covered by Mejoras 43-53 (loadConfig robustness, resolveResilience
+  // merge order, saveConfig atomic write). The two remaining items —
+  // hasTerminalConfig accepting both known/custom shapes and rejecting
+  // empty values — were the only gaps. Source: MEJORAS.md Finding 18.2.C.
+
+  it("returns false when the config has no terminal field", () => {
+    expect(hasTerminalConfig({})).toBe(false)
+  })
+
+  it("accepts a valid known terminal (type + non-empty name)", () => {
+    expect(
+      hasTerminalConfig({ terminal: { type: "known", name: "alacritty" } }),
+    ).toBe(true)
+  })
+
+  it("rejects a known terminal with an empty name", () => {
+    expect(
+      hasTerminalConfig({ terminal: { type: "known", name: "" } }),
+    ).toBe(false)
+  })
+
+  it("accepts a valid custom terminal (type + command + args string)", () => {
+    expect(
+      hasTerminalConfig({
+        terminal: {
+          type: "custom",
+          command: "x-terminal-emulator",
+          args: "-e {cmd}",
+        },
+      }),
+    ).toBe(true)
+  })
+
+  it("rejects a custom terminal with an empty command", () => {
+    expect(
+      hasTerminalConfig({
+        terminal: { type: "custom", command: "", args: "-e {cmd}" },
+      }),
+    ).toBe(false)
   })
 })
