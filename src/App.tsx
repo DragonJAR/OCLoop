@@ -1225,9 +1225,21 @@ function AppContent(props: AppProps) {
     // Stop server
     await server.stop()
 
-    // Clear title and restore terminal
-    renderer.setTerminalTitle("")
-    renderer.destroy()
+    // Clear title and restore terminal. The renderer calls are
+    // synchronous and CAN throw on a half-torn-down renderer
+    // (`@opentui/solid` internals). If we let the throw escape,
+    // the unhandled rejection handler (`index.tsx:300-304`) would
+    // force `process.exit(1)` and replace the user's intended
+    // exit code (default 0) — breaking shell scripts and CI
+    // pipelines that check `$?`. We're about to exit anyway,
+    // so swallow the error and proceed to the explicit exit.
+    // Source: MEJORAS.md Finding 17.3.C.
+    try {
+      renderer.setTerminalTitle("")
+      renderer.destroy()
+    } catch (err) {
+      log.warn("render", "Cleanup during quit failed", err)
+    }
 
     // Exit process
     process.exit(exitCode)
