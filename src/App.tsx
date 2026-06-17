@@ -78,6 +78,7 @@ import {
   Dashboard,
   DialogCompletion,
   DialogError,
+  DialogHelp,
   ActivityLog,
   BottomPanel,
   DialogTerminalConfig,
@@ -2020,6 +2021,15 @@ function AppContent(props: AppProps) {
     // Ctrl+P - open command palette
     if (key.ctrl && key.name === "p") {
       command.show()
+      key.preventDefault()
+      return
+    }
+
+    // ? - open the help / keybindings overlay. Global (works in every state
+    // that doesn't already have a dialog open), so a new user can discover the
+    // full keymap in one place instead of guessing from the state footer.
+    if (key.name === "?" || key.sequence === "?") {
+      dialog.show(() => <DialogHelp onClose={() => dialog.clear()} />)
       key.preventDefault()
       return
     }

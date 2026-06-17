@@ -339,6 +339,14 @@ const en = {
   cmdCancelPause: "Cancel pending pause",
   cmdRestartServer: "Restart OpenCode server",
   cmdQuit: "Quit OCLoop",
+  // --- Help overlay (opened with the ? key) ---
+  helpTitle: "Keybindings & Help",
+  helpDismissHint: "press any key to close",
+  helpIntro:
+    "OCLoop runs an AI agent once per task in your PLAN.md, then stops. Press S to start a loop iteration; press Ctrl+P anytime for the full command palette.",
+  helpSectionLoop: "Loop control",
+  helpSectionSession: "Session & terminal",
+  helpSectionDebug: "Debug mode",
   catView: "View",
   catLanguage: "Language",
   toastLanguageChanged: "Language changed",
@@ -692,6 +700,14 @@ const es: Record<MessageKey, Msg> = {
   cmdCancelPause: "Cancelar la pausa pendiente",
   cmdRestartServer: "Reiniciar el servidor OpenCode",
   cmdQuit: "Salir de OCLoop",
+  // --- Overlay de ayuda (se abre con la tecla ?) ---
+  helpTitle: "Atajos y ayuda",
+  helpDismissHint: "pulsa cualquier tecla para cerrar",
+  helpIntro:
+    "OCLoop ejecuta un agente de IA una vez por tarea de tu PLAN.md y luego para. Pulsa S para iniciar una iteración del loop; pulsa Ctrl+P en cualquier momento para la paleta de comandos completa.",
+  helpSectionLoop: "Control del loop",
+  helpSectionSession: "Sesión y terminal",
+  helpSectionDebug: "Modo debug",
   catView: "Vista",
   catLanguage: "Idioma",
   toastLanguageChanged: "Idioma cambiado",
