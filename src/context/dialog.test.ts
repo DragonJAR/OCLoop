@@ -2,7 +2,8 @@
  * createDialogController tests.
  *
  * Source: MEJORAS.md Finding 18.2.F (LOW — `context/*.tsx` and
- * `components/*.tsx` have no test).
+ * `components/*.tsx` have no test) and Finding 18.3.C (LOW —
+ * `DialogContext.tsx` top-only render contract is not pinned).
  *
  * Tests the public value of `useDialog()` by exercising the
  * `createDialogController()` factory inside a bare `createRoot`
@@ -17,9 +18,11 @@
  *
  * The "top-only render contract" of `<DialogStack />` (which is
  * what `useKeyboard` sibling-listener collision is gated on) is
- * structural JSX render code that is not unit-testable without
- * a DOM and is covered by the inline comment at DialogContext.tsx:192-196
- * plus code review.
+ * pinned at the data layer by the `top` accessor tests below. The
+ * JSX render of `<Show when={top()} keyed>` itself is structural
+ * and code-reviewed; rendering it would require a Solid root with
+ * a DOM, which `bun:test` does not provide (per
+ * `docs/solid-hook-testing.md`).
  */
 
 import { describe, expect, it } from "bun:test"
@@ -107,6 +110,76 @@ describe("createDialogController (Finding 18.2.F)", () => {
       ctrl.clear()
       expect(ctrl.stack()).toEqual([])
       expect(ctrl.hasDialogs()).toBe(false)
+    })
+  })
+})
+
+describe("createDialogController — top accessor (Finding 18.3.C)", () => {
+  // The "top-only render contract" of <DialogStack /> is gated on this
+  // accessor. <Show when={top()} keyed> renders exactly one dialog at a
+  // time, so the rest of the stack's useKeyboard listeners don't fire
+  // on Enter/Escape (sibling-listener collision). The render itself
+  // needs a Solid root, but the data-layer contract — "top returns the
+  // last element, or undefined when empty" — is pin-able here.
+
+  it("returns undefined when the stack is empty", () => {
+    withController((ctrl) => {
+      expect(ctrl.top()).toBeUndefined()
+    })
+  })
+
+  it("returns the only dialog after a single show", () => {
+    withController((ctrl) => {
+      ctrl.show(A)
+      expect(ctrl.top()).toBe(A)
+    })
+  })
+
+  it("returns the most recently pushed dialog (stack of 3 → top is the third)", () => {
+    withController((ctrl) => {
+      ctrl.show(A)
+      ctrl.show(B)
+      ctrl.show(C)
+      expect(ctrl.top()).toBe(C)
+    })
+  })
+
+  it("pop removes the top; the new top is the previously-second", () => {
+    withController((ctrl) => {
+      ctrl.show(A)
+      ctrl.show(B)
+      ctrl.show(C)
+      ctrl.pop()
+      expect(ctrl.top()).toBe(B)
+      ctrl.pop()
+      expect(ctrl.top()).toBe(A)
+    })
+  })
+
+  it("pop on an empty stack leaves top as undefined (no throw)", () => {
+    withController((ctrl) => {
+      ctrl.pop()
+      expect(ctrl.top()).toBeUndefined()
+    })
+  })
+
+  it("clear empties; top is undefined after clear", () => {
+    withController((ctrl) => {
+      ctrl.show(A)
+      ctrl.show(B)
+      ctrl.clear()
+      expect(ctrl.top()).toBeUndefined()
+    })
+  })
+
+  it("replace: top is the replaced dialog, regardless of previous", () => {
+    withController((ctrl) => {
+      ctrl.show(A)
+      ctrl.show(B)
+      ctrl.replace(C)
+      expect(ctrl.top()).toBe(C)
+      // Stack length is 1, not 3 — `replace` empties first.
+      expect(ctrl.stack()).toEqual([C])
     })
   })
 })

@@ -37,6 +37,18 @@ export interface DialogContextValue {
   stack: Accessor<DialogComponent[]>
   /** Check if any dialogs are open */
   hasDialogs: Accessor<boolean>
+  /**
+   * Top of the stack — the dialog currently mounted by `DialogStack`,
+   * or `undefined` when the stack is empty.
+   *
+   * Pins the "top-only render contract" of `DialogStack` at the data
+   * layer: the JSX render of `<Show when={top()} keyed>` depends on
+   * this returning the correct value, and the `keyed` prop is what
+   * causes the child to re-mount when the top's identity changes.
+   *
+   * Source: MEJORAS.md Finding 18.3.C.
+   */
+  top: Accessor<DialogComponent | undefined>
 }
 
 /**
@@ -85,6 +97,21 @@ export function createDialogController(): DialogContextValue {
    */
   const hasDialogs = () => stack().length > 0
 
+  /**
+   * Return the top of the stack (the dialog currently mounted by
+   * `DialogStack`), or `undefined` if the stack is empty.
+   *
+   * Reads `stack()` once into a local and indexes into the copy, so
+   * the JSX consumer subscribes to the stack signal a single time
+   * per change (not twice via `stack()[stack().length - 1]`).
+   *
+   * Source: MEJORAS.md Finding 18.3.C.
+   */
+  const top = (): DialogComponent | undefined => {
+    const s = stack()
+    return s.length > 0 ? s[s.length - 1] : undefined
+  }
+
   return {
     show,
     replace,
@@ -92,5 +119,6 @@ export function createDialogController(): DialogContextValue {
     pop,
     stack,
     hasDialogs,
+    top,
   }
 }

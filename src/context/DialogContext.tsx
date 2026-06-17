@@ -118,18 +118,17 @@ export function useDialog(): DialogContextValue {
  * ```
  */
 export function DialogStack() {
-  const { stack } = useDialog()
+  const { top } = useDialog()
 
-  // Render ONLY the top dialog. Each dialog registers a global keypress listener
-  // via useKeyboard, and `preventDefault()` does not stop sibling listeners — so
-  // rendering every stacked dialog would make Enter/Escape fire on all of them.
-  // Keeping just the top mounted means exactly one dialog handles input; popping
-  // it re-mounts the one beneath.
-  const top = () => {
-    const s = stack()
-    return s.length > 0 ? s[s.length - 1] : undefined
-  }
-
+  // Render ONLY the top dialog. The `top` accessor on the controller
+  // is the data-layer contract for "which dialog is at the top" —
+  // pinned by `dialog.test.ts` (see Finding 18.3.C); the `keyed` prop
+  // on `<Show>` is the render-layer contract for "re-mount on identity
+  // change". Each dialog registers a global keypress listener via
+  // useKeyboard, and `preventDefault()` does not stop sibling listeners
+  // — so rendering every stacked dialog would make Enter/Escape fire
+  // on all of them. Keeping just the top mounted means exactly one
+  // dialog handles input; popping it re-mounts the one beneath.
   return (
     <Show when={top()} keyed>
       {(DialogComponent) => <DialogComponent />}
