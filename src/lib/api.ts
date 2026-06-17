@@ -48,6 +48,24 @@ export function createClient(url: string): OpencodeClient {
 }
 
 /**
+ * Resolve the current server URL and return a cached SDK client, or `null` if
+ * the URL is not yet available. Collapses the
+ * `const url = server.url(); if (!url) ...; const client = createClient(url)`
+ * boilerplate that previously appeared at 10+ call sites in App.tsx into a
+ * single line plus a `!client` null-check.
+ *
+ * Source: MEJORAS.md Finding 16.2.A.
+ *
+ * The getter is invoked once per call (no caching at this layer — Solid's
+ * `server.url` is a signal and reads are O(1)). The `createClient` cache
+ * (above) still memoizes per URL.
+ */
+export function tryGetClient(getUrl: () => string | null): OpencodeClient | null {
+  const url = getUrl()
+  return url ? createClient(url) : null
+}
+
+/**
  * Per-call overrides shared by every wrapper.
  */
 export interface ApiCallOptions {

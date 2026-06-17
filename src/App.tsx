@@ -42,12 +42,12 @@ import {
   type ResilienceConfig,
 } from "./lib/config"
 import {
-  createClient,
   createSession,
   sendPromptAsync,
   abortSession,
   configureApiTimeouts,
   reconcileSession,
+  tryGetClient,
   type ReconcileResult,
 } from "./lib/api"
 import { withTimeout } from "./lib/with-timeout"
@@ -308,10 +308,11 @@ function AppContent(props: AppProps) {
       pingServer: () => chaos.ping(() => server.ping()),
       reconcile: () =>
         chaos.reconcile(async () => {
-          const url = server.url()
           const sid = getActiveSessionId(loop.state())
-          if (!url || !sid) return "unknown"
-          return reconcileSession(createClient(url), sid)
+          // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+          const client = tryGetClient(server.url)
+          if (!client || !sid) return "unknown"
+          return reconcileSession(client, sid)
         }),
     },
     actions: {
@@ -326,11 +327,12 @@ function AppContent(props: AppProps) {
       },
       abortAndRetry: async () => {
         activityLog.addEvent("task", t("actGuardAbort"), { level: "warn" })
-        const url = server.url()
         const sid = getActiveSessionId(loop.state())
-        if (url && sid) {
+        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+        const client = tryGetClient(server.url)
+        if (client && sid) {
           try {
-            await abortSession(createClient(url), sid)
+            await abortSession(client, sid)
           } catch {
             // Best effort — the session may already be gone.
           }
@@ -738,11 +740,10 @@ function AppContent(props: AppProps) {
    * event (SSE dropped during sleep/disconnect) — so we synthesize it here.
    */
   async function reconcileAndAdvance(): Promise<ReconcileResult> {
-    const url = server.url()
     const sid = getActiveSessionId(loop.state())
-    if (!url || !sid) return "unknown"
+    const client = tryGetClient(server.url)
+    if (!client || !sid) return "unknown"
 
-    const client = createClient(url)
     const result = await reconcileSession(client, sid)
     log.health("reconcile", result, { sessionId: sid })
 
@@ -943,8 +944,13 @@ function AppContent(props: AppProps) {
     // arriving mid-flight would create a second session and orphan the first
     // (it keeps running on the server, burning tokens, never aborted).
     if (startingIteration) return
-    const url = server.url()
-    if (!url) {
+    // Resolve the SDK client once and reuse it across the whole iteration.
+    // tryGetClient collapses the url-read + createClient pair and the null
+    // guard (Finding 16.2.A). The same `client` is used in the catch below
+    // for the best-effort abort — no second createClient call, no
+    // re-resolve of server.url() mid-error.
+    const client = tryGetClient(server.url)
+    if (!client) {
       log.error("iteration", "Cannot start iteration: server not ready")
       return
     }
@@ -979,9 +985,6 @@ function AppContent(props: AppProps) {
         }
       }
       lastIterationStartAt = monotonicNow()
-
-      // Create SDK client (all calls below are timeout-wrapped via api.ts)
-      const client = createClient(url)
 
       // Create a new session
       const session = await createSession(client)
@@ -1033,7 +1036,7 @@ function AppContent(props: AppProps) {
       // ~274. Finding 4.1.C.
       if (newSessionId) {
         try {
-          await abortSession(createClient(url), newSessionId)
+          await abortSession(client, newSessionId)
         } catch {
           // Best effort — the session may already be gone.
         }
@@ -1068,16 +1071,14 @@ function AppContent(props: AppProps) {
    */
   async function createDebugSession(): Promise<void> {
     log.info("session", "Creating debug session...")
-    const url = server.url()
-    if (!url) {
+    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+    const client = tryGetClient(server.url)
+    if (!client) {
       log.error("session", "Cannot create debug session: server not ready")
       return
     }
 
     try {
-      // Create SDK client (timeout-wrapped via api.ts)
-      const client = createClient(url)
-
       // Create a new session
       const session = await createSession(client)
       const newSessionId = session.id
@@ -1106,10 +1107,11 @@ function AppContent(props: AppProps) {
    * Send a prompt in debug mode
    */
   async function sendDebugPrompt(text: string): Promise<void> {
-    const url = server.url()
     const sid = sessionId() || lastSessionId()
+    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+    const client = tryGetClient(server.url)
 
-    if (!url || !sid) {
+    if (!client || !sid) {
       toast.show({ variant: "error", message: t("toastNoSessionPrompt") })
       return
     }
@@ -1118,7 +1120,6 @@ function AppContent(props: AppProps) {
       // Add activity log immediately for feedback
       activityLog.addEvent("user_message", `User: ${text}`)
 
-      const client = createClient(url)
       await sendPromptAsync(client, {
         sessionID: sid,
         parts: [{ type: "text", text }],
@@ -1192,9 +1193,9 @@ function AppContent(props: AppProps) {
     const currentSessionId = sessionId()
     if (currentSessionId) {
       try {
-        const url = server.url()
-        if (url) {
-          const client = createClient(url)
+        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+        const client = tryGetClient(server.url)
+        if (client) {
           await abortSession(client, currentSessionId)
         }
       } catch {
@@ -1234,9 +1235,9 @@ function AppContent(props: AppProps) {
 
       // Fetch active model from config if not already set via CLI
       if (!activeModel()) {
-        const url = server.url()
-        if (url) {
-          const client = createClient(url)
+        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+        const client = tryGetClient(server.url)
+        if (client) {
           withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
             .then(res => {
               if (res.data?.model) {
@@ -1261,36 +1262,45 @@ function AppContent(props: AppProps) {
       // start on it. Otherwise the validation (async) raced initializeSession
       // and the first prompt went out with a nonexistent agent, which the
       // server rejects mid-iteration as a fatal "agent not found".
-      const agentUrl = server.url()
-      if (props.agent && agentUrl) {
-        const client = createClient(agentUrl)
-        withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
-          .then(res => {
-            const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
-            if (primaryAgents.includes(props.agent!)) {
+      // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+      // We use server.url() again (cheap signal read) so the call site matches
+      // the pattern at every other createClient site in this file.
+      if (props.agent) {
+        const client = tryGetClient(server.url)
+        if (client) {
+          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
+            .then(res => {
+              const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
+              if (primaryAgents.includes(props.agent!)) {
+                startOnce()
+              } else {
+                dialog.show(() => (
+                  <DialogInvalidAgent
+                    agentName={props.agent!}
+                    availableAgents={primaryAgents}
+                    onUseDefault={() => {
+                      setActiveAgent(undefined)
+                      dialog.clear()
+                      startOnce()
+                    }}
+                    onQuit={() => handleQuit(1)}
+                  />
+                ))
+              }
+            })
+            .catch(err => {
+              // Don't block startup on a validation-infrastructure failure.
+              log.error("agent", "Failed to validate agent", err)
               startOnce()
-            } else {
-              dialog.show(() => (
-                <DialogInvalidAgent
-                  agentName={props.agent!}
-                  availableAgents={primaryAgents}
-                  onUseDefault={() => {
-                    setActiveAgent(undefined)
-                    dialog.clear()
-                    startOnce()
-                  }}
-                  onQuit={() => handleQuit(1)}
-                />
-              ))
-            }
-          })
-          .catch(err => {
-            // Don't block startup on a validation-infrastructure failure.
-            log.error("agent", "Failed to validate agent", err)
-            startOnce()
-          })
+            })
+        } else {
+          // No URL yet — same fallback as the original
+          // `if (props.agent && agentUrl)` branch: start without validation.
+          // The effect re-runs reactively when server.url() resolves.
+          startOnce()
+        }
       } else {
-        // No explicit agent (server uses its configured default) or no URL yet.
+        // No explicit agent (server uses its configured default).
         startOnce()
       }
     }
@@ -1381,10 +1391,11 @@ function AppContent(props: AppProps) {
    */
   async function doResume(p: PersistedLoopState): Promise<void> {
     rateLimitAttempts = p.rateLimitAttempts || 0
-    const url = server.url()
+    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
+    const client = tryGetClient(server.url)
     let verdict: ReconcileResult = "missing"
-    if (url && p.sessionId) {
-      verdict = await reconcileSession(createClient(url), p.sessionId)
+    if (client && p.sessionId) {
+      verdict = await reconcileSession(client, p.sessionId)
     }
     log.health("resume", verdict, {
       iteration: p.iteration,

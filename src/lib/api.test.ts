@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, type OpencodeClient } from "./api"
+import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, tryGetClient, type OpencodeClient } from "./api"
 import type { SessionStatus } from "@opencode-ai/sdk/v2"
 
 describe("assertResponse", () => {
@@ -205,6 +205,43 @@ describe("Phase 4 — API layer edge cases", () => {
       // Verify the newest entries still return the same cached instance.
       const newest = createClient(`http://localhost:10011`)
       expect(newest).toBe(clients[11])
+    })
+  })
+
+  describe("tryGetClient — server.url() + createClient() collapse", () => {
+    // tryGetClient is the helper introduced for Finding 16.2.A: it replaces
+    // the repeated `const url = server.url(); if (!url) ...; const client =
+    // createClient(url)` boilerplate at 10+ call sites in App.tsx.
+    it("returns null when the URL getter returns null (server not ready)", () => {
+      expect(tryGetClient(() => null)).toBeNull()
+    })
+
+    it("returns a client when the URL getter returns a URL", () => {
+      // Use a unique URL so we don't share cache state with the eviction test.
+      const client = tryGetClient(() => "http://localhost:20001")
+      expect(client).not.toBeNull()
+    })
+
+    it("returns null when the URL getter returns an empty string", () => {
+      // Defensive: an empty string is treated as "not ready" (matches the
+      // `if (!url) return` guards that the helper replaces).
+      expect(tryGetClient(() => "")).toBeNull()
+    })
+
+    it("memoizes the client per URL (cache hit on repeated call)", () => {
+      const a = tryGetClient(() => "http://localhost:20002")
+      const b = tryGetClient(() => "http://localhost:20002")
+      expect(a).toBe(b)
+    })
+
+    it("invokes the getter exactly once per call (no re-reads)", () => {
+      let calls = 0
+      const getter = () => {
+        calls++
+        return "http://localhost:20003"
+      }
+      tryGetClient(getter)
+      expect(calls).toBe(1)
     })
   })
 
