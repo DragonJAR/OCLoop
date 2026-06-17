@@ -53,8 +53,15 @@ OCLoop is a loop harness that orchestrates opencode to execute tasks from a
 PLAN.md file iteratively. Each iteration runs in an isolated session, with
 the opencode TUI embedded and visible throughout.
 
+Getting started:
+  First time here? Generate a plan interactively, then start the loop:
+    ocloop --create-plan
+    ocloop                 # then press [S] to begin (or: ocloop -r to auto-start)
+
+  Tip: press Ctrl+P in the TUI for the command palette; --lang es switches the UI to Spanish.
+
 Options:
-  -p, --port <number>      Server port (opencode defaults: try 4096, then random)
+  -p, --port <number>      OpenCode server port (if omitted, opencode picks 4096 or a random free port)
   -m, --model <provider/model> Model to use (for example openai/gpt-5)
   -a, --agent <string>     Agent to use (passed to opencode)
   -r, --run                Start iterations immediately (default: wait for [S])
@@ -78,6 +85,8 @@ Examples:
   ocloop -m opencode/claude-sonnet-4 # Use specific provider/model
   ocloop -a plan                   # Use specific agent
   ocloop --plan my-plan.md         # Use custom plan file
+  ocloop --lang es                 # Run the UI in Spanish
+  ocloop -c && ocloop -r           # Generate a plan, then auto-start
 `)
   process.exit(0)
 }
