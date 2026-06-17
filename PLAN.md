@@ -3696,10 +3696,69 @@ build` verde. Commit `615568f`.
 
 ### Mejora 72 — Finding 16.5.B — MEDIUM — DialogSelect per-row inline expressions subscribe to `selectedIndex` and `theme` 3+ times each
 
-- [ ] Evaluar la mejora 72 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 72 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 72 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 72 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 72 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 72 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 72 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 72 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21531-21650`): el per-row `<For>` callback
+(`src/ui/DialogSelect.tsx:230-275`, pre-fix) leía `isSelected()`
+3 veces y `theme()` 4 veces (más 2 llamadas a
+`selectedForeground(theme())` que cada una ejecuta 3
+`parseInt` + aritmética), así que en un command palette de
+20 opciones un arrow keypress disparaba 60 re-evaluations
+de expresiones JSX y 120 `parseInt` calls. El audit
+propone dos variantes: la "Proposed fix" (3 memos por row)
+y la "Alternative" (1 memo por row con un destructure).
+La segunda es estrictamente la correcta y reusa
+exactamente el patrón del codebase: Mejora 51 (Finding
+12.3.A) ya usa `v !== undefined && v !== null` como
+guarda unificada de N keys, Mejora 17 (Finding 5.1.B)
+ya colapsa N `clearCooldownTimers` calls en una guarda
+top-of-function, Mejora 65 (Finding 16.2.A) ya colapsa 11
+`server.url() + createClient(url)` en `tryGetClient`. El
+audit mismo prescribe la variante inline-destructured
+como "more idiomatic when the styles are all derived from
+the same source" — los 3 styles son función de un único
+`isSelected` y un único `theme()`. Implementación mínima:
+1 import (`createMemo` añadido a la línea 1) + 12 líneas
+de memo en el body del `<For>` callback (3-style destructure
++ comment block de 5 líneas que nombran el source
+`MEJORAS.md Finding 16.5.B`, la rationale de "one memo
+flips, N-1 stay cached", y la invariante "memo reads
+`i()`, `selectedIndex()`, `theme()` exactly once per
+eval") + 3 substituciones 1-a-1 (`backgroundColor`,
+`fg` para el span principal, `fg` para el span muted).
+Cero cambios al `<For>` signature, cero cambios al
+`<Show when={option.category}>`, cero cambios al
+`onMouseUp` handler, cero cambios al `truncate` call,
+cero cambios al `id={option.value}`, cero impacto en
+la ruta de mouse-up (el callback no toca `isSelected`),
+cero impacto en el input/search box (la prop
+`backgroundColor: theme().backgroundPanel` arriba queda
+igual — está fuera del `<For>`), cero impacto en
+`DialogTerminalConfig` / `CommandContext` (sus call
+sites no tocan el per-row body), cero impacto en el
+`maxHeight={6}` del scrollbox. Sin nuevos tests — la
+advertencia de `docs/testing.md:14-26` ("mocking
+@opentui/solid via mock.module rompe el JSX transform")
+prohíbe explícitamente tests que importen este archivo,
+y la pure relative-perf no es testable sin un
+micro-benchmark de keystroke latency que el audit
+describe como "out of scope for this audit, but easy to
+add". El contrato observable del componente (qué color
+recibe cada row en cada state) es byte-for-byte
+equivalente: cuando `isSelected` es true, `styles().bg`
+es `theme().primary` (igual que el original), `styles().fg`
+es `selectedForeground(theme())` (igual), `styles().fgMuted`
+es `selectedForeground(theme())` (igual). Cuando es
+false, `styles().bg` es `undefined` (igual),
+`styles().fg` es `theme().text` (igual), `styles().fgMuted`
+es `theme().textMuted` (igual). `bun test` verde: 788
+pass / 1 skip / 0 fail, 1831 expect() calls, 28 files,
+373 ms — sin cambio en el conteo (era 788 / 1 / 0 antes
+del memo). `bun run build` verde. Commit `a576a66`.
 
 ### Mejora 73 — Finding 16.5.C — LOW — `ActivityLog.displayEvents` is a no-op memo
 
