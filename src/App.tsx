@@ -981,8 +981,18 @@ function AppContent(props: AppProps) {
       // Check for plan completion first
       if (await checkPlanComplete()) {
         const planPath = resolvePlanFile(props.planFile)
-        // We know it's complete, but getPlanCompleteSummary returns string | null
-        const summaryContent = await getPlanCompleteSummary(planPath)
+        // We know it's complete, but getPlanCompleteSummary re-reads the file
+        // to extract the summary text. A FS error between the two awaits
+        // (e.g. file replaced with a directory, permission flip) must not
+        // be misclassified as an iteration error — the plan IS complete,
+        // only the human-readable summary is best-effort. Source: MEJORAS.md
+        // Finding 17.4.A.
+        let summaryContent: string | null = null
+        try {
+          summaryContent = await getPlanCompleteSummary(planPath)
+        } catch (err) {
+          log.warn("plan", "Plan complete but summary unreadable", err)
+        }
 
         loop.dispatch({
           type: "plan_complete",
