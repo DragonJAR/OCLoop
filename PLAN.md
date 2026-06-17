@@ -5001,10 +5001,89 @@ build` verde. Commit `174ae7a`.
 
 ### Mejora 92 — Finding 18.2.D — MEDIUM — `terminal-launcher.ts`, `clipboard.ts`, `power.ts` have no test
 
-- [ ] Evaluar la mejora 92 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 92 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 92 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 92 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 92 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 92 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 92 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 92 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del
+audit (`MEJORAS.md:24403-24415`): los tres módulos
+son "exec into the user's environment" y sus
+orderings (close-before-wait, unref-before-log,
+`{cmd}` placeholder substitution, buildArgs
+empty-token filter) son refactor-frágiles sin un
+test que los pine. `clipboard.test.ts` ya existía
+desde Mejora 42 (Finding 11.4.D, commit
+`8934ac0`), así que la mejora 92 cubre los dos
+módulos restantes. La propuesta del audit
+("Three small test files, each with 5-8 tests")
+se implementó como dos test files (terminal-launcher
++ power) siguiendo los patrones ya establecidos en
+el codebase:
+
+- `commandExists` mockeado al module boundary con
+  `mock.module("./command-exists", ...)` — el
+  mismo patrón que `clipboard.test.ts:19-23` y que
+  ya demostró ser seguro porque `terminal-launcher.ts`
+  / `command-exists.ts` no contienen JSX (la
+  advertencia de `docs/testing.md` sobre `mock.module`
+  es JSX-transform-específica).
+- `Bun.spawn` stub vía asignación directa de
+  propiedad (`Bun.spawn = ...`) — el global `Bun`
+  no es un módulo importable, así que `mock.module`
+  no lo intercepta. El mismo patrón que
+  `cli-args.test.ts:16-43` usa para `process.exit`
+  por la misma razón. El mock solo expone los
+  campos que el production code toca (`unref`,
+  `kill`, `pid`) — el resto del `Bun.Subprocess`
+  surface no se necesita.
+
+**`terminal-launcher.test.ts` (20 tests, 45 expects)**:
+cubre `getKnownTerminalByName` (4 tests: lookup
+válido, lookup inválido, structural pin de los 12
+entries, every entry has `{cmd}`), `getAttachCommand`
+(3 tests: happy path, Finding 11.3.A throw en
+empty url, Finding 11.3.B throw en empty sessionId),
+`detectInstalledTerminals` (2 tests: filter por
+`commandExists`, empty cuando nada está on PATH), y
+`launchTerminal` (11 tests: known-terminal happy
+path con la substitution del `{cmd}` placeholder
+verificada vía argv tokens, unknown terminal name,
+known-terminal command missing, custom-terminal
+happy path, custom args multi-space collapse,
+Finding 11.2.B empty args, Finding 11.2.C missing
+`{cmd}` placeholder, custom command missing, spawn
+failure swallowed por el try/catch exterior, Finding
+11.2.D buildArgs throw on empty attachCmd, Finding
+11.2.A `detached: true` + `windowsHide: true`
+flags pinned).
+
+**`power.test.ts` (12 tests, 28 expects)**: cubre
+los 3 early-return branches de `start()` (proc
+already set, !enabled, non-darwin platform), la
+ruta non-darwin con `win32` específicamente, la
+re-evaluación lazy del `enabled()` getter entre
+calls, `stop()` con proc set (kill + null), `stop()`
+sin proc (no-op), `stop()` tolerando kill throwing
+(ESRCH branch, lines 67-69), `start()` degradando
+graciosamente cuando spawn throws (caffeinate
+missing), `unref()` llamado exactamente una vez en
+`start()` (line 52, load-bearing para no mantener
+el event loop vivo), e `isActive()` reflejando el
+state a través de ciclos completos de
+start/stop/start.
+
+Cero cambios al production code — los dos test
+files son puramente additive. Cero impacto en el
+camino feliz, cero impacto en el reducer, cero
+impacto en la TUI. Cero cambios a `clipboard.test.ts`
+(ya cubría Finding 11.4.D con 4 tests, sigue
+verde). `bun test` verde: 848 pass / 1 skip / 0
+fail, 1969 expect() calls, 32 files, 541 ms — +32
+tests vs. 750 baseline (Mejora 53), +2 files. El
++1 skip viene del test "returns clip on win32" en
+`clipboard.test.ts:43` que se skipea en non-Windows.
+`bun run build` verde. Commit pendiente.
 
 ### Mejora 93 — Finding 18.2.E — LOW — `theme-resolver.ts`, `i18n.ts`, `project.ts`, `command-exists.ts` have no test
 
