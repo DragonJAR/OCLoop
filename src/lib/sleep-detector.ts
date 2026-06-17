@@ -14,6 +14,7 @@
  */
 
 import { type Clock, systemClock } from "./clock"
+import { log } from "./debug-logger"
 
 export interface SleepDetectorOptions {
   /** Sampling interval in ms (default 5000). */
@@ -55,7 +56,22 @@ export function createSleepDetector(options: SleepDetectorOptions): SleepDetecto
     lastSeen = now
     // A negative gap (clock moved backwards) is not a wake; ignore it.
     if (gap > thresholdMs) {
-      options.onWake(gap)
+      // Isolate onWake: a throw here escapes the setInterval callback and
+      // becomes an uncaughtException (the process dies). The wake handler in
+      // App.tsx (handleWake) calls sse.reconnect/watchdog.notifyWake/
+      // reconcileAndAdvance — any of those throwing on a wake (e.g. a
+      // reconnect race) must not take down the whole process. The watchdog's
+      // own tick() applies the same isolation via a .catch() on its timer
+      // (useWatchdog.ts); mirror that here. The baseline has already been
+      // updated above, so a failed wake-handling attempt doesn't re-fire.
+      try {
+        options.onWake(gap)
+      } catch (err) {
+        log.warn("sleep", "onWake handler threw; wake handling skipped", {
+          gapMs: gap,
+          message: err instanceof Error ? err.message : String(err),
+        })
+      }
     }
     return gap
   }

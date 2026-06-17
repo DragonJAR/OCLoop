@@ -1444,6 +1444,23 @@ End
     expect(parsePlanComplete(content)).toBeNull()
   })
 
+  it("finds a real tag after prose containing an INLINE triple-backtick literal", () => {
+    // Regression: an inline ``` in prose (e.g. "use ``` for code blocks") is
+    // NOT a line-start fence. The unterminated-fence strip must only match a
+    // fence marker at line start (0-3 spaces); an inline literal has text
+    // before it on the same line. Previously the non-anchored /```[\s\S]*$/
+    // matched the inline literal and deleted everything to EOF, including a
+    // genuine <plan-complete> written later — which kept the loop spinning at
+    // 100% for PLAN.md files that document markdown syntax.
+    const content = [
+      "## Notes",
+      'To mark code, use ``` around the snippet in your PLAN.md.',
+      "This is just documentation, not a real fence.",
+      "<plan-complete>actually done</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).toBe("actually done")
+  })
+
   it("ignores a documented tag inside a blockquote (nested, not top-level)", () => {
     const content = [
       "> <plan-complete>nested inside blockquote</plan-complete>",

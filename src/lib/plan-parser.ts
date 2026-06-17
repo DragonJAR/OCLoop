@@ -185,7 +185,7 @@ export function parsePlanComplete(content: string): string | null {
   // <\/plan-complete>: Match end tag
   // m                : Multiline flag to allow ^ to match start of lines
   // g                : Global flag for matchAll
-  // 
+  //
   // Strip fenced code blocks first: a ```fence``` documenting the mechanism can
   // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
   // premature completion. Real completion tags live at the document's top level.
@@ -195,7 +195,16 @@ export function parsePlanComplete(content: string): string | null {
     // paired regex, leaving a documented `<plan-complete>` example inside it to
     // trigger a premature completion. Strip from the dangling fence to EOF too:
     // a missed real tag (loop keeps running) is far safer than a false stop.
-    .replace(/```[\s\S]*$/, "")
+    //
+    // Anchor the fence marker to a LINE START (^ with the m flag, 0-3 spaces of
+    // indentation as CommonMark allows). The previous non-anchored `/```[\s\S]*$/`
+    // matched a triple-backtick INLINE in prose (e.g. "use ``` for code") and
+    // deleted everything from it to EOF — including a genuine <plan-complete>
+    // tag written later, which kept the loop spinning at 100% for PLAN.md files
+    // that document markdown syntax. A real fence always begins at line start;
+    // an inline literal has text before it on the same line and must NOT be
+    // treated as an unterminated fence.
+    .replace(/^[^\S\r\n]{0,3}```[\s\S]*$/gm, "")
   const matches = [
     ...withoutFences.matchAll(
       // Opening anchored to line start (0-3 spaces) so mid-line / 4+-indented / fenced
