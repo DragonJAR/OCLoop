@@ -1522,6 +1522,10 @@ function AppContent(props: AppProps) {
   // Persist minimal progress on every meaningful transition so a hard crash of
   // the OCLoop process (not just OpenCode) can be resumed. Atomic write. Skipped
   // in debug mode; cleared on terminal states.
+  // Reads `s.iteration` (a local property of the already-narrowed `s`) instead
+  // of `loop.iteration()` to avoid a second subscription to the same `state`
+  // signal — Solid merges them, but the double read reads as if it were an
+  // independent dependency. Source: MEJORAS.md Finding 16.5.E.
   createEffect(() => {
     if (props.debug) return
     const s = loop.state()
@@ -1534,7 +1538,7 @@ function AppContent(props: AppProps) {
       const sid = getActiveSessionId(s) || null
       const snapshot: PersistedLoopState = {
         version: 1,
-        iteration: loop.iteration(),
+        iteration: s.iteration,
         sessionId: sid || null,
         stateType: s.type,
         rateLimitAttempts,
