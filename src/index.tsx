@@ -387,9 +387,14 @@ async function main(): Promise<void> {
     agent: args.agent
   })
 
-  // Log plan file status
+  // Log plan file status. Use the safe `fileExists()` wrapper (not a raw
+  // `Bun.file().exists()`) so a failing stat — EACCES/ENOENT on a missing
+  // parent dir, EISDIR, a stale mount — surfaces a localized error instead of
+  // escaping to `main().catch()` as a bare "Fatal error: <stack>". The very
+  // next call (`validatePrerequisites`) already uses this wrapper for the same
+  // reason; consistency + DRY.
   const planPath = resolvePlanFile(args.planFile)
-  const planFileExists = await Bun.file(planPath).exists()
+  const planFileExists = await fileExists(planPath)
   log.info("startup", "Plan file check", { path: planPath, exists: planFileExists })
 
   // Validate prerequisites before rendering
