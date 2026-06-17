@@ -5577,7 +5577,124 @@ el conteo, era 908 antes del refactor). `bun run build`: green.
 Helper NO bundleado en `dist/index.js` (no hay import transitivo
 desde `src/index.tsx`). Commit `9e1cb8a`.
 
-- [ ] Confirmar que ninguna mejora implementada contradice patrones existentes del proyecto.
+- [x] Confirmar que ninguna mejora implementada contradice patrones existentes del proyecto.
+
+_Evaluación_: la auditoría de las 97 mejoras implementadas
+contra los patrones documentados en `docs/project-context.md:75-97`
+(las 6 convenciones) y la sección "Project Operations" de
+`AGENTS.md` no encontró ninguna contradicción. La auditoría
+cubrió:
+
+1. **Bun-first, ESM-only.** El único `require()` en el repo
+   está en `src/lib/cli-args.ts:27` con un comment block de 11
+   líneas (`cli-args.ts:16-26`, Mejora 88 / Finding 17.8.B) que
+   documenta el por qué del primitivo CJS en un proyecto ESM
+   y embebe la recipe de migración a
+   `createRequire(import.meta.url)` para el día que se flip
+   strict ESM. Coincide exactamente con la línea
+   `project-context.md:78-79`. Cero advenedizos.
+
+2. **Logging convention.** `console.error` aparece **solo** en
+   `src/index.tsx` (12 ocurrencias, todas en el flow
+   headless `--create-plan` + los 3 handlers de crash-time
+   `uncaughtException` / `unhandledRejection` / `main().catch`)
+   y en `src/lib/cli-args.ts` (4 ocurrencias, todas en el
+   parser de `--resilience`). Coincide exactamente con la
+   política `project-context.md:82-85`. Mejora 12 (Finding
+   4.1.A) ya cerró el último call site de TUI flow.
+
+3. **Tests colocados.** Cada `*.ts` en `src/lib/`,
+   `src/hooks/`, y `src/context/` tiene su `*.test.ts`
+   adyacente. Las **5 únicas excepciones** son
+   `command-exists.ts` (cubierto transitivamente por los 3
+   callers testados, Mejora 92), `constants.ts` (exporta
+   solo constantes, sin comportamiento), `debug-logger.ts`
+   (in-house logger, `docs/testing.md` desaconseja
+   testearlo), `i18n.ts` (paridad EN/ES pineada
+   compile-time por `en: Record<MessageKey, Msg>` y
+   `es: Record<MessageKey, Msg>`), y `project.ts` (43
+   líneas de thin wrappers sobre `fs/promises`, Mejora 93).
+   Mejoras 42, 89, 90, 91, 92, 93, 94, 95 cubrieron los
+   8 gaps que la Phase 1 audit enumeraba en
+   `project-context.md:115-117`.
+
+4. **Atomic writes.** Tanto `saveConfig` (`config.ts:320-350`,
+   Mejora 46) como `saveLoopState` (`loop-state-store.ts:46-67`,
+   Mejora 28) usan `writeFile` + `rename` + `unlink` best-effort
+   en el `catch`. Mejora 47 randomizó el suffix del tmp para
+   evitar el clobbering entre procesos concurrentes.
+
+5. **Mock patterns consistentes con el codebase.**
+   - `mock.module("./command-exists", ...)` →
+     `clipboard.test.ts:21-23`, `terminal-launcher.test.ts`,
+     `power.test.ts` (3 callers, mismo patrón).
+   - `mock.module("@opencode-ai/sdk/v2", ...)` →
+     `useServer.test.ts:46-74`, `useSSE.hook.test.ts`
+     (2 callers, mismo patrón).
+   - Direct property assignment para `process.exit` →
+     `cli-args.test.ts:16-43`.
+   - Direct property assignment para `Bun.spawn` →
+     `terminal-launcher.test.ts`, `power.test.ts`,
+     refactorizado a `src/lib/test-helpers/bun-spawn-mock.ts`
+     en el commit `9e1cb8a` (Phase 3 dedup).
+   - `skipIf(win32 || root)` + `chmodSync` para permisos
+     cross-platform → `loop-state-store.test.ts:71-92`
+     (Mejora 30), `config.test.ts:280-302` (Mejora 46),
+     `plan-parser.test.ts` EACCES branches (Mejora 85).
+   Cero nuevas variantes.
+
+6. **i18n paridad.** Todos los nuevos `MessageKey`s
+   introducidos por las mejoras (Mejoras 41, 84, 86) fueron
+   mirrorados en EN + ES con el mismo guard
+   `es: Record<MessageKey, Msg>` pineado en el header de
+   `i18n.ts`. El compilador forzó la mirror en cada caso.
+
+7. **State machine inalterable.** La state machine
+   `LoopState` / `LoopAction` solo recibió adendos
+   explícitamente planeados por el audit: `lastIteration?`
+   en la variante `error` (Mejora 11, Finding 3.1.A),
+   `kind` en la variante `cooldown` (Mejora 16, Finding
+   5.1.A), `resumedFromIdle?` en la variante `running`
+   (Mejora 32, Finding 8.5.A), y la action
+   `iteration_resumed` (mismo Mejora 32). Cada adendo fue
+   pineado en su test correspondiente; las 12 variantes
+   del state machine tienen cobertura de transición en
+   `useLoopState.test.ts:198-249` y el
+   `resilience-integration.test.ts`.
+
+8. **Convención "anotación sobre fix" en Mejoras
+   descartadas.** Las 8 mejoras descartadas (8.4.A, 15.8.B,
+   16.4.B-via-side-effect, 17.2.B-via-side-effect, 17.4.C-via-side-effect,
+   17.5.A-parte, 17.8.B-parte) todas dejaron una nota
+   `_Evaluación_:` en su bloque de PLAN, exactamente
+   siguiendo el patrón establecido por Mejoras 1-3. Cero
+   "skip silencioso".
+
+9. **Build green, tests green.** `bun test` →
+   908 pass / 1 skip / 0 fail en 779 ms (era 655 al
+   final de Phase 1). `bun run build` → green. El
+   `test-helpers/bun-spawn-mock.ts` (Phase 3 dedup, commit
+   `9e1cb8a`) está confirmado NO bundleado en
+   `dist/index.js` (0 matches, ningún import transitivo
+   desde `src/index.tsx`).
+
+10. **Un solo drift documental pre-existente.** La línea
+    `docs/project-context.md:68` reporta "655 pass / 0
+    fail in 280 ms" — el conteo de Phase 1, ahora stale
+    (908 tests). **No es una contradicción**:
+    `project-context.md` está documentado como
+    "**One-time research deliverable**" (`AGENTS.md:22`),
+    intencionalmente un snapshot de Phase 1. La doc
+    vigente para "what tests exist" es
+    `bun test` directo (output fresco). Cero acción
+    requerida.
+
+Resultado: **0 contradicciones detectadas**. Las 97
+mejoras respetan los 9 patrones pineados arriba. El
+proyecto está listo para Fase 3 — task 3 (revisión
+de cambios parciales) y task 4 (suite de verificación)
+sin findings pendientes. Commit pendiente.
+
 - [ ] Confirmar que no quedaron cambios parciales, archivos temporales ni código muerto.
 - [ ] Ejecutar la suite completa de verificación disponible para el proyecto.
 - [ ] Corregir cualquier fallo causado por las mejoras implementadas.
