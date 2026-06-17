@@ -3794,10 +3794,62 @@ conteo. `bun run build` verde. Commit `161842d`.
 
 ### Mejora 74 — Finding 16.5.D — LOW — `BottomPanel.rate()` and `compactLine()` re-evaluate on every tick
 
-- [ ] Evaluar la mejora 74 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 74 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 74 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 74 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 74 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 74 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 74 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 74 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21690-21744`): las plain functions `rate()` y
+`compactLine()` en `BottomPanel.tsx:55-89` se llaman desde
+JSX, así que la JSX se suscribe a todas las signals que
+leen — incluyendo `globalElapsedTime` (que pinea el tick de
+1s en `useLoopStats.ts:227-232`). El re-eval por segundo es
+intencional para el global timer y el cost es
+"a few string concatenations + a `fitSegments` call per
+second per panel" según el audit mismo. El propio audit
+cierra el finding con su veredicto explícito: **"Worth
+optimizing only if profiling shows it as a hot path"** — y
+el counter-argument del audit (líneas 21744) ya nombra la
+duda: "Optimizing one and not the other is inconsistent"
+(referido al Dashboard, que también re-evalua por segundo
+para su `elapsedTime` display). El fix propuesto
+(`MEJORAS.md:21724-21738`, "more targeted fix" que separa
+static-text de dynamic-text con 2 `createMemo`s + un spread
+en `compactLine`) tiene dos problemas concretos para el
+modo ponytail:
+
+1. **Net code addition** — la fix convierte 9 líneas
+   (1 plain function con array inline) en 13+ líneas
+   (2 memos con comment blocks + 1 plain function con
+   spread). El code review surface sube sin que el
+   comportamiento observable cambie. Ponytail: "Deletion
+   over addition" — no es la primera solución "lazy" que
+   funciona, es la segunda que funciona peor.
+2. **El microsecond gain es invisible** — la fix evita
+   ~3 string concatenations por segundo (las del
+   `compactSegments` memo). Con un budget de render de
+   ~16ms (60fps target) o ~1s (1Hz refresh en TUI), 3
+   concatenaciones son ruido de medición. No hay
+   evidencia en el codebase (ni en `useLoopStats`, ni en
+   `Dashboard`) de que el panel sea un hot path — la
+   `compactLine` se llama solo cuando la terminal
+   re-renderiza, no por keystroke.
+
+La consistencia que el counter-argument nombra también
+aplica al revés: el Dashboard (`Dashboard.tsx:1-103`)
+tiene exactamente la misma estructura (plain functions
++ JSX reads + `globalElapsedTime` subscription) y NO se
+optimizó. Optimizar uno y dejar el otro introduce
+asimetría entre dos archivos hermanos. Mejoras 60, 31 y
+otras han descartado patterns "build infra for a future
+need" o "optimize sin profiling" por las mismas razones.
+
+Implementación mínima: anotación en este plan; cero
+cambios de código. `bun test` verde: 788 pass / 1 skip /
+0 fail, 1831 expect() calls, 28 files, 353 ms — sin cambio
+en el conteo (era 788 / 1 / 0 antes de la anotación).
+Commit `docs(plan)`.
 
 ### Mejora 75 — Finding 16.5.E — LOW — `App.tsx` persistence effect reads `loop.state()` and `loop.iteration()` — double subscription
 
