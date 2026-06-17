@@ -4940,10 +4940,64 @@ calls, 30 files, 517 ms — +7 tests, +14 expects, +1 file
 
 ### Mejora 91 — Finding 18.2.C — MEDIUM — `config.ts` has no test
 
-- [ ] Evaluar la mejora 91 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 91 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 91 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 91 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 91 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 91 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 91 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 91 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:24393-24401`): `src/lib/config.ts` no tenía
+`*.test.ts` asociado en la fecha del audit. El propio audit
+propone una suite de 13 tests que cubren `loadConfig` (5),
+`saveConfig` (2), `resolveResilience` (5) y `hasTerminalConfig`
+(2). **Al momento de evaluar esta mejora, 11 de esos 13
+tests ya estaban implementados** por el trabajo acumulado de
+Mejoras 43-53 (commits `d9dd9ee`, `671581c`, `d83b0fd`,
+`d9a4628`, `9b5b4d8`, `5fbddbb`, `a20f4fb`, `fbfeb69`):
+
+- Items 1-4 (loadConfig schema robustness): `config.test.ts:36-76`
+  cubre los 4 casos exactos del audit (missing file, invalid
+  JSON, null/array/primitive, partial config).
+- Item 5 (saveConfig creates dir if missing): pineado
+  implícitamente por cada `saveConfig({ ... })` en el suite —
+  `beforeEach` setea `XDG_CONFIG_HOME` a un tempdir fresco sin
+  la subcarpeta `ocloop/`, así que el `mkdirSync({ recursive: true })`
+  interno es load-bearing para que los tests pasen. El test
+  "writes the config and loadConfig reads it back" (línea
+  469-472) es el canónico.
+- Item 6 (saveConfig writes to .tmp then renames, no leftover):
+  `config.test.ts:474-486` ("overwrites an existing config
+  atomically (no leftover .tmp)").
+- Items 7-11 (resolveResilience defaults / file / CLI /
+  undefined skip / precedence): 5 tests en el describe
+  "resolveResilience — null skip (Finding 12.3.A)" (líneas
+  347-398) + 3 tests en "resolveResilience — unknown-key
+  skip (Finding 12.3.C)" (líneas 400-445) + 2 tests en
+  "resolveResilience — non-object layers (Finding 12.3.A)"
+  (líneas 448-466). El "precedence" pineado en línea 383-390
+  ("lets a non-null CLI override win over a null file value")
+  es el caso central del audit.
+
+Los **únicos gaps** eran los items 12-13 del audit
+(hasTerminalConfig con ambos shapes + rechazo de empty).
+Implementación mínima: 1 import (`hasTerminalConfig`
+añadido a la línea 5) + 5 tests en un nuevo describe block
+al final del archivo (`config.test.ts:573-615`) que pinean:
+no terminal field → false, valid known name → true, empty
+known name → false, valid custom (command + args) → true,
+empty custom command → false. Cero cambios al production
+code de `config.ts` — el contract de `hasTerminalConfig`
+(`config.ts:441-463`) ya era correcto, solo faltaba el
+pineo. Cero impacto en los otros 53 tests del file
+(mutation de un solo import + 5 tests nuevos al final).
+Cero impacto en runtime, cero impacto en la TUI, cero
+impacto en el reducer, cero impacto en el lifecycle de
+iteración.
+
+`bun test` verde: 816 pass / 1 skip / 0 fail, 1896
+expect() calls, 30 files — +5 tests, +5 expects (era
+811 / 1 / 0 / 1891 / 30 antes del test file). `bun run
+build` verde. Commit `174ae7a`.
 
 ### Mejora 92 — Finding 18.2.D — MEDIUM — `terminal-launcher.ts`, `clipboard.ts`, `power.ts` have no test
 
