@@ -1,4 +1,4 @@
-import { createSignal, createEffect, onMount, For, Show } from "solid-js"
+import { createSignal, createEffect, createMemo, onMount, For, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { InputRenderable } from "@opentui/core"
 import fuzzysort from "fuzzysort"
@@ -229,8 +229,20 @@ export function DialogSelect(props: DialogSelectProps) {
         >
           <For each={filteredOptions()}>
             {(option, i) => {
-              const isSelected = () => i() === selectedIndex()
-              
+              // Per-row derived styles: one memo per row so that a `selectedIndex`
+              // change only re-evaluates the row that flipped. The memo reads
+              // `i()`, `selectedIndex()`, and `theme()` exactly once each, halving
+              // the per-keystroke hex-parsing cost of `selectedForeground`.
+              // (Source: MEJORAS.md Finding 16.5.B.)
+              const styles = createMemo(() => {
+                const sel = i() === selectedIndex()
+                return {
+                  bg: sel ? theme().primary : undefined,
+                  fg: sel ? selectedForeground(theme()) : theme().text,
+                  fgMuted: sel ? selectedForeground(theme()) : theme().textMuted,
+                }
+              })
+
               return (
                 <box
                   id={option.value}
@@ -245,25 +257,21 @@ export function DialogSelect(props: DialogSelectProps) {
                     height: 1,
                     paddingLeft: 1,
                     paddingRight: 1,
-                    backgroundColor: isSelected() ? theme().primary : undefined,
+                    backgroundColor: styles().bg,
                   }}
                 >
                   <box style={{ width: "100%", justifyContent: "space-between", flexDirection: "row" }}>
                     <text>
-                      <span style={{ 
-                        fg: isSelected() ? selectedForeground(theme()) : theme().text 
-                      }}>
+                      <span style={{ fg: styles().fg }}>
                         {/* Current indicator */}
                         {option.value === props.current ? "● " : "  "}
                         {truncate(option.title, 40)}
                       </span>
                     </text>
-                    
+
                     <Show when={option.category}>
                       <text>
-                        <span style={{ 
-                          fg: isSelected() ? selectedForeground(theme()) : theme().textMuted 
-                        }}>
+                        <span style={{ fg: styles().fgMuted }}>
                           {option.category}
                         </span>
                       </text>
