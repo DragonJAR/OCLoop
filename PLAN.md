@@ -5450,10 +5450,93 @@ production code, cero cambios a los call sites. `bun test` verde:
 
 ### Mejora 97 — Finding 18.3.C — LOW — `DialogContext.tsx` top-only render contract is not pinned
 
-- [ ] Evaluar la mejora 97 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 97 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 97 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 97 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 97 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 97 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 97 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 97 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:24489-24497`): `<DialogStack />` (línea 120-138)
+computaba `top()` localmente como un closure sobre `stack()`,
+así que el contrato "render only the top" estaba sostenido solo
+por el comment block (líneas 123-127) y por la inspección del
+código. La opción "render test con Solid root" del audit
+(`MEJORAS.md:24495`, item 5) es la ideal pero requiere DOM,
+que `bun:test` no provee (per `docs/solid-hook-testing.md` y la
+advertencia de `docs/testing.md` sobre el JSX transform de
+`@opentui/solid`). La opción "fix in root" — extraer `top` a
+un accessor en el controller — es estrictamente la mínima útil
+y reusa exactamente el patrón establecido por Mejora 94
+(Finding 18.2.F, commit `9af9a0c`): lógica testeable en
+`*.controller.ts` (puro `.ts`), JSX render como capa
+estructural code-reviewed. El componente `<DialogStack />` se
+reduce a un destructure + `<Show when={top()} keyed>` de 3
+líneas, y la contract se pinea en el data layer con tests que
+ejercitan los 5 paths del `top` (empty, single, multi, pop,
+replace, clear).
+
+Implementación (commit `4fd35e5`):
+
+- `src/context/dialog-controller.ts` (15 líneas añadidas):
+  `top: Accessor<DialogComponent | undefined>` añadido a la
+  interface `DialogContextValue` con comment block que nombra
+  el source `MEJORAS.md Finding 18.3.C` y explica la
+  responsabilidad "data-layer contract for the JSX render".
+  Implementación:
+  ```ts
+  const top = (): DialogComponent | undefined => {
+    const s = stack()
+    return s.length > 0 ? s[s.length - 1] : undefined
+  }
+  ```
+  La lectura única de `stack()` a un local `s` evita la
+  double-subscription que ocurriría si el consumer JSX
+  escribiera `stack()[stack().length - 1]` directamente.
+- `src/context/DialogContext.tsx` (5 líneas → 16 líneas, +1
+  import por destructuring): `DialogStack` ahora destructura
+  `top` de `useDialog()` y elimina la `const top = () => {…}`
+  local. El comment block extendido nombra explícitamente el
+  split de responsabilidades: data-layer (`top` accessor,
+  pineado por `dialog.test.ts`) + render-layer (`keyed` prop
+  en `<Show>`, structural, code-reviewed).
+- `src/context/dialog.test.ts` (78 líneas añadidas, 7 tests
+  nuevos en un segundo `describe` block): empty → undefined,
+  single show, stack of 3 → top is the third, pop drops the
+  top, pop on empty stays undefined, clear → undefined,
+  replace → only the replaced. Cada test ejercita un path
+  distinto del `top` accessor sin solapamiento. El
+  file-level comment se actualiza para reflejar que el
+  data-layer está pineado y el JSX render queda como
+  structural code-reviewed.
+
+Cero cambios al `stack` / `hasDialogs` / `show` / `replace` /
+`clear` / `pop` accessor shapes (la nueva `top` es aditiva, no
+modificativa). Cero cambios a los 13 call sites externos de
+`App.tsx` que usan `useDialog()` (siguen desestructurando lo
+que necesitan; `top` es opt-in). Cero cambios al `Show` de
+`solid-js` (sigue siendo el mismo `<Show when={top()} keyed>`;
+el `keyed` es el render-layer contract que causa re-mount
+cuando la identidad del top cambia). Cero impacto en el
+comportamiento del TUI, cero impacto en el reducer, cero
+impacto en el lifecycle de iteración. Cero impacto en los
+6 tests preexistentes del describe "createDialogController
+(Finding 18.2.F)" — `top` es aditivo.
+
+El `<Show when={top()} keyed>` queda como el único componente
+JSX estructural que code review cubre. El split de
+responsabilidades (data + render) pinea explícitamente qué
+parte está cubierta por test y qué parte es structural —
+siguiendo el patrón de Mejora 94 que extrajo la lógica de
+los `.tsx` a los `*.controller.ts` precisamente para resolver
+este trade-off entre la cobertura de test y la dependencia
+del JSX transform de `@opentui/solid`.
+
+`bun test` verde: 908 pass / 1 skip / 0 fail (era 901 / 1 /
+0 antes del fix), 2091 expect() calls, 37 files, 905 ms —
++7 tests (era 901 → 908), +9 expects, sin cambio en el
+conteo de archivos. `bun test src/context/dialog.test.ts`
+verde: 13 pass / 0 fail (era 6 → 13, +7). `bun run build`
+verde.
 
 - [x] Procesar el siguiente bloque explícito de mejora agregado a esta Fase 2 después de leer `MEJORAS.md`.
 - [x] Confirmar que no quedan mejoras de `MEJORAS.md` sin bloque explícito de tareas en este `PLAN.md`.
