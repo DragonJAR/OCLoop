@@ -368,5 +368,11 @@ async function main(): Promise<void> {
 // Run main and handle errors
 main().catch((error) => {
   console.error("Fatal error:", error)
+  // Mirrors the explicit call in the uncaughtException / unhandledRejection
+  // handlers above. The process.on("exit", restoreTerminal) backstop also
+  // covers this, but the explicit form keeps every process-exit path
+  // grep-friendly and self-documenting.
+  // Source: MEJORAS.md Finding 17.1.B.
+  restoreTerminal()
   process.exit(1)
 })
