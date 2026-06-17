@@ -372,7 +372,9 @@ main().catch((error) => {
   // handlers above. The process.on("exit", restoreTerminal) backstop also
   // covers this, but the explicit form keeps every process-exit path
   // grep-friendly and self-documenting.
-  // Source: MEJORAS.md Finding 17.1.B.
+  // Source: MEJORAS.md Findings 17.1.B and 17.2.B (17.2.B is a carryover of
+  // 17.1.B in the per-process-exit coverage audit; both name the same line
+  // of code and the same fix).
   restoreTerminal()
   process.exit(1)
 })
