@@ -4330,10 +4330,70 @@ build` verde. Commit `20efc5e`.
 
 ### Mejora 83 — Finding 17.4.A — MEDIUM — `getPlanCompleteSummary` failure is misclassified as an iteration error
 
-- [ ] Evaluar la mejora 83 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 83 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 83 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 83 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 83 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 83 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 83 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 83 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del
+audit (`MEJORAS.md:23211-23285`): el bloque
+`startIteration` (`App.tsx:980-1002`) envolvía
+`checkPlanComplete()` + `getPlanCompleteSummary()` en
+un único `try/catch` que enrutaba cualquier excepción
+a `handleIterationError`. `checkPlanComplete()` ya
+defiende su precondición (try/catch interno que
+retorna `false`, líneas 604-614), así que cuando
+retorna `true` sabemos que el plan está completo y
+el archivo era legible hace un instante. Si la
+segunda lectura (`getPlanCompleteSummary`,
+plan-parser.ts:247) falla por un FS error entre
+los dos awaits (archivo reemplazado por directorio,
+permisos modificados), el error es re-clasificado
+como un iteration error y entra a cooldown o
+dispatcha un error permanente — el usuario ve un
+toast espurio de "rate limit" o "error" aunque el
+plan SÍ está completo. La opción del fix propuesta
+en `MEJORAS.md:23261-23276` (local try/catch que
+falla al fallback localized) es estrictamente la
+mínima útil y reusa el patrón `try { ... } catch
+(err) { log.warn(category, message, err) }` que
+ya está pineado en el mismo file (línea 1241,
+`log.warn("render", "Cleanup during quit failed", err)`,
+introducido por Mejora 82). Implementación mínima:
+12 líneas añadidas a `src/App.tsx:984-995` (3
+líneas de comment block extendiendo el existente
+para nombrar el source `MEJORAS.md Finding 17.4.A`
++ 5 líneas del `try/catch` + 1 línea de
+`let summaryContent: string | null = null`).
+Cero cambios a la firma de `startIteration`
+(`Promise<void>` intacta), cero cambios al
+reducer `plan_complete`, cero cambios a
+`getPlanCompleteSummary` / `checkPlanComplete` /
+`isPlanComplete` en `plan-parser.ts`, cero
+impacto en la ruta "plan NO completo" (el `if`
+externo sigue controlando el branch), cero impacto
+en la ruta "summary legible" (el path feliz
+mantiene el `try { summaryContent = await ... }`
+con un `let` ahora — observable-equivalente). Cero
+impacto en `handleIterationError` (ese path ya no
+recibe el FS error del summary). Cero impacto en
+el reducer `cooldown` (no se entra en cooldown
+por un error que ahora se silencia). Sin nuevos
+tests — el audit (`MEJORAS.md:23283-23285`) ya
+justificó que el path "summary ilegible" es
+integration-territory (requiere Solid render +
+mock del filesystem para re-crear el EISDIR/EACCES
+race) y que la garantía del fix es estructural
+(un `try/catch` + `log.warn` que code review
+cubre sin gap de cobertura). La asimetría con
+el path "file missing" queda cerrada: ambos
+producen `summaryContent = null` y dispatchan
+`plan_complete` con el fallback localized
+(`t("dlgPlanCompleteFallback")`). `bun test`
+verde: 788 pass / 1 skip / 0 fail, 1832 expect()
+calls, 28 files, 341 ms — sin cambio en el conteo
+(era 788 antes del fix). `bun run build` verde.
+Commit `f2546a4`.
 
 ### Mejora 84 — Finding 17.4.B — LOW — `validatePrerequisites` propagates `exists()` exceptions to `main().catch()`
 
