@@ -29,3 +29,7 @@
   entrypoint must keep the `#!/usr/bin/env bun` shebang.
 - `@docs/terminal-compat.md` — terminal detection / attach behaviour
   (referenced by Findings 11.2.* and 11.3.*).
+- `@docs/solid-hook-testing.md` — `onMount` does NOT fire inside a bare
+  `createRoot`; triggers the `stop()` + `restart()` harness pattern used in
+  `useServer.test.ts`. Relevant for any future hook tests with
+  `onMount`/`onCleanup` (Findings 18.2.* / 18.3.*).
