@@ -4851,10 +4851,92 @@ Commit `dfef30c`.
 
 ### Mejora 90 — Finding 18.2.B — HIGH — `shutdown.ts` has no test (failsafe race verified by file read only)
 
-- [ ] Evaluar la mejora 90 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 90 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 90 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 90 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 90 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 90 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 90 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 90 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:24383-24391`): los 102 líneas de `src/lib/shutdown.ts`
+no tenían `*.test.ts` asociado, y la garantía del
+`isShuttingDown` re-entrancy guard y del failsafe timer
+dependía de un file-read. La propuesta del audit (4 tests
+pinneando el contract de `shutdown()` con un `mock.module`
+de `node:process`) se implementó con la variante
+**adaptada** del plan original por dos razones concretas:
+
+1. **`process.exit` se stubea por asignación directa de
+   propiedad** — el global `process` no es un ESM module de
+   Node, así que `mock.module("node:process", …)` no lo
+   intercepta. La asignación directa es el mismo patrón que
+   `cli-args.test.ts:16-43` ya estableció para el mismo
+   motivo (de hecho `shutdown.ts:83` y `cli-args.ts` ambos
+   llaman `process.exit(0)` como guard, y la
+   convención de test es la misma).
+2. **El singleton se resetea por type-assert al field
+   privado** — `shutdownManager` es un singleton
+   (`shutdown.ts:102`) y `isShuttingDown` y `forceExitMs` son
+   `private` para producción. El test necesita
+   resetearlos entre runs porque el singleton es shared
+   across el process. La type-assert es estrictamente
+   local al test file y code review la cubre.
+
+7 tests en `src/lib/shutdown.test.ts` (1 file nuevo, 187
+líneas, una decisión por test):
+
+1. **handler resolves → handler fires, exit(0)** — pinea
+   el happy path del `try` block.
+2. **no handler → exit(0)** — pinea el `else` branch
+   (el `clearTimeout` + `process.exit(0)` de la línea 86-87).
+3. **re-entrancy: second shutdown is no-op** — pinea el
+   `isShuttingDown` guard (línea 51-53). El segundo
+   call no invoca el handler y no llama `process.exit`
+   por segunda vez.
+4. **handler throws → exit(1) called** — pinea el catch
+   block. El assert usa `toContain(1)` (no
+   `toEqual([1, 0])`) porque en producción el `process.exit(1)`
+   de la línea 73 mata el runtime y la línea 83
+   `process.exit(0)` nunca corre; el `[1, 0]` que vemos
+   en el test es un artifact del mock que mantiene
+   el runtime vivo. Pinear el contract real
+   ("1 fue llamado") y no la secuencia del mock mantiene
+   el test relevante ante un refactor que quite el
+   `process.exit(0)` trailing.
+5. **failsafe: wedged handler → exit(1) after
+   forceExitMs** — pinea el path completo del
+   setTimeout de la línea 58-63. Reduce
+   `forceExitMs` a 50ms vía type-assert para que el
+   test corra rápido (verifica que el timer respeta
+   el field, no que es hard-coded a 10s). El
+   `void shutdownManager.shutdown()` no se
+   awaits (el handler wedges, la promesa nunca
+   resuelve); el test espera 100ms para que el
+   failsafe dispare.
+6. **register replaces a previously-registered handler** —
+   pinea el contract de la línea 35-37 ("only one
+   handler can be registered at a time; subsequent
+   calls replace the previous").
+7. **unregister removes the handler** — pinea el
+   contract de la línea 42-44. El shutdown con
+   handler=null toma el `else` branch (exit 0).
+
+Cero cambios al production code de `shutdown.ts` — la
+funcionalidad queda pineada, no modificada. Cero cambios
+a `src/index.tsx` (sigue llamando
+`process.on("SIGINT", …)` → `shutdownManager` igual). Cero
+impacto en el lifecycle de iteración, cero impacto en la
+TUI, cero impacto en el reducer.
+
+El `console.error` output del catch block (línea 72) y del
+failsafe timer (línea 60) se suprime en los tests 4 y 5
+vía override + `try/finally` para mantener el output del
+test runner limpio. La supresión es local al test scope
+y code review cubre el gap.
+
+`bun test` verde: 811 pass / 1 skip / 0 fail, 1891 expect()
+calls, 30 files, 517 ms — +7 tests, +14 expects, +1 file
+(era 804 / 1 / 0 / 1877 / 29 antes del test file).
+`bun run build` verde. Commit `87acf66`.
 
 ### Mejora 91 — Finding 18.2.C — MEDIUM — `config.ts` has no test
 
