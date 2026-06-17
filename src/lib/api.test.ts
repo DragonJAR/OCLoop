@@ -1,5 +1,5 @@
-import { describe, expect, it } from "bun:test"
-import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, tryGetClient, type OpencodeClient } from "./api"
+import { describe, expect, it, beforeEach } from "bun:test"
+import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, tryGetClient, __resetClientCacheForTests, type OpencodeClient } from "./api"
 import type { SessionStatus } from "@opencode-ai/sdk/v2"
 
 describe("assertResponse", () => {
@@ -194,17 +194,29 @@ describe("Phase 4 — API layer edge cases", () => {
   })
 
   describe("createClient — cache eviction", () => {
+    // Reset the module-level `clientCache` between tests so the eviction
+    // path is exercised deterministically. Without this reset, entries from
+    // prior tests (or prior runs in the same process) could fill the cache
+    // and the test would only verify "the newest URL is cached" — a
+    // necessary-but-not-sufficient check of the eviction policy.
+    //
+    // Source: MEJORAS.md Finding 16.6.B.
+    beforeEach(() => __resetClientCacheForTests())
+
     it("evicts the oldest half when cache exceeds MAX_CACHE_SIZE", () => {
-      // Reset the module-level cache by inserting unique URLs up to the limit + 1.
-      // createClient is memoized per URL; we verify that early entries are evicted.
+      // Fill the cache past MAX_CACHE_SIZE (10) with unique URLs.
       const clients: OpencodeClient[] = []
-      for (let i = 0; i <= 11; i++) {
+      for (let i = 0; i < 12; i++) {
         clients.push(createClient(`http://localhost:${10000 + i}`))
       }
-      // After 11 inserts (MAX_CACHE_SIZE=10), the oldest ~6 should have been evicted.
-      // Verify the newest entries still return the same cached instance.
+      // After 12 inserts (MAX_CACHE_SIZE=10), the oldest ~6 should have
+      // been evicted. Verify both: the newest is still cached, AND the
+      // very first URL is gone (a fresh client is built on the next
+      // lookup for that URL).
       const newest = createClient(`http://localhost:10011`)
+      const originalFirst = createClient(`http://localhost:10000`)
       expect(newest).toBe(clients[11])
+      expect(originalFirst).not.toBe(clients[0])
     })
   })
 

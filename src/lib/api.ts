@@ -48,6 +48,26 @@ export function createClient(url: string): OpencodeClient {
 }
 
 /**
+ * Test-only: clear the module-level `clientCache` between tests.
+ *
+ * The cache is closure-private (not part of the public API) and accumulates
+ * across test files in a single `bun test` process. Without a reset, the
+ * eviction test in `api.test.ts` would have to rely on URL uniqueness and
+ * could silently skip the eviction path if prior tests had already filled
+ * the cache.
+ *
+ * Gated on `NODE_ENV === "test"` so production builds (which bundle this
+ * module) cannot accidentally clear the live cache via a stray call. Bun sets
+ * `NODE_ENV=test` automatically for `bun test`.
+ *
+ * Source: MEJORAS.md Finding 16.6.B.
+ */
+export function __resetClientCacheForTests(): void {
+  if (process.env.NODE_ENV !== "test") return
+  clientCache.clear()
+}
+
+/**
  * Resolve the current server URL and return a cached SDK client, or `null` if
  * the URL is not yet available. Collapses the
  * `const url = server.url(); if (!url) ...; const client = createClient(url)`
