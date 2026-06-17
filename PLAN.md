@@ -3092,10 +3092,60 @@ conteo (era 750 antes del fix).
 
 ### Mejora 63 — Finding 16.1.C — LOW — `enterCooldown` call sites differ only in the optional `kind` argument
 
-- [ ] Evaluar la mejora 63 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 63 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 63 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 63 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 63 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 63 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 63 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 63 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:20678-20691`): la API path de
+`handleIterationError` (línea 913, pre-fix) llamaba
+`enterCooldown(classified.message, classified.retryAfter, "rate_limit")`
+con el `kind` explícito, mientras la SSE path
+(`App.tsx:561`) llama
+`enterCooldown(error.message, error.retryAfter)` y deja
+que el default (`"rate_limit"`, en `App.tsx:674`)
+resuelva. Ambos son correctos; el divergence es
+estilístico. La opción "drop the explicit" propuesta en
+`MEJORAS.md:20689` es estrictamente la mínima útil vs.
+la opción "add the explicit to SSE" (más verbose sin
+valor agregado, dado que el default es la contract) — la
+audit explícitamente nombra la prefer: "the
+default-omitting form is shorter and reads better".
+Implementación mínima: 1 línea de código (drop the
+`"rate_limit"` arg en `App.tsx:913`) + 5 líneas de
+comment block que nombran el source `MEJORAS.md Finding
+16.1.C`, el parallel con la SSE path en
+`App.tsx:561`, y la rationale "the default is
+`rate_limit`, so omitting is observable-equivalent". El
+branch `transient` (línea 920, post-fix) queda
+explícito (forced por la function signature — el default
+sería wrong) y se documenta in-line para que un
+mantenedor entienda la aparente-asymmetric sin re-derivar
+del audit.
+
+Cero cambios a la firma de `enterCooldown`
+(`(reason, retryAfterSeconds?, kind?) => void` intacta —
+el `kind` arg sigue siendo opcional, solo que el call
+site ya no lo pasa cuando el value coincide con el
+default), cero cambios al reducer, cero cambios a la SSE
+path, cero cambios al `transient` branch del API path.
+Cero impacto en runtime: la function call queda
+observablemente equivalente (default `"rate_limit"` ==
+explicit `"rate_limit"`). Cero impacto en tests (750
+pass / 1 skip / 0 fail, sin cambio en el conteo). Cero
+impacto en el contract del audit "pick one form" — el
+explicit-vs-implicit divergence queda cerrado para el
+`rate_limit` case; el `transient` case es structural
+asymmetric (forced explicit) y queda documentado.
+
+Sin nuevos tests: el contract de `enterCooldown` (default
+`"rate_limit"`) ya está pineado por
+`resilience-integration.test.ts` y la single-line
+change es structural, no computacional. `bun test`
+verde: 750 pass / 1 skip / 0 fail, 1784 expect() calls,
+25 files — sin cambio en el conteo (era 750 antes del
+fix).
 
 ### Mejora 64 — Finding 16.1.D — LOW — `handleIterationError` and SSE `onSessionError` could share a "kind → action" helper
 

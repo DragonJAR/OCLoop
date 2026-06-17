@@ -910,7 +910,11 @@ function AppContent(props: AppProps) {
   function handleIterationError(err: unknown): void {
     const classified = classifySessionError(err)
     if (classified.kind === "rate_limit") {
-      enterCooldown(classified.message, classified.retryAfter, "rate_limit")
+      // Omit the `kind` arg — the default is `"rate_limit"`, matching the
+      // SSE path's call form (App.tsx:561). `transient` below stays explicit
+      // because the default would be wrong for that branch.
+      // Source: MEJORAS.md Finding 16.1.C.
+      enterCooldown(classified.message, classified.retryAfter)
       return
     }
     if (classified.kind === "transient") {
