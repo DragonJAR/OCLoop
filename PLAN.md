@@ -3394,17 +3394,146 @@ anotación). Commit `docs(plan)`.
 
 ### Mejora 67 — Finding 16.3.A — LOW — `props.planFile || DEFAULTS.PLAN_FILE` repeated at 8 sites
 
-- [ ] Evaluar la mejora 67 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 67 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 67 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 67 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 67 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 67 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 67 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 67 y corregir cualquier regresión causada por el cambio.
+
+_Evaluación_: la causa raíz es exactamente la del audit
+(`MEJORAS.md:21036-21080`): la 1-line expression
+`props.planFile || DEFAULTS.PLAN_FILE` aparecía 8 veces entre
+`App.tsx` (6) e `index.tsx` (2), cada sitio re-derivando el
+mismo valor mecánicamente. La opción del fix propuesta en
+`MEJORAS.md:21042-21060` (helper puro `resolvePlanFile` en
+`src/lib/plan-file.ts`) es estrictamente la mínima útil y
+reusa el patrón ya establecido en `create-plan-warning.ts`
+(Mejora 7) y `api.ts` (Mejora 65): una función pura + archivo
+`*.test.ts` pineado. Implementación mínima:
+
+- `src/lib/plan-file.ts` (nuevo, 28 líneas, una decisión por
+  guard): export único `resolvePlanFile(planFile: string |
+  undefined): string` con guarda `if (!planFile || !planFile.trim())`
+  que cae al default. El trim es defense-in-depth sobre
+  Finding 1.1.A: `requireValue` (cli-args.ts:147) ya rechaza
+  whitespace-only al parse time, así que el único path que
+  puede llegar a `resolvePlanFile("   ")` es un test
+  hand-rolled o un future refactor que bypase el parser. La
+  docstring nombra la racionalidad, el cross-reference, y
+  el paralelo con el patrón `lib/` del codebase.
+- `src/lib/plan-file.test.ts` (nuevo, 4 tests): pino del
+  contrato `non-empty → identity`, `empty → default`,
+  `undefined → default`, `whitespace-only → default` (con
+  `"   "` y `"\t\n"` para pinear ambos flavors).
+- `src/App.tsx` (6 substitutions 1-a-1 + 1 import): las 6
+  call sites listadas en `MEJORAS.md:21040` ahora llaman
+  `resolvePlanFile(props.planFile)`. `DEFAULTS` queda
+  importado porque sigue usándose en 3 sites de `promptFile`
+  (líneas 1000, 1005, 1018), que es Finding 4.1.B territory
+  y queda deferido.
+- `src/index.tsx` (2 substitutions 1-a-1 + 1 import): las 2
+  call sites de `runCreatePlan` (línea 138) y `main`
+  (línea 348) ahora llaman `resolvePlanFile(args.planFile)`.
+  `DEFAULTS` queda importado por los 2 sites de `promptFile`
+  (línea 51) y por la check `planArg` (línea 234) que ya
+  vivía ahí.
+
+Cero impacto en runtime (la línea 1:1 substitution es
+observable-equivalente para los 8 call sites: `undefined` y
+`""` ya caían al default vía `||`; la única diferencia es
+que `"   "` también cae ahora, y ese caso no era alcanzable
+en producción por el `requireValue` upstream). Cero impacto
+en la TUI, cero impacto en el reducer, cero impacto en el
+lifecycle de iteración, cero impacto en el `--create-plan`
+flow (la resolution rule de la fase headless es la misma
+que la fase TUI), cero impacto en tests preexistentes (los
+4 sites de `cli-args.test.ts:50, 950, 1179` y los 4 sites
+de `create-plan-warning.test.ts:9-94` ya construyen
+`planFile: DEFAULTS.PLAN_FILE` o `planFile: "x.md"`, ambos
+non-empty, así que el round-trip es bit-equivalent).
+
+Cubierto por 4 tests nuevos en `plan-file.test.ts:1-31` que
+pinean los 4 escenarios del audit. `bun test` verde: 782
+pass / 1 skip / 0 fail (era 778 / 1 / 0 antes del fix),
+1821 expect() calls (era 1814), 27 files (era 26) — +4
+tests, +7 expects, +1 file. `bun run build` verde. Commit
+`ef0a9e4`.
 
 ### Mejora 68 — Finding 16.3.B — LOW — `AppProps extends CLIArgs` makes the `||` type-unjustified
 
-- [ ] Evaluar la mejora 68 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
-- [ ] Si la mejora 68 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
-- [ ] Si la mejora 68 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
-- [ ] Ejecutar la verificación mínima aplicable después de la mejora 68 y corregir cualquier regresión causada por el cambio.
+- [x] Evaluar la mejora 68 de `MEJORAS.md` contra el código actual y decidir si se implementa, se adapta o se descarta.
+- [x] Si la mejora 68 aporta valor y es viable, implementarla con el cambio mínimo correcto siguiendo DRY.
+- [x] Si la mejora 68 no es viable, documentar brevemente el motivo y no modificar el código para esa mejora.
+- [x] Ejecutar la verificación mínima aplicable después de la mejora 68 y corregir cualquier regresión causada por el cambio.
+
+_Verdicto_: **descartada con motivo** (sin cambios de código). El
+audit propone dos opciones en `MEJORAS.md:21090-21100`:
+
+1. **Adoptar 16.3.A** (el helper `resolvePlanFile`) — ya hecho
+   en la mejora anterior (commit `ef0a9e4`). Las 8 call
+   sites hoy dicen `resolvePlanFile(props.planFile)` /
+   `resolvePlanFile(args.planFile)`, no `||` literal.
+2. **Dropear el `||`** en las 8 sites y confiar en el tipo —
+   "la opción más agresiva".
+
+La opción 2 es **incompatible con 16.3.A** y **pierde la defensa
+de whitespace** que el audit marca explícitamente en
+`MEJORAS.md:21100`: *"Option 2 is safe to apply **if** the
+resolution rule stays at 'if non-empty, use it; if empty, fall
+back to default' — i.e. if 16.3.A's whitespace-trim behavior is
+**not** adopted."*. Si dropeamos el helper, regresamos al
+status quo pre-16.3.A: el `||` deja pasar `"   "` y reproduce
+el bug de 16.3.C / Finding 1.1.A (CWD ve un archivo llamado
+`   ` después de `Bun.write`).
+
+La objeción "type-unjustified" del audit (línea 21086) asume
+que la única razón del fallback es defender contra
+`planFile: undefined` o `planFile: ""`. Pero el helper tiene
+**dos responsabilidades**, ambas legítimas:
+
+- Centralizar la regla de resolución para los 8 sites
+  (DRY: Mejoras 65, 66, 67 ya establecieron este patrón).
+- Atrapar whitespace-only como backstop del upstream parser
+  bug (1.1.A) — un concern **independiente** del tipo
+  `string | undefined` que el compilador valida.
+
+Que el helper acepte `string | undefined` no es un smell: es
+el shape mínimo útil para una función pura de resolución
+(defensiva por construcción, testeable con 4 pines en
+`plan-file.test.ts`). El callsite `resolvePlanFile(props.planFile)`
+con `props.planFile: string` es **type-safe**: TS acepta el
+`string` como `string | undefined` por contravariance de
+parámetros. La "incertidumbre" que el audit menciona
+(línea 21086) no se materializa en el código: el helper es
+un trusted primitive testeado, no un parche defensivo ad-hoc.
+
+Auditoría de construcción de `AppProps` / `CLIArgs` con
+`planFile: ""` o `undefined`:
+- `src/lib/cli-args.test.ts:50, 73, 179, 533, 539, 545, 551,
+  606, 653, 1226` — todos `planFile: DEFAULTS.PLAN_FILE`,
+  `"x.md"`, `"tasks.md"`, `"plans/weekly.md"`, etc. (todos
+  non-empty).
+- `src/lib/create-plan-warning.test.ts:77` — `planFile:
+  "my-plan.md"` (non-empty).
+- `src/App.tsx:91` — `AppProps extends CLIArgs {}` (no
+  default manual).
+- `src/index.tsx:325-335` — pasa `args` directo de
+  `parseArgs` (no construction literal).
+- Búsqueda de `planFile:\s*["']` en `src/`: solo
+  `cli-args.test.ts:1226` y `create-plan-warning.test.ts:77`,
+  ambos non-empty. Búsqueda de `planFile:\s*undefined|null`:
+  cero matches.
+
+**Conclusión**: la queja del audit es válida como observación
+de tipos, pero la solución correcta (dropear el helper) es
+**regresiva** respecto a 16.3.A. Mantener el helper resuelve
+la queja: la firma `string | undefined` documenta
+explícitamente que la función es defensiva (forward-compat),
+y el callsite que pasa `string` es type-safe. **No hay cambio
+de código que hacer.**
+
+Cero impacto en runtime, cero impacto en tests (782 pass / 1
+skip / 0 fail — sin cambios desde el commit `ef0a9e4`), cero
+impacto en el build. Sin commit necesario.
 
 ### Mejora 69 — Finding 16.4.A — LOW — `sessionId() || lastSessionId()` repeated at 11 sites
 
