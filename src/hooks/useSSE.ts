@@ -526,10 +526,23 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       setReconnectAttempts(0)
       log.info("sse", "Connected")
 
-      // Process events from the stream
+      // Process events from the stream. A throwing consumer handler (e.g. a
+      // malformed payload hitting an unguarded code path in onTodoUpdated /
+      // onFileEdited / getToolPreview) must NOT tear down the SSE connection:
+      // this stream is the watchdog's sole source of heartbeats, and losing it
+      // triggers false wedge detections and a reconnect storm. Isolate each
+      // event so one bad handler skips that event (logged) but the stream — and
+      // thus every subsequent heartbeat — survives.
       for await (const event of events.stream) {
         if (abortController !== myController) return
-        processEvent(event)
+        try {
+          processEvent(event)
+        } catch (err) {
+          log.warn("sse", "Handler threw while processing an event; skipping", {
+            type: event.type,
+            message: err instanceof Error ? err.message : String(err),
+          })
+        }
       }
 
       // Superseded after the stream ended? The newer connect() owns status.
