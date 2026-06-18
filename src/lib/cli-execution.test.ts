@@ -34,7 +34,7 @@
  * one describe per matrix case.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runCli } from "./cli-runner"
@@ -327,5 +327,70 @@ describe("CLI: ejecución con una sola tarea pendiente entre varias completadas"
     // test above for why the promptCreated banner legitimately writes to stdout.)
     expect(result.exitCode).toBe(1)
     expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
+  })
+})
+
+// Phase 3 regression: "PLAN.md inexistente" must surface a clean errPlanNotFound
+// (or errCannotReadFile, if exists() itself throws) at the CLI layer — no raw
+// stack trace, no segfault, no unhandled promise rejection. The `fileExists`
+// wrapper at index.tsx:41-53 catches any throw from `Bun.file().exists()` and
+// prints errCannotReadFile, and `validatePrerequisites` (index.tsx:58-101)
+// exits 1 with errPlanNotFound when exists() returns false. These tests pin
+// both branches for the realistic "the file's not really there" shapes:
+// a regular non-existent path (covered above), a path that points at an
+// existing directory, and a path whose parent directory doesn't exist.
+describe("CLI: PLAN.md inexistente — ramas de excepción en fileExists()", () => {
+  it("exits 1 with errPlanNotFound when PLAN.md is actually a directory", async () => {
+    // Edge case: the user has a folder named `PLAN.md` (or `--plan` points at
+    // one). `Bun.file(<dir>).exists()` returns false on a directory (verified
+    // in plan-parser.test.ts:1739-1747 EISDIR pattern), so the pre-flight
+    // guard sees "not found" and rejects with errPlanNotFound. Without the
+    // guard, the TUI would later call `Bun.file(<dir>).text()` and crash with
+    // EISDIR; with the guard, we get a clean exit 1 with a clear message.
+    mkdirSync(join(dir, DEFAULTS.PLAN_FILE))
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file not found")
+    // Default --plan echoes the literal "PLAN.md" (the constant, not the
+    // resolved cwd-prefixed path) — the actionable hint is "create a
+    // PLAN.md in this folder", and the errPlanNotFound template surfaces
+    // exactly that.
+    expect(result.stderr).toContain(DEFAULTS.PLAN_FILE)
+    expect(result.stdout).toBe("")
+
+    // Plan step aborted at the existence check, so the prompt auto-create
+    // (which would write `.loop-prompt.md`) must NOT have run.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 1 with errPlanNotFound when PLAN.md is in a non-existent parent dir", async () => {
+    // Edge case: --plan (or default) points into a subdirectory that was never
+    // created. `Bun.file(<missing-parent>/x.md).exists()` returns false (the
+    // OS reports ENOENT, which Bun normalizes to "not exists"), so the
+    // pre-flight guard rejects with errPlanNotFound. Without the guard, the
+    // TUI's `parsePlanFile` would crash with ENOENT inside `file.text()` and
+    // bubble out as a bare "Fatal error:" in main().catch().
+    const deepPath = join(dir, "does", "not", "exist", DEFAULTS.PLAN_FILE)
+
+    const result = await runCli(["--lang", "en", "--plan", deepPath], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file not found")
+    // The deep path must be echoed verbatim — proves the guard uses the
+    // exact `args.planFile` value, not a fallback to the default.
+    expect(result.stderr).toContain(deepPath)
+    expect(result.stdout).toBe("")
+
+    // Plan step aborted at the existence check, so the prompt auto-create
+    // must NOT have run.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
   })
 })
