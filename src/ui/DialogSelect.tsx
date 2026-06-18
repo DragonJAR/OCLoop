@@ -241,11 +241,10 @@ export function DialogSelect(props: DialogSelectProps) {
         >
           <For each={filteredOptions()}>
             {(option, i) => {
-              // Per-row derived styles: one memo per row so that a `selectedIndex`
-              // change only re-evaluates the row that flipped. The memo reads
-              // `i()`, `selectedIndex()`, and `theme()` exactly once each, halving
-              // the per-keystroke hex-parsing cost of `selectedForeground`.
-              // (Source: MEJORAS.md Finding 16.5.B.)
+              // Per-row derived styles: one memo per row so a selectedIndex change
+              // only re-evaluates the row that flipped. The memo reads i(),
+              // selectedIndex(), and theme() exactly once each, halving the
+              // per-keystroke hex-parsing cost of selectedForeground.
               const styles = createMemo(() => {
                 const sel = i() === selectedIndex()
                 return {
