@@ -180,3 +180,55 @@ describe("CLI: ejecución con PLAN.md vacío", () => {
     expect([124, 139]).toContain(result.exitCode)
   })
 })
+
+describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
+  it("passes pre-TUI validation and enters the render path (matrix case 51)", async () => {
+    // Matrix case 51: PLAN.md exists, has at least one task, but every
+    // task is already marked `[x]` (or `[MANUAL]`/`[BLOCKED]`) — there is
+    // no `- [ ]` line to act on. `isStructurallyComplete` from
+    // `plan-parser.ts:161-163` would return true for this content, but
+    // `validatePrerequisites` does not call it — it only checks
+    // `Bun.file(planPath).exists()` (matrix case 27 is the empty-file
+    // twin; this is its "has tasks but nothing to do" sibling).
+    //
+    // The intended runtime behavior (App.tsx:checkPlanComplete, line 724)
+    // is to detect structural completion inside the TUI's iteration
+    // flow, write the `<plan-complete>` tag deterministically, and
+    // dispatch `plan_complete` so the user sees the completion dialog
+    // and the loop ends cleanly (exit 0 on Q). That path lives behind
+    // `startIteration` (line 963), which is only triggered by `--run` or
+    // the user pressing `S`. In non-TTY mode the user can't press S, so
+    // the TUI just shows "esperando…" until the segfault/hang.
+    //
+    // This test pins the CURRENT pre-flight behavior: a no-pending plan
+    // passes validation exactly like a valid one, the prompt auto-create
+    // runs, and the CLI enters the render path where it hits the same
+    // non-TTY hang/segfault pinned in the "valid PLAN.md" and "empty
+    // PLAN.md" tests. Phase 3 owns the decision: either tighten
+    // pre-flight to also reject "no pending tasks" with a clear error
+    // (matches the empty-plan fix shape), or leave it alone and let the
+    // TUI's `checkPlanComplete` handle it on `--run`/S. Either way this
+    // assertion set is the pre-fix baseline.
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      "# Plan\n\n- [x] Done task one\n- [x] Done task two\n",
+    )
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+      timeoutMs: 500,
+    })
+
+    // Same side-effect proof: pre-TUI validation ran end-to-end, the
+    // default `.loop-prompt.md` was auto-created BEFORE `tuiStarted`.
+    // If the file is missing, validation aborted earlier than expected.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(true)
+
+    // Same non-TTY pin as the other pre-flight tests: timeout-kill (124)
+    // or segfault (139). The structurally-complete plan content does NOT
+    // change the pre-flight outcome today — it goes to render just like
+    // a valid plan.
+    expect([124, 139]).toContain(result.exitCode)
+  })
+})
