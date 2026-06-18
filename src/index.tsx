@@ -28,18 +28,11 @@ const DEFAULT_PLAN_AGENT = "plan"
 // (default in DEFAULT_RESILIENCE); resolved per-run in runCreatePlan.
 
 /**
- * Check a file's existence, printing a localized error and exiting with code 1
- * if the `Bun.file().exists()` call itself throws (EACCES, ENOENT on a missing
- * parent dir, EISDIR, etc.). Without this wrapper, an `await ... .exists()`
- * failure propagates out of `validatePrerequisites` and is caught by
- * `main().catch()` (line 358-361), which prints "Fatal error: <stack trace>" —
- * a confusing user-facing UX for a permission-denied or stale-mount case.
- *
- * `process.exit(1)` is a `never` return in @types/node, so TypeScript accepts
- * the `Promise<boolean>` return type without the unreachable `return` in the
- * catch path.
- *
- * Source: MEJORAS.md Finding 17.4.B.
+ * Check a file's existence, printing a localized error and exiting 1 if the
+ * Bun.file().exists() call itself throws (EACCES/ENOENT/EISDIR). Without this
+ * wrapper the failure would escape to main().catch() as a bare "Fatal error:
+ * <stack>" — a confusing UX for a permission-denied or stale-mount case.
+ * process.exit(1) is `never`, so the Promise<boolean> return type holds.
  */
 async function fileExists(path: string): Promise<boolean> {
   try {
@@ -56,27 +49,17 @@ async function fileExists(path: string): Promise<boolean> {
 }
 
 /**
- * Boot pre-flight: verify that `process.cwd()` is writable with a single
- * probe write of a uniquely-named temp file. The temp name is random
- * (6 random bytes → 12 hex chars) so two `ocloop` processes pointing at
- * the same cwd (a TUI plus a `--create-plan` in another terminal, or
- * two TMUX panes) never collide on the probe.
+ * Boot pre-flight: verify process.cwd() is writable with a single probe write
+ * of a uniquely-named temp file. The temp name is random (6 bytes → 12 hex) so
+ * two ocloop processes on the same cwd never collide on the probe. The probe is
+ * unlinked on the success path, so there is no on-disk residue.
  *
- * Returns `{ ok: false, message }` with the OS error string on failure,
- * or `{ ok: true }` on success. The probe file is unlinked before the
- * function returns on the success path, so there is no on-disk residue
- * between runs.
- *
- * Why a pre-flight at all: both `saveLoopState` (.loop-state.json) and
- * the debug logger (.loop.log) swallow EACCES/EROFS/ENOSPC for in-loop
- * resilience — a hot-loop ENOSPC or a stale read-only mount shouldn't
- * crash the app. But the user has no state to resume from after a
- * crash, and that failure is silent. Catching the unwritable case at
- * boot, with a clean localized "working directory is not writable"
- * error, gives the user actionable feedback (chmod, change cwd, fix
- * the mount) instead of a confusing downstream "Cannot create
- * .loop-prompt.md" or a resume-broken state after a crash. Source:
- * PLAN.md bug-hunt candidate #3 (silent state loss on write failure).
+ * Why a pre-flight: saveLoopState and the debug logger swallow EACCES/EROFS/
+ * ENOSPC for in-loop resilience — a hot-loop ENOSPC or a stale read-only mount
+ * shouldn't crash the app, but the user then has no state to resume from after
+ * a crash, silently. Catching the unwritable case at boot gives actionable
+ * feedback (chmod, change cwd, fix the mount) instead of a confusing downstream
+ * "Cannot create .loop-prompt.md" or a resume-broken state.
  */
 async function preflightCwdWritable(): Promise<{ ok: true } | { ok: false; message: string }> {
   const probe = `.ocloop-write-probe.${randomBytes(6).toString("hex")}.tmp`
@@ -116,16 +99,14 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
     process.exit(1)
   }
 
-  // Check PLAN.md has at least one task. A 0-byte file, a whitespace-only
-  // file, or one with only headings/prose all collapse to `parsePlan(...).total
-  // === 0` — the loop has nothing actionable to run. The pre-flight exits 1
-  // with a localized "add a task" message instead of letting the TUI render
-  // path segfault in non-TTY or open a dashboard that immediately reports
-  // "no tasks" in TTY. Wrapped in try/catch for the TOCTOU window between
-  // the existence check above and this read: a file that was readable a
-  // millisecond ago can lose its permissions or vanish on a stale mount, and
-  // the raw rejection would otherwise escape to `main().catch()` as a bare
-  // "Fatal error: <stack>". Source: MEJORAS.md Finding 17.7.A.
+  // Check PLAN.md has at least one task. A 0-byte / whitespace-only / headings-
+  // only file collapses to parsePlan(...).total === 0 — nothing actionable.
+  // The pre-flight exits 1 with a localized "add a task" message instead of
+  // segfaulting the non-TTY render path or opening a dashboard that immediately
+  // reports "no tasks". try/catch covers the TOCTOU window between the existence
+  // check above and this read (a file readable a moment ago can lose perms or
+  // vanish on a stale mount); the raw rejection would otherwise escape to
+  // main().catch() as a bare "Fatal error: <stack>".
   let planContent: string
   try {
     planContent = await Bun.file(args.planFile).text()
@@ -178,12 +159,9 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   const promptExists = await fileExists(args.promptFile)
   if (!promptExists) {
     if (args.promptFile === DEFAULTS.PROMPT_FILE) {
-      // Bun.write() can reject on EACCES, EROFS, ENOENT (parent dir missing),
-      // ENOSPC, EISDIR, etc. Without this wrapper the rejection propagates out
-      // of `validatePrerequisites` to `main().catch()` and the user sees a raw
-      // "Fatal error: SystemError: ..." stack trace. Mirrors the pattern used
-      // three lines above (`errPlanNotFound`) and below (`errPromptNotFound`).
-      // Source: MEJORAS.md Finding 17.5.A.
+      // Bun.write() can reject on EACCES/EROFS/ENOENT/ENOSPC/EISDIR; wrap so the
+      // rejection doesn't escape to main().catch() as a raw stack trace. Mirrors
+      // the errPlanNotFound / errPromptNotFound pattern.
       try {
         await Bun.write(args.promptFile, t("defaultLoopPrompt"))
         console.log(t("promptCreated", { path: args.promptFile }))
@@ -548,19 +526,12 @@ async function main(): Promise<void> {
   await validatePrerequisites(args)
 
   // Reject non-TTY environments before reaching OpenTUI's render(). Without
-  // this guard, any invocation where stdin or stdout is not a real terminal —
-  // pipes (`ocloop | less`), redirects (`ocloop > out.log`), CI runners,
-  // editor-launched subprocesses, the bun:test harness — segfaults Bun inside
-  // `render()` (matrix case 4 / 20 / 47 / 55 of the flow matrix) or hangs
-  // forever on a closed stdin. The check sits AFTER `validatePrerequisites`
-  // so the PLAN.md / .loop-prompt.md checks still run exactly like the real
-  // TTY path (the side-effect of auto-creating the default prompt is
-  // preserved), and BEFORE `tuiStarted = true` so the exit handler skips
-  // its terminal-mode restore (it never enabled those modes). The
-  // `--create-plan` path above never reaches here — it has its own
-  // EOF-into-no-goal handling via `prompt()` and `process.exit()`s
-  // unconditionally.
-  // Source: MEJORAS.md Finding 17.6.A.
+  // this guard, any invocation where stdin/stdout is not a real terminal (pipes,
+  // redirects, CI runners, editor subprocesses, bun:test) segfaults Bun inside
+  // render() or hangs on a closed stdin. The check sits after validatePrerequisites
+  // so the PLAN.md / .loop-prompt.md checks still run (the auto-create prompt
+  // side effect is preserved), and before tuiStarted = true so the exit handler
+  // skips its terminal-mode restore. The --create-plan path never reaches here.
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     console.error(t("errNoTty"))
     process.exit(1)
@@ -581,13 +552,9 @@ async function main(): Promise<void> {
 // Run main and handle errors
 main().catch((error) => {
   console.error("Fatal error:", error)
-  // Mirrors the explicit call in the uncaughtException / unhandledRejection
-  // handlers above. The process.on("exit", restoreTerminal) backstop also
-  // covers this, but the explicit form keeps every process-exit path
+  // Explicit restoreTerminal mirrors the handlers above; the process.on("exit")
+  // backstop also covers this, but the explicit form keeps every exit path
   // grep-friendly and self-documenting.
-  // Source: MEJORAS.md Findings 17.1.B and 17.2.B (17.2.B is a carryover of
-  // 17.1.B in the per-process-exit coverage audit; both name the same line
-  // of code and the same fix).
   restoreTerminal()
   process.exit(1)
 })
