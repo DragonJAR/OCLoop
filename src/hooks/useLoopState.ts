@@ -185,6 +185,9 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           resumeAt: action.resumeAt,
           attempt: action.attempt,
           kind: action.kind ?? "rate_limit",
+          // Bug #4: remember a pending pause so resume_cooldown restores it
+          // instead of silently auto-resuming the loop.
+          ...(state.type === "pausing" ? { wasPausing: true } : {}),
         }
       }
       return state
@@ -194,6 +197,11 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
       // Cooldown elapsed: back to running with an empty session so the next
       // iteration is re-created and the prompt re-sent (same plan progress).
       if (state.type === "cooldown") {
+        // Bug #4: if the user asked to pause when the 429 hit, honor it (resume
+        // to `paused`) instead of silently auto-resuming into a new iteration.
+        if (state.wasPausing) {
+          return { type: "paused", iteration: state.iteration }
+        }
         return {
           type: "running",
           iteration: state.iteration,

@@ -43,6 +43,10 @@ export type LoopState =
       resumeAt: number // monotonic ms when the retry will fire
       attempt: number // consecutive rate-limit attempt number
       kind: "rate_limit" | "transient"
+      // Bug #4: the user had requested a pause (state was `pausing`) when the
+      // cooldown was entered → resume_cooldown returns to `paused`, not `running`,
+      // so a 429 mid-pause doesn't silently auto-resume the loop.
+      wasPausing?: boolean
     }
   | { type: "stopping" }
   | { type: "stopped" }

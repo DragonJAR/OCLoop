@@ -454,7 +454,11 @@ function AppContent(props: AppProps) {
 
     // Detect rate-limit cooldown: pause the active timer so the wait isn't
     // counted, and mark the next iteration-start as a resume (see above).
-    if (state.type === "cooldown" && (prev.type === "running" || prev.type === "pausing")) {
+    // Bug #4: only the running→cooldown path needs this. For pausing→cooldown
+    // the timer was already paused at running→pausing (above) and resume_cooldown
+    // now lands in `paused` (not running), so the later un-pause handles stats —
+    // setting pendingCooldownResume here would mis-attribute the paused time.
+    if (state.type === "cooldown" && prev.type === "running") {
       stats.pause()
       pendingCooldownResume = true
     }

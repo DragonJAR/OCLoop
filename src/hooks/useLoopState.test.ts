@@ -596,6 +596,30 @@ describe("loopReducer", () => {
       ).toBe("paused")
     })
 
+    it("preserves a pause across a cooldown: pausing → rate_limited → resume_cooldown ⇒ paused (Bug #4)", () => {
+      let state: LoopState = { type: "pausing", iteration: 4, sessionId: "ses-x" }
+      state = loopReducer(state, {
+        type: "rate_limited", reason: "429", resumeAt: 999, attempt: 1, kind: "rate_limit",
+      })
+      expect(state.type).toBe("cooldown")
+      if (state.type === "cooldown") expect(state.wasPausing).toBe(true)
+      // Cooldown elapses → must return to PAUSED (not running), honoring the pause.
+      state = loopReducer(state, { type: "resume_cooldown" })
+      expect(state.type).toBe("paused")
+      if (state.type === "paused") expect(state.iteration).toBe(4)
+    })
+
+    it("running → rate_limited → resume_cooldown still resumes to running (no false pause, Bug #4)", () => {
+      let state: LoopState = { type: "running", iteration: 2, sessionId: "ses-y" }
+      state = loopReducer(state, {
+        type: "rate_limited", reason: "429", resumeAt: 999, attempt: 1, kind: "rate_limit",
+      })
+      if (state.type === "cooldown") expect(state.wasPausing).toBeUndefined()
+      state = loopReducer(state, { type: "resume_cooldown" })
+      expect(state.type).toBe("running")
+      if (state.type === "running") expect(state.sessionId).toBe("")
+    })
+
     it("resume_cooldown returns to running with an empty session, same iteration", () => {
       const state: LoopState = {
         type: "cooldown",
