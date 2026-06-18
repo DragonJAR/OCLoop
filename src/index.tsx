@@ -91,7 +91,12 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
     )
     process.exit(1)
   }
-  if (parsePlan(planContent).total === 0) {
+  // Parse the plan once and reuse it for the empty / complete checks below —
+  // both branches need the same `parsePlan(content)` result, so call it once
+  // and pass the value forward. Single source of truth for the plan stats in
+  // this pre-flight.
+  const planProgress = parsePlan(planContent)
+  if (planProgress.total === 0) {
     console.error(t("errPlanEmpty", { path: args.planFile }))
     process.exit(1)
   }
@@ -101,9 +106,9 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // pre-flight sibling of `errPlanEmpty`: the plan is in a "done" state, not
   // a broken one, so we exit 0 (success) with a clear localized message —
   // mirroring how `App.tsx:checkPlanComplete` (line 724-752) handles the same
-  // case from inside the TUI (it shows the completion dialog). The check
-  // reuses the same `parsePlan(planContent)` call as the errPlanEmpty branch
-  // above (we already read the file for the empty check, no need to re-read).
+  // case from inside the TUI (it shows the completion dialog). Reuses the
+  // `planProgress` parsed above — no second `parsePlan(planContent)` call
+  // (the same plan file is read once and parsed once for both checks).
   // Exit 0 instead of 1: a CI script that runs `ocloop` after each commit
   // and gates on `$?` doesn't need a special case for "all done"; it's the
   // same success signal as "nothing went wrong". The pre-flight is read-only
@@ -114,7 +119,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // call. The check sits BEFORE the prompt auto-create so a completed plan
   // doesn't drag in a default `.loop-prompt.md` the user didn't ask for.
   // Source: PLAN.md Phase 3 task 4 (matrix case 51).
-  if (isStructurallyComplete(parsePlan(planContent))) {
+  if (isStructurallyComplete(planProgress)) {
     console.error(t("errPlanComplete", { path: args.planFile }))
     process.exit(0)
   }

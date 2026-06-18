@@ -235,6 +235,26 @@ export function withPlanCompleteTag(content: string, summary: string): string {
 }
 
 /**
+ * Read a plan file, run `transform` on its content, and return the result.
+ * Returns `fallback` if the read fails (missing file, EISDIR, EACCES, etc.).
+ * The single try/catch avoids the TOCTOU window of `exists()` + `text()` and
+ * is the shared implementation for `isPlanComplete` and `getPlanCompleteSummary`.
+ * Source: MEJORAS.md Finding 17.4.C.
+ */
+async function readPlanFileSafe<T>(
+  planPath: string,
+  transform: (content: string) => T,
+  fallback: T,
+): Promise<T> {
+  try {
+    const content = await Bun.file(planPath).text()
+    return transform(content)
+  } catch {
+    return fallback
+  }
+}
+
+/**
  * Checks if a plan file contains the completion tag.
  *
  * Defensive against TOCTOU: rather than `await file.exists()` + `await file.text()`
@@ -246,12 +266,7 @@ export function withPlanCompleteTag(content: string, summary: string): string {
  * @returns true if the plan is marked complete; false on missing file, EISDIR, EACCES, etc.
  */
 export async function isPlanComplete(planPath: string): Promise<boolean> {
-  try {
-    const content = await Bun.file(planPath).text()
-    return parsePlanComplete(content) !== null
-  } catch {
-    return false
-  }
+  return readPlanFileSafe(planPath, (content) => parsePlanComplete(content) !== null, false)
 }
 
 /**
@@ -266,12 +281,7 @@ export async function isPlanComplete(planPath: string): Promise<boolean> {
  * @returns The summary text or null if not complete / unreadable
  */
 export async function getPlanCompleteSummary(planPath: string): Promise<string | null> {
-  try {
-    const content = await Bun.file(planPath).text()
-    return parsePlanComplete(content)
-  } catch {
-    return null
-  }
+  return readPlanFileSafe(planPath, (content) => parsePlanComplete(content), null)
 }
 
 /**
