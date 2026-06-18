@@ -7,8 +7,9 @@
  * `t(key, params?)`. Parameterized strings are functions so interpolation stays
  * in one place per locale.
  *
- * Because the locale is fixed before the UI renders, `t()` is a plain function
- * (no reactivity needed): every component reads the correct locale at render.
+ * The active locale is held in a Solid signal so the TUI re-renders live when
+ * the language is toggled from the command palette; reading `t()` in a
+ * reactive scope tracks it, while plain CLI code just gets the current value.
  */
 
 import { createSignal } from "solid-js"
@@ -1049,7 +1050,7 @@ const [localeSignal, setLocaleSignal] = createSignal<Locale>("en")
 
 /** Set the active locale (reactive — switches the whole UI live). */
 export function setLocale(locale: Locale): void {
-  setLocaleSignal(locale === "es" ? "es" : "en")
+  setLocaleSignal(locale)
 }
 
 /** Get the active locale (reactive accessor read). */
@@ -1060,6 +1061,6 @@ export function getLocale(): Locale {
 /** Translate a key for the active locale, with optional interpolation params. */
 export function t(key: MessageKey, params?: Params): string {
   const table = localeSignal() === "es" ? es : en
-  const value = table[key] ?? en[key]
+  const value = table[key]
   return typeof value === "function" ? value(params ?? {}) : value
 }
