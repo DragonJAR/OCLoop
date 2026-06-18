@@ -1723,6 +1723,104 @@ describe("getCurrentTaskFromContent", () => {
     const result = getCurrentTaskFromContent(content)
     expect(result).toBe("pending a")
   })
+
+  // PLAN.md 2.9 — "single pending task" is matrix case 52. The parser contract
+  // is "return the first pending task's description", and that contract has a
+  // unique answer when there is exactly one pending task — selection is
+  // unambiguous by construction. These tests pin that contract for the
+  // single-pending shape across the realistic positions a real PLAN.md might
+  // have: a file with ONLY one task (the trivially small case), a pending
+  // surrounded by many completed rows in different positions, a pending at
+  // the very last task line of the file, and a pending inside a file that
+  // has section headings and prose. Without these, the only "single pending"
+  // coverage in the suite is the integration test in `cli-execution.test.ts`
+  // — and that test only confirms the no-TTY guard fires, not that the
+  // parser would have returned the right description. If `getCurrentTask`
+  // ever returned null or the wrong description, the integration test would
+  // still pass (the guard short-circuits before the TUI ever reads the
+  // task), so the parser-level pin is the real contract fence.
+
+  it("returns the unique pending when the file contains exactly one pending task", () => {
+    // Trivial case: one task, it's pending. The function must return it —
+    // not null, not an empty string, not the surrounding headings.
+    const content = [
+      "# My Plan",
+      "",
+      "Some prose explaining the plan.",
+      "",
+      "- [ ] The only pending task",
+      "",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("The only pending task")
+  })
+
+  it("returns the unique pending when it sits at the very top of the task list", () => {
+    // Single pending at position 0, followed by many completed. A buggy
+    // parser that walked the plan in reverse, or that returned the LAST
+    // non-empty task, would land on "Done task five" instead. Pins that
+    // the position-of-the-pending doesn't matter — only the "first
+    // pending" contract.
+    const content = [
+      "- [ ] Only pending at the top",
+      "- [x] Done task two",
+      "- [x] Done task three",
+      "- [x] Done task four",
+      "- [x] Done task five",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("Only pending at the top")
+  })
+
+  it("returns the unique pending when it sits at the very end of the task list", () => {
+    // Mirror of the above: single pending at the last task position. A
+    // buggy parser that returned the FIRST task line (regardless of
+    // type) would land on "Done task one" instead. Pins the "first
+    // PENDING" contract specifically — not "first line", not "last
+    // non-empty".
+    const content = [
+      "- [x] Done task one",
+      "- [x] Done task two",
+      "- [x] Done task three",
+      "- [x] Done task four",
+      "- [ ] Only pending at the end",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("Only pending at the end")
+  })
+
+  it("returns the unique pending in a file with many non-pending distractors", () => {
+    // Realistic PLAN.md shape: headings, manual tasks, blocked tasks, blank
+    // lines, and ONE pending task. The pending is the only actionable
+    // target; the function must skip every non-pending row and land on it.
+    // A parser that confused a `[MANUAL]` or `[BLOCKED]` task for a
+    // pending would return the wrong description here, and the TUI's
+    // "Task: …" display would mislead the user about what the loop is
+    // working on next.
+    const content = [
+      "# My Plan",
+      "",
+      "## Phase 1",
+      "",
+      "- [x] Completed in phase 1",
+      "- [MANUAL] Manual task in phase 1",
+      "- [BLOCKED: needs API] Blocked task in phase 1",
+      "",
+      "## Phase 2",
+      "",
+      "Some prose between phases.",
+      "",
+      "- [x] Completed in phase 2",
+      "- [ ] The single pending in phase 2",
+      "- [x] Completed in phase 2 (after)",
+      "",
+      "## Phase 3",
+      "",
+      "- [MANUAL] All manual in phase 3",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("The single pending in phase 2")
+  })
 })
 
 describe("isPlanComplete", () => {
