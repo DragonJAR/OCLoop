@@ -2,9 +2,9 @@
  * Shared dialog primitives.
  *
  * Extracted from the byte-identical header and button blocks that were
- * copy-pasted across DialogAlert / DialogConfirm / DialogInvalidAgent. These
- * emit exactly the same element tree as the originals, so applying them is a
- * pure de-duplication with no visual change.
+ * copy-pasted across DialogConfirm / DialogInvalidAgent. These emit exactly
+ * the same element tree as the originals, so applying them is a pure
+ * de-duplication with no visual change.
  *
  * Dialogs with a divergent button/header shape (e.g. DialogCompletion's
  * span-less buttons, the terminal dialogs' custom forms) intentionally keep

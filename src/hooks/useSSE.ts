@@ -60,11 +60,10 @@ export interface StepFinishPart {
   }
 }
 
-export interface FileDiff {
-  file: string
-  additions: number
-  deletions: number
-}
+// `FileDiff` is defined once in `useSessionStats` (the hook owns the shape the
+// UI consumes) and re-exported here so SSE consumers keep importing it from
+// the stream module. Single source of truth — avoids two divergent definitions.
+export type { FileDiff } from "./useSessionStats"
 
 /**
  * SSE connection status

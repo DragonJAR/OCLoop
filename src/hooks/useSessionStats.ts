@@ -1,5 +1,18 @@
 import { createSignal, Accessor } from "solid-js";
 
+/**
+ * Shape entregado por el evento SSE `session.diff` (una entrada por archivo
+ * editado en la sesión). Se reduce a {@link SessionDiff} vía
+ * {@link UseSessionStatsReturn.setDiffFromFiles}. Vive aquí (y se re-exporta
+ * desde `useSSE.ts` para el handler del stream) para que el hook sea la
+ * única fuente de verdad del shape que la UI consume.
+ */
+export interface FileDiff {
+  file: string;
+  additions: number;
+  deletions: number;
+}
+
 export interface SessionTokens {
   input: number;
   output: number;
@@ -22,6 +35,15 @@ export interface UseSessionStatsReturn {
   totalTokens: Accessor<number>;
   addTokens: (tokens: Partial<SessionTokens>) => void;
   setDiff: (diff: SessionDiff) => void;
+  /**
+   * Reduce a `session.diff` payload (one entry per file edited in the session)
+   * into the aggregate {@link SessionDiff} and store it. The SSE event is the
+   * session's accumulated state (not a per-edit delta), so this replaces (not
+   * adds to) the previous value — matching the contract of `setDiff`.
+   * Single-sources the reduction so App.tsx's `onSessionDiff` handler is a
+   * one-liner and the math is unit-testable in isolation.
+   */
+  setDiffFromFiles: (diffs: FileDiff[]) => void;
   /** Zero the per-task counter — call at each fresh iteration start. */
   resetTaskTokens: () => void;
   reset: () => void;
@@ -68,6 +90,23 @@ export function useSessionStats(): UseSessionStatsReturn {
     setTaskTokens({ ...INITIAL_TOKENS });
   }
 
+  function setDiffFromFiles(diffs: FileDiff[]): void {
+    // Reduce one-entry-per-file into the aggregate the UI shows. The SSE
+    // `session.diff` event carries the session's accumulated state (not a
+    // per-edit delta), so this replaces rather than accumulates. Guards
+    // against non-finite counts so a malformed payload can't paint `NaN` in
+    // the BottomPanel's `+N/-M (F)` summary.
+    let additions = 0;
+    let deletions = 0;
+    for (const d of diffs) {
+      const a = Number(d?.additions);
+      const del = Number(d?.deletions);
+      if (Number.isFinite(a)) additions += a;
+      if (Number.isFinite(del)) deletions += del;
+    }
+    setDiff({ additions, deletions, files: diffs.length });
+  }
+
   function reset() {
     setTokens({ ...INITIAL_TOKENS });
     setTaskTokens({ ...INITIAL_TOKENS });
@@ -81,6 +120,7 @@ export function useSessionStats(): UseSessionStatsReturn {
     totalTokens,
     addTokens,
     setDiff,
+    setDiffFromFiles,
     resetTaskTokens,
     reset,
   };

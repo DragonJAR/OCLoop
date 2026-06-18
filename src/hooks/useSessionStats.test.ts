@@ -56,14 +56,50 @@ describe("useSessionStats", () => {
   it("should update diff summary", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();
-      
+
       stats.setDiff({ additions: 10, deletions: 5, files: 2 });
       expect(stats.diff()).toEqual({
         additions: 10,
         deletions: 5,
         files: 2,
       });
-      
+
+      dispose();
+    });
+  });
+
+  it("setDiffFromFiles reduces a session.diff payload into the aggregate", () => {
+    createRoot((dispose) => {
+      const stats = useSessionStats();
+
+      stats.setDiffFromFiles([
+        { file: "/a.ts", additions: 3, deletions: 1 },
+        { file: "/b.ts", additions: 7, deletions: 4 },
+        { file: "/c.md", additions: 0, deletions: 2 },
+      ]);
+      expect(stats.diff()).toEqual({ additions: 10, deletions: 7, files: 3 });
+
+      // Replaces (does not accumulate): the SSE event is the session's
+      // current accumulated state, not a per-edit delta.
+      stats.setDiffFromFiles([{ file: "/d.ts", additions: 5, deletions: 0 }]);
+      expect(stats.diff()).toEqual({ additions: 5, deletions: 0, files: 1 });
+
+      dispose();
+    });
+  });
+
+  it("setDiffFromFiles ignores non-finite counts in a malformed payload", () => {
+    createRoot((dispose) => {
+      const stats = useSessionStats();
+
+      stats.setDiffFromFiles([
+        { file: "/a.ts", additions: 3, deletions: 1 },
+        // @ts-expect-error -- simulating a malformed server payload
+        { file: "/b.ts", additions: "lots", deletions: undefined },
+      ]);
+      // files still counts the entry; the bad counts are dropped, not NaN.
+      expect(stats.diff()).toEqual({ additions: 3, deletions: 1, files: 2 });
+
       dispose();
     });
   });

@@ -9,6 +9,7 @@
  */
 
 import { createContext, useContext, createSignal, onMount, type JSX } from "solid-js"
+import { join } from "node:path"
 import {
   getResolvedTheme,
   isValidTheme,
@@ -75,14 +76,22 @@ interface OpenCodeKV {
 /**
  * Get the path to OpenCode's kv.json file
  *
- * Uses XDG_STATE_HOME if set, otherwise ~/.local/state
+ * Uses XDG_STATE_HOME if set, otherwise ~/.local/state. Built with `path.join`
+ * so the separators are correct on every platform: the previous string
+ * concatenation (`${home}/.local/state`) produced mixed forward+back slashes
+ * on Windows (`C:\Users\foo/.local/state/...`), which Node/Bun tolerate on
+ * read but which can confuse other tools and look broken in error messages.
+ * `HOME || USERPROFILE` covers Unix and Windows home resolution. OpenCode
+ * itself uses the XDG `~/.local/state/opencode` convention on all platforms,
+ * so the directory layout is kept consistent with it (we read a file it
+ * writes).
  */
 function getKVPath(): string {
   const xdgState = process.env.XDG_STATE_HOME
   const home = process.env.HOME || process.env.USERPROFILE || ""
 
-  const stateDir = xdgState || `${home}/.local/state`
-  return `${stateDir}/opencode/kv.json`
+  const stateDir = xdgState || join(home, ".local", "state")
+  return join(stateDir, "opencode", "kv.json")
 }
 
 /**

@@ -27,10 +27,10 @@ class DebugLogger {
       const oldLogPath = path.resolve(process.cwd(), OLD_LOG_FILE);
       try {
         fs.renameSync(this.logFile, oldLogPath);
-      } catch (err) {
-        // If rename fails (e.g. file open), just ignore and append/overwrite
-        // or maybe we should try to copy and truncate?
-        // For simplicity, we'll just try to rename.
+      } catch {
+        // Rename can fail if the file is open or the target is busy; the
+        // writeFileSync below then overwrites the current log, which is the
+        // intended fallback (rotation is best-effort, logging must not crash).
       }
     }
 
@@ -113,9 +113,9 @@ class DebugLogger {
     if (!this.enabled) return;
     try {
       fs.appendFileSync(this.logFile, content);
-    } catch (err) {
-      // If we can't write to log, suppress error to avoid crashing app
-      // console.error('Failed to write to debug log:', err);
+    } catch {
+      // If we can't write to the log, suppress the error: logging is
+      // best-effort and must never crash the app.
     }
   }
 }

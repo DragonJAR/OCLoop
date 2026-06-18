@@ -22,10 +22,18 @@ class ShutdownManager {
     // Register signal handlers. SIGHUP fires when the controlling terminal is
     // closed (window closed, SSH dropped) — handling it prevents an orphaned
     // OpenCode server in exactly the kind of unattended scenario this harness
-    // is built for.
+    // is built for. Node/Bun also generate SIGHUP on Windows when the console
+    // window closes, so this one line covers "terminal gone" on every OS.
     process.on("SIGINT", () => this.handleSignal("SIGINT"))
     process.on("SIGTERM", () => this.handleSignal("SIGTERM"))
     process.on("SIGHUP", () => this.handleSignal("SIGHUP"))
+    // Windows-only: Ctrl+Break (SIGBREAK) is a native Windows console signal
+    // that Node/Bun deliver there but not on POSIX. Registering it is a no-op
+    // on macOS/Linux (the signal simply never arrives), and on Windows it
+    // gives Ctrl+Break the same clean shutdown Ctrl+C already gets. The
+    // registration itself is always safe — process.on never throws for these
+    // standard names (verified on darwin; Bun mirrors Node's win32 behavior).
+    process.on("SIGBREAK", () => this.handleSignal("SIGBREAK"))
   }
 
   /**

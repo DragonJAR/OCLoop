@@ -13,11 +13,11 @@
  */
 
 import { rename, writeFile, readFile, unlink } from "node:fs/promises"
+import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 import { log } from "./debug-logger"
 
 const STATE_FILE = ".loop-state.json"
-const TMP_FILE = ".loop-state.json.tmp"
 
 /** Persisted snapshot. `version` guards against future format changes. */
 export interface PersistedLoopState {
@@ -38,8 +38,18 @@ function statePath(): string {
   return join(process.cwd(), STATE_FILE)
 }
 
+/**
+ * Per-save random tmp path. A fixed tmp name (`.loop-state.json.tmp`) let two
+ * `ocloop` processes pointing at the same cwd (e.g. a TUI plus a `--create-plan`
+ * run in a second terminal, or two TMUX panes) race on the same file and
+ * interleave each other's mid-write bytes. The final `rename` to
+ * `.loop-state.json` is still last-writer-wins (atomic rename on POSIX), so the
+ * user-observable behavior is unchanged; the random suffix only prevents the
+ * intermediate-state clobbering of the tmp. Mirrors the same fix in
+ * `saveConfig` (config.ts, MEJORAS.md Finding 12.2.B) for consistency + DRY.
+ */
 function tmpPath(): string {
-  return join(process.cwd(), TMP_FILE)
+  return `${statePath()}.${randomBytes(6).toString("hex")}.tmp`
 }
 
 /**
@@ -47,11 +57,18 @@ function tmpPath(): string {
  * and must not crash the app.
  */
 export async function saveLoopState(state: PersistedLoopState): Promise<void> {
+  // Capture the random tmp name ONCE and reuse it across write/rename/unlink.
+  // Each `tmpPath()` call returns a fresh random suffix; calling it twice would
+  // produce two different names, so `rename(tmpPath(), …)` would target a file
+  // that `writeFile(tmpPath(), …)` never wrote (and the cleanup `unlink` would
+  // miss it too). Mirrors the `const tmpPath = …` pattern in `saveConfig`
+  // (config.ts). Source: DRY with the config path + the concurrency fix above.
+  const tmp = tmpPath()
   try {
     const json = JSON.stringify(state, null, 2)
-    await writeFile(tmpPath(), json, "utf-8")
+    await writeFile(tmp, json, "utf-8")
     try {
-      await rename(tmpPath(), statePath())
+      await rename(tmp, statePath())
     } catch (renameErr) {
       // Best-effort cleanup of the orphan tmp file. The rename failed (e.g. the
       // destination dir became read-only mid-flight, ENOSPC, EPERM) but the
@@ -60,7 +77,7 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
       // situation we cannot do better than log the original rename error.
       // Source: MEJORAS.md Finding 8.1.A.
       try {
-        await unlink(tmpPath())
+        await unlink(tmp)
       } catch {
         // Nothing more we can do; the next saveLoopState overwrites the tmp.
       }

@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync, existsSync, chmodSync } from "node:fs"
+import { mkdtempSync, rmSync, chmodSync, readdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -49,7 +49,12 @@ describe("loop-state-store", () => {
     await saveLoopState({ ...sample, iteration: 9 })
     const loaded = await loadLoopState()
     expect(loaded?.iteration).toBe(9)
-    expect(existsSync(join(dir, ".loop-state.json.tmp"))).toBe(false)
+    // After a successful save+rename, NO temp file should remain — neither the
+    // legacy fixed name nor a random-suffixed one (the rename consumed it).
+    // readdirSync catches any orphan regardless of the suffix scheme, so this
+    // stays correct as the tmp-naming strategy evolves.
+    const leftovers = readdirSync(dir).filter((f) => f.endsWith(".tmp"))
+    expect(leftovers).toEqual([])
   })
 
   it("clears the state file", async () => {

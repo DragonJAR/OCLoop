@@ -13,23 +13,15 @@
 - **No `--no-verify`**: pre-commit expectation is `bun test` passes.
 - **No `git add .`**: stage only the files the commit touches. `.loop*` is
   gitignored; never commit `.loop-state.json` / `.loop.log`.
-- **Full project context (stack, layout, conventions, risks):** see
-  `@docs/project-context.md` — written during Phase 1 of the MEJORAS.md audit.
+- **Full project context (stack, layout, conventions, risks):** see the
+  remaining docs under `docs/` (`build-process.md`, `terminal-compat.md`).
 
 ## Research
 
-- `@docs/project-context.md` — Phase 1 project state: stack, source layout,
-  architecture, validation commands, conventions, initial risks. One-time
-  research deliverable; read before starting Phase 2 improvements.
-- `@docs/testing.md` — known issue: mocking `@opentui/solid` via `mock.module`
-  breaks the JSX transform (`jsxImportSource`). TUI components are tested by
-  extracting logic into testable hooks/functions.
 - `@docs/build-process.md` — `bun run build.ts` is required (plain
   `bun build` CLI uses the React JSX transform and fails on SolidJS). The
   entrypoint must keep the `#!/usr/bin/env bun` shebang.
-- `@docs/terminal-compat.md` — terminal detection / attach behaviour
-  (referenced by Findings 11.2.* and 11.3.*).
-- `@docs/solid-hook-testing.md` — `onMount` does NOT fire inside a bare
-  `createRoot`; triggers the `stop()` + `restart()` harness pattern used in
-  `useServer.test.ts`. Relevant for any future hook tests with
-  `onMount`/`onCleanup` (Findings 18.2.* / 18.3.*).
+- `@docs/terminal-compat.md` — terminal capability detection (color depth,
+  Unicode vs ASCII, TTY/CI), glyph fallbacks, and the DRY primitives
+  (`LabelValue`, `StatusBadge`, `ProgressIndicator`) that keep the TUI look
+  consistent across terminals.

@@ -537,6 +537,14 @@ function AppContent(props: AppProps) {
         setLastSessionId(id)
         sessionStats.reset()
       },
+      onSessionDiff: (diffs) => {
+        // session.diff carries the session's accumulated file changes; the hook
+        // owns the reduction to SessionDiff ({additions, deletions, files}) so
+        // this stays a one-liner and the math is unit-tested in isolation.
+        // BottomPanel renders "+N/-M (F)" from the resulting signal. Reset on
+        // session change is handled by onSessionCreated → sessionStats.reset().
+        sessionStats.setDiffFromFiles(diffs)
+      },
       onSessionError: (eventSessionId, error) => {
         const state = loop.state()
         // Ignore errors for a session that is no longer the active one. A stale
@@ -1741,37 +1749,42 @@ function AppContent(props: AppProps) {
    }
 
    const onConfigCopy = async () => {
-      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-      const url = server.url()
-      if (sid && url) {
-         const cmd = getAttachCommand(url, sid)
-         const result = await copyToClipboard(cmd)
-         if (result.success) {
-            toast.show({ variant: "success", message: t("toastCopied") })
-         } else {
-            // Source: MEJORAS.md Finding 11.4.C — show the actual error
-            // to the user instead of a misleading "Copied to clipboard"
-            // toast when the clipboard command failed.
-            toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
-         }
-      }
+      await copyAttachCommand()
       dialog.clear()
    }
    
    const onErrorCopy = async () => {
+      await copyAttachCommand()
+   }
+
+   /**
+    * Copy the current session's attach command to the system clipboard and
+    * surface the outcome via a toast. Single-sources the
+    * `resolveActiveSessionId → getAttachCommand → copyToClipboard → toast`
+    * pipeline that previously appeared, verbatim, in four call sites
+    * (`onConfigCopy`, `onErrorCopy`, the `copy_attach` command, and the `C`
+    * keybind). All four branches shared the same success/error toast keys,
+    * the same `result.error ?? ""` fallback, and the same sid+url guard —
+    * the only divergence was whether the caller cleared a dialog afterwards,
+    * which the callers now own (they wrap this helper).
+    *
+    * No-ops when there is no active session or server URL, matching the
+    * previous per-site behavior (each one guarded on `if (sid && url)`).
+    * Source: DRY consolidation of the 4 duplicated clipboard paths.
+    */
+   async function copyAttachCommand(): Promise<void> {
       const sid = resolveActiveSessionId(sessionId(), lastSessionId())
       const url = server.url()
-      if (sid && url) {
-         const cmd = getAttachCommand(url, sid)
-         const result = await copyToClipboard(cmd)
-         if (result.success) {
-            toast.show({ variant: "success", message: t("toastCopied") })
-         } else {
-            // Source: MEJORAS.md Finding 11.4.C — branch on the
-            // ClipboardResult so a failure surfaces a real error toast
-            // instead of a silent no-op.
-            toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
-         }
+      if (!sid || !url) return
+      const cmd = getAttachCommand(url, sid)
+      const result = await copyToClipboard(cmd)
+      if (result.success) {
+         toast.show({ variant: "success", message: t("toastCopied") })
+      } else {
+         // Source: MEJORAS.md Finding 11.4.C — surface the actual error
+         // instead of a misleading "Copied to clipboard" toast when the
+         // clipboard command failed (e.g. macOS/Windows empty pasteboard).
+         toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
       }
    }
 
@@ -1858,21 +1871,7 @@ function AppContent(props: AppProps) {
         keybind: "C",
         disabled: !hasSession,
         onSelect: async () => {
-          if (sid && url) {
-            const cmd = getAttachCommand(url, sid)
-            const result = await copyToClipboard(cmd)
-            if (result.success) {
-              toast.show({ variant: "success", message: t("toastCopied") })
-            } else {
-              // Source: MEJORAS.md Finding 11.4.C — the previous code
-              // fired a success toast synchronously on the next line
-              // before the clipboard command was even spawned; on
-              // macOS/Windows the user saw "Copied to clipboard" with
-              // an empty pasteboard. Now we await and surface the
-              // real error.
-              toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
-            }
-          }
+          await copyAttachCommand()
         },
       },
       {
@@ -2142,17 +2141,12 @@ function AppContent(props: AppProps) {
        // C — copy the attach command. The palette declares keybind "C" for
        // cmdCopyAttach; this wires the direct key so the advertised shortcut
        // actually works (it previously fell through to opentui and no-op'd).
+       // Shares the copyAttachCommand helper with the palette entry and the
+       // terminal-config dialog so all three paths stay in sync.
        const sid = resolveActiveSessionId(sessionId(), lastSessionId())
        const url = server.url()
        if (sid && url) {
-          const cmd = getAttachCommand(url, sid)
-          copyToClipboard(cmd).then((result) => {
-            if (result.success) {
-              toast.show({ variant: "success", message: t("toastCopied") })
-            } else {
-              toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
-            }
-          })
+          copyAttachCommand().then(() => {})
        } else {
           toast.show({ variant: "info", message: t("toastNoSessionAttach") })
        }

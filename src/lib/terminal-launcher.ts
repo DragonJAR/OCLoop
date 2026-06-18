@@ -31,9 +31,11 @@ export interface LaunchResult {
  * The args array uses {cmd} as a placeholder for the command to execute.
  */
 export const KNOWN_TERMINALS: KnownTerminal[] = [
+  // --- Cross-platform (buildable from source on any OS) ---
   { name: "alacritty", command: "alacritty", args: ["-e", "{cmd}"] },
   { name: "kitty", command: "kitty", args: ["{cmd}"] },
   { name: "wezterm", command: "wezterm", args: ["start", "--", "{cmd}"] },
+  // --- Linux (X11 / Wayland desktop environments) ---
   {
     name: "gnome-terminal",
     command: "gnome-terminal",
@@ -55,6 +57,15 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
     command: "x-terminal-emulator",
     args: ["-e", "{cmd}"],
   },
+  // --- Windows ---
+  // Windows Terminal (`wt`) is the default on Windows 10/11. `new-tab --`
+  // runs the command in a new tab; everything after `--` is forwarded to
+  // the launched shell verbatim. Without this entry, `detectInstalledTerminals`
+  // found NOTHING on Windows and every user had to hand-configure a Custom
+  // terminal — despite the built-in being the obvious first choice.
+  // `wt` resolves via PATH on Win10/11; `where.exe wt` confirms it (now that
+  // `commandExists` uses `where.exe` instead of the missing `which`).
+  { name: "windows-terminal", command: "wt", args: ["new-tab", "--", "{cmd}"] },
 ]
 
 /**

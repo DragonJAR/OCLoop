@@ -61,11 +61,12 @@ describe("getKnownTerminalByName (Finding 18.2.D)", () => {
     expect(getKnownTerminalByName("nope-not-a-terminal")).toBeUndefined()
   })
 
-  it("KNOWN_TERMINALS has 12 entries (the audit's cross-check baseline)", () => {
-    // Pin the size: any future add/remove is intentional and gets a
-    // matching test update. The audit's "12 matches" baseline is in
-    // MEJORAS.md:13529.
-    expect(KNOWN_TERMINALS).toHaveLength(12)
+  it("KNOWN_TERMINALS has 13 entries (cross-platform: 12 Unix + Windows Terminal)", () => {
+    // Pin the size: any future add/remove is intentional and gets a matching
+    // test update. The original audit baseline was 12 (Unix-only); Windows
+    // Terminal (`wt`) was added so `detectInstalledTerminals` finds the
+    // built-in on Win10/11 instead of returning an empty list.
+    expect(KNOWN_TERMINALS).toHaveLength(13)
   })
 
   it("every KNOWN_TERMINALS entry has a {cmd} placeholder in args", () => {
