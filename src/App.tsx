@@ -17,6 +17,7 @@ import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useKeybindings } from "./hooks/useKeybindings"
 import { useCooldown } from "./hooks/useCooldown"
 import { useCommandPalette } from "./hooks/useCommandPalette"
+import { useTerminalLauncher } from "./hooks/useTerminalLauncher"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -64,13 +65,10 @@ import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
 import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
 import { NoProgressDetector } from "./lib/no-progress-detector"
-import { 
-  detectInstalledTerminals, 
-  getAttachCommand, 
-  launchTerminal, 
-  type KnownTerminal 
+import {
+  detectInstalledTerminals,
+  type KnownTerminal
 } from "./lib/terminal-launcher"
-import { copyToClipboard } from "./lib/clipboard"
 import { routeSessionError } from "./lib/error-router"
 import { ThemeProvider, useTheme } from "./context/ThemeContext"
 import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
@@ -83,8 +81,6 @@ import {
   DialogError,
   ActivityLog,
   BottomPanel,
-  createTerminalConfigState,
-  DialogTerminalError,
   DialogInvalidAgent,
 } from "./components"
 import type { CLIArgs, PlanProgress, LoopState } from "./types"
@@ -1550,150 +1546,27 @@ function AppContent(props: AppProps) {
     }
   })
   
-  /**
-   * Helper to show terminal error dialog
-   */
-  const showTerminalError = (name: string, error: string) => {
-    // Finding 16.4.B: collapse the two-eval pattern of
-    // `sessionId() || lastSessionId()` into a single read; the helper
-    // (Finding 16.4.A) makes the natural shape "resolve once, use twice".
-    const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-    const attachCmd = sid && server.url()
-      ? getAttachCommand(server.url()!, sid)
-      : ""
-    dialog.show(() => (
-      <DialogTerminalError
-        terminalName={name}
-        errorMessage={error}
-        attachCommand={attachCmd}
-        onCopy={onErrorCopy}
-        onClose={() => dialog.clear()}
-      />
-    ))
-  }
-
-  /**
-   * Execute launch and handle errors
-   */
-  async function launchConfiguredTerminal(sid: string, terminalConfig: OcloopConfig['terminal']) {
-     if (!terminalConfig) return
-     
-     const url = server.url()
-     if (!url) return
-
-     const attachCmd = getAttachCommand(url, sid)
-     log.info("terminal", "Launching", {
-        sessionId: sid,
-        terminal: terminalConfig,
-        command: attachCmd
-     })
-
-     const result = await launchTerminal(terminalConfig, url, sid)
-     
-     log.info("terminal", "Launch result", result)
-
-     if (!result.success) {
-        showTerminalError(
-           terminalConfig.type === 'known' ? terminalConfig.name : 'Custom',
-           result.error || t("errUnknown")
-        )
-     }
-  }
-  
-  // Handlers for Terminal Config Dialog
-  const onConfigSelect = async (terminal: KnownTerminal) => {
-     // Save config
-     const newConfig: OcloopConfig = {
-        ...ocloopConfig(),
-        terminal: {
-           type: 'known',
-           name: terminal.name
-        }
-     }
-
-     // saveConfig is synchronous — do not await it. On I/O failure it returns
-     // false and logs a warn; we surface that so the user knows the change
-     // won't survive a restart.
-     if (!saveConfig(newConfig)) {
-        toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
-        return
-     }
-     setOcloopConfig(newConfig)
-     dialog.clear()
-
-     // Launch!
-     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-     if (sid) {
-        launchConfiguredTerminal(sid, newConfig.terminal)
-     }
-  }
-
-   const onConfigCustom = async (command: string, args: string) => {
-     // Save config
-     const newConfig: OcloopConfig = {
-        ...ocloopConfig(),
-        terminal: {
-           type: 'custom',
-           command,
-           args
-        }
-     }
-
-     // saveConfig is synchronous — do not await it. On I/O failure it returns
-     // false and logs a warn; we surface that so the user knows the change
-     // won't survive a restart.
-     if (!saveConfig(newConfig)) {
-        toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
-        return
-     }
-     setOcloopConfig(newConfig)
-     dialog.clear()
-
-     // Launch!
-     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-     if (sid) {
-        launchConfiguredTerminal(sid, newConfig.terminal)
-     }
-   }
-
-   const onConfigCopy = async () => {
-      await copyAttachCommand()
-      dialog.clear()
-   }
-   
-   const onErrorCopy = async () => {
-      await copyAttachCommand()
-   }
-
-   /**
-    * Copy the current session's attach command to the system clipboard and
-    * surface the outcome via a toast. Single-sources the
-    * `resolveActiveSessionId → getAttachCommand → copyToClipboard → toast`
-    * pipeline that previously appeared, verbatim, in four call sites
-    * (`onConfigCopy`, `onErrorCopy`, the `copy_attach` command, and the `C`
-    * keybind). All four branches shared the same success/error toast keys,
-    * the same `result.error ?? ""` fallback, and the same sid+url guard —
-    * the only divergence was whether the caller cleared a dialog afterwards,
-    * which the callers now own (they wrap this helper).
-    *
-    * No-ops when there is no active session or server URL, matching the
-    * previous per-site behavior (each one guarded on `if (sid && url)`).
-    * Source: DRY consolidation of the 4 duplicated clipboard paths.
-    */
-   async function copyAttachCommand(): Promise<void> {
-      const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-      const url = server.url()
-      if (!sid || !url) return
-      const cmd = getAttachCommand(url, sid)
-      const result = await copyToClipboard(cmd)
-      if (result.success) {
-         toast.show({ variant: "success", message: t("toastCopied") })
-      } else {
-         // Surface the actual error instead of a misleading "Copied" toast
-         // when the clipboard command failed (e.g. empty pasteboard).
-         toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
-      }
-   }
+  // --- External-terminal attach + config-dialog handlers (useTerminalLauncher) ---
+  const {
+    showTerminalError,
+    launchConfiguredTerminal,
+    onConfigSelect,
+    onConfigCustom,
+    onConfigCopy,
+    onErrorCopy,
+    copyAttachCommand,
+    terminalConfigState,
+  } = useTerminalLauncher({
+    dialog,
+    toast,
+    t,
+    sessionId,
+    lastSessionId,
+    serverUrl: server.url,
+    ocloopConfig,
+    setOcloopConfig,
+    availableTerminals,
+  })
 
   // Persist a theme chosen in the picker. The picker already applied it live
   // (via onMove/onSelect → applyTheme); this only writes it to disk + syncs the
@@ -1707,15 +1580,6 @@ function AppContent(props: AppProps) {
     setOcloopConfig(newConfig)
     dialog.clear()
   }
-
-  // Create state for terminal config dialog
-  const terminalConfigState = createTerminalConfigState(
-    availableTerminals,
-    onConfigSelect,
-    onConfigCustom,
-    onConfigCopy,
-    () => dialog.clear()
-  )
 
   // Register commands (extracted to useCommandPalette)
   useCommandPalette({
