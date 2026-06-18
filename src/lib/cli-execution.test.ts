@@ -21,7 +21,7 @@
  * beforeEach/afterEach scaffolding.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runCli } from "./cli-runner"
@@ -57,5 +57,53 @@ describe("CLI: ejecución sin parámetros", () => {
     expect(result.stderr).toContain("Error: Plan file not found")
     expect(result.stderr).toContain("PLAN.md")
     expect(result.stdout).toBe("")
+  })
+})
+
+describe("CLI: ejecución con PLAN.md mínimo válido", () => {
+  it("passes pre-TUI validation and enters the render path (current bug: non-TTY hangs/segfaults)", async () => {
+    // Minimal valid PLAN.md: a single pending task is enough for
+    // validatePrerequisites to accept the file. We don't care about the
+    // content of the task here — this test pins the CLI's BEHAVIOR at
+    // the boundary between pre-flight validation and TUI render, not
+    // task semantics (those are covered by the parser unit tests).
+    writeFileSync(
+      join(dir, "PLAN.md"),
+      "# Plan\n\n- [ ] Do something\n",
+    )
+
+    // Short timeout: validatePrerequisites + render start take <500 ms
+    // in this environment, so 500 ms is enough for the side effect
+    // (.loop-prompt.md auto-create) to land on disk before the timeout
+    // kills the hung TUI input loop. Mirrors cli-runner.test.ts's
+    // 250 ms TUI hang test but with a bit more headroom because the
+    // non-debug path also has to validate the plan file and resolve
+    // locale.
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+      timeoutMs: 500,
+    })
+
+    // Side-effect proof: validatePrerequisites ran end-to-end. PLAN.md
+    // was found AND, because no .loop-prompt.md existed yet, the
+    // default was auto-created with `t("defaultLoopPrompt")`. That
+    // `Bun.write` happens BEFORE `tuiStarted = true`, so its presence
+    // on disk proves the CLI got past validation into the render path.
+    // If the file is missing, validation aborted earlier than expected
+    // (e.g. a regression that re-checks the plan file after the prompt
+    // step) and the test would catch it.
+    const promptFile = join(dir, ".loop-prompt.md")
+    expect(existsSync(promptFile)).toBe(true)
+
+    // Current non-TTY behavior (matrix case 4 / Phase 3 fix target):
+    // the TUI input loop hangs on a closed stdin and gets killed by the
+    // timeout (124) — or, less often, Bun segfaults mid-render (139)
+    // when the input loop finally touches the dead handle. Either is
+    // acceptable for this "pin the current behavior" test. Phase 3
+    // replaces both with a clean `process.exit(1)` plus a friendly
+    // "OCLoop requires an interactive terminal" message — at which
+    // point this assertion tightens to `expect(result.exitCode).toBe(1)`
+    // and the prompt-file check stays.
+    expect([124, 139]).toContain(result.exitCode)
   })
 })
