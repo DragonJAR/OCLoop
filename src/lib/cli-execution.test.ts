@@ -34,7 +34,7 @@
  * one describe per matrix case.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runCli } from "./cli-runner"
@@ -558,5 +558,62 @@ describe("CLI: PLAN.md inexistente — ramas de excepción en fileExists()", () 
     // must NOT have run.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(false)
+  })
+})
+
+// PLAN.md bug-hunt candidate #3: silent state loss on a non-writable cwd.
+// Both `saveLoopState` (.loop-state.json) and the debug logger (.loop.log)
+// swallow EACCES/EROFS/ENOSPC so a mid-loop ENOSPC or a stale read-only
+// mount wouldn't crash the app — but it also means the user has no state
+// to resume from after a crash. The fix is a boot-time pre-flight: probe
+// the cwd with a single temp-write, exit 1 with a clear localized
+// "working directory is not writable" if the probe fails, BEFORE any
+// other pre-flight that might otherwise mislead the user (e.g. the
+// prompt-file auto-create branch currently emits "Cannot create
+// .loop-prompt.md" if cwd is unwritable — accurate but not actionable).
+describe("CLI: cwd no escribible (boot pre-flight de estado silencioso)", () => {
+  it.skipIf(
+    process.platform === "win32" ||
+      (typeof process.getuid === "function" && process.getuid() === 0),
+  )("exits 1 with errCwdNotWritable when cwd is chmod 0o555 (read-only)", async () => {
+    // Set up a valid PLAN.md. The write happens BEFORE chmod 0o555 so it
+    // succeeds; the test then locks the dir to read+execute-only, which
+    // blocks every subsequent write inside it (saveLoopState's rename,
+    // debug-logger's appendFileSync, prompt auto-create's Bun.write).
+    // Reads inside the dir still work, so the plan existence + content
+    // checks would otherwise pass.
+    writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "- [ ] Only task\n")
+
+    // Lock the cwd to 0o555. On POSIX this denies create/rename/unlink
+    // inside the dir to the current user (root bypasses — see the
+    // skipIf above, matching the chmod 0o555 pattern already used in
+    // src/lib/loop-state-store.test.ts:78-97 for the same reason).
+    chmodSync(dir, 0o555)
+    try {
+      const result = await runCli(["--lang", "en"], {
+        entrypoint: ENTRYPOINT,
+      })
+
+      // Pre-fix: this used to fall through to the prompt auto-create
+      // branch and exit 1 with "Cannot create .loop-prompt.md" — a
+      // confusing message that points at the prompt file, not the real
+      // problem (cwd is read-only). The fix surfaces the actionable
+      // "working directory is not writable" with the path echoed so
+      // the user can `cd` out or `chmod` back. The exact phrase is
+      // asserted (not just "writable") to catch regressions that emit
+      // a generic message.
+      expect(result.exitCode).toBe(1)
+      expect(result.stderr).toContain("working directory is not writable")
+      // The path is echoed so the user can locate the bad cwd.
+      expect(result.stderr).toContain(dir)
+      // Pin the "this is the writable-pre-flight" exit, not the
+      // prompt-auto-create error. A regression that removes the new
+      // pre-flight would let the prompt branch fire instead, and this
+      // assertion would catch it.
+      expect(result.stderr).not.toContain("Cannot create .loop-prompt.md")
+    } finally {
+      // Restore so afterEach's rmSync can clean up the tempdir.
+      chmodSync(dir, 0o755)
+    }
   })
 })

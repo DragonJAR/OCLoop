@@ -258,12 +258,37 @@ const en = {
     "  - You pipe the command (e.g. `ocloop | less`)",
     "  - You redirect output (e.g. `ocloop > out.log`)",
     "  - You run from a CI runner or sandbox without a TTY",
-    "  - You launch from an editor / IDE process that doesn't expose a TTY",
+    "  - You launch from an editor / IDE that doesn't expose a TTY",
     "",
     "Open a real terminal (Terminal.app, iTerm, gnome-terminal, Windows Terminal, etc.)",
     "and run the command there.",
     "",
   ].join("\n"),
+  // Boot pre-flight: a single probe-write to `process.cwd()` failed, so
+  // .loop-state.json (resume after a crash), .loop.log (debug trace), and
+  // the default .loop-prompt.md (auto-create) cannot be created. Without
+  // this check the user would see a downstream "Cannot create .loop-prompt.md"
+  // (misleading — the prompt is just one of several things that need
+  // writes) or, worse, a silent resume-broken state after a crash. The
+  // check is read-only + a single unique-name temp file; if the probe
+  // succeeds, the file is unlinked before this function returns, so
+  // there's no on-disk residue between runs.
+  // Source: PLAN.md bug-hunt candidate #3 (silent state loss on write
+  // failure).
+  errCwdNotWritable: (p: Params) =>
+    [
+      `Error: working directory is not writable: ${p.path}`,
+      "",
+      "OCLoop needs to write to this directory to:",
+      "  - save the loop state (.loop-state.json) so it can resume after a crash",
+      "  - write the debug log (.loop.log)",
+      "  - auto-create the default .loop-prompt.md if it doesn't exist",
+      "",
+      "The directory is not writable for the current user, or the underlying",
+      "filesystem is read-only / out of space. Check permissions (e.g. `ls -ld`,",
+      "`chmod u+w`) or change to a writable directory, then run the command again.",
+      "",
+    ].join("\n"),
 
   // --- Default .loop-prompt.md (auto-created when missing) ---
   // Announced to the user; the body below is written to disk verbatim.
@@ -717,6 +742,22 @@ const es: Record<MessageKey, Msg> = {
     "y ejecuta el comando allí.",
     "",
   ].join("\n"),
+  // Espejo de `errCwdNotWritable` (en). Ver bloque en `en` para la nota de source.
+  errCwdNotWritable: (p) =>
+    [
+      `Error: directorio de trabajo no escribible: ${p.path}`,
+      "",
+      "OCLoop necesita escribir en este directorio para:",
+      "  - guardar el estado del loop (.loop-state.json) para reanudar tras un crash",
+      "  - escribir el log de depuración (.loop.log)",
+      "  - auto-crear el .loop-prompt.md por defecto si no existe",
+      "",
+      "El directorio no es escribible para el usuario actual, o el sistema de",
+      "archivos subyacente es de solo lectura / está sin espacio. Verifica los",
+      "permisos (p. ej. `ls -ld`, `chmod u+w`) o cambia a un directorio escribible,",
+      "luego ejecuta el comando de nuevo.",
+      "",
+    ].join("\n"),
 
   promptCreated: (p) =>
     `No se encontró ${p.path} en esta carpeta — se creó un prompt de loop por defecto. Edítalo para personalizar lo que se ejecuta en cada iteración.`,

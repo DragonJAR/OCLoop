@@ -15,6 +15,8 @@ import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
 import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
+import { randomBytes } from "node:crypto"
+import { writeFile, unlink } from "node:fs/promises"
 
 /**
  * Defaults for the interactive plan generator (`--create-plan`).
@@ -50,6 +52,51 @@ async function fileExists(path: string): Promise<boolean> {
       }),
     )
     process.exit(1)
+  }
+}
+
+/**
+ * Boot pre-flight: verify that `process.cwd()` is writable with a single
+ * probe write of a uniquely-named temp file. The temp name is random
+ * (6 random bytes → 12 hex chars) so two `ocloop` processes pointing at
+ * the same cwd (a TUI plus a `--create-plan` in another terminal, or
+ * two TMUX panes) never collide on the probe.
+ *
+ * Returns `{ ok: false, message }` with the OS error string on failure,
+ * or `{ ok: true }` on success. The probe file is unlinked before the
+ * function returns on the success path, so there is no on-disk residue
+ * between runs.
+ *
+ * Why a pre-flight at all: both `saveLoopState` (.loop-state.json) and
+ * the debug logger (.loop.log) swallow EACCES/EROFS/ENOSPC for in-loop
+ * resilience — a hot-loop ENOSPC or a stale read-only mount shouldn't
+ * crash the app. But the user has no state to resume from after a
+ * crash, and that failure is silent. Catching the unwritable case at
+ * boot, with a clean localized "working directory is not writable"
+ * error, gives the user actionable feedback (chmod, change cwd, fix
+ * the mount) instead of a confusing downstream "Cannot create
+ * .loop-prompt.md" or a resume-broken state after a crash. Source:
+ * PLAN.md bug-hunt candidate #3 (silent state loss on write failure).
+ */
+async function preflightCwdWritable(): Promise<{ ok: true } | { ok: false; message: string }> {
+  const probe = `.ocloop-write-probe.${randomBytes(6).toString("hex")}.tmp`
+  try {
+    await writeFile(probe, "", "utf-8")
+    // Best-effort cleanup. The next run will overwrite the probe if
+    // unlink fails (e.g. on a directory whose permission we lost
+    // mid-flight, which can't happen here because we just successfully
+    // wrote to it).
+    try {
+      await unlink(probe)
+    } catch {
+      // ignore
+    }
+    return { ok: true }
+  } catch (err) {
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+    }
   }
 }
 
@@ -456,6 +503,23 @@ async function main(): Promise<void> {
     }
     await runCreatePlan(args)
     process.exit(process.exitCode ?? 0)
+  }
+
+  // Boot pre-flight: cwd must be writable. The state store and the debug
+  // logger both silently swallow write errors (a hot-loop ENOSPC or a
+  // stale read-only mount shouldn't crash the app), but a user who lost
+  // write access has no state to resume from after a crash. Catching the
+  // unwritable case HERE, with a clean localized error, gives the user
+  // actionable feedback (chmod, change cwd, fix the mount) before any
+  // side-effects run — log.sessionStart, plan-file checks, the prompt
+  // auto-create. Sits AFTER the --create-plan branch above because
+  // --create-plan can write to a custom `--plan` path that is independent
+  // of cwd; the writable-cwd check is for the TUI's state/log/prompt
+  // files, not for arbitrary custom paths the user passes in.
+  const writable = await preflightCwdWritable()
+  if (!writable.ok) {
+    console.error(t("errCwdNotWritable", { path: process.cwd(), message: writable.message }))
+    process.exit(1)
   }
 
   // Initialize logging
