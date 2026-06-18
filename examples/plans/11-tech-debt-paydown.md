@@ -6,6 +6,20 @@ deprecated APIs, and shaky workarounds — one item at a time, keeping the suite
 green between each. Use this when debt has accumulated faster than it was repaid
 and is starting to slow down feature work.
 
+**Methodology (how the pros do it):** First *classify* debt with **Fowler's
+Technical Debt Quadrant** (reckless/prudent × deliberate/inadvertent) — only
+*deliberate* debt is "real," and prudent-inadvertent ("now we know better") is
+healthy. *Quantify* it with **SQALE** (SonarQube): remediation cost ÷ dev cost →
+an A–E maintainability rating. *Prioritize* with behavioral analysis
+(**CodeScene** hotspots: high change-frequency × low code-health — typically ~2-4%
+of the codebase, where debt hurts most). Track self-admitted debt (SATD) and pay
+it down in small, continuous increments.
+
+**Tools/standards named here:** **Fowler's Technical Debt Quadrant**; **SQALE**
+quality model / **SonarQube** (Technical Debt Ratio, A–E rating); **CodeScene**
+behavioral code analysis / hotspots (Tornhill, *Your Code as a Crime Scene*);
+SATD scanning (TODO/FIXME/XXX/HACK markers); the Boy Scout rule.
+
 ## Architecture context (read first)
 Replace the debt source and command with your own. Re-read every iteration.
 - Debt markers: `TODO`, `FIXME`, `HACK`, `@deprecated`, `XXX` scattered across `src/`.
@@ -14,12 +28,12 @@ Replace the debt source and command with your own. Re-read every iteration.
 - Record what was paid down in `docs/debt-paydown.md` (create `docs/` if missing).
 
 ## Phase 1: Inventory & prioritize
-- [ ] **1.1** Collect every debt marker
-  - Grep for `TODO|FIXME|HACK|XXX|@deprecated` across `src/`; record each (file, line, text) in `docs/debt-paydown.md`
-  - Pull the matching issues from the tracker and cross-reference
+- [ ] **1.1 (recon)** Collect and classify every debt item
+  - Grep for `TODO|FIXME|HACK|XXX|@deprecated`; run SonarQube/CodeScene if available; record each item (file, line, text, SQALE estimate) in `docs/debt-paydown.md`; pull matching issues from the tracker
+  - **Recursion:** for each discovered debt item insert one `- [ ]` task below to resolve it
 - [ ] **1.2** Rank by risk and blast radius
-  - Prioritize: debt on money/auth/data paths, debt blocking feature work, then the rest
-  - Verify: the ranked list in `docs/debt-paydown.md` justifies each priority with a one-line reason
+  - Prioritize: debt on money/auth/data paths and in CodeScene hotspots (high churn × low health), then debt blocking feature work, then the rest
+  - Verify: the ranked list in `docs/debt-paydown.md` justifies each priority with a one-line reason (quadrant + hotspot status)
 
 ## Phase 2: High-risk debt (money / auth / data)
 - [ ] **2.1** Resolve the highest-risk item
@@ -42,8 +56,8 @@ Replace the debt source and command with your own. Re-read every iteration.
 
 ## Phase 4: Confirm & prevent recurrence
 - [ ] **4.1** Confirm the debt count dropped and the suite is green
-  - Re-grep; confirm the marker count is down by the items addressed; run the full suite
-  - Verify: record the before/after counts in `docs/debt-paydown.md`; zero failing tests
+  - Re-grep and re-scan (SonarQube/CodeScene); confirm the marker count and the Tech Debt Ratio dropped; run the full suite
+  - Verify: record the before/after counts and the maintainability rating in `docs/debt-paydown.md`; zero failing tests
 - [ ] **4.2** Add guards against regression
   - Where a debt recurred before, add a lint rule, test, or CI check that catches it
   - Verify: the guard fails on the old pattern and passes on the fix
@@ -58,11 +72,12 @@ Replace the debt source and command with your own. Re-read every iteration.
 ## Acceptance criteria
 1. Every high-risk (money/auth/data) debt item from the inventory is resolved or blocked with a follow-up.
 2. Deprecated API usage is eliminated; no new deprecation warnings remain.
-3. The marker count dropped measurably (before/after in `docs/debt-paydown.md`); the suite is green.
+3. The marker count and SonarQube/CodeScene debt ratio dropped measurably (before/after in `docs/debt-paydown.md`); the suite is green.
 4. Guards exist for any debt that previously recurred.
 
 ## How OCLoop reads this file
 - Markers: `- [x]` complete, `- [ ]` pending (executed), `- [MANUAL]` human-only (skipped), `- [BLOCKED: reason]` blocked (skipped).
 - It runs one pending task per fresh session, marks it `[x]`, and continues.
 - After marking `[x]`, the agent leaves a short indented note beneath it (the debt item resolved and why the fix is correct) as memory for the next iteration — prose or plain sub-bullets, never `- [ ]`/`- [x]` lines.
+- **Self-expanding tasks:** a task marked `(recon)` discovers items (TODO/FIXME markers, SonarQube violations, CodeScene hotspots); upon completion it inserts one new `- [ ]` task per item, immediately after its `[x]` line, so OCLoop executes each in a later iteration.
 - The run ends automatically when no automatable tasks remain; OCLoop appends a `<plan-complete>` summary itself.
