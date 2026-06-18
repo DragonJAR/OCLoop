@@ -199,6 +199,36 @@ When OCLoop re-invokes the agent, the new session starts with a blank context. T
 
 Notes must be **indented prose or plain sub-bullets** (`  - Decision: ...`), never `- [ ]`/`- [x]` lines — the parser trims indentation before matching, so an indented checkbox would still count as a task and corrupt the progress bar. Omit a note when nothing is worth carrying forward; permanent, project-wide gotchas belong in `AGENTS.md` instead.
 
+### Self-expanding plans (reconnaissance tasks)
+
+A plan can grow itself at runtime. Mark any inventory/discovery task with `(recon)` (or `[RECON]`) in its title:
+
+```markdown
+- [ ] **1.1 (recon)** Inventory the attack surface
+  - List every endpoint and public function
+  - Recursion: for each, insert one `- [ ]` task below to audit it
+```
+
+When the agent completes a `(recon)` task, it inserts one new `- [ ]` task per discovered item **immediately after** the `[x]` line (not at the end). OCLoop re-reads `PLAN.md` every iteration, so those new tasks are picked up and executed in document order — no restart, no manual edit.
+
+```markdown
+- [x] **1.1 (recon)** Inventory the attack surface
+  - Discovered 12 endpoints; see docs/attack-surface.md
+- [ ] **1.1a** Audit POST /api/orders for IDOR & injection
+- [ ] **1.1b** Audit GET /api/users/:id for authz
+- ...
+- [ ] **1.2** Next pre-existing task
+```
+
+Rules the default loop prompt enforces:
+- Recon fan-out is the **only** case where the agent may add `- [ ]` lines — never for any other reason.
+- Each inserted task names its **specific item** (path/endpoint/id) and its action.
+- Number them `N.Ma`, `N.Mb`, … inheriting the parent's phase (e.g. `**1.1a**`).
+- Cap at **~20** per recon task; for more, group items or raise it as `[MANUAL]`.
+- Never duplicate a task that is already pending.
+
+This turns "list all files → review each" into a single self-extending plan. It's especially powerful for audits (per-endpoint, per-account), debt paydown (per-TODO), and reconciliations (per-balance-sheet-account). All 20 example plans under `examples/plans/` use it.
+
 ## Keybindings
 
 | Key | State | Action |

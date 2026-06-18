@@ -199,6 +199,36 @@ Cuando OCLoop reinvoca al agente, la nueva sesión arranca con contexto en blanc
 
 Las notas deben ser **prosa indentada o sub-bullets simples** (`  - Decisión: ...`), nunca líneas `- [ ]`/`- [x]` — el parser recorta la indentación antes de hacer match, así que un checkbox indentado contaría como tarea y corrompería la barra de progreso. Omítela cuando no haya nada digno de recordar; los gotchas permanentes del proyecto van en `AGENTS.md`.
 
+### Planes auto-expansivos (tareas de reconocimiento)
+
+Un plan puede crecer a sí mismo en tiempo de ejecución. Marca cualquier tarea de inventario/descubrimiento con `(recon)` (o `[RECON]`) en su título:
+
+```markdown
+- [ ] **1.1 (recon)** Inventa la superficie de ataque
+  - Lista cada endpoint y función pública
+  - Recursión: por cada uno, inserta una tarea `- [ ]` debajo para auditarlo
+```
+
+Cuando el agente completa una tarea `(recon)`, inserta una nueva tarea `- [ ]` por cada ítem descubierto **inmediatamente después** de la línea `[x]` (no al final). OCLoop relee `PLAN.md` en cada iteración, así que esas tareas nuevas se detectan y ejecutan en orden del documento — sin reinicio, sin edición manual.
+
+```markdown
+- [x] **1.1 (recon)** Inventa la superficie de ataque
+  - Descubrió 12 endpoints; ver docs/attack-surface.md
+- [ ] **1.1a** Audita POST /api/orders (IDOR e inyección)
+- [ ] **1.1b** Audita GET /api/users/:id (autorización)
+- ...
+- [ ] **1.2** Siguiente tarea preexistente
+```
+
+Reglas que impone el prompt por defecto:
+- El fan-out de recon es el **único** caso en que el agente puede añadir líneas `- [ ]` — nunca por ninguna otra razón.
+- Cada tarea insertada nombra su **ítem específico** (ruta/endpoint/id) y su acción.
+- Numéralas `N.Ma`, `N.Mb`, … heredando la fase del padre (p. ej. `**1.1a**`).
+- Límite de **~20** por tarea recon; para más, agrupa ítems o márcalo como `[MANUAL]`.
+- Nunca dupliques una tarea que ya esté pendiente.
+
+Esto convierte "listar todos los archivos → revisar cada uno" en un único plan que se auto-extiende. Es especialmente potente para auditorías (por endpoint, por cuenta), pago de deuda (por TODO) y conciliaciones (por cuenta de balance). Los 20 planes de ejemplo en `examples/plans/` lo usan.
+
 ## Atajos de teclado
 
 | Tecla | Estado | Acción |
