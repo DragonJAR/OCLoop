@@ -50,30 +50,22 @@ export type ErrorAction =
 
 /**
  * Decide which side effect should fire for a classified session error.
- * Centralizes the "which `kind` triggers which action" policy that was
- * duplicated between `handleIterationError` (App.tsx:910, the API
- * path) and the SSE `onSessionError` handler (App.tsx:520, the SSE
- * path). Replaces the asymmetric branches surfaced by Findings 16.1.A
- * (recoverable flag) and 16.1.B (transient path divergence) with a
- * single source of truth.
+ * Centralizes the "which kind triggers which action" policy that was previously
+ * duplicated between handleIterationError (API path) and the SSE onSessionError
+ * handler.
  *
- * Policy (Source: MEJORAS.md Finding 16.1.D):
+ * Policy:
  *
- * - `isAborted: true` → returns `null`. The abort policy is
- *   source-specific (SSE does `toggle_pause`, the API does not abort
- *   through this path today) so the call site keeps ownership.
- * - `kind: "rate_limit" | "transient"` + (`running` | `pausing`) →
- *   cooldown. `retryAfter` is propagated for rate_limit; transient
- *   leaves it `undefined`.
- * - `kind: "rate_limit" | "transient"` + other state → `null` (no
- *   live iteration to retry; the error is dormant).
- * - `kind: "auth" | "fatal"` + (`running` | `pausing` | `debug`) →
- *   non-recoverable error. The `recoverable` flag is `false` for
- *   these two kinds; the defensive `classified.kind === "transient"`
- *   is kept so any future branch that adds a new recoverable kind
- *   composes correctly (matches the original SSE handler's defensive
- *   form at App.tsx:584).
- * - `kind: "auth" | "fatal"` + other state → `null`.
+ * - isAborted: true → returns null. The abort policy is source-specific (SSE
+ *   does toggle_pause, the API does not abort through this path) so the call
+ *   site keeps ownership.
+ * - kind: rate_limit | transient + (running | pausing) → cooldown. retryAfter
+ *   is propagated for rate_limit; transient leaves it undefined.
+ * - kind: rate_limit | transient + other state → null (no live iteration to
+ *   retry; the error is dormant).
+ * - kind: auth | fatal + (running | pausing | debug) → non-recoverable error.
+ *   The recoverable flag is false for these two kinds.
+ * - kind: auth | fatal + other state → null.
  *
  * The rare case `kind: "aborted"` without `isAborted: true` falls
  * through to the auth/fatal branch (treated as a non-recoverable

@@ -80,10 +80,9 @@ class ShutdownManager {
         console.error(`Error during shutdown (${signal}):`, error)
         process.exit(1)
       } finally {
-        // Normal-completion path: clear the failsafe now that we know
-        // the handler returned. The catch-block path is past the point
-        // of needing cleanup — process.exit(1) terminates the runtime.
-        // Source: MEJORAS.md Finding 17.7.B.
+        // Normal-completion path: clear the failsafe now that the handler
+        // returned. The catch-block path is past the point of needing cleanup
+        // (process.exit(1) terminates the runtime).
         clearTimeout(failsafe)
       }
       // Handler finished without exiting (e.g. programmatic shutdown): make sure
