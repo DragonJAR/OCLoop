@@ -8,8 +8,8 @@
  *
  * The detector is a small, dependency-free class so it can be unit-tested
  * without wiring up the rest of the loop. The actual halt is the caller's
- * job — `recordIterationStart()` only reports whether the threshold has been
- * reached. Source: PLAN.md bug-hunt #1.
+ * job — recordIterationStart() only reports whether the threshold has been
+ * reached.
  *
  * Semantics:
  *   - `recordIterationStart(task)` is called at the start of each iteration,

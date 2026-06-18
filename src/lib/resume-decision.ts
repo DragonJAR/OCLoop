@@ -1,18 +1,13 @@
 /**
- * Pure helper for the startup resume log emitted at App.tsx:1130.
+ * Pure helper for the startup resume log emitted by AppContent's onMount.
  *
- * The TUI onMount effect calls `loadLoopState()` and then only consults
- * `resilience().resume` inside the `persisted && persisted.iteration > 0`
- * branch. When the user passes `--resume` on a clean run (no
- * `.loop-state.json`, or a stale one with `iteration === 0`), the flag is
- * parsed and stored on the args object but produces zero observable effect
- * — the loop just starts as a fresh run.
+ * When the user passes --resume on a clean run (no .loop-state.json, or a stale
+ * one with iteration === 0), the flag is parsed and stored but produces zero
+ * observable effect — the loop starts as a fresh run. This surfaces that no-op
+ * in the startup log so anyone reading .loop.log can see it. Non-functional
+ * improvement; the decision tree is unchanged.
  *
- * Source: MEJORAS.md Finding 1.8.B. The fix is a non-functional improvement:
- * it surfaces the no-op in the startup log so anyone reading `.loop.log` can
- * see it. No behavior change; the decision tree in App.tsx is unchanged.
- *
- * The helper returns the log event to emit (or null when `--resume` was not
+ * The helper returns the log event to emit (or null when --resume was not
  * requested), keeping the side-effect-free part isolated from the call site
  * so the rules can be unit-tested.
  */

@@ -1,17 +1,15 @@
 /**
- * PLAN.md bug-hunt #4: detect a misalignment between the task the loop was
- * working on at save time and the first-pending task in PLAN.md at resume
- * time. When the two differ, the user has edited/reordered PLAN.md between
- * the crash and the resume, and a naive resume will silently skip the
- * original task. The fix does NOT change the resume flow — the agent still
- * picks the first pending task, as its prompt instructs — it just surfaces
- * the misalignment as a warning in `.loop.log` and as an activity event so
- * the user can confirm the change was intentional.
+ * Detect a misalignment between the task the loop was working on at save time
+ * and the first-pending task in PLAN.md at resume time. When the two differ,
+ * the user has edited/reordered PLAN.md between crash and resume, and a naive
+ * resume would silently skip the original task. The fix does NOT change the
+ * resume flow — the agent still picks the first pending task, as its prompt
+ * instructs — it just surfaces the misalignment as a warning in .loop.log and
+ * as an activity event so the user can confirm the change was intentional.
  *
- * The helper is pure: it takes the saved task and the current PLAN.md text
- * and returns a structured `ResumeAlignment` (or `null` when nothing to
- * report). Keeping it pure lets the same rules be unit-tested without
- * touching the loop or the file system.
+ * The helper is pure: it takes the saved task and the current PLAN.md text and
+ * returns a structured ResumeAlignment (or null when nothing to report). Keeping
+ * it pure lets the same rules be unit-tested without touching the loop or FS.
  *
  * Semantics:
  *   - `savedTask` is `null`/`undefined`/empty → `null`. Backward-compat: a

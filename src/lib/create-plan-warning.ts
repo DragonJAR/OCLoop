@@ -1,16 +1,11 @@
 /**
- * Pure helper that lists the CLI flags `--create-plan` accepts but cannot
- * honor. The TUI never starts in plan-generator mode (src/index.tsx:320-323
- * exits before render), so any flag whose only consumer is the TUI is parsed
- * and stored on the args object and then ignored.
+ * Pure helper that lists the CLI flags --create-plan accepts but cannot honor.
+ * The TUI never starts in plan-generator mode (index.tsx exits before render),
+ * so any flag whose only consumer is the TUI is parsed, stored, then ignored.
  *
- * The warning is non-fatal: the user can still pipe stderr away
- * (`2>/dev/null`) to silence it. The fix improves discoverability without
- * breaking the "store everything, decide later" philosophy of parseArgs.
- *
- * Source: MEJORAS.md Finding 1.7.A. Also covers the cross-reference
- * Finding 1.8.A (`--resume` is the most prominent of the resilience
- * flags silently swallowed by --create-plan).
+ * The warning is non-fatal: the user can still pipe stderr away (2>/dev/null)
+ * to silence it. Improves discoverability without breaking the "store everything,
+ * decide later" philosophy of parseArgs. Notably covers --resume.
  */
 
 import { DEFAULTS } from "./constants"

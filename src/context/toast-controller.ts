@@ -1,21 +1,17 @@
 /**
  * Toast controller factory.
  *
- * Builds the value exposed by `useToast()` — a single-toast controller
- * with `show` / `error` / `currentToast` and an auto-hide timer.
+ * Builds the value exposed by useToast() — a single-toast controller with
+ * show / error / currentToast and an auto-hide timer.
  *
- * Lives in a pure `.ts` file (no JSX) so it can be unit-tested inside
- * a bare `createRoot` (per `docs/testing.md`, importing a `.tsx` file
- * under `jsxImportSource: "@opentui/solid"` fails in `bun:test` because
- * the `@opentui/solid` JSX runtime is not loadable without a DOM).
- * `ToastContext.tsx` re-exports it for the public API.
+ * Lives in a pure .ts file (no JSX) so it can be unit-tested inside a bare
+ * createRoot: importing a .tsx file under jsxImportSource: "@opentui/solid"
+ * fails in bun:test because the @opentui/solid JSX runtime is not loadable
+ * without a DOM. ToastContext.tsx re-exports it for the public API.
  *
- * The factory uses `onCleanup` to clear its auto-hide timer when the
- * surrounding reactive owner disposes; tests must call this from a
- * `createRoot` and invoke `dispose()` to deterministically clear the
- * timer (preventing it from leaking into other tests).
- *
- * Source: MEJORAS.md Finding 18.2.F.
+ * The factory uses onCleanup to clear its auto-hide timer when the surrounding
+ * reactive owner disposes; tests must call this from a createRoot and invoke
+ * dispose() to deterministically clear the timer (preventing leaks across tests).
  */
 
 import { createSignal, onCleanup, type Accessor } from "solid-js"
