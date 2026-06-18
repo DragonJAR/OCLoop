@@ -35,6 +35,33 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
   { name: "alacritty", command: "alacritty", args: ["-e", "{cmd}"] },
   { name: "kitty", command: "kitty", args: ["{cmd}"] },
   { name: "wezterm", command: "wezterm", args: ["start", "--", "{cmd}"] },
+  // --- macOS (built-in `osascript`; these surface only on macOS because
+  // `commandExists("osascript")` is false elsewhere — no platform field needed).
+  // GUI terminals here don't take a command via plain argv like xterm's `-e`;
+  // the attach command is a single STRING inside the AppleScript clause, so
+  // `{cmd}` is embedded in the arg and buildArgs inline-substitutes it.
+  // ponytail: both appear whenever osascript exists; Terminal.app is always
+  // installed (guaranteed-working option), and if iTerm is absent its osascript
+  // fails gracefully into the terminal-error dialog. Add an app-presence check
+  // if the iTerm false-positive ever bugs users.
+  {
+    name: "Terminal",
+    command: "osascript",
+    args: [
+      "-e",
+      `tell application "Terminal" to do script "{cmd}"`,
+      "-e",
+      `tell application "Terminal" to activate`,
+    ],
+  },
+  {
+    name: "iTerm",
+    command: "osascript",
+    args: [
+      "-e",
+      `tell application "iTerm" to create window with default profile command "{cmd}"`,
+    ],
+  },
   // --- Linux (X11 / Wayland desktop environments) ---
   {
     name: "gnome-terminal",
@@ -167,10 +194,26 @@ function buildArgs(argsPattern: string[], cmdParts: string[]): string[] {
     throw new Error("attach command is empty; cannot construct terminal command")
   }
 
+  // For terminals launched via a wrapper that takes the command as a single
+  // STRING rather than separate argv tokens (macOS `osascript … do script
+  // "{cmd}"`), `{cmd}` appears INSIDE an arg instead of as its own token. Join
+  // the parts and escape for embedding in an AppleScript double-quoted string
+  // (`\` then `"`). The attach tokens are PATH-safe today (no spaces/quotes), so
+  // the join round-trips cleanly; the escape is a defensive guard.
+  const joinedCmd = cmdParts
+    .join(" ")
+    .replace(/\\/g, "\\\\")
+    .replace(/"/g, '\\"')
+
   return argsPattern.flatMap((arg) => {
+    // Standalone token → expand to the attach argv tokens (alacritty `-e {cmd}`).
     if (arg === "{cmd}") {
-      // Replace placeholder with command parts
       return cmdParts
+    }
+    // Embedded placeholder → inline-substitute the joined command string
+    // (osascript `… do script "{cmd}"`).
+    if (arg.includes("{cmd}")) {
+      return [arg.replaceAll("{cmd}", joinedCmd)]
     }
     // Keep other args as-is
     return [arg]

@@ -61,20 +61,21 @@ describe("getKnownTerminalByName (Finding 18.2.D)", () => {
     expect(getKnownTerminalByName("nope-not-a-terminal")).toBeUndefined()
   })
 
-  it("KNOWN_TERMINALS has 13 entries (cross-platform: 12 Unix + Windows Terminal)", () => {
+  it("KNOWN_TERMINALS has 15 entries (12 Unix + Windows Terminal + macOS Terminal/iTerm)", () => {
     // Pin the size: any future add/remove is intentional and gets a matching
-    // test update. The original audit baseline was 12 (Unix-only); Windows
-    // Terminal (`wt`) was added so `detectInstalledTerminals` finds the
-    // built-in on Win10/11 instead of returning an empty list.
-    expect(KNOWN_TERMINALS).toHaveLength(13)
+    // test update. Baselines: 12 Unix → +1 Windows Terminal (`wt`) → +2 macOS
+    // (Terminal.app, iTerm via osascript) so the chooser is never empty on Mac.
+    expect(KNOWN_TERMINALS).toHaveLength(15)
   })
 
-  it("every KNOWN_TERMINALS entry has a {cmd} placeholder in args", () => {
-    // Backstop for Finding 11.2.C: launchTerminal relies on the
-    // {cmd} token to substitute the attach command. A known-terminal
-    // entry without it would spawn an empty shell.
+  it("every KNOWN_TERMINALS entry references the {cmd} placeholder in args", () => {
+    // Backstop for Finding 11.2.C: launchTerminal relies on {cmd} to substitute
+    // the attach command. Token-style terminals carry it as its own arg
+    // (["-e", "{cmd}"]); osascript terminals embed it inside a string
+    // ('… do script "{cmd}"'). Either form must reference it, or the terminal
+    // would open an empty shell.
     for (const t of KNOWN_TERMINALS) {
-      expect(t.args).toContain("{cmd}")
+      expect(t.args.some((a) => a.includes("{cmd}"))).toBe(true)
     }
   })
 })
@@ -129,6 +130,26 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       "http://127.0.0.1:4096",
       "--session",
       "ses_abc",
+    ])
+  })
+
+  it("spawns the macOS Terminal via osascript with the attach command inlined", async () => {
+    // osascript takes the command as a single STRING inside `do script "…"`,
+    // so {cmd} is embedded in the arg (not a standalone token) and must be
+    // inline-substituted with the space-joined attach command.
+    commandExistsImpl = async (cmd) => cmd === "osascript"
+    const result = await launchTerminal(
+      { type: "known", name: "Terminal" },
+      "http://127.0.0.1:4096",
+      "ses_abc",
+    )
+    expect(result).toEqual({ success: true })
+    expect(spawnState.calls[0].cmd).toEqual([
+      "osascript",
+      "-e",
+      `tell application "Terminal" to do script "opencode attach http://127.0.0.1:4096 --session ses_abc"`,
+      "-e",
+      `tell application "Terminal" to activate`,
     ])
   })
 
