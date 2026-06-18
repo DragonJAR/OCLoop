@@ -528,6 +528,98 @@ describe("parseTaskLine", () => {
       })
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.7 — leading and trailing whitespace tolerance.
+  // The parser calls `.trim()` on the raw line before scanning for the
+  // "- [" prefix and the closing bracket, so any leading or trailing
+  // whitespace (spaces, tabs, CR) is collapsed. The contract being pinned
+  // here: an editor that auto-indents under a list, or a CRLF file saved
+  // by Windows, or a trailing-space cleanup tool that adds whitespace,
+  // must NOT change the classification of the line. The four task
+  // variants (x, pending, MANUAL, BLOCKED) all get a row each, plus a
+  // combined-indent-and-trailing test that proves the rule stacks.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.7 — leading and trailing whitespace tolerance", () => {
+    it("trims a single leading space on a completed task", () => {
+      expect(parseTaskLine(" - [x] Done task")).toEqual({ type: "completed", description: "Done task" })
+    })
+
+    it("trims multiple leading spaces on a pending task (auto-indent under a list)", () => {
+      expect(parseTaskLine("      - [ ] Pending task")).toEqual({
+        type: "pending",
+        description: "Pending task",
+      })
+    })
+
+    it("trims a leading tab on a manual task", () => {
+      // \t at the start of the line is whitespace and gets collapsed.
+      expect(parseTaskLine("\t- [MANUAL] Tab-indented manual")).toEqual({
+        type: "manual",
+        description: "Tab-indented manual",
+      })
+    })
+
+    it("trims a leading tab on a blocked task (keyword form)", () => {
+      expect(parseTaskLine("\t- [BLOCKED: needs API] Tab-indented blocked")).toEqual({
+        type: "blocked",
+        description: "Tab-indented blocked",
+        blockedReason: "needs API",
+      })
+    })
+
+    it("trims a mix of leading tabs and spaces on a pending task", () => {
+      // Common editor artifact: tab-indent followed by spaces, or vice versa.
+      expect(parseTaskLine("\t  \t - [ ] Mixed leading whitespace")).toEqual({
+        type: "pending",
+        description: "Mixed leading whitespace",
+      })
+    })
+
+    it("trims trailing spaces on a completed task (trailing-space cleanup tool)", () => {
+      // Many editors strip trailing whitespace on save. A line that
+      // originally read "- [x] Task" and was rewritten with N trailing
+      // spaces must still parse identically.
+      expect(parseTaskLine("- [x] Task          ")).toEqual({
+        type: "completed",
+        description: "Task",
+      })
+    })
+
+    it("trims trailing tabs on a pending task", () => {
+      expect(parseTaskLine("- [ ] Task\t\t\t")).toEqual({
+        type: "pending",
+        description: "Task",
+      })
+    })
+
+    it("trims BOTH leading and trailing whitespace on the same line", () => {
+      // Stacked: leading tabs + spaces, content, trailing tabs. Both ends
+      // are independent — neither must affect the other.
+      expect(parseTaskLine("  \t - [x] Task \t  ")).toEqual({
+        type: "completed",
+        description: "Task",
+      })
+    })
+
+    it("a line that is ONLY whitespace stays not-a-task (not a false positive)", () => {
+      // A bare whitespace line must NOT classify as a task — the leading
+      // "- [" check still has to fail because the entire line is whitespace.
+      expect(parseTaskLine("   ")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("\t\t")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("a CRLF-style line (carriage return at the end) is trimmed to its content", () => {
+      // If a PLAN.md is edited in a tool that leaves stray CRs on lines
+      // (e.g. a Windows-era editor mixed with Unix line endings), the
+      // trailing \r is whitespace and gets stripped. The task survives.
+      expect(parseTaskLine("- [x] Done task\r")).toEqual({
+        type: "completed",
+        description: "Done task",
+      })
+    })
+  })
 })
 
 describe("parsePlan", () => {
@@ -1347,6 +1439,205 @@ Some intro.
       expect(result.percentComplete).toBe(13)
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.7 — blank lines and whitespace tolerance at the file level.
+  // A real PLAN.md is not a dense list of tasks: editors leave blank
+  // lines between sections, copy-paste introduces trailing whitespace,
+  // and auto-indent tools add leading whitespace. The parser must count
+  // tasks correctly regardless of the noise BETWEEN them. parseTaskLine
+  // already trims each line, but `parsePlan` walks the file line by line
+  // and must silently skip blank / whitespace-only lines without
+  // inflating the total. The contract being pinned here: blank lines
+  // between tasks (or runs of blank lines, or whitespace-only lines)
+  // contribute 0 to `total` and never shift the percentComplete math.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.7 — blank lines and whitespace tolerance in whole-file parsing", () => {
+    it("counts tasks correctly when separated by single blank lines", () => {
+      // 3 tasks separated by exactly one blank line each. The blank
+      // lines must NOT be counted in `total`.
+      const content = [
+        "- [x] Task one",
+        "",
+        "- [x] Task two",
+        "",
+        "- [ ] Task three",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(1)
+      expect(result.automatable).toBe(1)
+      // percentComplete = 2 / (3 - 0 - 0) = 2/3 → 67
+      expect(result.percentComplete).toBe(67)
+    })
+
+    it("counts tasks correctly when separated by runs of multiple blank lines", () => {
+      // Authors often leave big vertical gaps for readability. The
+      // parser must not care how many blank lines sit between tasks.
+      const content = [
+        "- [x] Task one",
+        "",
+        "",
+        "",
+        "- [x] Task two",
+        "",
+        "",
+        "- [ ] Task three",
+        "",
+        "",
+        "",
+        "",
+        "- [ ] Task four",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(2)
+      expect(result.automatable).toBe(2)
+      // percentComplete = 2 / (4 - 0 - 0) = 2/4 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("counts tasks correctly when interleaved with whitespace-only lines", () => {
+      // Whitespace-only lines (tabs, spaces) must be treated as blanks
+      // by the file-level walk — same `.trim()` rule as the line level.
+      const content = [
+        "- [x] Task one",
+        "   ",
+        "- [x] Task two",
+        "\t\t",
+        "- [ ] Task three",
+        " \t  \t ",
+        "- [ ] Task four",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(2)
+      expect(result.automatable).toBe(2)
+      // percentComplete = 2 / (4 - 0 - 0) = 2/4 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("counts tasks correctly when surrounded by leading and trailing blank lines", () => {
+      // PLAN.md files commonly have a blank line at the start (after
+      // the title) and a trailing newline at the end (sometimes more
+      // than one). Both edges must not pollute the count.
+      const content = [
+        "",
+        "",
+        "- [x] Task one",
+        "- [ ] Task two",
+        "- [MANUAL] Manual task",
+        "",
+        "",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(3)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(1)
+      expect(result.automatable).toBe(1)
+      // percentComplete = 1 / (3 - 1 manual) = 1/2 = 50%
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("combines leading/trailing whitespace on individual task lines with blank lines between them", () => {
+      // The hardest realistic case: a PLAN.md that has been auto-formatted
+      // by an editor that indents tasks under sections AND leaves blank
+      // lines between them. Both surfaces (per-line and per-file) must
+      // compose without double-counting or dropping tasks.
+      const content = [
+        "# My Plan",
+        "",
+        "## Phase 1",
+        "",
+        "  - [x] Indented completed",
+        "",
+        "    - [ ] Indented pending",
+        "",
+        "\t- [MANUAL] Tab-indented manual",
+        "",
+        "## Phase 2",
+        "",
+        "- [BLOCKED: needs API] Blocked",
+        "",
+        "  - [x] Indented completed 2  ",
+        "    - [ ] Indented pending 2  ",
+        "",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(6)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(2)
+      expect(result.manual).toBe(1)
+      expect(result.blocked).toBe(1)
+      expect(result.automatable).toBe(2)
+      // percentComplete = 2 / (6 - 1 manual - 1 blocked) = 2/4 = 50%
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("a file of only blank lines and whitespace parses as zero tasks (no false positives)", () => {
+      // Mirrors the "whitespace-only file" test at line 944 (Phase 2.1)
+      // but spelled out as a distinct contract: any number of blank /
+      // whitespace lines, with no task lines anywhere, must produce
+      // total=0 and percentComplete=100. A parser that counted blank
+      // lines as tasks would produce percentComplete=NaN.
+      const content = [
+        "",
+        "   ",
+        "",
+        "\t\t",
+        "",
+        " \t  \t ",
+        "",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result).toEqual({
+        total: 0,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 0,
+        automatable: 0,
+        percentComplete: 100,
+      })
+    })
+
+    it("blank lines do not shift the percentComplete math (math survives noise)", () => {
+      // The percentComplete formula is `completed / denominator`. Blank
+      // lines must NOT enter either side. A parser that, say, counted
+      // blank lines as `total` would shift the denominator and produce
+      // a wrong percentage. Pin the exact math with a realistic file.
+      const content = [
+        "",
+        "- [x] One",
+        "",
+        "- [x] Two",
+        "",
+        "- [ ] Three",
+        "",
+        "- [ ] Four",
+        "",
+        "- [ ] Five",
+        "",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(5)
+      expect(result.completed).toBe(2)
+      // percentComplete = 2 / 5 = 40% (no manual, no blocked in denominator)
+      expect(result.percentComplete).toBe(40)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
@@ -1820,6 +2111,62 @@ describe("getCurrentTaskFromContent", () => {
     ].join("\n")
     const result = getCurrentTaskFromContent(content)
     expect(result).toBe("The single pending in phase 2")
+  })
+
+  // PLAN.md 2.7 — selection survives blank lines and whitespace.
+  // Mirrors the parsePlan file-level contract at the getCurrentTaskFromContent
+  // surface: blank lines between tasks must not throw off the "first
+  // pending" selection. A parser that treated blank lines as
+  // parseable-but-empty tasks (and bailed out early) would return null
+  // here; a parser that counted blank lines as pending (and returned the
+  // empty description) would return "" here. The correct behavior is to
+  // skip blanks and return the real first pending description.
+  it("returns the first pending when blank lines separate the tasks", () => {
+    const content = [
+      "- [x] Done",
+      "",
+      "",
+      "- [ ] First pending after blank",
+      "",
+      "- [ ] Second pending after blank",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("First pending after blank")
+  })
+
+  it("returns the first pending when whitespace-only lines separate the tasks", () => {
+    const content = [
+      "- [x] Done",
+      "   ",
+      "\t\t",
+      " \t  \t ",
+      "- [ ] First pending after whitespace",
+      "  ",
+      "- [ ] Second pending after whitespace",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("First pending after whitespace")
+  })
+
+  it("returns the first pending when blank lines are interleaved with leading/trailing whitespace on the task lines", () => {
+    // The hardest realistic case: a PLAN.md where BOTH the per-line
+    // whitespace (indentation, trailing whitespace) AND the inter-line
+    // whitespace (blank lines) are present. Both surfaces must
+    // compose — the parser trims each line individually AND walks the
+    // file skipping blanks. Neither surface can mask the other.
+    const content = [
+      "",
+      "  - [x] Done task  ",
+      "",
+      "    - [ ] First pending (indented)  ",
+      "",
+      "\t- [x] Another done (tab-indented)\t",
+      "",
+      "      - [ ] Second pending (deeply indented)",
+      "",
+    ].join("\n")
+    const result = getCurrentTaskFromContent(content)
+    expect(result).toBe("First pending (indented)")
   })
 })
 
