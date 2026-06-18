@@ -16,11 +16,11 @@ export type ErrorSource = "server" | "sse" | "pty" | "api" | "plan"
 export type LoopState =
   | { type: "starting" }
   | { type: "ready" }  // Server ready, waiting for user to start iterations
-  // `resumedFromIdle` is set on the FIRST `running` reached via `iteration_resumed`
-  // (doResume idle branch). The next `iteration_started` consumes it: the in-flight
+  // resumedFromIdle is set on the first `running` reached via iteration_resumed
+  // (doResume idle branch). The next iteration_started consumes it: the in-flight
   // session's work was already done in the previous run, so the counter does not
   // increment for the resumed iteration. A later session_idle → startIteration cycle
-  // will increment normally because the flag is cleared. See MEJORAS.md Finding 8.5.A.
+  // increments normally because the flag is cleared.
   | {
       type: "running"
       iteration: number
@@ -31,11 +31,10 @@ export type LoopState =
   | { type: "paused"; iteration: number }
   // Waiting out a provider rate limit (or a transient connection blip) before
   // retrying the SAME iteration. This is a healthy waiting state, deliberately
-  // distinct from `error`, so the watchdog stays quiet and the user sees a
+  // distinct from error, so the watchdog stays quiet and the user sees a
   // countdown instead of a failure. `kind` lets the UI distinguish a real
-  // rate-limit ("Rate limited — retrying in Ns") from a transient connection
-  // issue ("Connection issue — retrying in Ns") so we never call a flaky
-  // network "rate limit". See MEJORAS.md Finding 5.1.A.
+  // rate-limit from a transient connection issue so we never call a flaky
+  // network "rate limit".
   | {
       type: "cooldown"
       iteration: number
@@ -43,19 +42,18 @@ export type LoopState =
       resumeAt: number // monotonic ms when the retry will fire
       attempt: number // consecutive rate-limit attempt number
       kind: "rate_limit" | "transient"
-      // Bug #4: the user had requested a pause (state was `pausing`) when the
-      // cooldown was entered → resume_cooldown returns to `paused`, not `running`,
-      // so a 429 mid-pause doesn't silently auto-resume the loop.
+      // If the user had requested a pause (state was pausing) when the cooldown
+      // was entered, resume_cooldown returns to paused, not running, so a 429
+      // mid-pause doesn't silently auto-resume the loop.
       wasPausing?: boolean
     }
   | { type: "stopping" }
   | { type: "stopped" }
   | { type: "complete"; iterations: number; summary: CompletionSummary }
-  // `lastIteration` is the iteration count the loop had reached BEFORE entering
-  // the error state, carried over from the source state when it had one
-  // (running/pausing/paused/cooldown). `plan_complete` fired while in `error`
-  // uses this to report the real progress instead of resetting to 0. See
-  // MEJORAS.md Finding 3.1.A.
+  // lastIteration is the iteration count the loop had reached BEFORE entering
+  // error, carried over from the source state when it had one
+  // (running/pausing/paused/cooldown). plan_complete fired while in error uses
+  // this to report real progress instead of resetting to 0.
   | {
       type: "error"
       source: ErrorSource
@@ -82,9 +80,8 @@ export type LoopAction =
   | { type: "retry" }
   // Enter cooldown after a rate limit (or a transient connection blip);
   // resumeAt is monotonic ms. `kind` is optional for backward compat with the
-  // chaos path (`chaos_429` injects a synthetic 429 and doesn't need to
-  // specify a kind); when absent, the reducer defaults to "rate_limit". See
-  // MEJORAS.md Finding 5.1.A.
+  // chaos path (chaos_429 injects a synthetic 429 and doesn't specify a kind);
+  // when absent, the reducer defaults to "rate_limit".
   | {
       type: "rate_limited"
       reason: string
@@ -99,12 +96,11 @@ export type LoopAction =
   // non-empty sessionId re-attaches to a live session; an empty one lets the
   // iteration-driver start the next session (the attempt counter then advances).
   | { type: "resume_session"; iteration: number; sessionId: string }
-  // Like `resume_session` but signals that the in-flight session was already
-  // done in a previous run (the server returned `idle` during doResume). The
-  // reducer tags the resulting `running` state with `resumedFromIdle: true` so
-  // the next `iteration_started` does NOT increment the counter — the count
-  // represents "iterations of unique work", not "iterations started", in this
-  // one edge case. See MEJORAS.md Finding 8.5.A.
+  // Like resume_session but signals that the in-flight session was already
+  // done in a previous run (the server returned idle during doResume). The
+  // reducer tags the resulting running state with resumedFromIdle: true so
+  // the next iteration_started does NOT increment the counter — the count
+  // represents "iterations of unique work", not "iterations started", here.
   | { type: "iteration_resumed"; iteration: number; sessionId: string }
 
 /**
