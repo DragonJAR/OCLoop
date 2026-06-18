@@ -2,17 +2,17 @@
   "name": "ocloop",
   "version": "0.5.0",
   "type": "module",
-  "description": "A loop harness for opencode to execute tasks from PLAN.md",
-  "author": "d3vr",
+  "description": "An unattended loop harness for OpenCode — runs your PLAN.md one task at a time and survives rate limits, sleep, and crashes.",
+  "author": "Fayçal Mitidji (d3vr); DragonJAR SAS (fork)",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/d3vr/ocloop.git"
+    "url": "git+https://github.com/DragonJAR/OCLoop.git"
   },
   "bugs": {
-    "url": "https://github.com/d3vr/ocloop/issues"
+    "url": "https://github.com/DragonJAR/OCLoop/issues"
   },
-  "homepage": "https://github.com/d3vr/ocloop#readme",
+  "homepage": "https://github.com/DragonJAR/OCLoop#readme",
   "keywords": [
     "opencode",
     "cli",

@@ -16,6 +16,7 @@ export interface DialogAboutProps {
 const LINK_AUTHOR = "https://github.com/d3vr"
 const LINK_DRAGONJAR = "https://www.dragonjar.org"
 const LINK_SERVICES = "https://www.dragonjar.org/servicios-de-seguridad-informatica"
+const LINK_REPO = "https://github.com/DragonJAR/OCLoop"
 
 /**
  * "About" overlay, opened from the command palette (Ctrl+P → About).
@@ -49,7 +50,7 @@ export function DialogAbout(props: DialogAboutProps) {
   )
 
   return (
-    <Dialog onClose={props.onClose} width={72} height={18}>
+    <Dialog onClose={props.onClose} width={74} height={20}>
       <box style={{ flexDirection: "column" }}>
         {/* Header: title + version, dismiss hint */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1, flexDirection: "row" }}>
@@ -62,11 +63,15 @@ export function DialogAbout(props: DialogAboutProps) {
           </text>
         </box>
 
-        {/* Tagline */}
-        <text style={{ marginBottom: 1 }}>
+        {/* Tagline + runtime */}
+        <text style={{ marginBottom: 0 }}>
           <span style={{ fg: theme().text }}>{t("aboutTagline")}</span>
         </text>
+        <text style={{ marginBottom: 1 }}>
+          <span style={{ fg: theme().textMuted }}>{t("aboutRuntime")}</span>
+        </text>
 
+        <Credit label={t("aboutRepo")} url={LINK_REPO} />
         <Credit label={t("aboutCreatedBy")} url={LINK_AUTHOR} />
         <Credit label={t("aboutMaintainedBy")} url={LINK_DRAGONJAR} />
         <Credit label={t("aboutServices")} url={LINK_SERVICES} />
