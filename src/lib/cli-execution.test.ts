@@ -1,7 +1,7 @@
 /**
  * Phase 2 base execution tests.
  *
- * Verifies the pre-TUI `validatePrerequisites` path in four shapes:
+ * Verifies the pre-TUI `validatePrerequisites` path in five shapes:
  *  - task 1: no PLAN.md at the default path → `errPlanNotFound`, exit 1.
  *  - task 2: valid PLAN.md → past validation, into render (current bug:
  *           non-TTY hangs/segfaults; pinned with a 500 ms timeout).
@@ -14,6 +14,18 @@
  *           hits the same non-TTY hang/segfault. Pins that the current
  *           pre-flight does NOT reject content-less files — Phase 3
  *           owns the fix to add a content check (matrix case 27).
+ *  - task 5: PLAN.md with no pending tasks → passes pre-flight like a
+ *           valid one, then hits the render path's structural-completion
+ *           detection. Same non-TTY pin as task 2.
+ *  - task 6: PLAN.md with exactly one pending task amid completed
+ *           tasks above and below → passes pre-flight, into render
+ *           (matrix case 52; the trailing completed tasks prove the
+ *           selection is unambiguous, not just "first line").
+ *  - task 7: `--prompt <custom-path>` pointing to a missing file with
+ *           a valid PLAN.md present → `errPromptNotFound`, NOT the
+ *           plan-step error and NOT a silent auto-create. Symmetric
+ *           to task 3, exercising the SECOND check in
+ *           `validatePrerequisites` (the prompt file). Matrix case 29.
  *
  * ponytail: shared beforeEach/afterEach mkdtemp + chdir scaffolding;
  * one describe per matrix case. The TUI segfault case (matrix case 4)
@@ -137,6 +149,54 @@ describe("CLI: ejecución con --plan apuntando a un archivo inexistente", () => 
     // step (which would write `.loop-prompt.md`) must NOT have run.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(false)
+  })
+})
+
+describe("CLI: ejecución con --prompt apuntando a un archivo inexistente", () => {
+  it("exits 1 with errPromptNotFound naming the custom path, no default auto-create", async () => {
+    // Matrix case 29: user passes `--prompt my.md` but my.md doesn't exist
+    // (and PLAN.md IS valid). The CLI must:
+    //   (a) PASS the plan-existence check (PLAN.md is present).
+    //   (b) FAIL the prompt-existence check on the custom path.
+    //   (c) Emit `errPromptNotFound` with the custom path echoed, NOT
+    //       silently fall through to the default `.loop-prompt.md`
+    //       auto-create branch. The branch in `validatePrerequisites`
+    //       (index.tsx:75-99) is gated on `args.promptFile ===
+    //       DEFAULTS.PROMPT_FILE` — any non-default path skips the
+    //       auto-create and goes straight to `errPromptNotFound`. A
+    //       regression that drops the gate would let the custom path
+    //       create a file at that path; we assert it didn't.
+    //   (d) NOT enter the render path (no `.loop.log`, no render
+    //       timeout/segfault).
+    writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "- [ ] Only task\n")
+
+    const customPath = join(dir, "custom-prompt.md")
+    expect(existsSync(customPath)).toBe(false) // sanity: the file really is missing
+
+    // Use a generous timeout to distinguish "exited cleanly" (≤ 1 s in
+    // practice) from "hung/segfaulted" (would hit the 500 ms window
+    // from the render tests). The non-TTY render tests rely on
+    // `timeoutMs: 500` to pin the segfault/hang; this test does NOT
+    // want to reach the render path at all, so we allow up to 5 s and
+    // then assert a clean exit-1 rather than 124/139.
+    const result = await runCli(
+      ["--lang", "en", "--prompt", customPath],
+      { entrypoint: ENTRYPOINT, timeoutMs: 5_000 },
+    )
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Prompt file not found")
+    // The custom path must be echoed, not the default.
+    expect(result.stderr).toContain(customPath)
+    expect(result.stdout).toBe("")
+
+    // The plan check passed (PLAN.md exists). The prompt check on the
+    // custom path FAILED, exiting before any auto-create could run —
+    // so neither the default `.loop-prompt.md` nor the custom path
+    // was written to disk.
+    const defaultPrompt = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(defaultPrompt)).toBe(false)
+    expect(existsSync(customPath)).toBe(false)
   })
 })
 
