@@ -1851,6 +1851,116 @@ Some intro.
       expect(result.percentComplete).toBe(50)
     })
   })
+
+  // ────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.10 — multi-phase plans (tasks distributed across ## Phase N
+  // headings). Pins the aggregation contract: each ## Phase N heading is
+  // a scope marker, NOT a task. The parser must walk every line, skip
+  // heading lines, and aggregate the buckets (completed/pending/manual/
+  // blocked) globally across phases — without double-counting headings,
+  // losing a task to a heading line, or breaking percentComplete math
+  // when MANUAL and BLOCKED tasks are distributed across phases.
+  // ────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.10 — multi-phase plans (tasks distributed across ## Phase N headings)", () => {
+    it("counts tasks and percentComplete across phases with all four categories distributed", () => {
+      // The most realistic multi-phase shape: each ## Phase N contains a
+      // mix of [x], [ ], [MANUAL], and [BLOCKED] tasks. The parser must
+      // aggregate the buckets globally (sum across phases) without
+      // double-counting headings or losing a task to a heading line.
+      // A buggy implementation that, say, reset the counters at every
+      // heading, or that returned the last phase's counts only, would
+      // fail this test with a clearly different number.
+      const content = [
+        "## Phase 1 — Inventario",
+        "- [x] Phase 1 done 1",
+        "- [x] Phase 1 done 2",
+        "- [MANUAL] Phase 1 manual",
+        "",
+        "## Phase 2 — Tests",
+        "- [x] Phase 2 done",
+        "- [ ] Phase 2 pending 1",
+        "- [ ] Phase 2 pending 2",
+        "- [BLOCKED: needs API] Phase 2 blocked",
+        "",
+        "## Phase 3 — Ship",
+        "- [ ] Phase 3 pending",
+        "- [MANUAL] Phase 3 manual",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      // Buckets aggregated across all 3 phases (9 task lines total):
+      //   completed: 3 (P1 × 2 + P2 × 1)
+      //   pending:   3 (P2 × 2 + P3 × 1)
+      //   manual:    2 (P1 × 1 + P3 × 1)
+      //   blocked:   1 (P2 × 1)
+      expect(result.total).toBe(9)
+      expect(result.completed).toBe(3)
+      expect(result.pending).toBe(3)
+      expect(result.manual).toBe(2)
+      expect(result.blocked).toBe(1)
+      expect(result.automatable).toBe(3)
+      // percentComplete = 3 / (9 - 2 manual - 1 blocked) = 3/6 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("### subsections within a phase count the tasks but not the subsection heading", () => {
+      // Deep nesting: a ## Phase heading contains ### Subsection
+      // headings, each of which contains tasks. The subsection heading
+      // line must NOT enter any bucket. A parser that treated ###
+      // headings as tasks (or that counted them in the total) would
+      // inflate the percentage and shift the bucket counts.
+      const content = [
+        "## Phase 1",
+        "- [x] Phase 1 outer done",
+        "",
+        "### Subsection 1.1",
+        "- [x] Sub 1.1 done",
+        "- [ ] Sub 1.1 pending",
+        "",
+        "### Subsection 1.2",
+        "- [ ] Sub 1.2 pending",
+        "- [BLOCKED] Sub 1.2 blocked",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      // 5 task lines (the two ### heading lines are NOT tasks).
+      expect(result.total).toBe(5)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(2)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(1)
+      expect(result.automatable).toBe(2)
+      // percentComplete = 2 / (5 - 0 - 1) = 2/4 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("consecutive phases without blank lines between heading and tasks parse correctly", () => {
+      // Blank lines are not load-bearing — the parser walks line-by-line
+      // and the test is whether a phase heading immediately followed by
+      // tasks (no separator) still classifies the tasks correctly. This
+      // shape is uncommon in human-edited plans but shows up in auto-
+      // generated plans where formatting is stripped.
+      const content = [
+        "## Phase 1",
+        "- [x] Phase 1 done",
+        "- [ ] Phase 1 pending",
+        "## Phase 2",
+        "- [ ] Phase 2 pending",
+        "## Phase 3",
+        "- [x] Phase 3 done",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(2)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      // percentComplete = 2 / 4 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
@@ -2460,6 +2570,94 @@ describe("getCurrentTaskFromContent", () => {
       ].join("\n")
       const result = getCurrentTaskFromContent(content)
       expect(result).toBeNull()
+    })
+  })
+
+  // ────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.4 — multi-phase plans (selection across ## Phase N headings).
+  // Pins the selection contract for the realistic PLAN.md shape where
+  // work is split into named phases: the function must walk every line,
+  // skip heading lines, and return the FIRST pending task in DOCUMENT
+  // order — regardless of which phase it lives in, how many phases
+  // precede it, or whether deeper-nested subsection headings (###) sit
+  // between phases.
+  // ────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.4 — multi-phase plans (selection across ## Phase N headings)", () => {
+    it("returns the pending in the last phase when all earlier phases are completed", () => {
+      // The inverse of the existing "first pending wins" test (line
+      // 2540 of pre-edit file): here the pending is NOT in the first
+      // phase that contains one, but in the LAST phase of the plan.
+      // Every earlier phase is fully resolved ([x] only, or [x] plus
+      // a [BLOCKED] terminal task). A parser that "skipped ahead" past
+      // completed-only phases to find the "active" one would still
+      // pass — but a parser that confused [BLOCKED] with pending and
+      // returned the blocked task's description as the current work
+      // would land in an earlier phase. This pins: [BLOCKED] is
+      // TERMINAL, not actionable, and the actual pending at the end
+      // wins.
+      const content = [
+        "## Phase 1 — Setup",
+        "- [x] Phase 1 done 1",
+        "- [x] Phase 1 done 2",
+        "",
+        "## Phase 2 — Build",
+        "- [x] Phase 2 done 1",
+        "- [BLOCKED: needs review] Phase 2 blocked",
+        "",
+        "## Phase 3 — Ship",
+        "- [x] Phase 3 done 1",
+        "- [ ] Phase 3 final pending",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("Phase 3 final pending")
+    })
+
+    it("returns the first pending by document order — same description in two phases picks the earlier one", () => {
+      // Selection must be deterministic by document order, not by
+      // phase number, description, or any other key. When the same
+      // task description appears verbatim in two different phases,
+      // the earlier occurrence wins. A parser that scanned in
+      // reverse, or that grouped by phase and picked the LAST
+      // pending within the LAST phase containing one, would land
+      // on the later occurrence and fail this test.
+      const content = [
+        "## Phase 1",
+        "- [ ] Shared name",
+        "- [x] Phase 1 other done",
+        "",
+        "## Phase 2",
+        "- [ ] Shared name",
+        "- [x] Phase 2 other done",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("Shared name")
+    })
+
+    it("returns the pending inside a deeply nested ### subsection when earlier phases are completed", () => {
+      // Combines two surfaces: multi-phase (headings separate work
+      // into chunks) and deep nesting (### subsections live inside
+      // a phase). The pending is the only actionable task in the
+      // file; the function must find it despite the heading tree
+      // around it. A parser that only scanned top-level task lines
+      // (ignoring indented checkboxes inside ### subsections) would
+      // miss this. Source: the line-46 "indented checkboxes" test
+      // already pins the indented-checkbox half; this test pins the
+      // multi-phase selection half.
+      const content = [
+        "## Phase 1",
+        "- [x] Phase 1 done",
+        "### Subsection 1.1",
+        "- [x] Sub 1.1 done",
+        "### Subsection 1.2",
+        "- [x] Sub 1.2 done",
+        "",
+        "## Phase 2",
+        "### Subsection 2.1",
+        "- [ ] Pending in deep subsection",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("Pending in deep subsection")
     })
   })
 })
