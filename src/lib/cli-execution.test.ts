@@ -1,30 +1,26 @@
 /**
- * Phase 2 base execution tests — first deliverable.
+ * Phase 2 base execution tests.
  *
- * Scope (PLAN.md Fase 2, task 1): "ejecución sin parámetros con salida y
- * código de salida esperados". Verifies that invoking the CLI with no
- * arguments, in a directory with no PLAN.md, fails cleanly through the
- * `validatePrerequisites` pre-TUI path:
+ * Verifies the pre-TUI `validatePrerequisites` path in three shapes:
+ *  - task 1: no PLAN.md at the default path → `errPlanNotFound`, exit 1.
+ *  - task 2: valid PLAN.md → past validation, into render (current bug:
+ *           non-TTY hangs/segfaults; pinned with a 500 ms timeout).
+ *  - task 3: `--plan <custom-path>` pointing to a missing file → same
+ *           `errPlanNotFound`, but with the custom path echoed in the
+ *           message and NO prompt-file auto-create (proves validation
+ *           aborted before reaching the prompt step).
  *
- *   - exit code 1
- *   - localized `errPlanNotFound` on stderr (NOT a stack trace)
- *   - empty stdout
- *
- * This pins the documented matrix case 3 (pre-TUI validation). The TUI
- * segfault case (matrix case 4) lives in cli-runner.test.ts's existing
- * `--run --debug` timeout test; it is owned by Phase 3's non-TTY pre-flight
- * fix, not here.
- *
- * ponytail: one describe, one test, mkdtemp + chdir + rmSync. Future
- * Phase 2 tasks (valid PLAN, missing PLAN, empty PLAN, no pending tasks,
- * single pending task) will live in the same file and reuse the same
- * beforeEach/afterEach scaffolding.
+ * ponytail: shared beforeEach/afterEach mkdtemp + chdir scaffolding;
+ * one describe per matrix case. The TUI segfault case (matrix case 4)
+ * lives in cli-runner.test.ts's `--run --debug` timeout test; it is
+ * owned by Phase 3's non-TTY pre-flight fix, not here.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { runCli } from "./cli-runner"
+import { DEFAULTS } from "./constants"
 
 let dir: string
 let prevCwd: string
@@ -105,5 +101,36 @@ describe("CLI: ejecución con PLAN.md mínimo válido", () => {
     // point this assertion tightens to `expect(result.exitCode).toBe(1)`
     // and the prompt-file check stays.
     expect([124, 139]).toContain(result.exitCode)
+  })
+})
+
+describe("CLI: ejecución con --plan apuntando a un archivo inexistente", () => {
+  it("exits 1 with errPlanNotFound naming the custom path, no prompt auto-create", async () => {
+    // Matrix case 26: user passes `--plan my.md` but my.md doesn't exist.
+    // The CLI must reject the file via the SAME pre-TUI `errPlanNotFound`
+    // path as the default case, but the error message must echo the
+    // custom path the user actually typed (not the default `PLAN.md`).
+    // Also asserts the prompt-file auto-create step did NOT run — if it
+    // did, the test cwd would have a `.loop-prompt.md` and we would know
+    // validation reached the prompt step instead of stopping at the plan
+    // step. The order in `validatePrerequisites` is: plan first, prompt
+    // second (`index.tsx:65-100`).
+    const customPath = join(dir, "custom-plan.md")
+    expect(existsSync(customPath)).toBe(false) // sanity: the file really is missing
+
+    const result = await runCli(["--lang", "en", "--plan", customPath], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file not found")
+    // The custom path must be echoed, not the default.
+    expect(result.stderr).toContain(customPath)
+    expect(result.stdout).toBe("")
+
+    // The plan check ran first and aborted; the prompt auto-create
+    // step (which would write `.loop-prompt.md`) must NOT have run.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
   })
 })
