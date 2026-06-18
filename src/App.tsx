@@ -85,6 +85,7 @@ import {
   DialogTerminalConfig,
   createTerminalConfigState,
   DialogThemePicker,
+  DialogAbout,
   DialogTerminalError,
   DialogInvalidAgent,
 } from "./components"
@@ -1957,6 +1958,18 @@ function AppContent(props: AppProps) {
           dialog.clear()
           dialog.show(() => (
             <DialogThemePicker onCommit={onSelectTheme} onClose={() => dialog.clear()} />
+          ))
+        },
+      },
+      // --- Help ---
+      {
+        title: t("cmdAbout"),
+        value: "about",
+        category: t("catHelp"),
+        onSelect: () => {
+          dialog.clear()
+          dialog.show(() => (
+            <DialogAbout onClose={() => dialog.clear()} />
           ))
         },
       },

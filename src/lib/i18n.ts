@@ -350,6 +350,7 @@ const en = {
   cmdCancelPause: "Cancel pending pause",
   cmdRestartServer: "Restart OpenCode server",
   cmdQuit: "Quit OCLoop",
+  cmdAbout: "About",
   // --- Help overlay (opened with the ? key) ---
   helpTitle: "Keybindings & Help",
   helpDismissHint: "press any key to close",
@@ -358,9 +359,16 @@ const en = {
   helpSectionLoop: "Loop control",
   helpSectionSession: "Session & terminal",
   helpSectionDebug: "Debug mode",
+  // --- About overlay ---
+  aboutTitle: "About OCLoop",
+  aboutTagline: "Runs your PLAN.md one task at a time with opencode, then stops.",
+  aboutCreatedBy: "Originally created by Fayçal Mitidji (d3vr).",
+  aboutMaintainedBy: "Fork maintained by DragonJAR SAS, with many improvements.",
+  aboutServices: "IT security services, proactive validation, offensive security.",
   catView: "View",
   catAppearance: "Appearance",
   catLanguage: "Language",
+  catHelp: "Help",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
   // Source: MEJORAS.md Finding 17.3.B — surfaced when `saveConfig` returns
@@ -728,6 +736,7 @@ const es: Record<MessageKey, Msg> = {
   cmdCancelPause: "Cancelar la pausa pendiente",
   cmdRestartServer: "Reiniciar el servidor OpenCode",
   cmdQuit: "Salir de OCLoop",
+  cmdAbout: "Acerca de",
   // --- Overlay de ayuda (se abre con la tecla ?) ---
   helpTitle: "Atajos y ayuda",
   helpDismissHint: "pulsa cualquier tecla para cerrar",
@@ -736,9 +745,16 @@ const es: Record<MessageKey, Msg> = {
   helpSectionLoop: "Control del loop",
   helpSectionSession: "Sesión y terminal",
   helpSectionDebug: "Modo debug",
+  // --- Overlay Acerca de ---
+  aboutTitle: "Acerca de OCLoop",
+  aboutTagline: "Ejecuta tu PLAN.md tarea por tarea con opencode y se detiene.",
+  aboutCreatedBy: "Creado originalmente por Fayçal Mitidji (d3vr).",
+  aboutMaintainedBy: "Fork mantenido por DragonJAR SAS, con muchas mejoras.",
+  aboutServices: "Seguridad informática, validación proactiva, seguridad ofensiva.",
   catView: "Vista",
   catAppearance: "Apariencia",
   catLanguage: "Idioma",
+  catHelp: "Ayuda",
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
   // Source: MEJORAS.md Finding 17.3.B — Spanish mirror of the above.

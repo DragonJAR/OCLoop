@@ -24,7 +24,9 @@ import { isLocale, t } from "./i18n"
 //   import { createRequire } from "node:module"
 //   const _require = createRequire(import.meta.url)
 //   const VERSION = _require("../../package.json").version
-const VERSION = require("../../package.json").version
+// Exported so other surfaces (e.g. the About dialog) reuse this single read
+// instead of re-importing package.json — keeps the version source DRY.
+export const VERSION = require("../../package.json").version
 const PORT_RE = /^\d+$/
 // ponytail: decimal-only strictness mirrors PORT_RE; Number(raw) alone accepts
 // scientific (1e3), hex (0x10), decimal-as-integer (1.0), and leading sign (+5)
