@@ -8,6 +8,9 @@ dist/
 # the project explicitly decides they belong in Git.
 .*
 !/.gitignore
+# CI workflows live in a dotfolder; allowlist so GitHub Actions sees them.
+!/.github/
+!/.github/**
 
 # Markdown files are ignored by default so ad-hoc plans/notes are not pushed.
 # Explicitly allow root release/readme docs and versioned examples.
