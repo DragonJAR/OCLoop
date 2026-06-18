@@ -15,18 +15,20 @@
  *   - `savedTask` is `null`/`undefined`/empty → `null`. Backward-compat: a
  *     state file written before this field was added has no task to check.
  *   - The saved task is still the first pending task in PLAN.md → `null`.
- *   - The saved task appears in PLAN.md but as `[x]` (completed) → `completed`.
- *     The work was done; the next iteration will start fresh.
+ *   - The saved task appears in PLAN.md but as `[x]`/`[X]` (completed) →
+ *     `completed`. The work was done; the next iteration will start fresh.
  *   - The saved task is still pending in PLAN.md but is NOT the first pending
  *     task → `reordered`. PLAN.md was edited to insert a task above it; the
  *     next iteration will pick the new top task, skipping the saved one for
  *     now (it will be reached again once the inserted task is done).
  *   - The saved task no longer appears in PLAN.md at all → `removed`. The
  *     next iteration will start from whatever is now first (or halt with
- *     plan_complete if nothing is left).
+ *     plan_complete if nothing is left). A task re-tagged `[MANUAL]` or
+ *     `[BLOCKED]` (no longer pending nor completed) also reports `removed`,
+ *     surfacing the edit so the user can confirm it was intentional.
  */
 
-import { getCurrentTaskFromContent } from "./plan-parser"
+import { getCurrentTaskFromContent, parseTaskLine } from "./plan-parser"
 
 /**
  * Structured description of a misalignment between the saved task and the
@@ -78,27 +80,32 @@ export function describeResumeAlignment(
   }
   // Slow path: the first-pending task is now something else. Decide what
   // kind of edit the user made by scanning every line of PLAN.md for the
-  // saved task — split the input on lines once, then walk the array.
-  // `parseTaskLine` would re-parse the line, but here we only need to know
-  // whether the saved task's description appears and what its `[x]/[ ]`
-  // status is, so a lightweight scan is enough and keeps the helper
-  // dependency-free of the parser's full task type.
+  // saved task. We reuse `parseTaskLine` (the canonical PLAN.md line
+  // parser) instead of a hand-rolled regex: the two grammars had diverged
+  // (the old scan regex only matched lowercase `[x]`, not `[X]`, and did
+  // not handle indented sub-tasks or `[MANUAL]`/`[BLOCKED]` tagging the way
+  // `parseTaskLine` does — `getCurrentTaskFromContent` already uses it, so
+  // the saved `currentTask` and the scan here now share one grammar).
   const lines = planContent.split("\n")
   let savedStillPending = false
+  let savedNowCompleted = false
   for (const line of lines) {
-    // Match `- [ ] savedTask` or `- [x] savedTask` (the loop only ever
-    // saved a "pending" task, so the completed case below is the one we
-    // need to distinguish from "removed").
-    const match = line.match(/^[-*]\s+\[(x| )\]\s+(.+?)\s*$/)
-    if (!match) continue
-    const status = match[1]
-    const description = match[2]
-    if (description !== savedTask) continue
-    if (status === " ") {
+    const task = parseTaskLine(line)
+    if (task.type === "not-a-task") continue
+    if (task.description !== savedTask) continue
+    // First line whose description matches the saved task decides its
+    // current status. (A pending + completed duplicate of the same
+    // description is pathological markdown; matching the first keeps the
+    // verdict deterministic.)
+    if (task.type === "pending") {
       savedStillPending = true
+    } else if (task.type === "completed") {
+      savedNowCompleted = true
     }
-    // `status === "x"` → the saved task is now marked done. We fall
-    // through to return "completed" below.
+    // manual/blocked matches are intentionally neither: the task is
+    // present but no longer actionable, so it is neither "still pending"
+    // (reordered) nor "completed" — it falls through to "removed" below,
+    // which surfaces the edit to the user.
     break
   }
   if (savedStillPending) {
@@ -106,20 +113,12 @@ export function describeResumeAlignment(
     // reordered to put a different task above it.
     return { kind: "reordered", saved: savedTask, current: current ?? "" }
   }
-  // The saved task is no longer pending. Two sub-cases:
-  //   - It's now `[x]` → "completed" (work was done in some other process,
-  //     perhaps a manual edit).
-  //   - It no longer appears at all → "removed" (the user deleted/renamed
-  //     the line).
-  // The scan above only sets `savedStillPending`; the absence of a pending
-  // match plus the presence of any match with the description means
-  // "completed", and the total absence means "removed".
-  const stillPresentAsCompleted = lines.some((line) => {
-    const match = line.match(/^[-*]\s+\[x\]\s+(.+?)\s*$/)
-    return !!match && match[1] === savedTask
-  })
-  if (stillPresentAsCompleted) {
+  if (savedNowCompleted) {
+    // The saved task is now `[x]`/`[X]` → "completed" (work was done in
+    // some other process, perhaps a manual edit).
     return { kind: "completed", saved: savedTask }
   }
+  // The saved task no longer appears as pending or completed → "removed"
+  // (the user deleted/renamed the line, or re-tagged it MANUAL/BLOCKED).
   return { kind: "removed", saved: savedTask, current: current }
 }

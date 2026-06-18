@@ -92,6 +92,19 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
 }
 
 /**
+ * A finite, non-negative integer — the shape every count field
+ * (`iteration`, `rateLimitAttempts`) must have. `typeof === "number"` alone
+ * admits `NaN`, `Infinity`, and negatives, which would otherwise round-trip
+ * through the reducer: `iteration: NaN` poisons `iteration + 1` forever, and a
+ * negative `rateLimitAttempts` can never exceed `maxRateLimitRetries`, so the
+ * circuit breaker never trips. Mirrors `isValidResilienceValue` in config.ts
+ * (the same "valid count" notion, kept DRY by matching its checks).
+ */
+function isNonNegInt(v: unknown): boolean {
+  return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+}
+
+/**
  * Per-field type guard for PersistedLoopState. Validates every field so a
  * hand-edited or partially-written file with a wrong-typed sessionId/stateType/
  * rateLimitAttempts/updatedAt is rejected at the trust boundary, rather than
@@ -111,10 +124,10 @@ function isPersistedLoopState(p: unknown): p is PersistedLoopState {
     typeof s.currentTask === "string"
   return (
     s.version === 1 &&
-    typeof s.iteration === "number" &&
+    isNonNegInt(s.iteration) &&
     (s.sessionId === null || typeof s.sessionId === "string") &&
     typeof s.stateType === "string" &&
-    typeof s.rateLimitAttempts === "number" &&
+    isNonNegInt(s.rateLimitAttempts) &&
     typeof s.updatedAt === "string" &&
     currentTaskOk
   )

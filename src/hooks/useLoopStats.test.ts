@@ -74,6 +74,18 @@ describe("formatDuration", () => {
       // 25 hours 30 minutes
       expect(formatDuration(25.5 * 60 * 60 * 1000)).toBe("25h 30m");
     });
+
+    // A corrupted or missing time signal (e.g. an un-awaited math path) could
+    // surface as NaN/Infinity. Without the isFinite guard these rendered as
+    // "NaNs"/"∞s" in the TUI; the guard collapses them to "0s" for parity with
+    // formatTokenCount's non-finite handling.
+    it("should render NaN as 0s (not 'NaNs')", () => {
+      expect(formatDuration(NaN)).toBe("     0s");
+    });
+
+    it("should render Infinity as 0s (not '∞s')", () => {
+      expect(formatDuration(Infinity)).toBe("     0s");
+    });
   });
 });
 

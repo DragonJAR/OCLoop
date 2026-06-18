@@ -11,7 +11,11 @@ export function formatTokenCount(n: number): string {
  * Padded to 7 chars for TUI column alignment.
  */
 export function formatDuration(ms: number): string {
-  if (ms < 0) return "0s".padStart(7, " ");
+  // NaN/Infinity (a corrupted or missing time signal) would otherwise render as
+  // "NaNs"/"∞s". Fall back to "0s" — the same policy formatTokenCount uses for
+  // a non-finite token count. Negative values are treated as 0 too (the guard
+  // below folded into this single isFinite + sign check).
+  if (!Number.isFinite(ms) || ms < 0) return "0s".padStart(7, " ");
 
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
