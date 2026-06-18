@@ -3184,6 +3184,209 @@ describe("getCurrentTaskFromContent", () => {
   })
 })
 
+// ──────────────────────────────────────────────────────────────────────────
+// PLAN.md 2.12 — [MANUAL] tasks are not auto-executed.
+//
+// Contract: tasks marked [MANUAL] (in any of the supported shapes:
+// `- [MANUAL] desc`, `- [ ] [MANUAL] desc`, `- [MANUAL]` bare) require human
+// intervention. The auto-execution path goes through two surfaces:
+//
+// 1. `getCurrentTaskFromContent(content)` — the loop's "what's next?"
+//    selector. Walks lines and returns the first PENDING description.
+//    A bug that loosened the type filter would let a manual task leak
+//    into the returned value, and the TUI's "Task: …" display would
+//    mislead the user about what the loop is working on.
+//
+// 2. `parsePlan(content).automatable` — the loop's "what can I work on?"
+//    counter. If it ever grew to include manual tasks, the loop would
+//    keep iterating on a plan that has nothing to do automatically.
+//
+// These tests pin the boundary at both surfaces across the realistic
+// shapes a user might write. They are pure regression coverage — the
+// parser already handles all of them correctly today; the fence is here
+// so a future refactor cannot quietly start executing manual work.
+// ──────────────────────────────────────────────────────────────────────────
+
+describe("PLAN.md 2.12 — [MANUAL] tasks are not auto-executed", () => {
+  // ── getCurrentTaskFromContent: selection surface ──────────────────────
+
+  it("returns null when the only tasks are [MANUAL] (checkbox and tag forms, no pending anywhere)", () => {
+    // The trivial no-work case: every line is a manual task in some
+    // shape. The selector must return null, not the first manual
+    // description, not an empty string, not the last manual's text.
+    const content = [
+      "- [MANUAL] Manual task one",
+      "- [MANUAL] Manual task two",
+      "- [ ] [MANUAL] Tagged manual",
+      "- [MANUAL]",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBeNull()
+  })
+
+  it("skips a - [MANUAL] task that sits before the first pending", () => {
+    // A manual at the top of the list must not be selected even if it's
+    // the first task line. A bug that returned the first non-empty
+    // description (regardless of type) would return "Manual task to skip".
+    const content = [
+      "- [MANUAL] Manual task to skip",
+      "- [x] Done",
+      "- [ ] Real pending task",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBe("Real pending task")
+  })
+
+  it("skips a - [ ] [MANUAL] tag-form line that visually looks like a pending", () => {
+    // The tag form is the most common in real PLAN.md files: a user
+    // writes `- [ ] [MANUAL] do this by hand` thinking they're flagging
+    // a pending checkbox. The parser must catch the [MANUAL] tag and
+    // skip the line, landing on the real pending below.
+    const content = [
+      "- [ ] Real pending at the top",
+      "- [ ] [MANUAL] Looks pending but is manual",
+      "- [x] Done",
+      "- [ ] Second real pending",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBe("Real pending at the top")
+  })
+
+  it("skips a bare - [MANUAL] (no description) between a done and the real pending", () => {
+    // Bare `- [MANUAL]` is classified as `type: "manual"` by parseTaskLine
+    // (no description required, unlike bare `- [ ]` which is not-a-task).
+    // The selector must skip it the same way it skips described manuals,
+    // not by treating it as not-a-task and silently bailing.
+    const content = [
+      "- [x] Done task",
+      "- [MANUAL]",
+      "- [ ] Real pending after bare manual",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBe("Real pending after bare manual")
+  })
+
+  it("does not mistake a completed task with a trailing [MANUAL] tag for a manual task", () => {
+    // A completed row with a [MANUAL] tag after the x-marker is still
+    // type: "completed" (the x check fires first in parseTaskLine). The
+    // [MANUAL] text ends up in the description, not the type. The
+    // selector must skip it as a completed row, not as a manual task.
+    // This pins the existing "x wins" contract from a different angle.
+    const content = [
+      "- [x] [MANUAL] Done 2 with manual tag in description",
+      "- [x] Done 3",
+      "- [ ] The real pending",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBe("The real pending")
+  })
+
+  it("returns the real pending when the plan mixes MANUAL and pending across phases", () => {
+    // Realistic shape: a multi-phase plan with manuals in one phase and
+    // the only real pending in another. The selector must walk the
+    // whole file, skip the manuals, and land on the pending — not
+    // return null (the pendings are non-empty descriptions).
+    const content = [
+      "# My Plan",
+      "",
+      "## Phase 1",
+      "",
+      "- [x] Done in phase 1",
+      "- [MANUAL] Manual step in phase 1",
+      "- [ ] [MANUAL] Tagged manual in phase 1",
+      "",
+      "## Phase 2",
+      "",
+      "- [x] Done in phase 2",
+      "- [ ] The real pending in phase 2",
+      "",
+      "## Phase 3",
+      "",
+      "- [MANUAL] All manual in phase 3",
+    ].join("\n")
+    expect(getCurrentTaskFromContent(content)).toBe("The real pending in phase 2")
+  })
+
+  // ── parsePlan.automatable: counter surface ───────────────────────────
+
+  it("parsePlan reports automatable=0 for a plan of only [MANUAL] tasks (the loop has nothing to do)", () => {
+    // The auto-execution count is the loop's "what can I work on?"
+    // counter. A plan with only manual tasks must report automatable=0
+    // — the loop should not start an iteration on a manual task.
+    const p = parsePlan("- [MANUAL] a\n- [MANUAL] b\n- [ ] [MANUAL] c\n- [MANUAL]")
+    expect(p.automatable).toBe(0)
+    expect(p.pending).toBe(0)
+    expect(p.manual).toBe(4)
+    expect(p.total).toBe(4)
+  })
+
+  it("parsePlan.automatable counts ONLY pending tasks, excluding manual (mixed plan)", () => {
+    // The classic mixed plan: 2 completed, 2 manual (one checkbox form,
+    // one tag form), 1 pending, 1 blocked. The loop's automatable count
+    // must be EXACTLY 1 — the single pending. If automatable ever grew
+    // to include manual, the loop would attempt to execute a task the
+    // user explicitly marked for manual work.
+    const p = parsePlan([
+      "- [x] done a",
+      "- [x] done b",
+      "- [MANUAL] manual checkbox form",
+      "- [ ] pending a",
+      "- [BLOCKED: needs key] blocked a",
+      "- [ ] [MANUAL] manual tag form",
+    ].join("\n"))
+    expect(p.automatable).toBe(1)
+    expect(p.pending).toBe(1)
+    expect(p.manual).toBe(2)
+    expect(p.completed).toBe(2)
+    expect(p.blocked).toBe(1)
+    expect(p.total).toBe(6)
+  })
+
+  it("parsePlan.automatable stays equal to pending regardless of how many manuals surround them", () => {
+    // A plan with 1 pending and 5 manuals. automatable must be 1, not
+    // 6 — the manuals do not "leak" into the automatable bucket even
+    // when they numerically dominate.
+    const p = parsePlan([
+      "- [MANUAL] m1",
+      "- [MANUAL] m2",
+      "- [ ] the only pending",
+      "- [ ] [MANUAL] tagged m3",
+      "- [MANUAL] m4",
+      "- [MANUAL] m5",
+    ].join("\n"))
+    expect(p.automatable).toBe(1)
+    expect(p.pending).toBe(1)
+    expect(p.manual).toBe(5)
+  })
+
+  // ── isStructurallyComplete: pre-flight completion ────────────────────
+
+  it("isStructurallyComplete returns true for a plan of only [MANUAL] tasks (loop should stop, not pick one up)", () => {
+    // The pre-flight completion check used by validatePrerequisites.
+    // A plan with only manual tasks has zero automatable work — the
+    // loop should treat it as structurally complete and exit cleanly.
+    // A regression that counted manual tasks as automatable would
+    // return false here, and the loop would attempt to execute the
+    // first manual task instead of reporting the plan as done.
+    const p = parsePlan([
+      "- [MANUAL] a",
+      "- [ ] [MANUAL] b",
+      "- [MANUAL] c",
+    ].join("\n"))
+    expect(isStructurallyComplete(p)).toBe(true)
+    expect(p.automatable).toBe(0)
+  })
+
+  it("isStructurallyComplete returns false when a manual sits next to a real pending (loop must keep iterating)", () => {
+    // Mirror of the above: as soon as ANY automatable task remains,
+    // the plan is NOT complete. A bug that returned true when
+    // manuals outnumber pendings would short-circuit the loop.
+    const p = parsePlan([
+      "- [MANUAL] m1",
+      "- [MANUAL] m2",
+      "- [MANUAL] m3",
+      "- [ ] the only real pending",
+    ].join("\n"))
+    expect(isStructurallyComplete(p)).toBe(false)
+    expect(p.automatable).toBe(1)
+  })
+})
+
 describe("isPlanComplete", () => {
   it("should return false for a non-existent file", async () => {
     const result = await isPlanComplete("/tmp/ocloop-nonexistent-plan-test-xyz.md")
