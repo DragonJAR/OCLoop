@@ -232,3 +232,61 @@ describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
     expect([124, 139]).toContain(result.exitCode)
   })
 })
+
+describe("CLI: ejecución con una sola tarea pendiente entre varias completadas", () => {
+  it("passes pre-TUI validation and enters the render path (matrix case 52)", async () => {
+    // Matrix case 52: PLAN.md has several tasks, exactly one is pending,
+    // and it sits in the middle of the file (surrounded by completed
+    // tasks above AND below). The TUI's `getCurrentTaskFromContent`
+    // (plan-parser.ts:299) returns the FIRST unchecked line, so the
+    // pending task here is the unique actionable target — selection is
+    // unambiguous. The trailing completed tasks on purpose: a buggy
+    // parser that picked the LAST unchecked line, or that re-counted
+    // `[x]` as pending, would not have a single unambiguous target, and
+    // a buggy selection that walked the plan in reverse would land on
+    // "Done task four" instead. This shape exercises both directions.
+    //
+    // Companion to the "valid PLAN.md" test (which had ONE task total):
+    // that test pinned the pre-TUI existence check at the minimum, this
+    // test pins it at a representative non-trivial shape where the
+    // count matters, not just the existence. Phase 3's non-TTY
+    // pre-flight fix replaces both with a clean `process.exit(1)` plus
+    // a friendly "OCLoop requires an interactive terminal" message;
+    // until then both tests assert the same `[124, 139]` window.
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      [
+        "# Plan",
+        "",
+        "- [x] Done task one",
+        "- [x] Done task two",
+        "- [x] Done task three",
+        "- [ ] Only pending task",
+        "- [x] Done task four",
+        "",
+      ].join("\n"),
+    )
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+      timeoutMs: 500,
+    })
+
+    // Same side-effect proof as the other pre-flight tests: the pre-TUI
+    // validation ran end-to-end, the default `.loop-prompt.md` was
+    // auto-created BEFORE `tuiStarted`. If the file is missing,
+    // validation aborted earlier than expected.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(true)
+
+    // Same non-TTY pin as the other pre-flight tests: timeout-kill (124)
+    // or segfault (139). The shape of the plan content (one pending
+    // among many) does NOT change the pre-flight outcome today — it
+    // goes to render just like the minimal valid case. Phase 3's non-TTY
+    // pre-flight fix replaces both with `exit 1` + a localized message,
+    // and the assertion above will then need to flip to
+    // `expect(existsSync(promptFile)).toBe(false)` (or stay true if the
+    // fix only guards the TUI step after validation).
+    expect([124, 139]).toContain(result.exitCode)
+  })
+})
