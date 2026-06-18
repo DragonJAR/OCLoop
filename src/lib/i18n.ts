@@ -417,6 +417,22 @@ const en = {
       "Inspect the plan, fix the blocking issue, then press R to resume.",
       "",
     ].join("\n"),
+  errDecomposeFailed:
+    "Couldn't generate subtasks — the agent returned nothing usable. The plan was left unchanged.",
+  splitGenerating: "Splitting the stalled task into subtasks…",
+  splitApplied: (p: Params) => `Task split into ${p.count} subtasks — resuming.`,
+  dlgSplitTask: "Split task",
+  dlgSplitTitle: "Split stalled task?",
+  dlgSplitBody: "Replace the stalled task with these subtasks:",
+  splitPromptTemplate: (p: Params) =>
+    [
+      "The following PLAN.md task has stalled — repeated attempts finished without completing it:",
+      "",
+      `    ${p.task}`,
+      "",
+      "Break it into 2-5 smaller, ordered subtasks that stay coherent with the original task and together fully accomplish it. Each subtask must be concrete and independently checkable.",
+      'Reply with ONLY the subtasks, one per line, each as a markdown checkbox: "- [ ] <subtask>". No headings, no prose, no numbering.',
+    ].join("\n"),
   errServerStart:
     "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
   errUnknown:
@@ -882,6 +898,22 @@ const es: Record<MessageKey, Msg> = {
       `El agente está atrapado reintentando la misma tarea — PLAN.md no avanzó.`,
       "Revisa el plan, corrige el bloqueo, y pulsa R para reanudar.",
       "",
+    ].join("\n"),
+  errDecomposeFailed:
+    "No se pudieron generar subtareas — el agente no devolvió nada utilizable. El plan quedó sin cambios.",
+  splitGenerating: "Partiendo la tarea estancada en subtareas…",
+  splitApplied: (p) => `Tarea dividida en ${p.count} subtareas — reanudando.`,
+  dlgSplitTask: "Partir tarea",
+  dlgSplitTitle: "¿Partir la tarea estancada?",
+  dlgSplitBody: "Reemplazar la tarea estancada con estas subtareas:",
+  splitPromptTemplate: (p) =>
+    [
+      "La siguiente tarea de PLAN.md se estancó — varios intentos terminaron sin completarla:",
+      "",
+      `    ${p.task}`,
+      "",
+      "Divídela en 2-5 subtareas más pequeñas y ordenadas, coherentes con la tarea original, que en conjunto la completen del todo. Cada subtarea debe ser concreta y verificable por separado.",
+      'Responde SOLO con las subtareas, una por línea, cada una como checkbox markdown: "- [ ] <subtarea>". Sin encabezados, sin prosa, sin numeración.',
     ].join("\n"),
   errServerStart:
     "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",

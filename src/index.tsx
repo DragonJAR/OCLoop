@@ -4,7 +4,7 @@ import { render } from "@opentui/solid"
 import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
-import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient } from "./lib/api"
+import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient, fetchMessages, extractLastAssistantText, countAssistantMessages, hasNewAssistantReply, type SessionMessage } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
@@ -187,58 +187,6 @@ function stripCodeFences(text: string): string {
   const t = text.trim()
   const m = t.match(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/)
   return m ? m[1].trim() : t
-}
-
-/** Extract the assistant's text from a message's parts. */
-function extractPlanText(
-  data: { parts?: Array<{ type?: string; text?: string }> } | undefined,
-): string {
-  if (!data?.parts) return ""
-  return data.parts
-    .filter((p) => p.type === "text" && typeof p.text === "string")
-    .map((p) => p.text as string)
-    .join("")
-    .trim()
-}
-
-/** One session message (info + parts) as returned by `session.messages`. */
-type SessionMessage = {
-  info?: { role?: string }
-  parts?: Array<{ type?: string; text?: string }>
-}
-
-/** Fetch a session's messages, surfacing transport/HTTP errors consistently. */
-async function fetchMessages(
-  client: OpencodeClient,
-  sessionID: string,
-): Promise<SessionMessage[]> {
-  const res = await client.session.messages({ sessionID })
-  assertResponse(res, "read plan messages")
-  return (res.data ?? []) as SessionMessage[]
-}
-
-/** Text of the most recent assistant message (the model's latest reply). */
-function extractLastAssistantText(messages: SessionMessage[]): string {
-  for (let i = messages.length - 1; i >= 0; i--) {
-    if (messages[i]?.info?.role === "assistant") return extractPlanText(messages[i])
-  }
-  return ""
-}
-
-/** Count assistant messages in a session snapshot. */
-function countAssistantMessages(messages: SessionMessage[]): number {
-  return messages.filter((message) => message.info?.role === "assistant").length
-}
-
-/** True once a new, non-empty assistant reply has landed after the prompt. */
-function hasNewAssistantReply(
-  messages: SessionMessage[],
-  assistantCountBefore: number,
-): boolean {
-  return (
-    countAssistantMessages(messages) > assistantCountBefore &&
-    extractLastAssistantText(messages).length > 0
-  )
 }
 
 /** Build the plan-generation prompt for a fresh goal (localized via i18n). */

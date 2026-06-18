@@ -9,6 +9,8 @@ export interface DialogErrorProps {
   message: string
   recoverable: boolean
   onRetry?: () => void
+  /** When set, offers a "P" action to split the stalled task into subtasks. */
+  onDecompose?: () => void
   onQuit: () => void
 }
 
@@ -24,6 +26,10 @@ export function DialogError(props: DialogErrorProps) {
     }
     if (props.recoverable && key.name === "r") {
       props.onRetry?.()
+      return
+    }
+    if (props.onDecompose && key.name === "p") {
+      props.onDecompose()
       return
     }
   })
@@ -76,6 +82,10 @@ export function DialogError(props: DialogErrorProps) {
         <text style={{ marginTop: 2 }}>
           <Show when={props.recoverable}>
             <span style={{ bold: true }}>{t("dlgRetry")}</span> R
+            <span style={{ fg: theme().textMuted }}>  </span>
+          </Show>
+          <Show when={props.onDecompose}>
+            <span style={{ bold: true }}>{t("dlgSplitTask")}</span> P
             <span style={{ fg: theme().textMuted }}>  </span>
           </Show>
           <span style={{ bold: true }}>{t("dlgQuitConfirm")}</span> Q

@@ -60,6 +60,8 @@ export type LoopState =
       message: string
       recoverable: boolean
       lastIteration?: number
+      /** First-pending task that stalled — enables the "split task" action. */
+      decomposableTask?: string
     }
   | { type: "debug"; sessionId: string }
 
@@ -76,7 +78,7 @@ export type LoopAction =
   | { type: "iteration_started"; sessionId: string }
   | { type: "new_session"; sessionId: string }
   | { type: "plan_complete"; summary: CompletionSummary }
-  | { type: "error"; source: ErrorSource; message: string; recoverable: boolean }
+  | { type: "error"; source: ErrorSource; message: string; recoverable: boolean; decomposableTask?: string }
   | { type: "retry" }
   // Enter cooldown after a rate limit (or a transient connection blip);
   // resumeAt is monotonic ms. `kind` is optional for backward compat with the
