@@ -158,12 +158,10 @@ const en = {
       `Or omit --prompt to auto-generate a default ${DEFAULTS.PROMPT_FILE} in this folder.`,
       "",
     ].join("\n"),
-  // Surfaces a PLAN.md that exists but contains no task lines (matrix case
-  // 27). Covers 0-byte files, whitespace-only files, and files with only
-  // markdown headings / prose — all shapes where `parsePlan` returns
-  // `total === 0`. The pre-flight check sits between the existence check
-  // and the prompt-file auto-create, so the prompt is NOT created when
-  // the plan itself is unusable. Source: MEJORAS.md Finding 17.7.A.
+  // Surfaces a PLAN.md that exists but has no task lines (0-byte, whitespace-
+  // only, or headings/prose-only — parsePlan returns total === 0). The pre-flight
+  // sits between the existence check and the prompt-file auto-create, so the
+  // prompt is NOT created when the plan is unusable.
   errPlanEmpty: (p: Params) =>
     [
       `Error: Plan file is empty: ${p.path}`,
@@ -215,7 +213,6 @@ const en = {
   // on a missing parent dir, EISDIR, etc.) so the user gets a clean,
   // localized "Cannot read <path>: <reason>" instead of a raw stack trace
   // bubbled up through main().catch().
-  // Source: MEJORAS.md Finding 17.4.B.
   errCannotReadFile: (p: Params) =>
     [
       `Error: Cannot read ${p.path}: ${p.message}`,
@@ -231,7 +228,6 @@ const en = {
   // stack trace bubbled up through main().catch(). The non-default path
   // (custom --prompt) keeps its hard error pre-create (errPromptNotFound)
   // and never enters this branch.
-  // Source: MEJORAS.md Finding 17.5.A.
   errCannotCreatePrompt: (p: Params) =>
     [
       `Error: Cannot create ${p.path}: ${p.message}`,
@@ -244,11 +240,10 @@ const en = {
   // editor-launched subprocess) right before the TUI render path. OpenTUI
   // cannot render outside an interactive terminal and segfaults in that
   // case, so this is a clean process.exit(1) with a localized message
-  // instead of a SIGSEGV (139) or a hung render loop. The check sits AFTER
-  // `validatePrerequisites` (so PLAN.md and .loop-prompt.md validation
-  // still runs, mirroring how the real TTY path works) and BEFORE
-  // `tuiStarted = true` (so the exit handler doesn't try to restore a
-  // terminal mode it never enabled). Source: MEJORAS.md Finding 17.6.A.
+  // instead of a SIGSEGV (139) or a hung render loop. The check sits after
+  // validatePrerequisites (so PLAN.md/.loop-prompt.md validation still runs,
+  // mirroring the real TTY path) and before tuiStarted = true (so the exit
+  // handler doesn't try to restore a terminal mode it never enabled).
   errNoTty: [
     `Error: OCLoop requires an interactive terminal (TTY).`,
     "",
@@ -265,17 +260,12 @@ const en = {
     "and run the command there.",
     "",
   ].join("\n"),
-  // Boot pre-flight: a single probe-write to `process.cwd()` failed, so
-  // .loop-state.json (resume after a crash), .loop.log (debug trace), and
-  // the default .loop-prompt.md (auto-create) cannot be created. Without
-  // this check the user would see a downstream "Cannot create .loop-prompt.md"
-  // (misleading — the prompt is just one of several things that need
-  // writes) or, worse, a silent resume-broken state after a crash. The
-  // check is read-only + a single unique-name temp file; if the probe
-  // succeeds, the file is unlinked before this function returns, so
-  // there's no on-disk residue between runs.
-  // Source: PLAN.md bug-hunt candidate #3 (silent state loss on write
-  // failure).
+  // Boot pre-flight: a single probe-write to process.cwd() failed, so
+  // .loop-state.json (resume), .loop.log (trace), and the default
+  // .loop-prompt.md (auto-create) cannot be created. Without this check the
+  // user would see a misleading "Cannot create .loop-prompt.md" or a silent
+  // resume-broken state after a crash. The probe is unlinked on success, so
+  // there is no on-disk residue between runs.
   errCwdNotWritable: (p: Params) =>
     [
       `Error: working directory is not writable: ${p.path}`,
@@ -450,12 +440,11 @@ const en = {
   actResuming: (p: Params) => `Resuming session ${p.id} (iter ${p.iteration})`,
   actContinuing: (p: Params) =>
     `Previous session ${p.verdict}; continuing the loop`,
-  // PLAN.md bug-hunt #4: PLAN.md was edited between crash and resume, so
-  // the task the loop was working on no longer matches the first pending
-  // task. The warning is informational; the loop still proceeds (the
-  // agent's prompt instructs it to pick the first pending task), but the
-  // user gets a single line in the activity log and `.loop.log` so they
-  // can confirm the change was intentional. The "kind" disambiguates the
+  // PLAN.md was edited between crash and resume, so the task the loop was
+  // working on no longer matches the first pending task. The warning is
+  // informational; the loop still proceeds (the agent picks the first pending
+  // task), but the user gets a line in the activity log and .loop.log to
+  // confirm the change was intentional. The "kind" disambiguates the
   // three sub-cases the helper returns (completed, reordered, removed).
   actResumeMisalign: (p: Params) =>
     `Resume: PLAN.md changed since crash (${p.kind}) — was on "${p.saved}", now starts on "${p.current ?? "—"}"`,
@@ -492,10 +481,9 @@ const en = {
   catHelp: "Help",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
-  // Source: MEJORAS.md Finding 17.3.B — surfaced when `saveConfig` returns
-  // `false` (I/O failure: EACCES, ENOSPC, EROFS, EXDEV). The on-disk state
-  // is stale, the in-memory state reflects the user's choice, and the user
-  // needs to know the change won't survive a restart.
+  // Surfaced when saveConfig returns false (EACCES/ENOSPC/EROFS/EXDEV). The
+  // on-disk state is stale and the user needs to know the change won't survive
+  // a restart.
   toastConfigSaveFailed:
     "Failed to save config — change will not persist. Check that ~/.config/ocloop/ocloop.json is writable.",
   // Chaos fault-injection (debug + --chaos). One label + one "done" per action,
@@ -917,11 +905,10 @@ const es: Record<MessageKey, Msg> = {
     ].join("\n"),
   actResuming: (p) => `Reanudando sesión ${p.id} (iter ${p.iteration})`,
   actContinuing: (p) => `Sesión previa ${p.verdict}; continuando el loop`,
-  // PLAN.md bug-hunt #4: PLAN.md fue editado entre el crash y la
-  // reanudación. La advertencia es informativa; el loop continúa, pero
-  // el usuario ve una línea en el log de actividad y en `.loop.log`
-  // para confirmar que el cambio fue intencional. "kind" distingue los
-  // tres sub-casos (completed, reordered, removed).
+  // PLAN.md fue editado entre el crash y la reanudación. La advertencia es
+  // informativa; el loop continúa, pero el usuario ve una línea en el log de
+  // actividad y en .loop.log para confirmar que el cambio fue intencional.
+  // "kind" distingue los tres sub-casos (completed, reordered, removed).
   actResumeMisalign: (p) =>
     `Reanudación: PLAN.md cambió desde el crash (${p.kind}) — estaba en "${p.saved}", ahora empieza en "${p.current ?? "—"}"`,
 
@@ -956,7 +943,7 @@ const es: Record<MessageKey, Msg> = {
   catHelp: "Ayuda",
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
-  // Source: MEJORAS.md Finding 17.3.B — Spanish mirror of the above.
+  // Spanish mirror of toastConfigSaveFailed above.
   toastConfigSaveFailed:
     "Fallo al guardar la configuración — el cambio no se mantendrá. Verifica que ~/.config/ocloop/ocloop.json sea escribible.",
   chaosKill: "Chaos: matar servidor",
