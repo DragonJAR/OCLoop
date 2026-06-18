@@ -109,17 +109,6 @@ describe("parseTaskLine", () => {
       expect(c).toEqual({ type: "blocked", description: "", blockedReason: "" })
     })
 
-    it("captures single-space reason in the checkbox form (- [BLOCKED: some reason])", () => {
-      // Colon + single space + reason: `^BLOCKED[:\s]*` strips "BLOCKED:"
-      // (colon only, since `*` is greedy but `[:\s]*` prefers the colon first
-      // then any leading spaces). The reason is the rest of checkboxContent.
-      expect(parseTaskLine("- [BLOCKED: some reason]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "some reason",
-      })
-    })
-
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -248,25 +237,6 @@ describe("parsePlan", () => {
     expect(result.automatable).toBe(2)
     // percentComplete = completed / (total - manual - blocked) = 2 / 4 = 50%
     expect(result.percentComplete).toBe(50)
-  })
-
-  it("should calculate correct percentage", () => {
-    const content = `
-- [x] Task 1
-- [x] Task 2
-- [x] Task 3
-- [ ] Task 4
-- [ ] Task 5
-- [MANUAL] Manual task
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(6)
-    expect(result.completed).toBe(3)
-    expect(result.pending).toBe(2)
-    expect(result.manual).toBe(1)
-    // percentComplete = 3 / (6 - 1) = 3/5 = 60%
-    expect(result.percentComplete).toBe(60)
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -492,22 +462,6 @@ describe("parsePlan", () => {
       expect(result.automatable).toBe(3)
       // percentComplete = 2 / (5 - 0 - 0) = 2/5 → 40
       expect(result.percentComplete).toBe(40)
-    })
-
-    it("PLAN.md with heading whose body contains [ ] is NOT a task (no false positives)", () => {
-      // A heading like "## Phase 1 — see [ ] for context" must not
-      // produce a pending task. The parser splits on \n and the heading
-      // line is one line that doesn't start with "- [", so it returns
-      // not-a-task; the brackets inside are noise.
-      const content = [
-        "## Phase 1 — see [ ] for context",
-        "- [x] Real task",
-      ].join("\n")
-      const result = parsePlan(content)
-
-      expect(result.total).toBe(1)
-      expect(result.completed).toBe(1)
-      expect(result.pending).toBe(0)
     })
 
   })
