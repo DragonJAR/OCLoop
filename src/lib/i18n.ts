@@ -393,6 +393,14 @@ const en = {
       "",
     ].join("\n"),
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
+  errNoProgress: (p: Params) =>
+    [
+      `Loop halted: ${p.count} consecutive iterations started on the same task without progress.`,
+      `Task: "${p.task}"`,
+      `The agent is stuck redoing the same work — PLAN.md was not advanced.`,
+      "Inspect the plan, fix the blocking issue, then press R to resume.",
+      "",
+    ].join("\n"),
   errServerStart:
     "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
   errUnknown:
@@ -828,6 +836,14 @@ const es: Record<MessageKey, Msg> = {
       "",
     ].join("\n"),
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
+  errNoProgress: (p) =>
+    [
+      `Bucle detenido: ${p.count} iteraciones consecutivas comenzaron en la misma tarea sin progreso.`,
+      `Tarea: "${p.task}"`,
+      `El agente está atrapado reintentando la misma tarea — PLAN.md no avanzó.`,
+      "Revisa el plan, corrige el bloqueo, y pulsa R para reanudar.",
+      "",
+    ].join("\n"),
   errServerStart:
     "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",
   errUnknown:

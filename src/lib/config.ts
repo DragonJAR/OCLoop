@@ -104,6 +104,17 @@ export interface ResilienceConfig {
   resume: boolean
   /** Enable the chaos fault-injection module (debug only). */
   chaos: boolean
+
+  // --- Phase 7: no-progress halt ---
+  /**
+   * Number of consecutive iterations that start with the same PLAN.md task
+   * description before the loop halts with `errNoProgress`. The detector
+   * resets on any task change (i.e. real progress), so this only fires when
+   * the agent is stuck redoing the same task — the classic "idle but not
+   * making progress" failure mode. A value of N gives the agent N-1 retries
+   * on a single task before halting. Must be >= 1.
+   */
+  noProgressThreshold: number
 }
 
 /**
@@ -134,6 +145,8 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 
   resume: false,
   chaos: false,
+
+  noProgressThreshold: 3,
 }
 
 /**

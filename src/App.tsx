@@ -61,6 +61,7 @@ import { t, setLocale, getLocale, type Locale } from "./lib/i18n"
 import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
 import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
+import { NoProgressDetector } from "./lib/no-progress-detector"
 import { 
   detectInstalledTerminals, 
   getAttachCommand, 
@@ -241,6 +242,29 @@ function AppContent(props: AppProps) {
   let restartServerInProgress = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
+
+  // --- No-progress detector (PLAN.md bug-hunt #1) ---
+  // A small stateful tracker that counts consecutive iterations that start
+  // with the same PLAN.md task description. When the count reaches
+  // `resilience().noProgressThreshold`, the loop halts with errNoProgress.
+  // Without this, an agent that fails to make progress (e.g. it produces
+  // a clean idle every time but never edits PLAN.md) would re-execute the
+  // same task forever — the watchdog stays quiet (idle != stuck) and the
+  // existing state machine treats a clean idle as success. The threshold
+  // is read from resilience so a user who wants a tighter or looser limit
+  // can override it via the config file or `--resilience
+  // noProgressThreshold=N`. The detector is created lazily (after
+  // resilience resolves) so the default seed in `resilience()` is
+  // available; see `initializeNoProgressDetector()` below.
+  let noProgressDetector: NoProgressDetector | null = null
+  function ensureNoProgressDetector(): NoProgressDetector {
+    if (!noProgressDetector) {
+      noProgressDetector = new NoProgressDetector(
+        Math.max(1, resilience().noProgressThreshold | 0),
+      )
+    }
+    return noProgressDetector
+  }
 
   /** Clear any pending cooldown timers (on resume, quit, or success). */
   function clearCooldownTimers(): void {
@@ -1000,9 +1024,53 @@ function AppContent(props: AppProps) {
           log.warn("plan", "Plan complete but summary unreadable", err)
         }
 
+        // A real completion is itself the strongest "progress" signal
+        // possible — drop the streak so the next plan (or a manual
+        // resume) starts fresh.
+        noProgressDetector?.reset()
         loop.dispatch({
           type: "plan_complete",
           summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
+        })
+        return
+      }
+
+      // No-progress halt (PLAN.md bug-hunt #1). Compare the current
+      // first-pending task against the previous iteration's first-pending
+      // task. If they match for N consecutive iterations the agent is
+      // stuck redoing the same work without ever editing PLAN.md, so we
+      // halt with a clear, actionable error rather than burning another
+      // session. Reading the task here is cheap (the file is also read
+      // by checkPlanComplete above via Bun.file().text()) and is the
+      // single source of truth for "what is the loop working on right
+      // now". A null task (plan has no pending work) resets the streak
+      // — there is nothing to be stuck on.
+      let currentTask: string | null = null
+      try {
+        currentTask = await getCurrentTask(resolvePlanFile(props.planFile))
+      } catch (err) {
+        // The task read is best-effort for the detector — the real
+        // completion check above already verified the file is readable.
+        // If this throws (race with a file replace, perm flip), treat
+        // it as "no task" so the detector resets rather than
+        // misclassifying the error as progress.
+        log.warn("plan", "No-progress detector task read failed", err)
+        currentTask = null
+      }
+      const detector = ensureNoProgressDetector()
+      const streak = detector.recordIterationStart(currentTask)
+      if (detector.isStuck()) {
+        const stuckTask = detector.currentTask ?? ""
+        log.error(
+          "loop",
+          "No-progress halt",
+          { streak, threshold: resilience().noProgressThreshold, task: stuckTask },
+        )
+        loop.dispatch({
+          type: "error",
+          source: "plan",
+          message: t("errNoProgress", { count: streak, task: stuckTask }),
+          recoverable: true,
         })
         return
       }
@@ -1628,6 +1696,11 @@ function AppContent(props: AppProps) {
           onRetry={() => {
             dialog.clear()
             if (loop.canRetry()) {
+              // Reset the no-progress streak so the next run gets a
+              // fresh threshold window. The user explicitly chose to
+              // resume, so the prior stuck-streak should not carry
+              // over.
+              noProgressDetector?.reset()
               loop.dispatch({ type: "retry" })
             }
           }}
