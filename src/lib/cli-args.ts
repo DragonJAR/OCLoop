@@ -46,14 +46,12 @@ import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./config"
 import { isLocale, t } from "./i18n"
 
 // Read version from package.json (repo root, two levels up from src/lib).
-// ponytail: `require()` is a CommonJS primitive in this ESM-first project
-// (`package.json` has `"type": "module"`, `tsconfig.json` has `"module": "ESNext"`).
-// It works today because Bun's runtime resolves CJS in ESM-mode projects
-// (no `ERR_REQUIRE_ESM`) and the bundler inlines `package.json` into a
-// `__commonJS` wrapper for the published binary, so the bundled output has
-// no runtime filesystem dependency. Source: MEJORAS.md Finding 17.8.B. If
-// the project ever formalizes strict ESM (`"module": "nodenext"` +
-// `"verbatimModuleSyntax": true`), swap to:
+// require() is a CommonJS primitive in this ESM-first project, but it works
+// because Bun's runtime resolves CJS in ESM-mode projects (no ERR_REQUIRE_ESM)
+// and the bundler inlines package.json into a __commonJS wrapper for the
+// published binary, so the bundled output has no runtime FS dependency.
+// If the project ever formalizes strict ESM (module: nodenext +
+// verbatimModuleSyntax: true), swap to:
 //   import { createRequire } from "node:module"
 //   const _require = createRequire(import.meta.url)
 //   const VERSION = _require("../../package.json").version

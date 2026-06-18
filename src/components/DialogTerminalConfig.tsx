@@ -60,19 +60,13 @@ export function createTerminalConfigState(
   const [activeInput, setActiveInput] = createSignal<"command" | "args">("command")
 
   const onSaveCustom = () => {
-    // Reject save if either field is empty, or if args is missing the
-    // `{cmd}` placeholder:
-    //
+    // Reject save if either field is empty, or if args is missing the {cmd}
+    // placeholder:
     //   - empty args → terminal launches with no command (empty shell).
-    //   - args without `{cmd}` → terminal launches with the literal args
-    //     and never runs the attach command (e.g. `wezterm -e bash` opens
-    //     a plain bash shell).
-    //
-    // The launcher's defensive guards in `src/lib/terminal-launcher.ts`
-    // (lines 144-172) are the last line of defense; this dialog check
-    // prevents the bad state from being persisted in the first place.
-    // Source: MEJORAS.md Findings 11.2.B (empty) and 11.2.C (no
-    // placeholder).
+    //   - args without {cmd} → terminal launches with the literal args and
+    //     never runs the attach command (e.g. wezterm -e bash opens a plain shell).
+    // The launcher's defensive guards are the last line of defense; this dialog
+    // check prevents the bad state from being persisted in the first place.
     const cmd = customCommand().trim()
     const args = customArgs().trim()
     if (cmd && args && args.includes("{cmd}")) {

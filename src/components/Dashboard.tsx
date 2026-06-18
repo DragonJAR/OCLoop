@@ -91,9 +91,9 @@ export function Dashboard(props: DashboardProps) {
     }
   })
 
-  // Cooldown countdown line shown on Row 3 during a rate limit (or a transient
-  // connection blip). The wording is driven by `state.kind` so a flaky network
-  // is never mislabelled "Rate limited". See MEJORAS.md Finding 5.1.A.
+  // Cooldown countdown line shown on Row 3 during a rate limit or a transient
+  // connection blip. The wording is driven by state.kind so a flaky network is
+  // never mislabelled "Rate limited".
   const cooldownText = createMemo(() => {
     const state = props.state
     if (state.type !== "cooldown") return null

@@ -349,14 +349,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       // Per-session filter policy (uniform across session.idle, session.error,
-      // todo.updated, message.part.updated): an event with no
-      // sessionID is dropped at the hook layer — the consumer filter has no
-      // key to compare against, and a silent drop is easier to debug than a
-      // silent dispatch into a state with no session context. The OpenCode
-      // SDK always populates sessionID (SessionIdleEvent / SessionErrorEvent
-      // both declare it as a required branded string), so this path is
-      // dormant in practice.
-      // Source: MEJORAS.md Finding 7.3.A.
+      // todo.updated, message.part.updated): an event with no sessionID is
+      // dropped at the hook layer — the consumer filter has no key to compare
+      // against, and a silent drop is easier to debug than a silent dispatch
+      // into a state with no session context. The SDK always populates
+      // sessionID, so this path is dormant in practice.
       case "session.idle": {
         const eventSessionId = event.properties.sessionID
         // Filter by session if a filter is set
