@@ -16,6 +16,7 @@ import { useSSE, classifySessionError } from "./hooks/useSSE"
 import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useKeybindings } from "./hooks/useKeybindings"
 import { useCooldown } from "./hooks/useCooldown"
+import { useCommandPalette } from "./hooks/useCommandPalette"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -42,7 +43,6 @@ import { describeResumeAlignment } from "./lib/resume-alignment"
 import {
   loadConfig,
   saveConfig,
-  hasTerminalConfig,
   resolveResilience,
   type OcloopConfig,
   type ResilienceConfig,
@@ -59,7 +59,7 @@ import {
 import { withTimeout } from "./lib/with-timeout"
 import { computeBackoff } from "./lib/backoff"
 import { monotonicNow } from "./lib/clock"
-import { t, setLocale, getLocale, type Locale } from "./lib/i18n"
+import { t } from "./lib/i18n"
 import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
 import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
@@ -74,7 +74,7 @@ import { copyToClipboard } from "./lib/clipboard"
 import { routeSessionError } from "./lib/error-router"
 import { ThemeProvider, useTheme } from "./context/ThemeContext"
 import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
-import { CommandProvider, useCommand, type CommandOption } from "./context/CommandContext"
+import { CommandProvider, useCommand } from "./context/CommandContext"
 import { ToastProvider, Toast, useToast } from "./context/ToastContext"
 import { DialogConfirm } from "./ui/DialogConfirm"
 import {
@@ -83,10 +83,7 @@ import {
   DialogError,
   ActivityLog,
   BottomPanel,
-  DialogTerminalConfig,
   createTerminalConfigState,
-  DialogThemePicker,
-  DialogAbout,
   DialogTerminalError,
   DialogInvalidAgent,
 } from "./components"
@@ -1720,208 +1717,25 @@ function AppContent(props: AppProps) {
     () => dialog.clear()
   )
 
-  // Register commands
-  createEffect(() => {
-    // Re-register commands when session ID changes so we can enable/disable them
-    // and provide current session ID to callbacks
-    const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-    const url = server.url()
-    const hasSession = !!sid
-
-    command.register(() => {
-      const st = loop.state().type
-      const opts: CommandOption[] = [
-      // --- Loop control (context-aware) ---
-      {
-        title: t("cmdStart"),
-        value: "loop_start",
-        category: t("catLoop"),
-        keybind: "S",
-        disabled: !loop.canStart(),
-        onSelect: () => {
-          dialog.clear()
-          loop.dispatch({ type: "start" })
-        },
-      },
-      {
-        title: t("cmdPause"),
-        value: "loop_pause",
-        category: t("catLoop"),
-        keybind: "Space",
-        disabled: st !== "running",
-        onSelect: () => {
-          dialog.clear()
-          loop.dispatch({ type: "toggle_pause" })
-        },
-      },
-      {
-        title: t("cmdResume"),
-        value: "loop_resume",
-        category: t("catLoop"),
-        keybind: "Space",
-        disabled: st !== "paused",
-        onSelect: () => {
-          dialog.clear()
-          loop.dispatch({ type: "toggle_pause" })
-        },
-      },
-      {
-        title: t("cmdCancelPause"),
-        value: "loop_cancel_pause",
-        category: t("catLoop"),
-        disabled: st !== "pausing",
-        onSelect: () => {
-          dialog.clear()
-          loop.dispatch({ type: "toggle_pause" })
-        },
-      },
-      {
-        title: t("cmdRestartServer"),
-        value: "server_restart",
-        category: t("catLoop"),
-        disabled: !url,
-        onSelect: () => {
-          dialog.clear()
-          toast.show({ variant: "info", message: t("toastRestarting") })
-          void restartServer()
-        },
-      },
-      // --- Terminal ---
-      {
-        title: t("cmdCopyAttach"),
-        value: "copy_attach",
-        category: t("catTerminal"),
-        keybind: "C",
-        disabled: !hasSession,
-        onSelect: async () => {
-          await copyAttachCommand()
-        },
-      },
-      {
-        title: t("cmdChooseTerminal"),
-        value: "terminal_config",
-        category: t("catTerminal"),
-        keybind: "T",
-        disabled: !hasSession,
-        onSelect: () => {
-          dialog.clear()
-          dialog.show(() => (
-            <DialogTerminalConfig
-              state={terminalConfigState}
-              onCancel={() => dialog.clear()}
-            />
-          ))
-        },
-      },
-      // --- View / language ---
-      {
-        title: t("cmdToggleScrollbar"),
-        value: "toggle_scrollbar",
-        category: t("catView"),
-        onSelect: async () => {
-          const current = ocloopConfig().scrollbar_visible ?? true
-          const newConfig = {
-            ...ocloopConfig(),
-            scrollbar_visible: !current
-          }
-          // saveConfig is synchronous — do not await. On I/O failure it returns
-          // false; we roll back the in-memory state and toast so the UI matches
-          // what survived to disk.
-          if (!saveConfig(newConfig)) {
-            toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
-            return
-          }
-          setOcloopConfig(newConfig)
-          dialog.clear()
-        },
-      },
-      {
-        // Inherently bilingual label: shows the language you'll switch TO.
-        title: getLocale() === "en" ? "Language → Español" : "Idioma → English",
-        value: "toggle_language",
-        category: t("catLanguage"),
-        onSelect: async () => {
-          const next: Locale = getLocale() === "en" ? "es" : "en"
-          setLocale(next)
-          const newConfig = { ...ocloopConfig(), language: next }
-          // saveConfig is synchronous — do not await. On I/O failure roll back
-          // the language switch and toast so the UI matches what survived to disk.
-          if (!saveConfig(newConfig)) {
-            // Roll back the locale so the in-memory state matches disk.
-            setLocale(next === "es" ? "en" : "es")
-            toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
-            return
-          }
-          setOcloopConfig(newConfig)
-          toast.show({ variant: "success", message: t("toastLanguageChanged") })
-          dialog.clear()
-        },
-      },
-      // --- Appearance ---
-      {
-        title: t("cmdChooseTheme"),
-        value: "theme_picker",
-        category: t("catAppearance"),
-        onSelect: () => {
-          dialog.clear()
-          dialog.show(() => (
-            <DialogThemePicker onCommit={onSelectTheme} onClose={() => dialog.clear()} />
-          ))
-        },
-      },
-      // --- Help ---
-      {
-        title: t("cmdAbout"),
-        value: "about",
-        category: t("catHelp"),
-        onSelect: () => {
-          dialog.clear()
-          dialog.show(() => (
-            <DialogAbout onClose={() => dialog.clear()} />
-          ))
-        },
-      },
-      // --- General ---
-      {
-        title: t("cmdQuit"),
-        value: "quit",
-        category: t("catView"),
-        keybind: "Q",
-        onSelect: () => {
-          dialog.clear()
-          showQuitConfirmation()
-        },
-      },
-      ]
-
-      // Chaos fault-injection commands (debug + --chaos only) for soak testing.
-      if (chaos.isEnabled()) {
-        const chaosCmd = (
-          title: string,
-          value: string,
-          run: () => void,
-          done: string,
-        ): CommandOption => ({
-          title,
-          value,
-          category: t("catChaos"),
-          onSelect: () => {
-            run()
-            toast.show({ variant: "info", message: done })
-            dialog.clear()
-          },
-        })
-        opts.push(
-          chaosCmd(t("chaosKill"), "chaos_kill", () => chaos.killServer(), t("chaosKillDone")),
-          chaosCmd(t("chaosRevive"), "chaos_revive", () => chaos.reviveServer(), t("chaosReviveDone")),
-          chaosCmd(t("chaosFreeze"), "chaos_freeze", () => chaos.freezeSession(), t("chaosFreezeDone")),
-          chaosCmd(t("chaosUnfreeze"), "chaos_unfreeze", () => chaos.unfreezeSession(), t("chaosUnfreezeDone")),
-          chaosCmd(t("chaosRateLimit"), "chaos_429", () => cooldown.enterCooldown("chaos: injected 429", 5), t("chaosRateLimitDone")),
-        )
-      }
-
-      return opts
-    })
+  // Register commands (extracted to useCommandPalette)
+  useCommandPalette({
+    loop,
+    cooldown,
+    command,
+    dialog,
+    toast,
+    t,
+    sessionId,
+    lastSessionId,
+    serverUrl: server.url,
+    ocloopConfig,
+    setOcloopConfig,
+    terminalConfigState,
+    chaos,
+    restartServer,
+    copyAttachCommand,
+    showQuitConfirmation,
+    onSelectTheme,
   })
 
   // Register shutdown handler for SIGINT/SIGTERM signals
