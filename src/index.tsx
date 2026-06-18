@@ -422,10 +422,7 @@ async function main(): Promise<void> {
     // (Finding 1.7.A). Non-fatal: user can `2>/dev/null` it away.
     const ignored = getIgnoredCreatePlanFlags(args)
     if (ignored.length > 0) {
-      console.error(
-        `Note: --create-plan ignores: ${ignored.join(", ")}. ` +
-          `These flags only affect the TUI loop, which does not start in plan-generator mode.`,
-      )
+      console.error(t("cpIgnoredFlags", { flags: ignored.join(", ") }))
     }
     await runCreatePlan(args)
     process.exit(process.exitCode ?? 0)

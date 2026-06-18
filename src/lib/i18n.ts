@@ -391,6 +391,11 @@ const en = {
   actSessionAborted: "Session aborted by user",
   actSessionError: (p: Params) => `Session error: ${p.message}`,
   actSessionIdle: "Session idle",
+  actSessionStarted: (p: Params) => `Session started: ${p.id}`,
+  actDebugSession: (p: Params) => `Debug session: ${p.id}`,
+  actUserMessage: (p: Params) => `User: ${p.text}`,
+  cpIgnoredFlags: (p: Params) =>
+    `Note: --create-plan ignores: ${p.flags}. These flags only affect the TUI loop, which does not start in plan-generator mode.`,
   actRateExhausted: (p: Params) =>
     `Persistent rate limit after ${p.attempts} attempts — wait for quota to reset, then press R; if it recurs, lower the rate via --resilience or check your API key/plan`,
   errRatePersistent: (p: Params) =>
@@ -874,6 +879,11 @@ const es: Record<MessageKey, Msg> = {
   actSessionAborted: "Sesión abortada por el usuario",
   actSessionError: (p) => `Error de sesión: ${p.message}`,
   actSessionIdle: "Sesión inactiva",
+  actSessionStarted: (p) => `Sesión iniciada: ${p.id}`,
+  actDebugSession: (p) => `Sesión de depuración: ${p.id}`,
+  actUserMessage: (p) => `Usuario: ${p.text}`,
+  cpIgnoredFlags: (p) =>
+    `Nota: --create-plan ignora: ${p.flags}. Estos flags solo afectan al bucle del TUI, que no arranca en modo generador de planes.`,
   actRateExhausted: (p) =>
     `Rate limit persistente tras ${p.attempts} intentos — espera al reset de cuota y pulsa R; si reincide, baja el ritmo con --resilience o verifica tu API key/plan`,
   errRatePersistent: (p) =>

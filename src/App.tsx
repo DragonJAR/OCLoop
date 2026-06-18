@@ -495,7 +495,7 @@ function AppContent(props: AppProps) {
     autoConnect: false, // We'll connect when server is ready
     handlers: {
       onSessionCreated: (id) => {
-        activityLog.addEvent("session_start", `Session started: ${id.substring(0, 8)}`)
+        activityLog.addEvent("session_start", t("actSessionStarted", { id: id.substring(0, 8) }))
         setLastSessionId(id)
       },
       onSessionError: (eventSessionId, error) => {
@@ -1003,7 +1003,7 @@ function AppContent(props: AppProps) {
       loop.dispatch({ type: "new_session", sessionId: newSessionId })
       setLastSessionId(newSessionId)
       
-      activityLog.addEvent("session_start", `Debug session: ${newSessionId.substring(0, 8)}`)
+      activityLog.addEvent("session_start", t("actDebugSession", { id: newSessionId.substring(0, 8) }))
 
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : String(err)
@@ -1031,7 +1031,7 @@ function AppContent(props: AppProps) {
 
     try {
       // Add activity log immediately for feedback
-      activityLog.addEvent("user_message", `User: ${text}`)
+      activityLog.addEvent("user_message", t("actUserMessage", { text }))
 
       await sendPromptAsync(client, {
         sessionID: sid,
