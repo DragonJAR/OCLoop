@@ -219,6 +219,7 @@ export function DialogTerminalConfig(props: DialogTerminalConfigProps) {
       title: term.name,
       value: term.name,
       category: t("dlgInstalledTerminals"),
+      footer: t("dlgTerminalOptHint"),
       onSelect: () => state.onSelect(term)
     }))
 
@@ -227,6 +228,7 @@ export function DialogTerminalConfig(props: DialogTerminalConfigProps) {
       title: t("dlgCustomEllipsis"),
       value: "custom",
       category: t("dlgManualConfig"),
+      footer: t("dlgCustomOptHint"),
       onSelect: () => state.setViewState("custom")
     })
     return terms

@@ -43,6 +43,9 @@ export interface ThemeContextValue {
   mode: () => ThemeMode
   /** Name of the current theme */
   themeName: () => string
+  /** Apply a theme by name immediately (live). Resolves + sets the reactive
+   * signals so the whole UI recolors at once. No-ops on an unknown name. */
+  applyTheme: (name: string) => void
   /** Whether to draw Unicode glyphs (else ASCII fallbacks — see glyphs.ts) */
   unicode: () => boolean
   /** Detected terminal capabilities (color level, unicode, TTY, CI) */
@@ -61,6 +64,7 @@ const ThemeContext = createContext<ThemeContextValue>({
   theme: () => defaultTheme,
   mode: () => "dark" as ThemeMode,
   themeName: () => DEFAULT_THEME,
+  applyTheme: () => {},
   unicode: () => termCaps.unicode,
   caps: () => termCaps,
 })
@@ -162,10 +166,17 @@ export function ThemeProvider(props: ThemeProviderProps) {
     setThemeName(selectedTheme)
   })
 
+  const applyTheme = (name: string) => {
+    if (!isValidTheme(name)) return
+    setTheme(applyCaps(getResolvedTheme(name, mode())))
+    setThemeName(name)
+  }
+
   const value: ThemeContextValue = {
     theme,
     mode,
     themeName,
+    applyTheme,
     unicode: () => termCaps.unicode,
     caps: () => termCaps,
   }

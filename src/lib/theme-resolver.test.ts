@@ -4,8 +4,10 @@ import {
   isValidTheme,
   resolveTheme,
   toMonochrome,
+  type ThemeColors,
   type ThemeDefinition,
 } from "./theme-resolver"
+import { themes } from "./themes"
 
 function makeTheme(theme: Record<string, string>): ThemeDefinition {
   return { defs: {}, theme }
@@ -200,5 +202,32 @@ describe("theme-resolver (Finding 18.2.E)", () => {
     expect(mono.background).toBe("#aaaaaa")
     expect(mono.backgroundPanel).toBe("#aaaaaa")
     expect(mono.backgroundElement).toBe("#aaaaaa")
+  })
+
+  it("every registered theme resolves to a complete 15-token palette (dark + light)", () => {
+    // Pin: the live theme picker (DialogThemePicker) iterates Object.keys(themes)
+    // and calls getResolvedTheme for each theme as the user navigates, in the
+    // active mode. Every vendored theme must resolve to all 15 ThemeColors tokens
+    // as valid hex strings in BOTH modes — a missing/garbage token would paint a
+    // broken palette mid-preview. Collect-then-assert so a failure names the
+    // exact theme/mode/token instead of stopping at the first.
+    const TOKENS: (keyof ThemeColors)[] = [
+      "primary", "secondary", "accent", "background", "backgroundPanel",
+      "backgroundElement", "text", "textMuted", "border", "borderActive",
+      "borderSubtle", "success", "warning", "error", "info",
+    ]
+    const hex = /^#[0-9a-fA-F]{3,8}$/
+    const bad: string[] = []
+    for (const name of Object.keys(themes)) {
+      for (const mode of ["dark", "light"] as const) {
+        const resolved = getResolvedTheme(name, mode)
+        for (const token of TOKENS) {
+          if (!hex.test(resolved[token])) {
+            bad.push(`${name}/${mode}.${token}=${JSON.stringify(resolved[token])}`)
+          }
+        }
+      }
+    }
+    expect(bad).toEqual([])
   })
 })
