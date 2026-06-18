@@ -284,9 +284,7 @@ function AppContent(props: AppProps) {
       }
     },
     probes: {
-      // Source: MEJORAS.md Finding 6.2.A — derived from the canonical helper
-      // (same as the 5 other getActiveSessionId call sites in this file) so a
-      // future extension of getActiveSessionId auto-extends the watchdog.
+      // Reuse getActiveSessionId so a future extension auto-extends the watchdog.
       isActive: () => getActiveSessionId(loop.state()) !== "",
       pingServer: () => chaos.ping(() => server.ping()),
       reconcile: () =>
@@ -403,10 +401,9 @@ function AppContent(props: AppProps) {
 
     // Detect rate-limit cooldown: pause the active timer so the wait isn't
     // counted, and mark the next iteration-start as a resume (see above).
-    // Bug #4: only the running→cooldown path needs this. For pausing→cooldown
-    // the timer was already paused at running→pausing (above) and resume_cooldown
-    // now lands in `paused` (not running), so the later un-pause handles stats —
-    // setting pendingCooldownResume here would mis-attribute the paused time.
+    // Only the running→cooldown path needs this: for pausing→cooldown the timer
+    // was already paused at running→pausing, and resume_cooldown lands in paused
+    // (not running), so setting pendingCooldownResume here would mis-attribute time.
     if (state.type === "cooldown" && prev.type === "running") {
       stats.pause()
       pendingCooldownResume = true
@@ -490,10 +487,9 @@ function AppContent(props: AppProps) {
     // mid-spawn) would propagate out of this onMount body and trigger the
     // unhandledRejection handler in `index.tsx:300-304`, exiting the process
     // before the TUI ever renders. Wrapped following the pattern of
-    // `refreshPlan` (line 681) — degraded UX (empty terminal list) is
-    // strictly better than a crash. `loadConfig` keeps its internal
-    // try/catch (config.ts:351-361) and is sync with no I/O, so no outer
-    // wrap is needed. Source: MEJORAS.md Finding 17.3.A.
+    // detectInstalledTerminals shells out per entry; a rejection here would crash
+    // the process before the TUI renders. Wrapped so degraded UX (empty list) is
+    // better than a crash. loadConfig keeps its own internal try/catch.
     try {
       const terminals = await detectInstalledTerminals()
       setAvailableTerminals(terminals)
@@ -541,22 +537,17 @@ function AppContent(props: AppProps) {
         }
         const st = state.type
         if (error.isAborted) {
-          // Abort is call-site specific: SSE toggles pause, the API path
-          // (handleIterationError) does not abort through this path. The
-          // shared `routeSessionError` helper returns null for `isAborted`
-          // so the abort policy stays here. Source: MEJORAS.md Finding
-          // 16.1.D.
+          // Abort is call-site specific: SSE toggles pause, the API path does not
+          // abort through here. routeSessionError returns null for isAborted so the
+          // abort policy stays here.
           activityLog.addEvent("task", t("actSessionAborted"))
           if (st === "running") {
             loop.dispatch({ type: "toggle_pause" })
           }
           return
         }
-        // The "kind → action" policy lives in routeSessionError
-        // (src/lib/error-router.ts). The helper returns a typed action;
-        // this handler still owns the activity-log write and the i18n
-        // message key, which differ per source. Source: MEJORAS.md
-        // Finding 16.1.D.
+        // The kind→action policy lives in routeSessionError; this handler owns
+        // the activity-log write and the i18n message key, which differ per source.
         const action = routeSessionError(error, st, "sse")
         if (!action) return
         if (action.type === "cooldown") {
@@ -849,27 +840,17 @@ function AppContent(props: AppProps) {
     // Clear stale timers before dispatching so any Solid effect subscribed
     // to `state` cannot observe a window where stale timers are still alive
     // after the reducer has already moved to the new `cooldown` value.
-    // Matches the clear-then-dispatch order used in handleWake
-    // (App.tsx:220-221). Defensive — the dispatch is synchronous and its
-    // only side effect today is the reducer, so this is observably
-    // equivalent; it preserves a stable invariant for future refactors.
-    // Source: MEJORAS.md Finding 5.1.B.
+    // Clear stale timers before dispatching so no Solid effect can observe a
+    // window where stale timers are still alive after the reducer moved to cooldown.
     clearCooldownTimers()
 
     loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
-    // Countdown for the dashboard, driven by the monotonic clock. Seed
-    // with `resumeAt - monotonicNow()` (same formula the ticker uses at
-    // line 762) so the dashboard doesn't briefly show the full `delayMs`
-    // if the renderer stalls between this set and the first 250ms tick.
-    // Source: MEJORAS.md Finding 5.1.C.
+    // Seed the countdown with the same formula the ticker uses so the dashboard
+    // doesn't briefly show the full delayMs if the renderer stalls before the first tick.
     setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
-    // Capture the interval ID locally so the self-stop branch clears the
-    // exact timer it was scheduled by, independent of any concurrent
-    // `clearCooldownTimers` that may have nulled the outer `cooldownTicker`
-    // reference. The outer `cooldownTicker` is only needed for
-    // `clearCooldownTimers` to know there is a live interval to clear.
-    // Source: MEJORAS.md Finding 5.1.D.
+    // Capture the interval ID locally so the self-stop branch clears the exact
+    // timer it was scheduled by, independent of any concurrent clearCooldownTimers.
     const tickerId = setInterval(() => {
       const remaining = Math.max(0, resumeAt - monotonicNow())
       setCooldownRemainingMs(remaining)
@@ -884,13 +865,8 @@ function AppContent(props: AppProps) {
     // re-creates the session and re-sends the prompt for the same iteration.
     cooldownTimer = setTimeout(() => {
       cooldownTimer = null
-      // Clear cooldownTicker (sibling timer) before dispatching, mirroring
-      // handleWake (line 220), exhaustion (line 725), and the regular
-      // enterCooldown clear-then-dispatch (line 760). The ticker self-stops
-      // on remaining <= 0, so this is defensive — the invariant
-      // "all cooldown timers are cleared before leaving cooldown" now holds
-      // for every dispatch path, not just the externally-driven one.
-      // Source: MEJORAS.md Finding 5.3.A.
+      // Invariant: all cooldown timers are cleared before leaving cooldown —
+      // holds for every dispatch path, not just the externally-driven one.
       clearCooldownTimers()
       if (loop.state().type === "cooldown") {
         loop.dispatch({ type: "resume_cooldown" })
@@ -907,25 +883,19 @@ function AppContent(props: AppProps) {
    */
   function handleIterationError(err: unknown): void {
     const classified = classifySessionError(err)
-    // The "kind → action" policy lives in routeSessionError
-    // (src/lib/error-router.ts) and is shared with the SSE path's
-    // onSessionError handler. The API path's call site only runs while
-    // the loop is `running` (startIteration's catch is in the
-    // in-flight-iteration window), so the helper's state gate always
-    // passes here. The helper returns `null` for `isAborted` because
-    // the API path does not abort through this surface; the original
-    // code dispatched a non-recoverable error for an aborted createSession
-    // and the helper preserves that via the auth/fatal branch. Source:
-    // MEJORAS.md Finding 16.1.D.
+    // The kind→action policy lives in routeSessionError (shared with the SSE
+    // onSessionError handler). The API path only runs while running, so the
+    // helper's state gate always passes here; it returns null for isAborted
+    // (API path doesn't abort through this surface) and surfaces auth/fatal as
+    // non-recoverable errors.
     const action = routeSessionError(classified, loop.state().type, "api")
     if (!action) return
     if (action.type === "cooldown") {
       enterCooldown(action.message, action.retryAfter, action.kind)
       return
     }
-    // action.type === "error" — auth/fatal. The i18n key differs from
-    // the SSE path (`errIterationStart` vs `actSessionError`) so the
-    // formatting stays at the call site.
+    // auth/fatal: the i18n key differs from the SSE path (errIterationStart vs
+    // actSessionError), so formatting stays at the call site.
     if (action.type !== "error") return
     loop.dispatch({
       type: "error",
@@ -986,16 +956,12 @@ function AppContent(props: AppProps) {
         return
       }
 
-      // No-progress halt (PLAN.md bug-hunt #1). Compare the current
-      // first-pending task against the previous iteration's first-pending
-      // task. If they match for N consecutive iterations the agent is
-      // stuck redoing the same work without ever editing PLAN.md, so we
-      // halt with a clear, actionable error rather than burning another
-      // session. Reading the task here is cheap (the file is also read
-      // by checkPlanComplete above via Bun.file().text()) and is the
-      // single source of truth for "what is the loop working on right
-      // now". A null task (plan has no pending work) resets the streak
-      // — there is nothing to be stuck on.
+      // No-progress halt: compare the current first-pending task against the
+      // previous iteration's. If they match for N consecutive iterations the
+      // agent is stuck redoing the same work without editing PLAN.md, so we halt
+      // with an actionable error instead of burning another session. This read
+      // is the single source of truth for "what is the loop working on now"; a
+      // null task (no pending work) resets the streak — nothing to be stuck on.
       let currentTask: string | null = null
       try {
         currentTask = await getCurrentTask(resolvePlanFile(props.planFile))
@@ -1219,22 +1185,11 @@ function AppContent(props: AppProps) {
    * @param exitCode - Exit code to use (default: 0)
    */
   async function handleQuit(exitCode: number = 0): Promise<void> {
-    // Re-entry guard. Closes the SIGINT-during-Q race: a user who
-    // confirms the quit dialog and then hits Ctrl+C (or any other
-    // concurrent trigger — e.g. parallel dialog close + signal
-    // handler) would otherwise re-enter handleQuit while the first
-    // call's awaits are still in flight. The first call's
-    // reducer-dispatched `quit` action is a no-op from `stopping`
-    // and the per-operation idempotency of clearCooldownTimers /
-    // watchdog.stop / sleepDetector.stop / power.stop /
-    // clearLoopState / sse.disconnect / server.stop covers the
-    // remaining steps — but `abortSession` (line ~1081 below)
-    // issues a non-idempotent HTTP request to the OpenCode server.
-    // The flag is set synchronously (no `await` before it) so the
-    // window closes the moment a second handleQuit call is invoked.
-    // Source: MEJORAS.md Finding 15.4.A. See also
-    // `ShutdownManager.isShuttingDown` (`src/lib/shutdown.ts:17`)
-    // which closes the parallel race for the SIGINT/SIGTERM path.
+    // Re-entry guard: abortSession is a non-idempotent HTTP call, so a concurrent
+    // trigger (quit confirm + Ctrl+C) would re-enter while the first call's awaits
+    // are in flight and fire it twice. The other steps are individually idempotent
+    // (clearCooldownTimers/watchdog.stop/etc.). ShutdownManager.isShuttingDown
+    // closes the parallel race for the SIGINT/SIGTERM path.
     if (isShuttingDown) return
     isShuttingDown = true
 
@@ -1271,15 +1226,10 @@ function AppContent(props: AppProps) {
     // Stop server
     await server.stop()
 
-    // Clear title and restore terminal. The renderer calls are
-    // synchronous and CAN throw on a half-torn-down renderer
-    // (`@opentui/solid` internals). If we let the throw escape,
-    // the unhandled rejection handler (`index.tsx:300-304`) would
-    // force `process.exit(1)` and replace the user's intended
-    // exit code (default 0) — breaking shell scripts and CI
-    // pipelines that check `$?`. We're about to exit anyway,
-    // so swallow the error and proceed to the explicit exit.
-    // Source: MEJORAS.md Finding 17.3.C.
+    // Clear title and restore terminal. These renderer calls can throw on a
+    // half-torn-down renderer; if the throw escaped it would force exit(1) and
+    // replace the user's intended exit code, breaking shell/CI pipelines that
+    // check $?. We're about to exit anyway, so swallow and proceed.
     try {
       renderer.setTerminalTitle("")
       renderer.destroy()
@@ -1416,14 +1366,11 @@ function AppContent(props: AppProps) {
           sessionId: persisted.sessionId,
           stateType: persisted.stateType,
         })
-        // PLAN.md bug-hunt #4: if the saved state has a `currentTask`,
-        // compare it against the current PLAN.md. A mismatch means the
-        // user edited/reordered/completed tasks between crash and resume,
-        // and a naive resume would silently start on a different task.
-        // The check is best-effort: a read failure logs a warn and
-        // continues (the next `getCurrentTask` call inside `startIteration`
-        // will retry), and the user-facing warning is purely informational
-        // — the loop proceeds either way.
+        // If the saved state has a currentTask, compare it against the current
+        // PLAN.md: a mismatch means the user edited/reordered/completed tasks
+        // between crash and resume, and a naive resume would silently start on a
+        // different task. Best-effort — a read failure logs a warn and the loop
+        // proceeds (the warning is informational).
         if (persisted.currentTask) {
           try {
             const planPath = resolvePlanFile(props.planFile)
@@ -1567,13 +1514,9 @@ function AppContent(props: AppProps) {
   // Server error effect - transition to error state
   createEffect(() => {
     if (server.status() === "error" && server.error()) {
-      // The server-error effect is the only `error` dispatch site that can
-      // fire from `cooldown` (all other sites are state-gated). Without this
-      // clear, the closure-bound cooldownTimer/setInterval would keep
-      // running with a stale `resumeAt` and only self-stop after the
-      // original `delayMs` window. Clear before dispatch, mirroring
-      // handleWake (line 220) and enterCooldown regular path (line 760).
-      // Source: MEJORAS.md Finding 5.2.A.
+      // The server-error effect is the only error dispatch site that can fire
+      // from cooldown (all others are state-gated). Clear the cooldown timers
+      // before dispatch or they'd keep running with a stale resumeAt.
       if (loop.state().type === "cooldown") {
         clearCooldownTimers()
       }
@@ -1643,10 +1586,8 @@ function AppContent(props: AppProps) {
   // Persist minimal progress on every meaningful transition so a hard crash of
   // the OCLoop process (not just OpenCode) can be resumed. Atomic write. Skipped
   // in debug mode; cleared on terminal states.
-  // Reads `s.iteration` (a local property of the already-narrowed `s`) instead
-  // of `loop.iteration()` to avoid a second subscription to the same `state`
-  // signal — Solid merges them, but the double read reads as if it were an
-  // independent dependency. Source: MEJORAS.md Finding 16.5.E.
+  // Reads s.iteration (local to the already-narrowed s) instead of loop.iteration()
+  // to avoid a redundant subscription to the same state signal.
   createEffect(() => {
     if (props.debug) return
     const s = loop.state()
@@ -1664,14 +1605,9 @@ function AppContent(props: AppProps) {
         stateType: s.type,
         rateLimitAttempts,
         updatedAt: new Date().toISOString(),
-        // PLAN.md bug-hunt #4: persist the first-pending task the loop is
-        // working on so a resume after a crash can detect a PLAN.md edit
-        // (insertion, reordering, completion, or removal) and warn the user
-        // that the saved task is no longer the first pending task. The
-        // `currentTask` signal is updated by `refreshCurrentTask` after
-        // every plan refresh, so this reads the most recent value the
-        // loop has seen. `?? null` normalizes the `undefined` initial
-        // state to the JSON-safe `null`.
+        // Persist the first-pending task so a resume after a crash can detect a
+        // PLAN.md edit (insert/reorder/complete/remove) and warn that the saved
+        // task is no longer first. currentTask() is refreshed after every plan read.
         currentTask: currentTask() ?? null,
       }
       void saveLoopState(snapshot)
@@ -1684,13 +1620,9 @@ function AppContent(props: AppProps) {
   createEffect(() => {
     const state = loop.state()
     if (state.type === "complete") {
-      // Calculate total time from stats.
-      // `totalActiveTime` subscribes transitively to the per-second `tick`
-      // signal (via `elapsedTime`); we want a one-shot snapshot here, not a
-      // live subscription, otherwise the effect re-fires every second and
-      // `dialog.show` piles a new entry onto the dialog stack (the user's
-      // active button + focus get reset on every re-mount). Source:
-      // MEJORAS.md Finding 16.5.A.
+      // totalActiveTime subscribes transitively to the per-second tick signal;
+      // untrack for a one-shot snapshot, else the effect re-fires every second
+      // and dialog.show piles a new entry onto the stack, resetting focus.
       const totalTime = untrack(() => stats.totalActiveTime())
 
       dialog.show(() => (
@@ -1792,10 +1724,9 @@ function AppContent(props: AppProps) {
         }
      }
 
-     // saveConfig is synchronous (returns `boolean`, not `Promise<boolean>`)
-     // — do not `await` it. On I/O failure the function returns `false` and
-     // logs a warn; we surface that to the user so they know the change
-     // won't survive a restart. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+     // saveConfig is synchronous — do not await it. On I/O failure it returns
+     // false and logs a warn; we surface that so the user knows the change
+     // won't survive a restart.
      if (!saveConfig(newConfig)) {
         toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
         return
@@ -1821,10 +1752,9 @@ function AppContent(props: AppProps) {
         }
      }
 
-     // saveConfig is synchronous (returns `boolean`, not `Promise<boolean>`)
-     // — do not `await` it. On I/O failure the function returns `false` and
-     // logs a warn; we surface that to the user so they know the change
-     // won't survive a restart. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+     // saveConfig is synchronous — do not await it. On I/O failure it returns
+     // false and logs a warn; we surface that so the user knows the change
+     // won't survive a restart.
      if (!saveConfig(newConfig)) {
         toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
         return
@@ -1872,9 +1802,8 @@ function AppContent(props: AppProps) {
       if (result.success) {
          toast.show({ variant: "success", message: t("toastCopied") })
       } else {
-         // Source: MEJORAS.md Finding 11.4.C — surface the actual error
-         // instead of a misleading "Copied to clipboard" toast when the
-         // clipboard command failed (e.g. macOS/Windows empty pasteboard).
+         // Surface the actual error instead of a misleading "Copied" toast
+         // when the clipboard command failed (e.g. empty pasteboard).
          toast.show({ variant: "error", message: t("toastCopyFailed", { error: result.error ?? "" }) })
       }
    }
@@ -2005,11 +1934,9 @@ function AppContent(props: AppProps) {
             ...ocloopConfig(),
             scrollbar_visible: !current
           }
-          // saveConfig is synchronous (returns `boolean`, not
-          // `Promise<boolean>`) — do not `await` it. On I/O failure the
-          // function returns `false` and logs a warn; we roll back the
-          // in-memory state and surface a toast so the UI matches what
-          // survived to disk. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+          // saveConfig is synchronous — do not await. On I/O failure it returns
+          // false; we roll back the in-memory state and toast so the UI matches
+          // what survived to disk.
           if (!saveConfig(newConfig)) {
             toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
             return
@@ -2027,11 +1954,8 @@ function AppContent(props: AppProps) {
           const next: Locale = getLocale() === "en" ? "es" : "en"
           setLocale(next)
           const newConfig = { ...ocloopConfig(), language: next }
-          // saveConfig is synchronous (returns `boolean`, not
-          // `Promise<boolean>`) — do not `await` it. On I/O failure the
-          // function returns `false` and logs a warn; we roll back the
-          // language switch and surface a toast so the UI matches what
-          // survived to disk. Source: MEJORAS.md Finding 12.2.E + 17.3.B.
+          // saveConfig is synchronous — do not await. On I/O failure roll back
+          // the language switch and toast so the UI matches what survived to disk.
           if (!saveConfig(newConfig)) {
             // Roll back the locale so the in-memory state matches disk.
             setLocale(next === "es" ? "en" : "es")
