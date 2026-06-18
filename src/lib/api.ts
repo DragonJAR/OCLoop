@@ -65,8 +65,6 @@ export function createClient(url: string): OpencodeClient {
  * Gated on `NODE_ENV === "test"` so production builds (which bundle this
  * module) cannot accidentally clear the live cache via a stray call. Bun sets
  * `NODE_ENV=test` automatically for `bun test`.
- *
- * Source: MEJORAS.md Finding 16.6.B.
  */
 export function __resetClientCacheForTests(): void {
   if (process.env.NODE_ENV !== "test") return
@@ -79,8 +77,6 @@ export function __resetClientCacheForTests(): void {
  * `const url = server.url(); if (!url) ...; const client = createClient(url)`
  * boilerplate that previously appeared at 10+ call sites in App.tsx into a
  * single line plus a `!client` null-check.
- *
- * Source: MEJORAS.md Finding 16.2.A.
  *
  * The getter is invoked once per call (no caching at this layer — Solid's
  * `server.url` is a signal and reads are O(1)). The `createClient` cache

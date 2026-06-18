@@ -18,13 +18,9 @@ type ClipboardResult = {
 
 /**
  * Detects the appropriate clipboard tool for the current environment.
- * Platform-native tools (`pbcopy` on macOS, `clip.exe` on Windows) are
- * preferred over cross-platform X11/Wayland tools so the copy lands in
- * the real system pasteboard (Aqua / Windows clipboard), not a fake
- * X11 selection. Returns null if no clipboard tool is available.
- *
- * Source: MEJORAS.md Finding 11.4.A (macOS branch) and 11.4.B (Windows
- * branch — paired with the `where.exe` fallback in `command-exists`).
+ * Platform-native tools (pbcopy on macOS, clip.exe on Windows) are preferred
+ * over cross-platform X11/Wayland tools so the copy lands in the real system
+ * pasteboard, not a fake X11 selection. Returns null if none is available.
  */
 export async function detectClipboardTool(): Promise<ClipboardTool | null> {
   // macOS — pbcopy is always present on stock installs
@@ -77,9 +73,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
   const tool = await detectClipboardTool();
 
   if (!tool) {
-    // Per-platform hint so the error message names the tool the user
-    // actually needs (or the built-in they should expect).
-    // Source: MEJORAS.md Finding 11.4.A (resolves 11.4.G as a side-effect).
+    // Per-platform hint so the error names the tool the user actually needs.
     const hint =
       process.platform === "darwin"
         ? "pbcopy (built-in)"

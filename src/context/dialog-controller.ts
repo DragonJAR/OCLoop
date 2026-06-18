@@ -1,16 +1,13 @@
 /**
  * Dialog controller factory.
  *
- * Builds the value exposed by `useDialog()` — a stack-based modal manager
- * with `show` / `replace` / `clear` / `pop` / `stack` / `hasDialogs`.
+ * Builds the value exposed by useDialog() — a stack-based modal manager
+ * with show / replace / clear / pop / stack / hasDialogs.
  *
- * Lives in a pure `.ts` file (no JSX) so it can be unit-tested inside
- * a bare `createRoot` (per `docs/testing.md`, importing a `.tsx` file
- * under `jsxImportSource: "@opentui/solid"` fails in `bun:test` because
- * the `@opentui/solid` JSX runtime is not loadable without a DOM).
- * `DialogContext.tsx` re-exports it for the public API.
- *
- * Source: MEJORAS.md Finding 18.2.F.
+ * Lives in a pure .ts file (no JSX) so it can be unit-tested inside a bare
+ * createRoot: importing a .tsx file under jsxImportSource: "@opentui/solid"
+ * fails in bun:test because the @opentui/solid JSX runtime is not loadable
+ * without a DOM. DialogContext.tsx re-exports it for the public API.
  */
 
 import { createSignal, type Accessor } from "solid-js"
@@ -38,15 +35,10 @@ export interface DialogContextValue {
   /** Check if any dialogs are open */
   hasDialogs: Accessor<boolean>
   /**
-   * Top of the stack — the dialog currently mounted by `DialogStack`,
-   * or `undefined` when the stack is empty.
-   *
-   * Pins the "top-only render contract" of `DialogStack` at the data
-   * layer: the JSX render of `<Show when={top()} keyed>` depends on
-   * this returning the correct value, and the `keyed` prop is what
-   * causes the child to re-mount when the top's identity changes.
-   *
-   * Source: MEJORAS.md Finding 18.3.C.
+   * Top of the stack — the dialog currently mounted by DialogStack, or
+   * undefined when empty. Pins the "top-only render contract" at the data
+   * layer: <Show when={top()} keyed> depends on this, and keyed is what causes
+   * the child to re-mount when the top's identity changes.
    */
   top: Accessor<DialogComponent | undefined>
 }
@@ -98,14 +90,10 @@ export function createDialogController(): DialogContextValue {
   const hasDialogs = () => stack().length > 0
 
   /**
-   * Return the top of the stack (the dialog currently mounted by
-   * `DialogStack`), or `undefined` if the stack is empty.
-   *
-   * Reads `stack()` once into a local and indexes into the copy, so
-   * the JSX consumer subscribes to the stack signal a single time
-   * per change (not twice via `stack()[stack().length - 1]`).
-   *
-   * Source: MEJORAS.md Finding 18.3.C.
+   * Return the top of the stack (the dialog currently mounted by DialogStack),
+   * or undefined if empty. Reads stack() once into a local so the JSX consumer
+   * subscribes to the signal a single time per change (not twice via
+   * stack()[stack().length - 1]).
    */
   const top = (): DialogComponent | undefined => {
     const s = stack()
