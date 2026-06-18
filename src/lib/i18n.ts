@@ -180,6 +180,36 @@ const en = {
       "  ocloop -c          (or: ocloop --create-plan)",
       "",
     ].join("\n"),
+  // Surfaces a PLAN.md that HAS tasks but NO automatable work for OCLoop:
+  // every task is already `[x]`, or is `[MANUAL]`/`[BLOCKED]` (terminal
+  // states). This is the matrix case 51 sibling of `errPlanEmpty` — same
+  // exit path (clean `process.exit(0)`), but the plan is in a "done"
+  // state, not a broken one. Exits 0 because the plan IS in a terminal
+  // good state: a CI script that runs `ocloop` after each commit and
+  // checks `$?` doesn't need a special case for "all done"; it's the
+  // same success signal as "nothing went wrong". The check sits AFTER
+  // `errPlanEmpty` (a plan with zero tasks is broken, not complete) and
+  // BEFORE the prompt auto-create (so a completed plan doesn't drag in
+  // a default `.loop-prompt.md` the user didn't ask for). The pre-flight
+  // is read-only — it does NOT write the `<plan-complete>` tag; that's
+  // the TUI's job (`App.tsx:checkPlanComplete`, line 724-752). The
+  // breakdown (X/Y + manual + blocked counts) is NOT included here
+  // because `buildCompletionSummary` is English-only by design (it gets
+  // persisted into PLAN.md by the TUI's tag-writing path, where
+  // localization would corrupt the deterministic format). The user can
+  // read their own PLAN.md to see the breakdown; the TUI's completion
+  // dialog shows the full summary in `App.tsx:checkPlanComplete`. Source:
+  // PLAN.md Phase 3 task 4 (matrix case 51).
+  errPlanComplete: (p: Params) =>
+    [
+      `Plan is already complete: ${p.path}`,
+      "",
+      "Nothing left for OCLoop to do (every task is [x], [MANUAL], or [BLOCKED]).",
+      "",
+      "To enter the dashboard anyway (skipping this check), run: ocloop --debug",
+      "To add more work, edit the plan file and add a new task (or run `ocloop -c`).",
+      "",
+    ].join("\n"),
   // Wraps `Bun.file().exists()` when the call itself throws (EACCES, ENOENT
   // on a missing parent dir, EISDIR, etc.) so the user gets a clean,
   // localized "Cannot read <path>: <reason>" instead of a raw stack trace
@@ -630,6 +660,18 @@ const es: Record<MessageKey, Msg> = {
       "",
       "Alternativamente, genéralo de forma interactiva con:",
       "  ocloop -c          (o: ocloop --create-plan)",
+      "",
+    ].join("\n"),
+  // Espejo de `errPlanComplete` (en). Ver bloque en `en` para la nota de source
+  // completa (rationale del exit 0, no-escritura del tag, etc.).
+  errPlanComplete: (p) =>
+    [
+      `El plan ya está completo: ${p.path}`,
+      "",
+      "No queda trabajo para OCLoop (cada tarea es [x], [MANUAL] o [BLOCKED]).",
+      "",
+      "Para entrar al dashboard de todas formas (omitiendo esta comprobación), ejecuta: ocloop --debug",
+      "Para añadir más trabajo, edita el archivo de plan y añade una nueva tarea (o ejecuta `ocloop -c`).",
       "",
     ].join("\n"),
   // Espejo de `errCannotReadFile` (en). Ver bloque en `en` para la nota de source.

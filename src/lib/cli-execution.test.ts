@@ -297,30 +297,23 @@ describe("CLI: ejecución con PLAN.md vacío", () => {
 })
 
 describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
-  it("exits 1 with errNoTty after pre-TUI validation (matrix case 51, existence-only pre-flight)", async () => {
+  it("exits 0 with errPlanComplete when all tasks are [x] (matrix case 51, structural-completion pre-flight)", async () => {
     // Matrix case 51: PLAN.md exists, has at least one task, but every
-    // task is already marked `[x]` (or `[MANUAL]`/`[BLOCKED]`) — there is
-    // no `- [ ]` line to act on. `isStructurallyComplete` from
-    // `plan-parser.ts:161-163` would return true for this content, but
-    // `validatePrerequisites` does not call it — it only checks
-    // `Bun.file(planPath).exists()` (matrix case 27 is the empty-file
-    // twin; this is its "has tasks but nothing to do" sibling).
+    // task is already marked `[x]` — there is no `- [ ]` line to act on.
+    // `isStructurallyComplete` from `plan-parser.ts:161-163` returns true
+    // for this content, so the pre-flight exits 0 (success) with the
+    // localized `errPlanComplete` message before reaching the prompt
+    // auto-create or the TTY guard.
     //
-    // The intended runtime behavior (App.tsx:checkPlanComplete, line 724)
-    // is to detect structural completion inside the TUI's iteration
-    // flow, write the `<plan-complete>` tag deterministically, and
-    // dispatch `plan_complete` so the user sees the completion dialog
-    // and the loop ends cleanly (exit 0 on Q). That path lives behind
-    // `startIteration` (line 963), which is only triggered by `--run` or
-    // the user pressing `S`. In non-TTY mode the user can't press S, so
-    // the TUI just shows "esperando…" until the segfault/hang.
-    //
-    // This test pins the CURRENT pre-flight behavior: a no-pending plan
-    // passes validation exactly like a valid one, the prompt auto-create
-    // runs, and the CLI then hits the non-TTY guard (Phase 3 fix) before
-    // `render()` segfaults. The "no pending tasks" content check is a
-    // separate Phase 3 task; this test only pins the pre-flight + TTY-guard
-    // flow.
+    // The sibling in the TUI is `App.tsx:checkPlanComplete` (line 724-752):
+    // it also detects structural completion and either shows the
+    // completion dialog (when triggered by `S`/`--run`) or writes the
+    // `<plan-complete>` tag deterministically. The CLI pre-flight is the
+    // read-only counterpart: it does NOT write the tag (the TUI owns that
+    // mutation), and it does NOT auto-create the prompt file (a
+    // completed plan doesn't need a fresh `.loop-prompt.md`). Exit 0
+    // because the plan IS in a terminal good state — same success signal
+    // as "nothing went wrong" for CI scripts gating on `$?`.
     writeFileSync(
       join(dir, DEFAULTS.PLAN_FILE),
       "# Plan\n\n- [x] Done task one\n- [x] Done task two\n",
@@ -328,20 +321,126 @@ describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
 
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 5_000,
     })
 
-    // Same side-effect proof: pre-TUI validation ran end-to-end, the
-    // default `.loop-prompt.md` was auto-created BEFORE the TTY guard.
-    // If the file is missing, validation aborted earlier than expected.
-    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
-    expect(existsSync(promptFile)).toBe(true)
+    // Exit 0 (success) — the plan is in a terminal good state.
+    expect(result.exitCode).toBe(0)
+    // Localized message: the path is echoed so the user can locate the
+    // file, and the "no automatable work" line tells them WHY nothing
+    // happened. The "To enter the dashboard anyway" hint points at
+    // --debug (the only flag that bypasses validatePrerequisites).
+    expect(result.stderr).toContain("Plan is already complete")
+    expect(result.stderr).toContain(DEFAULTS.PLAN_FILE)
+    expect(result.stderr).toContain("Nothing left for OCLoop to do")
 
-    // Phase 3 fix: clean exit 1 with the localized TTY-required message.
-    // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
-    // test above for why the promptCreated banner legitimately writes to stdout.)
-    expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
+    // Pre-flight exited BEFORE the prompt step, so the auto-create MUST
+    // NOT have written `.loop-prompt.md` to disk. If the file exists,
+    // the order in `validatePrerequisites` regressed (the errPlanComplete
+    // check should sit between errPlanEmpty and the prompt step).
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 0 with errPlanComplete when remaining tasks are [x] and [MANUAL] (loop has nothing automatable)", async () => {
+    // Same root cause as the all-[x] case: every task is in a terminal
+    // state, so `parsePlan().automatable === 0` and the pre-flight fires.
+    // A bare `[MANUAL]` line (no `- [ ]` checkbox wrapper) is parsed as
+    // type=`manual` and excluded from the `automatable` count
+    // (`plan-parser.ts:134`); the pre-flight must treat it the same way
+    // as the TUI does. This is the shape matrix case 51 actually calls
+    // out: "Todas las tareas `[x]` o `[MANUAL]`".
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      "# Plan\n\n- [x] Done\n- [MANUAL] Do by hand\n- [x] Also done\n",
+    )
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toContain("Plan is already complete")
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 0 with errPlanComplete when remaining tasks are [x] and [BLOCKED] (blocked excluded from automatable)", async () => {
+    // `[BLOCKED]` is also a terminal state per the parser
+    // (`plan-parser.ts:135-138` — denominator excludes blocked, so
+    // `automatable === 0` when all tasks are done or blocked). The
+    // pre-flight must handle this shape identically to `[x]`/`[MANUAL]`:
+    // a plan where the only remaining items are blocked is, from the
+    // loop's perspective, complete. If a regression changed the
+    // pre-flight to only check "no `- [ ]` lines" (a syntactic check
+    // instead of `isStructurallyComplete`'s semantic one), this case
+    // would pass validation and hit the TTY guard instead of the
+    // errPlanComplete branch.
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      "# Plan\n\n- [x] Done\n- [BLOCKED: needs API key] Blocked until Q3\n",
+    )
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toContain("Plan is already complete")
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 0 with errPlanComplete naming the custom path when --plan points to a completed plan", async () => {
+    // Matrix case 51 (custom path variant): `--plan completed.md` where
+    // completed.md is all-[x]. The pre-flight must use the CUSTOM path
+    // in the message (not the default `PLAN.md`), proving the check
+    // reads `args.planFile` exactly like the existence + empty checks
+    // do. A regression that hard-coded `DEFAULTS.PLAN_FILE` in the
+    // errPlanComplete template would surface the wrong path here.
+    const customPath = join(dir, "completed.md")
+    writeFileSync(customPath, "- [x] a\n- [x] b\n")
+
+    const result = await runCli(["--lang", "en", "--plan", customPath], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toContain("Plan is already complete")
+    // The custom path must be echoed, not the default.
+    expect(result.stderr).toContain(customPath)
+    expect(result.stdout).toBe("")
+
+    // Same as the default-path test: structural-completion check fired
+    // before the prompt step, so no auto-create on the default
+    // `.loop-prompt.md`. Also confirms we did NOT write a
+    // `.loop-prompt.md` next to the custom plan file — the pre-flight
+    // is read-only and only ever touches the prompt path when reaching
+    // the auto-create branch.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("localizes errPlanComplete to Spanish when --lang es is set", async () => {
+    // The pre-flight is fully localized: same English plan content, but
+    // `--lang es` should produce a Spanish-language message. This pins
+    // that the new i18n key was added to BOTH the `en` and `es` tables
+    // (a missing Spanish entry would have the i18n layer fall back to
+    // the English value silently — `i18n.ts:948-949` — and a test
+    // asserting on English text would falsely pass). Asserting the
+    // Spanish-specific phrasing ("ya está completo", "No queda trabajo")
+    // catches that regression.
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      "# Plan\n\n- [x] Tarea uno\n- [x] Tarea dos\n",
+    )
+
+    const result = await runCli(["--lang", "es"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stderr).toContain("El plan ya está completo")
+    expect(result.stderr).toContain("No queda trabajo para OCLoop")
   })
 })
 

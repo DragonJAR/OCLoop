@@ -7,7 +7,7 @@ import { App } from "./App"
 import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
-import { parsePlan } from "./lib/plan-parser"
+import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
 import { parseArgs, preScanLang } from "./lib/cli-args"
@@ -94,6 +94,29 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   if (parsePlan(planContent).total === 0) {
     console.error(t("errPlanEmpty", { path: args.planFile }))
     process.exit(1)
+  }
+
+  // Structural completion: PLAN.md HAS tasks but NONE are automatable (every
+  // task is `[x]`, `[MANUAL]`, or `[BLOCKED]`). This is matrix case 51's
+  // pre-flight sibling of `errPlanEmpty`: the plan is in a "done" state, not
+  // a broken one, so we exit 0 (success) with a clear localized message —
+  // mirroring how `App.tsx:checkPlanComplete` (line 724-752) handles the same
+  // case from inside the TUI (it shows the completion dialog). The check
+  // reuses the same `parsePlan(planContent)` call as the errPlanEmpty branch
+  // above (we already read the file for the empty check, no need to re-read).
+  // Exit 0 instead of 1: a CI script that runs `ocloop` after each commit
+  // and gates on `$?` doesn't need a special case for "all done"; it's the
+  // same success signal as "nothing went wrong". The pre-flight is read-only
+  // — we do NOT write the `<plan-complete>` tag here. The TUI's
+  // `checkPlanComplete` is the single owner of that mutation (so the
+  // completion dialog can run); writing the tag in two places would risk a
+  // TOCTOU between the pre-flight and the TUI's first `checkPlanComplete`
+  // call. The check sits BEFORE the prompt auto-create so a completed plan
+  // doesn't drag in a default `.loop-prompt.md` the user didn't ask for.
+  // Source: PLAN.md Phase 3 task 4 (matrix case 51).
+  if (isStructurallyComplete(parsePlan(planContent))) {
+    console.error(t("errPlanComplete", { path: args.planFile }))
+    process.exit(0)
   }
 
   // Loop prompt file. When the DEFAULT path is missing, auto-create it with a
