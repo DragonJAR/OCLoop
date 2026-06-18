@@ -17,6 +17,10 @@ import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 import type { t as Tfn } from "../lib/i18n"
 import type { ResilienceConfig } from "../lib/config"
+import type {
+  ActivityEventType,
+  AddEventOptions,
+} from "./useActivityLog"
 
 export interface CooldownDeps {
   /** Resolved resilience thresholds (reactive accessor). */
@@ -26,11 +30,7 @@ export interface CooldownDeps {
   /** Dispatch into the loop reducer (rate_limited / resume_cooldown / error). */
   dispatch: (action: CooldownDispatchAction) => void
   /** Activity log writer. */
-  addEvent: (
-    type: string,
-    message: string,
-    opts?: { level?: "warn"; progress?: { current: number; total: number } },
-  ) => void
+  addEvent: (type: ActivityEventType, message: string, opts?: AddEventOptions) => void
   t: typeof Tfn
 }
 

@@ -169,7 +169,7 @@ function AppContent(props: AppProps) {
     resilience,
     stateType: () => loop.state().type,
     dispatch: (action) => loop.dispatch(action),
-    addEvent: (type, message, opts) => activityLog.addEvent(type as never, message, opts),
+    addEvent: (type, message, opts) => activityLog.addEvent(type, message, opts),
     t,
   })
 

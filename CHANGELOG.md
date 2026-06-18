@@ -22,6 +22,14 @@ All notable changes to OCLoop are documented here. Format based on
   remaining), so neither row is overloaded.
 
 ### Fixed
+- **Closed a type-safety hole in the extracted `useCooldown` hook's `addEvent` dep.**
+  The interface narrowed `type` to `string` and `level` to `"warn"`, while the real
+  types are `ActivityEventType` (a 10-literal union) and `Level = "info" | "warn" |
+  "error"`. The mismatch was hidden by an `as never` cast at the App.tsx wiring site,
+  so the compiler could not catch a future invalid value (at runtime the event would
+  silently fall through to `DEFAULT_META` and render with a generic label instead of
+  `[error]`). The interface is now typed with the real `ActivityEventType` /
+  `AddEventOptions` from `useActivityLog`, and the cast is removed.
 - **The run now ends reliably when the plan is done, instead of looping forever at 100%.**
   Completion no longer depends on the executing model emitting a `<plan-complete>` tag
   (which it could omit or mis-format — e.g. the closing tag glued to the end of the last
