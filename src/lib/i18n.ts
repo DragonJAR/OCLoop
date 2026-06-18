@@ -157,6 +157,29 @@ const en = {
       `Or omit --prompt to auto-generate a default ${DEFAULTS.PROMPT_FILE} in this folder.`,
       "",
     ].join("\n"),
+  // Surfaces a PLAN.md that exists but contains no task lines (matrix case
+  // 27). Covers 0-byte files, whitespace-only files, and files with only
+  // markdown headings / prose — all shapes where `parsePlan` returns
+  // `total === 0`. The pre-flight check sits between the existence check
+  // and the prompt-file auto-create, so the prompt is NOT created when
+  // the plan itself is unusable. Source: MEJORAS.md Finding 17.7.A.
+  errPlanEmpty: (p: Params) =>
+    [
+      `Error: Plan file is empty: ${p.path}`,
+      "",
+      "OCLoop requires a plan file with at least one task.",
+      `The file at ${p.path} contains no task lines (lines starting with "- [ ]").`,
+      "",
+      `Add a task to ${p.path}, for example:`,
+      "",
+      "  ## Backlog",
+      "  - [ ] Task one description",
+      "  - [ ] Task two description",
+      "",
+      "Alternatively, generate one interactively with:",
+      "  ocloop -c          (or: ocloop --create-plan)",
+      "",
+    ].join("\n"),
   // Wraps `Bun.file().exists()` when the call itself throws (EACCES, ENOENT
   // on a missing parent dir, EISDIR, etc.) so the user gets a clean,
   // localized "Cannot read <path>: <reason>" instead of a raw stack trace
@@ -589,6 +612,24 @@ const es: Record<MessageKey, Msg> = {
       "    Lee {{PLAN_FILE}}, elige la primera tarea sin completar, hazla, haz commit y para.",
       "",
       `O omite --prompt para generar un ${DEFAULTS.PROMPT_FILE} por defecto en esta carpeta.`,
+      "",
+    ].join("\n"),
+  // Espejo de `errPlanEmpty` (en). Ver bloque en `en` para la nota de source.
+  errPlanEmpty: (p) =>
+    [
+      `Error: el archivo de plan está vacío: ${p.path}`,
+      "",
+      "OCLoop requiere un archivo de plan con al menos una tarea.",
+      `El archivo en ${p.path} no contiene líneas de tarea (líneas que empiecen con "- [ ]").`,
+      "",
+      `Añade una tarea a ${p.path}, por ejemplo:`,
+      "",
+      "  ## Backlog",
+      "  - [ ] Descripción de la tarea uno",
+      "  - [ ] Descripción de la tarea dos",
+      "",
+      "Alternativamente, genéralo de forma interactiva con:",
+      "  ocloop -c          (o: ocloop --create-plan)",
       "",
     ].join("\n"),
   // Espejo de `errCannotReadFile` (en). Ver bloque en `en` para la nota de source.

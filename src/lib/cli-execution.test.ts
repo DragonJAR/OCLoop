@@ -199,33 +199,100 @@ describe("CLI: ejecución con --prompt apuntando a un archivo inexistente", () =
 })
 
 describe("CLI: ejecución con PLAN.md vacío", () => {
-  it("exits 1 with errNoTty after pre-TUI validation (matrix case 27, existence-only pre-flight)", async () => {
-    // Matrix case 27: PLAN.md exists but is 0 bytes. Today's `validatePrerequisites`
-    // checks `Bun.file(planPath).exists()` (index.tsx:65) and nothing else — it
-    // never reads the plan content. So an empty file passes pre-flight exactly
-    // like a valid one, the .loop-prompt.md auto-create runs, and the CLI then
-    // hits the non-TTY guard (Phase 3 fix) before `render()` segfaults. The
-    // content check is a separate Phase 3 task; this test only pins the
-    // pre-flight + TTY-guard flow.
+  it("exits 1 with errPlanEmpty when PLAN.md is 0 bytes (matrix case 27, content pre-flight)", async () => {
+    // Matrix case 27: PLAN.md exists but is 0 bytes. The Phase 3 content
+    // pre-flight in `validatePrerequisites` (index.tsx, after the existence
+    // check) reads the file, runs `parsePlan`, and rejects `total === 0`
+    // with a localized "add a task" message before the prompt auto-create
+    // step or the TTY guard can run.
     writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "")
 
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 5_000,
     })
 
-    // Same side-effect proof as the valid-plan test: the pre-TUI validation ran
-    // end-to-end, so the missing default `.loop-prompt.md` was auto-created
-    // BEFORE the TTY guard. If the file is missing, validation aborted earlier
-    // than expected.
-    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
-    expect(existsSync(promptFile)).toBe(true)
-
-    // Phase 3 fix: clean exit 1 with the localized TTY-required message.
-    // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
-    // test above for why the promptCreated banner legitimately writes to stdout.)
     expect(result.exitCode).toBe(1)
-    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
+    expect(result.stderr).toContain("Error: Plan file is empty")
+    // The default path is echoed in the error (not the absolute cwd-prefixed
+    // path) — same convention as errPlanNotFound.
+    expect(result.stderr).toContain(DEFAULTS.PLAN_FILE)
+    expect(result.stdout).toBe("")
+
+    // Content check ran before the prompt step, so the auto-create MUST NOT
+    // have written `.loop-prompt.md` to disk. If the file exists, the order
+    // in `validatePrerequisites` regressed.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 1 with errPlanEmpty when PLAN.md has only a heading (no task lines)", async () => {
+    // A non-empty file that still has zero task lines (just a markdown
+    // heading) is functionally equivalent to a 0-byte file from the loop's
+    // perspective: `parsePlan` returns `total === 0` because `parseTaskLine`
+    // only counts lines that start with `- [`. The content check must catch
+    // it. If it didn't, the TUI's `getCurrentTaskFromContent` would return
+    // null and the dashboard would show "esperando…" forever (in TTY) or
+    // the segfault (in non-TTY).
+    writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "# My Plan\n\nJust a heading, no tasks yet.\n")
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file is empty")
+    expect(result.stderr).toContain(DEFAULTS.PLAN_FILE)
+    expect(result.stdout).toBe("")
+
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 1 with errPlanEmpty when PLAN.md has only whitespace and prose (no task lines)", async () => {
+    // Same root cause as the heading-only case: parsePlan returns total=0
+    // for any content without `- [...]` lines. Covers the realistic shape
+    // of a freshly-created PLAN.md the user started writing notes into but
+    // never added a checkbox to yet.
+    writeFileSync(
+      join(dir, DEFAULTS.PLAN_FILE),
+      "\n  \nJust some notes, no checkbox lines yet.\n  \n",
+    )
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file is empty")
+    expect(result.stdout).toBe("")
+
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
+  })
+
+  it("exits 1 with errPlanEmpty when --plan points to a 0-byte file (matrix case 27, custom path)", async () => {
+    // Matrix case 27 (custom path variant): `--plan empty.md` where empty.md
+    // is a 0-byte file. Same fix as the default-path test above, but
+    // asserts the custom path is echoed in the error (not the default
+    // "PLAN.md"), proving the content check uses `args.planFile` exactly
+    // like the existence check.
+    const customPath = join(dir, "empty-plan.md")
+    writeFileSync(customPath, "")
+    expect(existsSync(customPath)).toBe(true) // sanity: the file really is there
+
+    const result = await runCli(["--lang", "en", "--plan", customPath], {
+      entrypoint: ENTRYPOINT,
+    })
+
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: Plan file is empty")
+    expect(result.stderr).toContain(customPath)
+    expect(result.stdout).toBe("")
+
+    // Same as the default-path test: content check fired before the prompt
+    // step, so no auto-create on the default `.loop-prompt.md`.
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(false)
   })
 })
 

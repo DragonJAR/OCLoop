@@ -7,6 +7,7 @@ import { App } from "./App"
 import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient } from "./lib/api"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
+import { parsePlan } from "./lib/plan-parser"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
 import { parseArgs, preScanLang } from "./lib/cli-args"
@@ -65,6 +66,33 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   const planExists = await fileExists(args.planFile)
   if (!planExists) {
     console.error(t("errPlanNotFound", { path: args.planFile }))
+    process.exit(1)
+  }
+
+  // Check PLAN.md has at least one task. A 0-byte file, a whitespace-only
+  // file, or one with only headings/prose all collapse to `parsePlan(...).total
+  // === 0` — the loop has nothing actionable to run. The pre-flight exits 1
+  // with a localized "add a task" message instead of letting the TUI render
+  // path segfault in non-TTY or open a dashboard that immediately reports
+  // "no tasks" in TTY. Wrapped in try/catch for the TOCTOU window between
+  // the existence check above and this read: a file that was readable a
+  // millisecond ago can lose its permissions or vanish on a stale mount, and
+  // the raw rejection would otherwise escape to `main().catch()` as a bare
+  // "Fatal error: <stack>". Source: MEJORAS.md Finding 17.7.A.
+  let planContent: string
+  try {
+    planContent = await Bun.file(args.planFile).text()
+  } catch (err) {
+    console.error(
+      t("errCannotReadFile", {
+        path: args.planFile,
+        message: err instanceof Error ? err.message : String(err),
+      }),
+    )
+    process.exit(1)
+  }
+  if (parsePlan(planContent).total === 0) {
+    console.error(t("errPlanEmpty", { path: args.planFile }))
     process.exit(1)
   }
 
