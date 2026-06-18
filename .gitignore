@@ -11,6 +11,9 @@ dist/
 # CI workflows live in a dotfolder; allowlist so GitHub Actions sees them.
 !/.github/
 !/.github/**
+# …but the allowlist above re-includes macOS .DS_Store leftovers; re-ignore them
+# (the bare .* rule already covers .DS_Store everywhere outside /.github).
+.DS_Store
 
 # Markdown files are ignored by default so ad-hoc plans/notes are not pushed.
 # Explicitly allow root release/readme docs and versioned examples.
