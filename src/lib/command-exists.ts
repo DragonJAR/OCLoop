@@ -6,11 +6,15 @@
  * actually execute the target binary. Shared by clipboard and terminal
  * detection to avoid duplicating the same `Bun.spawn([<lookup>, …])` pattern.
  *
- * `process.platform` is read per-call so tests that stub `Bun.spawn` (see
- * `clipboard.test.ts` / `terminal-launcher.test.ts`) get deterministic results
- * without leaking platform state across cases.
+ * The platform is an injectable parameter (default `process.platform`, the same
+ * DI pattern as `power.ts` / `term-caps.ts`) so tests drive the win32-vs-POSIX
+ * branch deterministically on any host. In tests, spawn is stubbed via the
+ * shared `./test-helpers/bun-spawn-mock`.
  */
-export async function commandExists(command: string): Promise<boolean> {
+export async function commandExists(
+  command: string,
+  platform: string = process.platform,
+): Promise<boolean> {
   // `where.exe` is the Windows equivalent of `which` and ships with every
   // stock install. Without it, `commandExists` always throws on win32 (no
   // `which` binary), which made both clipboard detection (clipboard.ts) and
@@ -19,7 +23,7 @@ export async function commandExists(command: string): Promise<boolean> {
   // "No clipboard tool found" error even though `clip.exe` is built in.
   // The clipboard.ts comment already documented this fallback (Finding
   // 11.4.B); the implementation now matches the documented contract.
-  const lookup = process.platform === "win32" ? "where.exe" : "which"
+  const lookup = platform === "win32" ? "where.exe" : "which"
   try {
     const proc = Bun.spawn([lookup, command], {
       stdout: "ignore",
