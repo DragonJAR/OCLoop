@@ -31,19 +31,17 @@ export interface LaunchResult {
  * The args array uses {cmd} as a placeholder for the command to execute.
  */
 export const KNOWN_TERMINALS: KnownTerminal[] = [
-  // --- Cross-platform (buildable from source on any OS) ---
-  { name: "alacritty", command: "alacritty", args: ["-e", "{cmd}"] },
-  { name: "kitty", command: "kitty", args: ["{cmd}"] },
-  { name: "wezterm", command: "wezterm", args: ["start", "--", "{cmd}"] },
-  // --- macOS (built-in `osascript`; these surface only on macOS because
-  // `commandExists("osascript")` is false elsewhere — no platform field needed).
-  // GUI terminals here don't take a command via plain argv like xterm's `-e`;
-  // the attach command is a single STRING inside the AppleScript clause, so
-  // `{cmd}` is embedded in the arg and buildArgs inline-substitutes it.
-  // ponytail: both appear whenever osascript exists; Terminal.app is always
-  // installed (guaranteed-working option), and if iTerm is absent its osascript
-  // fails gracefully into the terminal-error dialog. Add an app-presence check
-  // if the iTerm false-positive ever bugs users.
+  // One guaranteed/standard terminal per OS. Each surfaces only where its
+  // launcher binary is on PATH (`detectInstalledTerminals` → `commandExists`),
+  // so any entry shown to the user is actually launchable. A curated list keeps
+  // the chooser predictable; speculative GUI terminals are intentionally out
+  // (they only ever showed if installed anyway).
+  //
+  // macOS — Terminal.app is always installed; launched via the built-in
+  // `osascript`. GUI terminals don't accept a command via plain argv (no `-e`),
+  // so the attach command is a STRING inside the AppleScript clause and `{cmd}`
+  // is embedded in the arg (buildArgs inline-substitutes it). Surfaces only on
+  // macOS because `osascript` isn't on PATH elsewhere.
   {
     name: "Terminal",
     command: "osascript",
@@ -54,45 +52,19 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
       `tell application "Terminal" to activate`,
     ],
   },
-  {
-    name: "iTerm",
-    command: "osascript",
-    args: [
-      "-e",
-      `tell application "iTerm" to create window with default profile command "{cmd}"`,
-    ],
-  },
-  // --- Linux (X11 / Wayland desktop environments) ---
-  {
-    name: "gnome-terminal",
-    command: "gnome-terminal",
-    args: ["--", "{cmd}"],
-  },
-  { name: "konsole", command: "konsole", args: ["-e", "{cmd}"] },
-  {
-    name: "xfce4-terminal",
-    command: "xfce4-terminal",
-    args: ["-e", "{cmd}"],
-  },
-  { name: "foot", command: "foot", args: ["{cmd}"] },
-  { name: "tilix", command: "tilix", args: ["-e", "{cmd}"] },
-  { name: "terminator", command: "terminator", args: ["-e", "{cmd}"] },
+  // Windows — cmd.exe ships with every Windows. `start "" cmd /k <cmd>` opens a
+  // new console window that runs the attach command and stays open. Surfaces
+  // only on Windows (`cmd` isn't on a POSIX PATH).
+  { name: "cmd", command: "cmd", args: ["/c", "start", "", "cmd", "/k", "{cmd}"] },
+  // Linux — no terminal is guaranteed on every system, so list the two most
+  // standard: `xterm` (classic X terminal) and `x-terminal-emulator`
+  // (Debian/Ubuntu default-terminal alias). Each shows only if installed.
   { name: "xterm", command: "xterm", args: ["-e", "{cmd}"] },
-  { name: "urxvt", command: "urxvt", args: ["-e", "{cmd}"] },
   {
     name: "x-terminal-emulator",
     command: "x-terminal-emulator",
     args: ["-e", "{cmd}"],
   },
-  // --- Windows ---
-  // Windows Terminal (`wt`) is the default on Windows 10/11. `new-tab --`
-  // runs the command in a new tab; everything after `--` is forwarded to
-  // the launched shell verbatim. Without this entry, `detectInstalledTerminals`
-  // found NOTHING on Windows and every user had to hand-configure a Custom
-  // terminal — despite the built-in being the obvious first choice.
-  // `wt` resolves via PATH on Win10/11; `where.exe wt` confirms it (now that
-  // `commandExists` uses `where.exe` instead of the missing `which`).
-  { name: "windows-terminal", command: "wt", args: ["new-tab", "--", "{cmd}"] },
 ]
 
 /**
