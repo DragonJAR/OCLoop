@@ -106,6 +106,37 @@ describe("loopReducer", () => {
         expect(result.sessionId).toBe("resume-session")
       }
     })
+
+    it("is a no-op from pausing — the orphan-session race (Bug #2)", () => {
+      // running("") → user hits Space → pausing("") → a late iteration_started
+      // (createSession resolved AFTER the pause) arrives. The reducer must NOT
+      // adopt the session; the App layer detects the dropped id and aborts the
+      // orphan so it doesn't keep running on the server burning tokens.
+      const pausing = loopReducer(
+        { type: "running", iteration: 1, sessionId: "" },
+        { type: "toggle_pause" },
+      )
+      expect(pausing.type).toBe("pausing")
+      const after = loopReducer(pausing, {
+        type: "iteration_started",
+        sessionId: "ses_orphan",
+      })
+      expect(after).toBe(pausing) // referential no-op
+      expect(getActiveSessionId(after)).toBe("") // never "ses_orphan"
+    })
+
+    it("is a no-op from a stopping/stopped state (Bug #2)", () => {
+      const stopped = loopReducer(
+        { type: "running", iteration: 1, sessionId: "" },
+        { type: "quit" },
+      )
+      const after = loopReducer(stopped, {
+        type: "iteration_started",
+        sessionId: "ses_orphan",
+      })
+      expect(after).toBe(stopped) // dropped id; App must abort it
+      expect(getActiveSessionId(after)).toBe("")
+    })
   })
 
   describe("toggle_pause action", () => {
