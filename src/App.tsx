@@ -61,6 +61,7 @@ import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
 import { NoProgressDetector } from "./lib/no-progress-detector"
 import { runOneShotAgent } from "./lib/one-shot-agent"
+import { resolveAgentAndModel, type OcAgent, type OcConfig, type ResolvedAgentModel } from "./lib/resolve-agent-model"
 import {
   detectInstalledTerminals,
   type KnownTerminal
@@ -1141,22 +1142,6 @@ function AppContent(props: AppProps) {
       // Connect SSE
       sse.reconnect()
 
-      // Fetch active model from config if not already set via CLI
-      if (!activeModel()) {
-            const client = tryGetClient(server.url)
-        if (client) {
-          withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
-            .then(res => {
-              if (res.data?.model) {
-                setActiveModel(res.data.model)
-              }
-            })
-            .catch(err => {
-              log.error("config", "Failed to fetch model from config", err)
-            })
-        }
-      }
-
       // Start the session lifecycle exactly once.
       const startOnce = () => {
         if (!sessionInitialized) {
@@ -1164,50 +1149,66 @@ function AppContent(props: AppProps) {
           initializeSession()
         }
       }
+      const applyResolved = (r: ResolvedAgentModel) => {
+        if (r.agent) setActiveAgent(r.agent)
+        if (r.model) setActiveModel(r.model)
+      }
 
-      // Validate an explicit --agent BEFORE starting, and gate the session
-      // start on it. Otherwise the validation (async) raced initializeSession
-      // and the first prompt went out with a nonexistent agent, which the
-      // server rejects mid-iteration as a fatal "agent not found".
-        // We use server.url() again (cheap signal read) so the call site matches
-      // the pattern at every other createClient site in this file.
-      if (props.agent) {
-        const client = tryGetClient(server.url)
-        if (client) {
-          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
-            .then(res => {
-              const primaryAgents = res.data?.filter((a: any) => a.mode === "primary").map((a: any) => a.name) || []
-              if (primaryAgents.includes(props.agent!)) {
-                startOnce()
-              } else {
-                dialog.show(() => (
-                  <DialogInvalidAgent
-                    agentName={props.agent!}
-                    availableAgents={primaryAgents}
-                    onUseDefault={() => {
-                      setActiveAgent(undefined)
-                      dialog.clear()
-                      startOnce()
-                    }}
-                    onQuit={() => handleQuit(1)}
-                  />
-                ))
-              }
-            })
-            .catch(err => {
-              // Don't block startup on a validation-infrastructure failure.
-              log.error("agent", "Failed to validate agent", err)
-              startOnce()
-            })
-        } else {
-          // No URL yet — same fallback as the original
-          // `if (props.agent && agentUrl)` branch: start without validation.
-          // The effect re-runs reactively when server.url() resolves.
-          startOnce()
-        }
-      } else {
-        // No explicit agent (server uses its configured default).
+      // Resolve the agent + model once the server is up, gating session start on
+      // it. With no --agent/--model, OCLoop uses OpenCode's default agent and THAT
+      // agent's own model (falling back to the global config model), so a setup
+      // that configures the model only per-agent still runs. Single source of
+      // truth for the precedence rules: resolveAgentAndModel. We fetch config +
+      // agents in parallel, once, and never block startup on an infra failure.
+      const client = tryGetClient(server.url)
+      if (!client) {
+        // No URL yet; the effect re-runs reactively when server.url() resolves.
         startOnce()
+      } else {
+        Promise.all([
+          withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
+            .then((res) => res.data as OcConfig | undefined)
+            .catch((err) => {
+              log.error("config", "Failed to fetch config", err)
+              return undefined
+            }),
+          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
+            .then((res) => (res.data ?? []) as OcAgent[])
+            .catch((err) => {
+              log.error("agent", "Failed to fetch agents", err)
+              return [] as OcAgent[]
+            }),
+        ])
+          .then(([config, agents]) => {
+            const resolved = resolveAgentAndModel(config, agents, props.agent, props.model)
+            // An explicit --agent that the server rejects: offer its default
+            // (resolved without the CLI agent) before starting, so the first
+            // prompt never goes out with a nonexistent agent.
+            if (resolved.invalidAgent) {
+              const fallback = resolveAgentAndModel(config, agents, undefined, props.model)
+              dialog.show(() => (
+                <DialogInvalidAgent
+                  agentName={resolved.invalidAgent!}
+                  availableAgents={resolved.availableAgents}
+                  defaultAgent={fallback.agent}
+                  onUseDefault={() => {
+                    applyResolved(fallback)
+                    dialog.clear()
+                    startOnce()
+                  }}
+                  onQuit={() => handleQuit(1)}
+                />
+              ))
+              return
+            }
+            applyResolved(resolved)
+            startOnce()
+          })
+          .catch((err) => {
+            // Never block startup on a resolution-infrastructure failure.
+            log.error("resolve", "Agent/model resolution failed", err)
+            startOnce()
+          })
       }
     }
   })
