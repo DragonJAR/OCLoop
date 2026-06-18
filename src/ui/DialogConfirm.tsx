@@ -1,4 +1,4 @@
-import { createSignal, onCleanup } from "solid-js"
+import { createSignal, onCleanup, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
@@ -21,6 +21,12 @@ export interface DialogConfirmProps {
    * <DialogConfirm> usage.
    */
   onUnmount?: () => void
+  /** Dialog width (default 50). */
+  width?: number
+  /** Dialog height (default 10). Use a larger value for long messages. */
+  height?: number
+  /** Render the message in a scrollbox (for long, multi-line content). */
+  scrollableMessage?: boolean
 }
 
 export function DialogConfirm(props: DialogConfirmProps) {
@@ -55,19 +61,42 @@ export function DialogConfirm(props: DialogConfirmProps) {
   })
 
   return (
-    <Dialog 
-      onClose={() => props.onCancel && props.onCancel()} 
-      width={50} 
-      height={10}
+    <Dialog
+      onClose={() => props.onCancel && props.onCancel()}
+      width={props.width ?? 50}
+      height={props.height ?? 10}
     >
       <DialogHeader title={props.title} />
 
-      {/* Message */}
-      <box style={{ flexGrow: 1, marginBottom: 1 }}>
-        <text>
-          <span style={{ fg: theme().textMuted }}>{props.message}</span>
-        </text>
-      </box>
+      {/* Message — scrollable for long, multi-line content (e.g. a task
+          breakdown); plain box otherwise to preserve existing layouts. */}
+      <Show
+        when={props.scrollableMessage}
+        fallback={
+          <box style={{ flexGrow: 1, marginBottom: 1 }}>
+            <text>
+              <span style={{ fg: theme().textMuted }}>{props.message}</span>
+            </text>
+          </box>
+        }
+      >
+        <scrollbox
+          marginTop={1}
+          marginBottom={1}
+          maxHeight={(props.height ?? 12) - 5}
+          verticalScrollbarOptions={{
+            visible: true,
+            trackOptions: {
+              backgroundColor: theme().backgroundPanel,
+              foregroundColor: theme().borderSubtle,
+            },
+          }}
+        >
+          <text>
+            <span style={{ fg: theme().textMuted }}>{props.message}</span>
+          </text>
+        </scrollbox>
+      </Show>
 
       {/* Buttons */}
       <box style={{ width: "100%", flexDirection: "row", justifyContent: "flex-end", gap: 2 }}>

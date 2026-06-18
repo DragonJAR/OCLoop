@@ -426,12 +426,13 @@ const en = {
   dlgSplitBody: "Replace the stalled task with these subtasks:",
   splitPromptTemplate: (p: Params) =>
     [
-      "The following PLAN.md task has stalled — repeated attempts finished without completing it:",
+      "The following PLAN.md task has stalled — repeated attempts finished without completing it, most likely because it is too large or too vague:",
       "",
       `    ${p.task}`,
       "",
-      "Break it into 2-5 smaller, ordered subtasks that stay coherent with the original task and together fully accomplish it. Each subtask must be concrete and independently checkable.",
-      'Reply with ONLY the subtasks, one per line, each as a markdown checkbox: "- [ ] <subtask>". No headings, no prose, no numbering.',
+      "Break it into 2-5 smaller, ordered subtasks that DISTRIBUTE the work into independently completable pieces and together fully accomplish the original task. Each subtask must be concrete, clearly smaller in scope than the original, and independently checkable.",
+      "Do NOT edit any files and do NOT run any tools — only output the list.",
+      'Reply with ONLY the subtasks, one per line, each as a markdown checkbox: "- [ ] <subtask>". No headings, no prose, no numbering, no commentary.',
     ].join("\n"),
   errServerStart:
     "OpenCode server failed to start — check the port isn't already in use (try --port) and that opencode is installed, then press R to retry.",
@@ -908,12 +909,13 @@ const es: Record<MessageKey, Msg> = {
   dlgSplitBody: "Reemplazar la tarea estancada con estas subtareas:",
   splitPromptTemplate: (p) =>
     [
-      "La siguiente tarea de PLAN.md se estancó — varios intentos terminaron sin completarla:",
+      "La siguiente tarea de PLAN.md se estancó — varios intentos terminaron sin completarla, probablemente porque es demasiado grande o demasiado vaga:",
       "",
       `    ${p.task}`,
       "",
-      "Divídela en 2-5 subtareas más pequeñas y ordenadas, coherentes con la tarea original, que en conjunto la completen del todo. Cada subtarea debe ser concreta y verificable por separado.",
-      'Responde SOLO con las subtareas, una por línea, cada una como checkbox markdown: "- [ ] <subtarea>". Sin encabezados, sin prosa, sin numeración.',
+      "Divídela en 2-5 subtareas más pequeñas y ordenadas que DISTRIBUYAN el trabajo en piezas completables de forma independiente y que en conjunto completen la tarea original. Cada subtarea debe ser concreta, claramente de menor alcance que la original y verificable por separado.",
+      "NO edites ningún archivo y NO ejecutes herramientas — solo devuelve la lista.",
+      'Responde SOLO con las subtareas, una por línea, cada una como checkbox markdown: "- [ ] <subtarea>". Sin encabezados, sin prosa, sin numeración, sin comentarios.',
     ].join("\n"),
   errServerStart:
     "El servidor de OpenCode no arrancó — verifica que el puerto no esté en uso (usa --port) y que opencode esté instalado, luego pulsa R para reintentar.",

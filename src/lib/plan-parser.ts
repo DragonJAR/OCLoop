@@ -334,29 +334,32 @@ export function parseSubtasksFromReply(text: string): string[] {
 }
 
 /**
- * Replaces the first pending task whose description matches `taskDescription`
- * with `subtasks` rendered as pending `- [ ]` lines, preserving the original
- * line's leading indentation. Returns `content` unchanged when no pending task
- * matches or `subtasks` is empty.
+ * Replaces the FIRST pending task (`- [ ]`) with `subtasks` rendered as pending
+ * lines, preserving the original line's leading indentation. The first pending
+ * task is, by construction, the one the loop selects and therefore the one that
+ * stalled — so targeting "first pending" is both correct and robust against the
+ * task description drifting (no fragile string-equality match).
+ *
+ * Returns the new content, or `null` when there is no pending task to replace
+ * or `subtasks` is empty — so the caller can surface a real failure instead of
+ * silently writing an unchanged file.
  *
  * Pure string transform (mirrors withPlanCompleteTag); the caller persists the
  * result with Bun.write.
  */
-export function replaceTaskWithSubtasks(
+export function replaceFirstPendingTaskWithSubtasks(
   content: string,
-  taskDescription: string,
   subtasks: string[],
-): string {
-  if (subtasks.length === 0) return content
+): string | null {
+  if (subtasks.length === 0) return null
   const lines = content.split("\n")
   for (let i = 0; i < lines.length; i++) {
-    const task = parseTaskLine(lines[i])
-    if (task.type === "pending" && task.description === taskDescription) {
+    if (parseTaskLine(lines[i]).type === "pending") {
       const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""
       const replacement = subtasks.map((s) => `${indent}- [ ] ${s}`)
       lines.splice(i, 1, ...replacement)
       return lines.join("\n")
     }
   }
-  return content
+  return null
 }

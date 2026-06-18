@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceTaskWithSubtasks } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -900,37 +900,32 @@ describe("parseSubtasksFromReply", () => {
   })
 })
 
-describe("replaceTaskWithSubtasks", () => {
-  it("replaces the matching pending task with subtask lines", () => {
+describe("replaceFirstPendingTaskWithSubtasks", () => {
+  it("replaces the first pending task with subtask lines, preserving order", () => {
     const content = "# Plan\n- [ ] Build the thing\n- [ ] Other task"
-    const out = replaceTaskWithSubtasks(content, "Build the thing", ["Design it", "Code it", "Test it"])
+    const out = replaceFirstPendingTaskWithSubtasks(content, ["Design it", "Code it", "Test it"])
     expect(out).toBe("# Plan\n- [ ] Design it\n- [ ] Code it\n- [ ] Test it\n- [ ] Other task")
   })
 
   it("preserves the original line's leading indentation", () => {
-    const content = "  - [ ] Nested task"
-    const out = replaceTaskWithSubtasks(content, "Nested task", ["a", "b"])
-    expect(out).toBe("  - [ ] a\n  - [ ] b")
+    expect(replaceFirstPendingTaskWithSubtasks("  - [ ] Nested task", ["a", "b"])).toBe("  - [ ] a\n  - [ ] b")
   })
 
-  it("replaces only the first matching pending task", () => {
-    const content = "- [ ] dup\n- [ ] dup"
-    expect(replaceTaskWithSubtasks(content, "dup", ["x"])).toBe("- [ ] x\n- [ ] dup")
+  it("replaces only the first pending task, leaving later pendings intact", () => {
+    expect(replaceFirstPendingTaskWithSubtasks("- [ ] one\n- [ ] two", ["x"])).toBe("- [ ] x\n- [ ] two")
   })
 
-  it("returns content unchanged when no pending task matches", () => {
-    const content = "- [ ] something else"
-    expect(replaceTaskWithSubtasks(content, "missing", ["a"])).toBe(content)
+  it("skips completed/manual/blocked lines and targets the first pending", () => {
+    const content = "- [x] done\n- [MANUAL] human\n- [BLOCKED] wait\n- [ ] the stalled one\n- [ ] later"
+    const out = replaceFirstPendingTaskWithSubtasks(content, ["a", "b"])
+    expect(out).toBe("- [x] done\n- [MANUAL] human\n- [BLOCKED] wait\n- [ ] a\n- [ ] b\n- [ ] later")
   })
 
-  it("returns content unchanged when subtasks is empty", () => {
-    const content = "- [ ] keep me"
-    expect(replaceTaskWithSubtasks(content, "keep me", [])).toBe(content)
+  it("returns null when there is no pending task", () => {
+    expect(replaceFirstPendingTaskWithSubtasks("- [x] done\n## heading\nprose", ["a"])).toBeNull()
   })
 
-  it("matches the first PENDING task, not a completed line with the same text", () => {
-    const content = "- [x] Build the thing\n- [ ] Build the thing"
-    const out = replaceTaskWithSubtasks(content, "Build the thing", ["sub"])
-    expect(out).toBe("- [x] Build the thing\n- [ ] sub")
+  it("returns null when subtasks is empty", () => {
+    expect(replaceFirstPendingTaskWithSubtasks("- [ ] keep me", [])).toBeNull()
   })
 })

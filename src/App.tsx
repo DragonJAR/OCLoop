@@ -24,7 +24,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceTaskWithSubtasks } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
@@ -1436,11 +1436,14 @@ function AppContent(props: AppProps) {
       return
     }
 
-    const approved = await DialogConfirm.show(
-      dialog,
-      t("dlgSplitTitle"),
-      t("dlgSplitBody") + "\n\n" + subtasks.map((s) => `• ${s}`).join("\n"),
-    )
+    const message =
+      `${t("dlgSplitBody")}\n\n"${stuckTask}"\n\n→\n\n` +
+      subtasks.map((s) => `• ${s}`).join("\n")
+    const approved = await DialogConfirm.show(dialog, t("dlgSplitTitle"), message, {
+      width: 72,
+      height: 18,
+      scrollableMessage: true,
+    })
     if (!approved) {
       presentError(view)
       return
@@ -1449,7 +1452,16 @@ function AppContent(props: AppProps) {
     try {
       const planPath = resolvePlanFile(props.planFile)
       const content = await Bun.file(planPath).text()
-      await Bun.write(planPath, replaceTaskWithSubtasks(content, stuckTask, subtasks))
+      const updated = replaceFirstPendingTaskWithSubtasks(content, subtasks)
+      if (updated === null) {
+        // No pending task to replace (plan changed underfoot, or nothing
+        // actionable). Surface a real failure instead of writing an unchanged
+        // file and falsely reporting success.
+        toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+        presentError(view)
+        return
+      }
+      await Bun.write(planPath, updated)
       decomposedTasks.add(stuckTask)
       await refreshPlan()
       // The split IS the progress signal — clear the streak so the first
