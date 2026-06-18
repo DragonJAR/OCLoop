@@ -9,12 +9,12 @@ import {
 } from "solid-js"
 import {
   useRenderer,
-  useKeyboard,
 } from "@opentui/solid"
 
 import { useServer } from "./hooks/useServer"
 import { useSSE, classifySessionError } from "./hooks/useSSE"
 import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
+import { useKeybindings } from "./hooks/useKeybindings"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -76,12 +76,10 @@ import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
 import { CommandProvider, useCommand, type CommandOption } from "./context/CommandContext"
 import { ToastProvider, Toast, useToast } from "./context/ToastContext"
 import { DialogConfirm } from "./ui/DialogConfirm"
-import { DialogPrompt } from "./ui/DialogPrompt"
 import {
   Dashboard,
   DialogCompletion,
   DialogError,
-  DialogHelp,
   ActivityLog,
   BottomPanel,
   DialogTerminalConfig,
@@ -2052,201 +2050,26 @@ function AppContent(props: AppProps) {
   })
 
   // Input handler for keybindings
-  useKeyboard((key) => {
-    // Log key press (only if verbose mode is enabled)
-    if (props.verbose) {
-      log.debug("keybinding", "Key pressed", { 
-        key: key.name, 
-        sequence: key.sequence,
-        state: loop.state().type,
-        sessionId: sessionId(),
-        lastSessionId: lastSessionId()
-      })
-    }
-
-    // If a dialog is open, let the dialog handle all input
-    if (dialog.hasDialogs()) {
-      return
-    }
-
-    // Ctrl+P - open command palette
-    if (key.ctrl && key.name === "p") {
-      command.show()
-      key.preventDefault()
-      return
-    }
-
-    // ? - open the help / keybindings overlay. Global (works in every state
-    // that doesn't already have a dialog open), so a new user can discover the
-    // full keymap in one place instead of guessing from the state footer.
-    if (key.name === "?" || key.sequence === "?") {
-      dialog.show(() => <DialogHelp onClose={() => dialog.clear()} />)
-      key.preventDefault()
-      return
-    }
-
-    // Debug mode handling
-    if (loop.isDebug()) {
-      // Detached in debug mode - handle our keybindings
-      if (key.name === "n") {
-        // N - create new session
-        createDebugSession()
-        key.preventDefault()
-        return
-      }
-      
-      if (key.name === "q") {
-        // Q - show quit confirmation
-        showQuitConfirmation()
-        key.preventDefault()
-        return
-      }
-
-      if (key.name === "i") {
-        // I - insert sample activity for UI testing
-        insertSampleActivity()
-        toast.show({ variant: "info", message: t("toastSampleInserted") })
-        key.preventDefault()
-        return
-      }
-
-      if (key.name === "p") {
-        // P - prompt dialog
-        const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-        if (!sid) {
-          toast.show({ variant: "info", message: t("toastNoSessionPrompt") })
-          key.preventDefault()
-          return
-        }
-
-        dialog.show(() => (
-          <DialogPrompt
-            onSubmit={(text) => {
-              if (text.trim()) {
-                sendDebugPrompt(text.trim())
-              }
-              dialog.clear()
-            }}
-            onCancel={() => dialog.clear()}
-          />
-        ))
-        key.preventDefault()
-        return
-      }
-
-      if (key.name === "t") {
-         const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-         if (sid) {
-            const config = ocloopConfig()
-            if (hasTerminalConfig(config)) {
-               launchConfiguredTerminal(sid, config.terminal)
-            } else {
-               dialog.show(() => (
-                  <DialogTerminalConfig
-                     state={terminalConfigState}
-                     onCancel={() => dialog.clear()}
-                  />
-               ))
-            }
-         } else {
-            toast.show({ variant: "info", message: t("toastNoSessionAttach") })
-         }
-         key.preventDefault()
-         return
-      }
-      
-      // Consume other input in debug mode when detached
-      key.preventDefault()
-      return
-    }
-
-    // Ready state - handle S to start iterations
-    if (loop.canStart()) {
-      if (key.name === "s") {
-        // The iteration-driver effect starts the first iteration once we enter
-        // running with an empty session.
-        loop.dispatch({ type: "start" })
-        key.preventDefault()
-        return
-      }
-      if (key.name === "q") {
-        showQuitConfirmation()
-        key.preventDefault()
-        return
-      }
-      // Consume other input in ready state
-      key.preventDefault()
-      return
-    }
-
-    // Complete state - Q to exit
-    if (loop.state().type === "complete") {
-      if (key.name === "q") {
-        handleQuit()
-      }
-      key.preventDefault()
-      return
-    }
-
-    // Detached - handle our keybindings
-    if (key.name === "c") {
-       // C — copy the attach command. The palette declares keybind "C" for
-       // cmdCopyAttach; this wires the direct key so the advertised shortcut
-       // actually works (it previously fell through to opentui and no-op'd).
-       // Shares the copyAttachCommand helper with the palette entry and the
-       // terminal-config dialog so all three paths stay in sync.
-       const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-       const url = server.url()
-       if (sid && url) {
-          copyAttachCommand().then(() => {})
-       } else {
-          toast.show({ variant: "info", message: t("toastNoSessionAttach") })
-       }
-       key.preventDefault()
-       return
-    }
-
-    if (key.name === "t") {
-       const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-       if (sid) {
-          const config = ocloopConfig()
-          if (hasTerminalConfig(config)) {
-             launchConfiguredTerminal(sid, config.terminal)
-          } else {
-             dialog.show(() => (
-                <DialogTerminalConfig
-                   state={terminalConfigState}
-                   onCancel={() => dialog.clear()}
-                />
-             ))
-          }
-       } else {
-          toast.show({ variant: "info", message: t("toastNoSessionAttach") })
-       }
-       key.preventDefault()
-       return
-    }
-
-    if (key.name === "space") {
-      if (loop.canPause()) {
-        loop.dispatch({ type: "toggle_pause" })
-      }
-      key.preventDefault()
-      return
-    }
-
-    if (key.name === "q") {
-      if (loop.canQuit()) {
-        showQuitConfirmation()
-      }
-      key.preventDefault()
-      return
-    }
-
-    // Error state R/Q is handled inside DialogError (it owns the keyboard while
-    // open; this global handler already returned early via hasDialogs()).
-
-    // Let opentui handle other input (scrolling, etc.)
+  useKeybindings({
+    debug: props.debug,
+    verbose: props.verbose,
+    loop,
+    sessionId,
+    lastSessionId,
+    serverUrl: server.url,
+    ocloopConfig,
+    terminalConfigState,
+    dialog,
+    command,
+    toast,
+    t,
+    createDebugSession,
+    sendDebugPrompt,
+    showQuitConfirmation,
+    handleQuit,
+    insertSampleActivity,
+    copyAttachCommand,
+    launchConfiguredTerminal,
   })
 
   return (
