@@ -25,5 +25,6 @@ Task rules (CRITICAL - OCLoop parses these literally):
 - When a change touches a shared value (config key, package name, endpoint), add a sub-bullet to update every other occurrence and any docs (README.md) that reference it.
 - Prefix tasks needing human action with `- [MANUAL]` (device testing, UI verification, external service or credential setup). MANUAL tasks are skipped by the loop and excluded from completion.
 - Do NOT pre-mark tasks `[x]`, and do NOT add `[BLOCKED]` (the loop adds that at runtime). Do NOT write any line that begins with `<plan-complete>`.
+- When the loop later marks a task `[x]`, it may leave a short indented note beneath it (prose or plain sub-bullets like `  - Decision: ...`, NEVER `- [ ]`/`- [x]` lines) as inter-task memory. Do not pre-write these notes; they are added during execution. Plan the structure so each `[ ]` task stands alone and is readable without such notes.
 
 Write the plan in English (or the repository's working language).
