@@ -204,6 +204,18 @@ describe("theme-resolver (Finding 18.2.E)", () => {
     expect(mono.backgroundElement).toBe("#aaaaaa")
   })
 
+  it("honors the OpenTUI 'transparent' keyword instead of the grey fallback (Bug #3)", () => {
+    // lucent-orng's base background tokens are "transparent"; they previously
+    // resolved to #808080 (resolveColorString fell through). The resolver now
+    // passes "transparent" through so OpenTUI renders a see-through surface.
+    for (const mode of ["dark", "light"] as const) {
+      const t = getResolvedTheme("lucent-orng", mode)
+      expect(t.background).toBe("transparent")
+      expect(t.backgroundPanel).toBe("transparent")
+      expect(t.backgroundElement).toBe("transparent")
+    }
+  })
+
   it("every registered theme resolves to a complete 15-token palette (dark + light)", () => {
     // Pin: the live theme picker (DialogThemePicker) iterates Object.keys(themes)
     // and calls getResolvedTheme for each theme as the user navigates, in the
@@ -222,7 +234,7 @@ describe("theme-resolver (Finding 18.2.E)", () => {
       for (const mode of ["dark", "light"] as const) {
         const resolved = getResolvedTheme(name, mode)
         for (const token of TOKENS) {
-          if (!hex.test(resolved[token])) {
+          if (!hex.test(resolved[token]) && resolved[token] !== "transparent") {
             bad.push(`${name}/${mode}.${token}=${JSON.stringify(resolved[token])}`)
           }
         }

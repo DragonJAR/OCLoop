@@ -99,6 +99,14 @@ function resolveColorString(
     return value;
   }
 
+  // OpenTUI's parseColor() accepts the CSS keyword "transparent" (→ alpha 0), so
+  // a theme can request a see-through surface. Pass it through instead of letting
+  // it fall to the grey fallback below. Bug #3: lucent-orng's background tokens
+  // are "transparent" and were rendering as #808080.
+  if (value === "transparent") {
+    return "transparent";
+  }
+
   // Otherwise, look it up in defs
   const defValue = defs[value];
   if (defValue) {
