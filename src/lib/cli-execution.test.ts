@@ -1,7 +1,7 @@
 /**
  * Phase 2 base execution tests.
  *
- * Verifies the pre-TUI `validatePrerequisites` path in three shapes:
+ * Verifies the pre-TUI `validatePrerequisites` path in four shapes:
  *  - task 1: no PLAN.md at the default path → `errPlanNotFound`, exit 1.
  *  - task 2: valid PLAN.md → past validation, into render (current bug:
  *           non-TTY hangs/segfaults; pinned with a 500 ms timeout).
@@ -9,6 +9,11 @@
  *           `errPlanNotFound`, but with the custom path echoed in the
  *           message and NO prompt-file auto-create (proves validation
  *           aborted before reaching the prompt step).
+ *  - task 4: empty PLAN.md (0 bytes) → passes pre-flight (existence-only
+ *           check) the same as a valid one; the render path then
+ *           hits the same non-TTY hang/segfault. Pins that the current
+ *           pre-flight does NOT reject content-less files — Phase 3
+ *           owns the fix to add a content check (matrix case 27).
  *
  * ponytail: shared beforeEach/afterEach mkdtemp + chdir scaffolding;
  * one describe per matrix case. The TUI segfault case (matrix case 4)
@@ -132,5 +137,46 @@ describe("CLI: ejecución con --plan apuntando a un archivo inexistente", () => 
     // step (which would write `.loop-prompt.md`) must NOT have run.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(false)
+  })
+})
+
+describe("CLI: ejecución con PLAN.md vacío", () => {
+  it("passes pre-TUI validation (existence-only) and enters the render path (matrix case 27)", async () => {
+    // Matrix case 27: PLAN.md exists but is 0 bytes. Today's `validatePrerequisites`
+    // checks `Bun.file(planPath).exists()` (index.tsx:65) and nothing else — it
+    // never reads the plan content. So an empty file passes pre-flight exactly
+    // like a valid one, the .loop-prompt.md auto-create runs, and the CLI enters
+    // the render path. That render then hits the same non-TTY hang/segfault
+    // pinned in the "valid PLAN.md" test above.
+    //
+    // This is the CURRENT (buggy) behavior. Phase 3 will tighten
+    // `validatePrerequisites` to also reject content-less plans with a clear
+    // error (`errPlanEmpty` or similar), at which point this test tightens to:
+    //   expect(result.exitCode).toBe(1)
+    //   expect(result.stderr).toContain("Error: ...")
+    //   expect(existsSync(promptFile)).toBe(false)  // auto-create didn't run
+    writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "")
+
+    const result = await runCli(["--lang", "en"], {
+      entrypoint: ENTRYPOINT,
+      timeoutMs: 500,
+    })
+
+    // Same side-effect proof as the valid-plan test: the pre-TUI validation ran
+    // end-to-end, so the missing default `.loop-prompt.md` was auto-created
+    // BEFORE `tuiStarted = true`. If the file is missing, validation aborted
+    // earlier than expected (e.g. a regression that rejects empty plans
+    // pre-emptively, before the prompt step).
+    const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
+    expect(existsSync(promptFile)).toBe(true)
+
+    // Same non-TTY behavior pinned as the valid-plan case: timeout-kill (124)
+    // or segfault (139) — either is acceptable for this "pin current behavior"
+    // test. Phase 3's non-TTY pre-flight fix replaces both with a clean
+    // `process.exit(1)` plus a friendly error message, and the assertion
+    // above (`existsSync(promptFile)`) will then need to flip to
+    // `expect(existsSync(promptFile)).toBe(false)` because validation will
+    // abort at the plan-content step before reaching the prompt step.
+    expect([124, 139]).toContain(result.exitCode)
   })
 })
