@@ -100,29 +100,13 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
 /**
  * Generate the opencode attach command for a session.
  *
- * Defensive guard (url): an empty `url` produces
- * `"opencode attach  --session <sid>"` (literal double space), which
- * `buildArgs` then splits and filters, silently dropping the empty URL
- * token. `Bun.spawn` then runs `opencode attach --session <sid>` with
- * no URL argument at all, and the user sees a confusing
- * "opencode: error: missing URL argument" surfaced through the outer
- * `try/catch` in `launchTerminal` — the terminal opened, but the
- * attach command failed for an invisible reason.
- *
- * Defensive guard (sessionId): an empty `sessionId` produces
- * `"opencode attach <url> --session "` (trailing space). `buildArgs`
- * passes the `--session` flag through to `Bun.spawn` with no value
- * following, and opencode errors with
- * `"opencode: error: argument --session requires a value"`.
- *
- * The App-level guards in App.tsx:1356-1357 (`launchConfiguredTerminal`),
- * App.tsx:1425-1426, 1436-1437, 1526-1527, 1462-1464 all short-circuit
- * on falsy `url` / falsy `sessionId` before reaching this function, so
- * both throws are strictly defensive: they catch any future call site,
- * hand-edited config, or test path that passes `""` directly. The
- * throw is caught by the outer `try/catch` in `launchTerminal` (line
- * 250) and surfaces as a clear `LaunchResult.error` instead of a
- * malformed spawn argv. Source: MEJORAS.md Findings 11.3.A + 11.3.B.
+ * Defensive guards reject empty url/sessionId: an empty url silently drops to
+ * `opencode attach --session <sid>` and opencode errors "missing URL argument";
+ * an empty sessionId passes `--session` with no value and opencode errors
+ * "argument --session requires a value". Both throws are caught by launchTerminal's
+ * try/catch and surface as a clear LaunchResult.error instead of a malformed argv.
+ * The App-level call sites already short-circuit on falsy values, so these are
+ * strictly defensive for future/test/hand-edited paths.
  */
 export function getAttachCommand(url: string, sessionId: string): string {
   return getAttachCommandArgs(url, sessionId).join(" ")
@@ -227,15 +211,10 @@ export async function launchTerminal(
       // Parse the args pattern, replacing {cmd}
       const argsPattern = config.args.split(/\s+/).filter((a) => a.length > 0)
 
-      // Defensive guard: an empty `config.args` produces `argsPattern = []`,
-      // which `buildArgs` passes through unchanged. `Bun.spawn` would then
-      // receive `[command]` and the terminal would open an empty shell with
-      // no attach command — the original bug of Finding 11.2.B. The custom
-      // dialog is the primary defense (it rejects empty args on save); this
-      // guard catches hand-edited configs, programmatic writes, and future
-      // call sites that bypass the dialog. The known-terminal path is safe:
-      // every entry in `KNOWN_TERMINALS` carries a non-empty `args` array.
-      // Source: MEJORAS.md Finding 11.2.B.
+      // Defensive guard: empty config.args would pass [] to Bun.spawn and open
+      // an empty shell with no attach command. The custom dialog rejects empty
+      // args on save; this catches hand-edited configs and programmatic writes.
+      // The known-terminal path is safe: every KNOWN_TERMINALS entry has args.
       if (argsPattern.length === 0) {
         return {
           success: false,
@@ -243,16 +222,13 @@ export async function launchTerminal(
         }
       }
 
-      // Defensive guard: a non-empty args pattern that does not contain the
-      // `{cmd}` placeholder is silently passed through `buildArgs` unchanged,
-      // so `Bun.spawn` would launch the terminal with the literal args
-      // (e.g. `wezterm -e bash`) and the user gets a plain shell — the
-      // attach command is never substituted. The custom dialog rejects
-      // placeholder-less args on save (see DialogTerminalConfig.tsx); this
-      // guard is the last-line backstop for hand-edited configs and
-      // programmatic writes. The known-terminal path is safe: every entry
-      // in `KNOWN_TERMINALS` carries a `{cmd}` token (verified by grep,
-      // 12 matches — one per entry). Source: MEJORAS.md Finding 11.2.C.
+      // Defensive guard: a non-empty args pattern without the {cmd} placeholder
+      // is passed through unchanged, so Bun.spawn would launch the terminal with
+      // literal args (e.g. `wezterm -e bash`) and the user gets a plain shell —
+      // the attach command is never substituted. The custom dialog rejects
+      // placeholder-less args on save; this is the last-line backstop for
+      // hand-edited configs. The known-terminal path is safe: every KNOWN_TERMINALS
+      // entry carries a {cmd} token.
       if (!argsPattern.includes("{cmd}")) {
         return {
           success: false,
@@ -274,12 +250,10 @@ export async function launchTerminal(
 
     log.info("terminal", "Spawning terminal", { command, args })
 
-    // Spawn the terminal detached from OCLoop's process group so closing the
-    // TUI / SSH session does not SIGHUP the launched terminal. stdio is set
-    // to "ignore" because the terminal app owns its own TTY/display; we do
-    // not want OCLoop blocked on terminal output. `proc.unref()` keeps the
-    // parent from waiting on the child.
-    // Source: MEJORAS.md Finding 11.2.A.
+    // Spawn detached from OCLoop's process group so closing the TUI/SSH session
+    // does not SIGHUP the launched terminal. stdio: "ignore" because the terminal
+    // owns its own TTY/display and we don't want OCLoop blocked on its output.
+    // proc.unref() keeps the parent from waiting on the child.
     const proc = Bun.spawn([command, ...args], {
       stdout: "ignore",
       stderr: "ignore",
