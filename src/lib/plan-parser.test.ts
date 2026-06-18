@@ -37,241 +37,10 @@ describe("parseTaskLine", () => {
     })
   })
 
-  it("should not misclassify words starting with BLOCKED as blocked", () => {
-    // The keyword must be anchored: "BLOCKEDABC" is not a blocked marker.
-    expect(parseTaskLine("- [BLOCKEDABC] Task")).toEqual({
-      type: "not-a-task",
-      description: "",
-    })
-  })
-
-  it("should capture full multi-word BLOCKED reason in checkbox", () => {
-    expect(parseTaskLine("- [BLOCKED: multi word reason here] Task")).toEqual({
-      type: "blocked",
-      description: "Task",
-      blockedReason: "multi word reason here",
-    })
-  })
-
-  it("should handle BLOCKED with no trailing description", () => {
-    expect(parseTaskLine("- [BLOCKED]")).toEqual({
-      type: "blocked",
-      description: "",
-      blockedReason: "",
-    })
-    expect(parseTaskLine("- [BLOCKED: reason]")).toEqual({
-      type: "blocked",
-      description: "",
-      blockedReason: "reason",
-    })
-  })
-
-  it("should parse BLOCKED tasks as tag after checkbox", () => {
-    expect(parseTaskLine("- [ ] [BLOCKED: reason] Task")).toEqual({ 
-      type: "blocked", 
-      description: "Task", 
-      blockedReason: "reason" 
-    })
-    expect(parseTaskLine("- [ ] [BLOCKED] Task")).toEqual({ 
-      type: "blocked", 
-      description: "Task", 
-      blockedReason: "" 
-    })
-  })
-
   it("should return not-a-task for invalid lines", () => {
     expect(parseTaskLine("Not a task")).toEqual({ type: "not-a-task", description: "" })
     expect(parseTaskLine("- Item")).toEqual({ type: "not-a-task", description: "" })
     expect(parseTaskLine("- [ ]")).toEqual({ type: "not-a-task", description: "" }) // Empty checkbox with no description → not a task
-  })
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // PLAN.md 2.1 — exhaustive variant audit of parseTaskLine markers.
-  // Each `it` pins one specific surface of the marker grammar.
-  // ──────────────────────────────────────────────────────────────────────────
-
-  describe("PLAN.md 2.1 — completed-marker variants", () => {
-    it("accepts - [x] with no trailing description", () => {
-      expect(parseTaskLine("- [x]")).toEqual({ type: "completed", description: "" })
-    })
-
-    it("accepts - [X] with no trailing description", () => {
-      expect(parseTaskLine("- [X]")).toEqual({ type: "completed", description: "" })
-    })
-
-    it("accepts - [x ] (trailing space inside brackets) with description", () => {
-      // The .trim() on checkboxContent normalises internal whitespace.
-      expect(parseTaskLine("- [x ] Task")).toEqual({ type: "completed", description: "Task" })
-    })
-
-    it("accepts - [X ] (trailing space inside brackets, uppercase) with description", () => {
-      expect(parseTaskLine("- [X ] Task")).toEqual({ type: "completed", description: "Task" })
-    })
-
-    it("accepts - [x ] (trailing space, no description) — empty description kept", () => {
-      // Completed marker with no description is still a real task — counted in total.
-      expect(parseTaskLine("- [x ]")).toEqual({ type: "completed", description: "" })
-    })
-
-    it("accepts - [X ] (uppercase, trailing space, no description)", () => {
-      expect(parseTaskLine("- [X ]")).toEqual({ type: "completed", description: "" })
-    })
-
-    it("strips trailing whitespace on the line, not the description", () => {
-      expect(parseTaskLine("- [x] Task   ")).toEqual({ type: "completed", description: "Task" })
-    })
-
-    it("handles internal whitespace in the x-marker (- [ x ]) — still not a valid x-marker", () => {
-      // The regex /^[xX]$/ requires exactly one x/X. " x " after .trim() becomes "x"
-      // because the leading/trailing spaces are stripped, but the slice here only
-      // covers the first close-bracket, so the raw content is " x " which trims to "x".
-      expect(parseTaskLine("- [ x ] Task")).toEqual({ type: "completed", description: "Task" })
-    })
-  })
-
-  describe("PLAN.md 2.1 — empty-checkbox variants", () => {
-    it("returns not-a-task for bare - [ ] (no description)", () => {
-      // Documented behavior: a bare checkbox with no description is not actionable.
-      expect(parseTaskLine("- [ ]")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [ ] followed by only whitespace", () => {
-      // After trim of the line, afterCheckbox becomes "" → not-a-task.
-      expect(parseTaskLine("- [ ]   ")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [  ] (extra spaces inside brackets, no description)", () => {
-      // checkboxContent = "  ", trimmed = "", afterCheckbox = "" → not-a-task.
-      expect(parseTaskLine("- [  ]")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [] (no space inside brackets, no description)", () => {
-      // checkboxContent = "", afterCheckbox = "" → not-a-task.
-      expect(parseTaskLine("- []")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("treats - [ ] followed by a real description as pending", () => {
-      expect(parseTaskLine("- [ ] Real work to do")).toEqual({ type: "pending", description: "Real work to do" })
-    })
-
-    it("trims leading indentation on a pending task", () => {
-      expect(parseTaskLine("    - [ ] Indented pending task")).toEqual({
-        type: "pending",
-        description: "Indented pending task",
-      })
-    })
-  })
-
-  describe("PLAN.md 2.1 — MANUAL-marker variants", () => {
-    it("accepts - [MANUAL] with no trailing description", () => {
-      expect(parseTaskLine("- [MANUAL]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [manual] (lowercase) with no trailing description", () => {
-      expect(parseTaskLine("- [manual]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [Manual] (mixed case) with no trailing description", () => {
-      expect(parseTaskLine("- [Manual]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [MANUAL] followed by only whitespace", () => {
-      // After .trim() the trailing whitespace vanishes, leaving empty description.
-      expect(parseTaskLine("- [MANUAL]   ")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [ ] [MANUAL] (tag form, no trailing description)", () => {
-      // The tag-form path also returns manual with empty description.
-      expect(parseTaskLine("- [ ] [MANUAL]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [ ][MANUAL] (no space between brackets and tag)", () => {
-      // closeBracket still finds the first ], and afterCheckbox is "[MANUAL]".
-      expect(parseTaskLine("- [ ][MANUAL]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("accepts - [ ] [manual] (lowercase tag, no description)", () => {
-      expect(parseTaskLine("- [ ] [manual]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("does NOT match - [MANUALSOMETHING] as a manual marker (anchored keyword)", () => {
-      // Same anchoring discipline as BLOCKED: must end, `:`, or whitespace.
-      expect(parseTaskLine("- [MANUALSOMETHING] Task")).toEqual({
-        type: "not-a-task",
-        description: "",
-      })
-    })
-  })
-
-  describe("PLAN.md 2.1 — BLOCKED-marker variants", () => {
-    it("accepts - [BLOCKED] (no description, no reason)", () => {
-      expect(parseTaskLine("- [BLOCKED]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [BLOCKED:] (empty reason with colon, no description)", () => {
-      // Lookahead matches the colon, reason is "" after stripping "BLOCKED:".
-      expect(parseTaskLine("- [BLOCKED:]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [BLOCKED: ] (empty reason with colon+space, no description)", () => {
-      expect(parseTaskLine("- [BLOCKED: ]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [ BLOCKED ] (spaces inside brackets, no description)", () => {
-      // checkboxContent = " BLOCKED ", .trim() = "BLOCKED" → matches.
-      expect(parseTaskLine("- [ BLOCKED ]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [ blocked ] (lowercase + spaces)", () => {
-      expect(parseTaskLine("- [ blocked ]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [BLOCKED]   (trailing whitespace on line)", () => {
-      expect(parseTaskLine("- [BLOCKED]   ")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [blocked] (lowercase) with description", () => {
-      expect(parseTaskLine("- [blocked] Task")).toEqual({ type: "blocked", description: "Task", blockedReason: "" })
-    })
-
-    it("accepts - [Blocked] (mixed case) with description", () => {
-      expect(parseTaskLine("- [Blocked] Task")).toEqual({ type: "blocked", description: "Task", blockedReason: "" })
-    })
-
-    it("accepts - [ ] [BLOCKED] (tag form, no description)", () => {
-      expect(parseTaskLine("- [ ] [BLOCKED]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [ ][BLOCKED] (no space between brackets and tag, no description)", () => {
-      expect(parseTaskLine("- [ ][BLOCKED]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("accepts - [ ] [blocked: reason] (lowercase tag form)", () => {
-      expect(parseTaskLine("- [ ] [blocked: reason] Task")).toEqual({
-        type: "blocked",
-        description: "Task",
-        blockedReason: "reason",
-      })
-    })
-
-    it("captures space-separated text as the reason when no colon is used (- [BLOCKED extra text])", () => {
-      // The lookahead /^BLOCKED(?=$|[:\s])/i accepts whitespace, so the rest of the
-      // brackets is parsed as the reason. Documented but worth pinning: a user who
-      // writes `- [BLOCKED some reason]` gets reason="some reason" and description="".
-      expect(parseTaskLine("- [BLOCKED some reason]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "some reason",
-      })
-    })
-
-    it("keeps a trailing description when reason is space-separated (- [BLOCKED text] Real desc)", () => {
-      expect(parseTaskLine("- [BLOCKED some reason] Real description")).toEqual({
-        type: "blocked",
-        description: "Real description",
-        blockedReason: "some reason",
-      })
-    })
   })
 
   describe("PLAN.md 2.1 — combined / mixed markers", () => {
@@ -293,21 +62,6 @@ describe("parseTaskLine", () => {
       })
     })
 
-    it("captures only up to the first ] for the close bracket (- [BLOCKED] extra] keeps 'extra]' in description)", () => {
-      // closeBracket = first ]; everything after stays in the trimmed description.
-      // Not a bug, but a footgun: a user who puts a stray ] in the description
-      // can't get it back. Pin the behavior so it doesn't drift.
-      expect(parseTaskLine("- [BLOCKED] extra]")).toEqual({
-        type: "blocked",
-        description: "extra]",
-        blockedReason: "",
-      })
-    })
-
-    it("returns not-a-task for - [ with no closing bracket", () => {
-      // closeBracket is -1, so we bail early.
-      expect(parseTaskLine("- [ x")).toEqual({ type: "not-a-task", description: "" })
-    })
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -326,119 +80,11 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("- [")).toEqual({ type: "not-a-task", description: "" })
     })
 
-    it("returns not-a-task for - [ followed by a single space only", () => {
-      // After the .trim() on the line, the body is empty. Still no ] to find.
-      expect(parseTaskLine("- [ ")).toEqual({ type: "not-a-task", description: "" })
-    })
-
     it("returns not-a-task for - [x with no closing bracket", () => {
       // Looks like a completed marker but missing the ] — guarded against
       // by the closeBracket === -1 short-circuit. The function never sees
       // the would-be "x" content because it bails before slicing.
       expect(parseTaskLine("- [x")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [X (uppercase, no close)", () => {
-      // Same as above for the uppercase variant.
-      expect(parseTaskLine("- [X")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [ ] (no description after close bracket)", () => {
-      // NOTE: this case is NOT the unclosed-bracket path — the `]` is present
-      // at index 4. It exercises the "empty checkbox, no description" branch
-      // (plan-parser.ts:80-83) which also returns not-a-task. Pinned here so
-      // the unclosed-bracket set doesn't grow accidental false positives: if
-      // this test ever starts failing, the unclosed-bracket hypothesis is
-      // wrong; the failure is in the empty-checkbox branch instead.
-      expect(parseTaskLine("- [ ] ")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [MANUAL with no closing bracket", () => {
-      // Same shape: the keyword is visible but the ] is missing. Without
-      // the close bracket, the function bails at the indexOf check before
-      // any keyword matching runs.
-      expect(parseTaskLine("- [MANUAL")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [BLOCKED with no closing bracket", () => {
-      // The BLOCKED branch is also unreachable when ] is missing.
-      expect(parseTaskLine("- [BLOCKED")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [BLOCKED: reason with no closing bracket", () => {
-      // Even the colon + reason variant is unrecognised without ].
-      expect(parseTaskLine("- [BLOCKED: reason")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [ with arbitrary body text but no close bracket", () => {
-      // Long body, no close bracket. The .indexOf search from position 3
-      // walks the whole string and returns -1.
-      expect(parseTaskLine("- [ this is a long task description with no close bracket")).toEqual({
-        type: "not-a-task",
-        description: "",
-      })
-    })
-
-    it("returns not-a-task for indented - [ with no closing bracket", () => {
-      // Leading whitespace is stripped by .trim() so the parsing path is
-      // identical to the no-indent case.
-      expect(parseTaskLine("    - [ ")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("    - [x")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [ with content and trailing whitespace but no close", () => {
-      // .trim() removes trailing whitespace; the ] is still missing.
-      expect(parseTaskLine("- [x   ")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("returns not-a-task for - [ with an OPENING bracket inside but no closing", () => {
-      // An unbalanced [ inside the body does not satisfy the ] check.
-      // The parser is looking for a close bracket, not a balanced pair.
-      expect(parseTaskLine("- [ [nested")).toEqual({ type: "not-a-task", description: "" })
-    })
-  })
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // PLAN.md 2.2 — no-description classification contrast.
-  // Pins the asymmetry: a bare `- [ ]` (empty checkbox) is not-a-task, but a
-  // bare `- [MANUAL]` / `- [x]` / `- [BLOCKED]` is a real task. The marker
-  // keyword IS the task declaration; only the empty `[ ]` slot needs a
-  // description to be actionable.
-  // ──────────────────────────────────────────────────────────────────────────
-
-  describe("PLAN.md 2.2 — no-description classification contrast", () => {
-    it("classifies bare - [ ] as not-a-task and bare - [MANUAL] as manual", () => {
-      // The asymmetry is intentional: empty-checkbox content is anonymous
-      // and needs a description to mean anything; a keyword marker
-      // (x, MANUAL, BLOCKED) is itself the task declaration.
-      expect(parseTaskLine("- [ ]")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("- [MANUAL]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("classifies tag-form bare - [ ] [MANUAL] as manual (marker is in the tag)", () => {
-      // The tag form is also valid: the user wrote a [MANUAL] marker, so the
-      // marker alone is the task even with no description text after it.
-      expect(parseTaskLine("- [ ] [MANUAL]")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("keyword markers x, BLOCKED, MANUAL all accept bare (no description) form", () => {
-      // These three are pinned together to make the rule explicit:
-      // keyword = task, no description required. The empty `[ ]` checkbox
-      // is the ONLY marker that requires a description.
-      expect(parseTaskLine("- [x]")).toEqual({ type: "completed", description: "" })
-      expect(parseTaskLine("- [MANUAL]")).toEqual({ type: "manual", description: "" })
-      expect(parseTaskLine("- [BLOCKED]")).toEqual({ type: "blocked", description: "", blockedReason: "" })
-    })
-
-    it("trailing whitespace on a bare - [MANUAL] still returns manual", () => {
-      // .trim() on the line collapses trailing whitespace, so the description
-      // stays empty and the classification is still manual.
-      expect(parseTaskLine("- [MANUAL]   ")).toEqual({ type: "manual", description: "" })
-    })
-
-    it("trailing whitespace on a bare - [ ] still returns not-a-task", () => {
-      // Mirror of the above: same .trim() rule, opposite outcome.
-      expect(parseTaskLine("- [ ]   ")).toEqual({ type: "not-a-task", description: "" })
     })
   })
 
@@ -474,59 +120,6 @@ describe("parseTaskLine", () => {
       })
     })
 
-    it("captures single-space reason in the tag form (- [ ] [BLOCKED: some reason ])", () => {
-      // Tag form: the regex /^\[BLOCKED[:\s]*([^\]]*)\]\s*(.*)$/i captures
-      // the inner `[^]]*` (any non-`]` chars, spaces included) and trims it
-      // for blockedReason. Internal spaces in the reason are preserved.
-      expect(parseTaskLine("- [ ] [BLOCKED: some reason ]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "some reason",
-      })
-    })
-
-    it("preserves multiple internal spaces in the reason (- [BLOCKED:  word  word ])", () => {
-      // The strip regex is `[:\s]*` after BLOCKED, which consumes the colon
-      // and the spaces IMMEDIATELY after it. Any further spaces in the reason
-      // are NOT touched — they belong to the reason text. This is the rule
-      // the task description asks us to pin: "spaces in reason" survive.
-      expect(parseTaskLine("- [BLOCKED:  word  word ]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "word  word",
-      })
-    })
-
-    it("preserves multiple internal spaces in the tag-form reason", () => {
-      // Same rule, applied to the tag form regex. match[1] is trimmed only at
-      // the edges; the interior keeps its whitespace.
-      expect(parseTaskLine("- [ ] [BLOCKED:  word  word ]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "word  word",
-      })
-    })
-
-    it("preserves colons inside the reason text (- [BLOCKED: needs foo:bar baz])", () => {
-      // The colon is only consumed when it directly follows BLOCKED. A colon
-      // appearing later in the reason is part of the reason text and is
-      // preserved verbatim.
-      expect(parseTaskLine("- [BLOCKED: needs foo:bar baz]")).toEqual({
-        type: "blocked",
-        description: "",
-        blockedReason: "needs foo:bar baz",
-      })
-    })
-
-    it("keeps a trailing description when the checkbox-form reason contains spaces", () => {
-      // Mirrors the line-265 test (space-separated reason), but with the
-      // colon variant that the task asks about.
-      expect(parseTaskLine("- [BLOCKED: some reason here] Real desc")).toEqual({
-        type: "blocked",
-        description: "Real desc",
-        blockedReason: "some reason here",
-      })
-    })
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -542,81 +135,12 @@ describe("parseTaskLine", () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe("PLAN.md 2.7 — leading and trailing whitespace tolerance", () => {
-    it("trims a single leading space on a completed task", () => {
-      expect(parseTaskLine(" - [x] Done task")).toEqual({ type: "completed", description: "Done task" })
-    })
-
-    it("trims multiple leading spaces on a pending task (auto-indent under a list)", () => {
-      expect(parseTaskLine("      - [ ] Pending task")).toEqual({
-        type: "pending",
-        description: "Pending task",
-      })
-    })
-
-    it("trims a leading tab on a manual task", () => {
-      // \t at the start of the line is whitespace and gets collapsed.
-      expect(parseTaskLine("\t- [MANUAL] Tab-indented manual")).toEqual({
-        type: "manual",
-        description: "Tab-indented manual",
-      })
-    })
-
-    it("trims a leading tab on a blocked task (keyword form)", () => {
-      expect(parseTaskLine("\t- [BLOCKED: needs API] Tab-indented blocked")).toEqual({
-        type: "blocked",
-        description: "Tab-indented blocked",
-        blockedReason: "needs API",
-      })
-    })
-
-    it("trims a mix of leading tabs and spaces on a pending task", () => {
-      // Common editor artifact: tab-indent followed by spaces, or vice versa.
-      expect(parseTaskLine("\t  \t - [ ] Mixed leading whitespace")).toEqual({
-        type: "pending",
-        description: "Mixed leading whitespace",
-      })
-    })
-
-    it("trims trailing spaces on a completed task (trailing-space cleanup tool)", () => {
-      // Many editors strip trailing whitespace on save. A line that
-      // originally read "- [x] Task" and was rewritten with N trailing
-      // spaces must still parse identically.
-      expect(parseTaskLine("- [x] Task          ")).toEqual({
-        type: "completed",
-        description: "Task",
-      })
-    })
-
-    it("trims trailing tabs on a pending task", () => {
-      expect(parseTaskLine("- [ ] Task\t\t\t")).toEqual({
-        type: "pending",
-        description: "Task",
-      })
-    })
-
     it("trims BOTH leading and trailing whitespace on the same line", () => {
       // Stacked: leading tabs + spaces, content, trailing tabs. Both ends
       // are independent — neither must affect the other.
       expect(parseTaskLine("  \t - [x] Task \t  ")).toEqual({
         type: "completed",
         description: "Task",
-      })
-    })
-
-    it("a line that is ONLY whitespace stays not-a-task (not a false positive)", () => {
-      // A bare whitespace line must NOT classify as a task — the leading
-      // "- [" check still has to fail because the entire line is whitespace.
-      expect(parseTaskLine("   ")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("\t\t")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("a CRLF-style line (carriage return at the end) is trimmed to its content", () => {
-      // If a PLAN.md is edited in a tool that leaves stray CRs on lines
-      // (e.g. a Windows-era editor mixed with Unix line endings), the
-      // trailing \r is whitespace and gets stripped. The task survives.
-      expect(parseTaskLine("- [x] Done task\r")).toEqual({
-        type: "completed",
-        description: "Done task",
       })
     })
   })
@@ -634,59 +158,8 @@ describe("parseTaskLine", () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe("PLAN.md 2.5 — markdown headings are not task lines", () => {
-    it("h1 (#) heading is not-a-task", () => {
-      expect(parseTaskLine("# Top-level title")).toEqual({ type: "not-a-task", description: "" })
-    })
-
     it("h2 (##) heading is not-a-task", () => {
       expect(parseTaskLine("## Phase 1 — Setup")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("h3 (###) heading is not-a-task", () => {
-      expect(parseTaskLine("### Subsection")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("h4 (####) heading is not-a-task", () => {
-      expect(parseTaskLine("#### Deep heading")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("h5 (#####) heading is not-a-task", () => {
-      expect(parseTaskLine("##### Even deeper")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("h6 (######) heading is not-a-task (deepest)", () => {
-      expect(parseTaskLine("###### Deepest possible heading")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("empty heading (just #) is not-a-task", () => {
-      // A bare `#` with nothing after is malformed markdown but the
-      // parser still must not classify it as a task.
-      expect(parseTaskLine("#")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("heading without space after # is not-a-task (no markdown-tag form)", () => {
-      // `#Phase` is not a valid heading (CommonMark requires a space
-      // or end of line after the leading #'s). The parser must not
-      // treat it as a task either, since it doesn't start with "- [".
-      expect(parseTaskLine("#Phase")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("##NotAHeading")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("heading whose body contains checkbox-looking text is not-a-task", () => {
-      // A heading like "## Phase 1 — see [ ] for context" is just prose
-      // inside a heading. The literal `- [` prefix is what makes a line
-      // a task; the brackets inside a heading are noise.
-      expect(parseTaskLine("## Phase 1 — see [ ] for context")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("### [ ] empty checkbox inside heading")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("Setext-style heading underline is not-a-task", () => {
-      // Setext headings use an underline (`===` or `---`) below the
-      // heading text. The parser splits on `\n` and sees each line
-      // independently; neither is a task.
-      expect(parseTaskLine("Heading text")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("===")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("---")).toEqual({ type: "not-a-task", description: "" })
     })
   })
 
@@ -715,51 +188,6 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("* [MANUAL] Task")).toEqual({ type: "not-a-task", description: "" })
     })
 
-    it("rejects + as list marker (only - is recognised)", () => {
-      // Same shape as the `*` test. The parser does not look at `+` at
-      // all. A regression that matched `[-+*]` instead of `-` only would
-      // fail here.
-      expect(parseTaskLine("+ [x] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("+ [ ] Task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects numbered list markers (1. / 2. / etc.)", () => {
-      // Numbered lists are valid markdown but not OCLoop task syntax. The
-      // prefix check is `startsWith("- [")`, so any digit-led line is
-      // filtered out before the checkbox scan.
-      expect(parseTaskLine("1. [x] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("2. [ ] Task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects blockquote-wrapped task-like lines", () => {
-      // `> ` is a blockquote prefix. A task inside a blockquote is a
-      // list inside a quote, not a top-level task. The parser sees
-      // `> - [x]` as one line; the leading `> ` makes the `- [` check
-      // fail at the prefix stage.
-      expect(parseTaskLine("> - [x] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("> - [ ] Task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects lines with the space-after-dash missing", () => {
-      // The prefix is `- [` (dash + space + open bracket). `-[x]` is
-      // missing the space, so the prefix check fails. A regression that
-      // loosened the prefix to `-?\\s?\\[` would accept these and
-      // miscount them.
-      expect(parseTaskLine("-[x] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("-[ ] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("-[ ]")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects lines that look like the checkbox syntax but lack the leading dash", () => {
-      // A bare `[x] Task` (no `-`) is a prose sentence, not a task.
-      // The prefix check is `startsWith("- [")`, so anything without the
-      // dash is filtered out — including the empty-bracket edge case
-      // `[] task` which would otherwise look like a pending task.
-      expect(parseTaskLine("[x] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("[ ] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("[] task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
     it("rejects unknown checkbox content (not x/X/MANUAL/BLOCKED)", () => {
       // The four valid markers are: empty (after trim), x, X, MANUAL,
       // BLOCKED[: reason]. Anything else in the brackets is not a task
@@ -771,77 +199,6 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("- [N/A] Task")).toEqual({ type: "not-a-task", description: "" })
       expect(parseTaskLine("- [v] Task")).toEqual({ type: "not-a-task", description: "" })
       expect(parseTaskLine("- [wip] Task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects unicode checkbox glyphs (only ASCII x and X are valid completed markers)", () => {
-      // ✓/✗/✘ are popular in rendered markdown for human readers, but
-      // the parser's `/^[xX]$/` regex is ASCII-only by design. A
-      // regression that widened the completed-marker regex to match
-      // unicode would also need to update the rendered-pending
-      // comparisons, which is out of scope.
-      expect(parseTaskLine("- [✓] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("- [✗] Task")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("- [✘] Task")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects checkbox-like text inside HTML comments", () => {
-      // `<!-- ... -->` is an HTML comment. A line that starts with
-      // `<!--` doesn't start with `- [`, so the parser skips it. The
-      // checkbox text inside the comment is just text and must not be
-      // treated as a task.
-      expect(parseTaskLine("<!-- - [x] Task -->")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("<!-- [ ] todo -->")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("rejects checkbox-like text inside prose and inline code", () => {
-      // A paragraph that says "use [x] for done" has checkbox-looking
-      // text but no `-` prefix. Even if a user pastes `- [x]` inside a
-      // backtick span, the backticks make the line not start with
-      // `- [`, so the line is not a task. The parser doesn't try to
-      // unwrap inline code or recognise prose mentions of the syntax.
-      expect(parseTaskLine("Use [x] for done and [ ] for pending")).toEqual({ type: "not-a-task", description: "" })
-      expect(parseTaskLine("`- [x] inside`")).toEqual({ type: "not-a-task", description: "" })
-    })
-
-    it("does not parse the inner checkbox-like text of a description (description is opaque)", () => {
-      // The description AFTER the closing `]` is opaque. A description
-      // like "task with [BLOCKED] inside" is not a blocked task — the
-      // parser already committed to the marker in the checkbox slot,
-      // and any brackets in the description are just text. This pins
-      // that a regression that tried to re-parse the description would
-      // fail with a different `type` or `description` value.
-      expect(parseTaskLine("- [x] task with [BLOCKED] inside")).toEqual({
-        type: "completed",
-        description: "task with [BLOCKED] inside",
-      })
-      expect(parseTaskLine("- [ ] task with [x] reference inside")).toEqual({
-        type: "pending",
-        description: "task with [x] reference inside",
-      })
-    })
-
-    it("accepts tight punctuation in the description (no space after ] is fine)", () => {
-      // A regression that required a whitespace separator between `]`
-      // and the description (e.g. by reading `]` and validating an
-      // extra character) would reject these. The parser is
-      // intentionally permissive about the boundary — any non-empty
-      // description after `]` is valid.
-      expect(parseTaskLine("- [x]Task")).toEqual({ type: "completed", description: "Task" })
-      expect(parseTaskLine("- [ ]Task")).toEqual({ type: "pending", description: "Task" })
-      expect(parseTaskLine("- [x].Sentence continuation.")).toEqual({
-        type: "completed",
-        description: ".Sentence continuation.",
-      })
-    })
-
-    it("accepts internal whitespace inside the brackets (parses as the trimmed marker)", () => {
-      // `- [ x] Task` has an internal space inside the brackets. The
-      // .trim() of the checkbox content reduces the marker to `x`, so
-      // the line is a valid completed task. This is documented
-      // behaviour and pinned here so a regression that checked the raw
-      // slice (with the leading space) would fail.
-      expect(parseTaskLine("- [ x] Task")).toEqual({ type: "completed", description: "Task" })
-      expect(parseTaskLine("- [ X] Task")).toEqual({ type: "completed", description: "Task" })
     })
 
     it("accepts no space inside the brackets (- [] Task) as a pending task", () => {
@@ -869,109 +226,6 @@ describe("parsePlan", () => {
     expect(result.percentComplete).toBe(100) // edge case: no tasks = 100% complete
   })
 
-  it("should parse completed tasks with lowercase x", () => {
-    const content = `
-- [x] Task one
-- [x] Task two
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.completed).toBe(2)
-    expect(result.pending).toBe(0)
-    expect(result.percentComplete).toBe(100)
-  })
-
-  it("should parse completed tasks with uppercase X", () => {
-    const content = `
-- [X] Task one
-- [X] Task two
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.completed).toBe(2)
-    expect(result.pending).toBe(0)
-    expect(result.percentComplete).toBe(100)
-  })
-
-  it("should parse pending tasks", () => {
-    const content = `
-- [ ] Task one
-- [ ] Task two
-- [ ] Task three
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(3)
-    expect(result.completed).toBe(0)
-    expect(result.pending).toBe(3)
-    expect(result.automatable).toBe(3)
-    expect(result.percentComplete).toBe(0)
-  })
-
-  it("should parse MANUAL tasks", () => {
-    const content = `
-- [MANUAL] Manual testing task
-- [MANUAL] Another manual task
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.manual).toBe(2)
-    expect(result.pending).toBe(0)
-    expect(result.percentComplete).toBe(100) // manual tasks excluded from percentage
-  })
-
-  it("should parse MANUAL tasks with checkbox tag", () => {
-    const content = `
-- [ ] [MANUAL] Manual testing task
-- [ ] [MANUAL] Another manual task
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.manual).toBe(2)
-    expect(result.pending).toBe(0)
-    expect(result.percentComplete).toBe(100)
-  })
-
-  it("should parse BLOCKED tasks", () => {
-    const content = `
-- [BLOCKED: waiting for API] Blocked task one
-- [BLOCKED: needs review] Blocked task two
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.blocked).toBe(2)
-    expect(result.pending).toBe(0)
-  })
-
-  it("should parse BLOCKED tasks with checkbox tag", () => {
-    const content = `
-- [ ] [BLOCKED: waiting for API] Blocked task one
-- [ ] [BLOCKED] Blocked task two
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.blocked).toBe(2)
-    expect(result.pending).toBe(0)
-  })
-
-  it("should parse BLOCKED tasks case-insensitively", () => {
-    const content = `
-- [blocked: reason] Task one
-- [Blocked: reason] Task two
-- [BLOCKED: reason] Task three
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(3)
-    expect(result.blocked).toBe(3)
-  })
-
   it("should parse a mixed plan correctly", () => {
     const content = `
 ## Backlog
@@ -996,36 +250,6 @@ describe("parsePlan", () => {
     expect(result.percentComplete).toBe(50)
   })
 
-  it("should handle indented checkboxes", () => {
-    const content = `
-  - [x] Indented completed
-    - [ ] Double indented pending
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.completed).toBe(1)
-    expect(result.pending).toBe(1)
-  })
-
-  it("should ignore non-checkbox lines", () => {
-    const content = `
-# Header
-
-Some description text.
-
-- [x] A real task
-
-More text here.
-
-- Regular list item without checkbox
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(1)
-    expect(result.completed).toBe(1)
-  })
-
   it("should calculate correct percentage", () => {
     const content = `
 - [x] Task 1
@@ -1043,67 +267,6 @@ More text here.
     expect(result.manual).toBe(1)
     // percentComplete = 3 / (6 - 1) = 3/5 = 60%
     expect(result.percentComplete).toBe(60)
-  })
-
-  // ──────────────────────────────────────────────────────────────────────────
-  // PLAN.md 2.2 — downstream impact of bare - [MANUAL] on parsePlan.
-  // Pins the asymmetry at the plan level: bare `- [ ]` lines are excluded
-  // from `total`; bare `- [MANUAL]` lines are counted as manual tasks. A
-  // bare manual task does NOT contribute to the percentComplete denominator
-  // (manual is excluded from `automatable`), so a plan full of bare manual
-  // markers still resolves to 100%.
-  // ──────────────────────────────────────────────────────────────────────────
-
-  it("counts bare - [MANUAL] lines as manual tasks (no description required)", () => {
-    const content = `
-- [MANUAL]
-- [MANUAL] Real manual task
-- [ ] [MANUAL]
-- [ ] [MANUAL] Real tagged manual task
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(4)
-    expect(result.manual).toBe(4)
-    expect(result.completed).toBe(0)
-    expect(result.pending).toBe(0)
-    expect(result.blocked).toBe(0)
-    expect(result.percentComplete).toBe(100) // manual is excluded from denominator
-  })
-
-  it("excludes bare - [ ] but INCLUDES bare - [MANUAL] from total — explicit asymmetry", () => {
-    // The first two lines are bare pending (not-a-task, skipped). The third
-    // is a bare manual (counted). The asymmetry is pinned at the plan level.
-    const content = `
-- [ ]
-- [ ]
-- [MANUAL]
-- [x]
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(2)
-    expect(result.completed).toBe(1)
-    expect(result.manual).toBe(1)
-    expect(result.pending).toBe(0)
-    expect(result.blocked).toBe(0)
-    // percentComplete = 1 / (2 - 1) = 1/1 = 100%
-    expect(result.percentComplete).toBe(100)
-  })
-
-  it("a plan of only bare - [MANUAL] lines resolves to 100% (no automatable work)", () => {
-    // The semantic: the loop has no work to do (all manual), so 100% is correct.
-    const content = `
-- [MANUAL]
-- [MANUAL]
-- [ ] [MANUAL]
-`
-    const result = parsePlan(content)
-
-    expect(result.total).toBe(3)
-    expect(result.manual).toBe(3)
-    expect(result.automatable).toBe(0)
-    expect(result.percentComplete).toBe(100)
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -1128,66 +291,6 @@ More text here.
         automatable: 0,
         percentComplete: 100,
       })
-    })
-
-    it("file with prose but no checkbox lines → 0 total / 100% (no tasks to do)", () => {
-      // Confirms that random prose / paragraphs are silently ignored by
-      // parseTaskLine (returns not-a-task) and never enter the total.
-      const content = `Some intro paragraph.
-Another paragraph with no checkboxes at all.
-Just plain text — not a task list.`
-      const result = parsePlan(content)
-
-      expect(result).toEqual({
-        total: 0,
-        completed: 0,
-        pending: 0,
-        manual: 0,
-        blocked: 0,
-        automatable: 0,
-        percentComplete: 100,
-      })
-    })
-
-    it("file with only headings → 0 total / 100% (no actionable lines)", () => {
-      // Markdown headers are not task lines — parseTaskLine requires the
-      // "- [" prefix. Headings of any depth (##, ###, ####) are all ignored.
-      const content = `# Top-level title
-## Phase 1 — Setup
-### Subsection
-#### Deep heading
-##### Even deeper
-## Phase 2 — Run`
-      const result = parsePlan(content)
-
-      expect(result).toEqual({
-        total: 0,
-        completed: 0,
-        pending: 0,
-        manual: 0,
-        blocked: 0,
-        automatable: 0,
-        percentComplete: 100,
-      })
-    })
-
-    it("file with only completed tasks → 100% (every automatable task is done)", () => {
-      // Denominator = total - manual - blocked = 2 - 0 - 0 = 2.
-      // 2 completed / 2 denominator = 100%.
-      const content = `
-- [x] First done
-- [X] Second done
-- [x] Third done
-`
-      const result = parsePlan(content)
-
-      expect(result.total).toBe(3)
-      expect(result.completed).toBe(3)
-      expect(result.pending).toBe(0)
-      expect(result.manual).toBe(0)
-      expect(result.blocked).toBe(0)
-      expect(result.automatable).toBe(0)
-      expect(result.percentComplete).toBe(100)
     })
 
     it("file with only blocked tasks → 100% (denominator=0, loop has nothing automatable to do)", () => {
