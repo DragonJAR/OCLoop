@@ -11,11 +11,13 @@ export function formatTokenCount(n: number): string {
  * Padded to 7 chars for TUI column alignment.
  */
 export function formatDuration(ms: number): string {
+  // ponytail: one width for every duration format (was padStart(7) ×4).
+  const pad = (s: string) => s.padStart(7, " ");
   // NaN/Infinity (a corrupted or missing time signal) would otherwise render as
   // "NaNs"/"∞s". Fall back to "0s" — the same policy formatTokenCount uses for
   // a non-finite token count. Negative values are treated as 0 too (the guard
   // below folded into this single isFinite + sign check).
-  if (!Number.isFinite(ms) || ms < 0) return "0s".padStart(7, " ");
+  if (!Number.isFinite(ms) || ms < 0) return pad("0s");
 
   const totalSeconds = Math.floor(ms / 1000);
   const hours = Math.floor(totalSeconds / 3600);
@@ -23,12 +25,12 @@ export function formatDuration(ms: number): string {
   const seconds = totalSeconds % 60;
 
   if (hours > 0) {
-    return `${hours}h ${minutes}m`.padStart(7, " ");
+    return pad(`${hours}h ${minutes}m`);
   }
   if (minutes > 0) {
-    return `${minutes}m ${seconds}s`.padStart(7, " ");
+    return pad(`${minutes}m ${seconds}s`);
   }
-  return `${seconds}s`.padStart(7, " ");
+  return pad(`${seconds}s`);
 }
 
 // Two truncators on purpose: `truncate` is width-exact (1-col "…", no whitespace

@@ -132,6 +132,9 @@ export function Dashboard(props: DashboardProps) {
   // Keybinding hints based on state
   const keybindHints = createMemo(() => {
     const state = props.state
+    // ponytail: command-palette + quit hints recur in almost every branch.
+    const cmdHint = { key: "Ctrl+P", desc: t("hintCommands") }
+    const quitHint = { key: "Q", desc: t("hintQuit") }
 
     switch (state.type) {
       case "starting":
@@ -141,8 +144,8 @@ export function Dashboard(props: DashboardProps) {
       case "ready":
         return [
           { key: "S", desc: t("hintStart") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       case "running":
         return [
@@ -150,8 +153,8 @@ export function Dashboard(props: DashboardProps) {
           { key: "T", desc: t("hintTerminal") },
           { key: "Space", desc: t("hintPause") },
           { key: "↑/↓", desc: t("hintScroll") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       case "paused":
         return [
@@ -159,21 +162,21 @@ export function Dashboard(props: DashboardProps) {
           { key: "T", desc: t("hintTerminal") },
           { key: "Space", desc: t("hintResume") },
           { key: "↑/↓", desc: t("hintScroll") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       case "pausing":
         return [
           { key: "", desc: t("hintPausingMsg") },
           { key: "Space", desc: t("hintCancel") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       case "cooldown":
         return [
           { key: "", desc: t("hintCooldownMsg") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       case "complete":
         return [{ key: "", desc: t("hintCompleteMsg") }]
@@ -181,10 +184,10 @@ export function Dashboard(props: DashboardProps) {
         if (state.recoverable) {
           return [
             { key: "R", desc: t("hintRetry") },
-            { key: "Q", desc: t("hintQuit") },
+            quitHint,
           ]
         }
-        return [{ key: "Q", desc: t("hintQuit") }]
+        return [quitHint]
       case "debug":
         // Detached in debug mode
         if (state.sessionId) {
@@ -193,16 +196,16 @@ export function Dashboard(props: DashboardProps) {
             { key: "T", desc: t("hintTerminal") },
             { key: "N", desc: t("hintNewSession") },
             { key: "I", desc: t("hintSampleActivity") },
-            { key: "Ctrl+P", desc: t("hintCommands") },
-            { key: "Q", desc: t("hintQuit") },
+            cmdHint,
+            quitHint,
           ]
         }
         // No active session
         return [
           { key: "N", desc: t("hintNewSession") },
           { key: "I", desc: t("hintSampleActivity") },
-          { key: "Ctrl+P", desc: t("hintCommands") },
-          { key: "Q", desc: t("hintQuit") },
+          cmdHint,
+          quitHint,
         ]
       default:
         return []
