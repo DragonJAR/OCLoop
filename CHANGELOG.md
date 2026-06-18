@@ -6,6 +6,18 @@ All notable changes to OCLoop are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Split a stalled task into subtasks.** When the no-progress detector halts the
+  loop, the halt dialog offers `P` to have the agent break the stalled task into
+  smaller, coordinated subtasks; after you approve them, OCLoop replaces the
+  stalled task in `PLAN.md` and resumes. The approval dialog is scrollable and
+  shows the task being replaced.
+- **No-flags model/agent resolution.** `ocloop` with no `--agent`/`--model` now
+  uses OpenCode's default agent (`default_agent`, falling back to `build`) and
+  THAT agent's own model (falling back to the global config model), so a setup
+  that configures the model per-agent runs without a flag.
+- **No-progress halt** (`noProgressThreshold`, default 3) — if the same task starts
+  N times in a row without `PLAN.md` advancing, the loop stops with a recoverable
+  `errNoProgress` instead of burning iterations on a task the agent can't finish.
 - **`resilience.planTimeoutMs`** — the `--create-plan` generation budget (default
   10 min) is now configurable: `--resilience planTimeoutMs=<ms>` or in the config
   file. The timeout message names the parameter and how to raise it.

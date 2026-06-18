@@ -131,8 +131,8 @@ Usage: ocloop [options]
 | Option | Description |
 | --- | --- |
 | `-p, --port <number>` | Server port (OpenCode default: try 4096, then random) |
-| `-m, --model <provider/model>` | Model to use, for example `openai/gpt-5` |
-| `-a, --agent <string>` | Agent to use (passed to OpenCode) |
+| `-m, --model <provider/model>` | Model to use, for example `openai/gpt-5` (default: the chosen agent's own model, else OpenCode's configured model) |
+| `-a, --agent <string>` | Agent to use (default: OpenCode's `default_agent`, falling back to `build`) |
 | `-r, --run` | Start iterations immediately (default: wait for `S`) |
 | `-c, --create-plan` | Interactively generate `PLAN.md`, then exit (model zai-coding-plan/glm-5.2, agent plan) |
 | `-d, --debug` | Debug/sandbox mode (no plan-file validation, manual sessions) |
@@ -268,7 +268,7 @@ What it handles:
 - **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects the event stream and reconciles the in-flight session (recovering a missed completion). On macOS it runs `caffeinate` while working to avoid sleeping at all (disable with `--no-caffeinate`).
 - **Server / session hangs** — an active health check restarts a hung OpenCode server and reconciles the session; a genuinely wedged session is aborted and retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full diagnostic instead of looping forever.
 - **Total crash** — minimal progress is persisted atomically to `.loop-state.json`. On the next start OCLoop offers to resume (automatic with `--resume`). Shutdown on `SIGINT`/`SIGTERM`/`SIGHUP` aborts the active session so no orphan server is left behind.
-- **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall.
+- **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall. From the halt you can press **`P`** to have the agent split the stalled task into smaller subtasks — OCLoop shows them for approval and, if you accept, rewrites `PLAN.md` (replacing the stalled task) and resumes.
 
 The dashboard shows a `Guard ●` indicator (green healthy, yellow checking, red recovering), and all guardian activity is logged to `.loop.log` as structured `[HEALTH]` lines so you can audit exactly why it acted. A `COOLDOWN` distinguishes a real rate limit (`COOLDOWN` with a retry counter) from a transient connection blip (`WAITING`).
 

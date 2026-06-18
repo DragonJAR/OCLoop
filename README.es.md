@@ -131,8 +131,8 @@ Uso: ocloop [opciones]
 | Opción | Descripción |
 | --- | --- |
 | `-p, --port <número>` | Puerto del servidor (por defecto de OpenCode: probar 4096, luego aleatorio) |
-| `-m, --model <proveedor/modelo>` | Modelo a usar, por ejemplo `openai/gpt-5` |
-| `-a, --agent <string>` | Agente a usar (se pasa a OpenCode) |
+| `-m, --model <proveedor/modelo>` | Modelo a usar, por ejemplo `openai/gpt-5` (por defecto: el modelo propio del agente elegido, si no el modelo configurado en OpenCode) |
+| `-a, --agent <string>` | Agente a usar (por defecto: el `default_agent` de OpenCode, con respaldo a `build`) |
 | `-r, --run` | Inicia las iteraciones de inmediato (por defecto: espera `S`) |
 | `-c, --create-plan` | Genera `PLAN.md` interactivamente y sale (modelo zai-coding-plan/glm-5.2, agente plan) |
 | `-d, --debug` | Modo debug/sandbox (sin validación del plan, sesiones manuales) |
@@ -268,7 +268,7 @@ Lo que maneja:
 - **Suspensión** — al cerrar la tapa, se detecta al despertar; OCLoop reconecta el stream de eventos y reconcilia la sesión en curso (recuperando una finalización perdida). En macOS ejecuta `caffeinate` mientras trabaja para no suspenderse (desactívalo con `--no-caffeinate`).
 - **Cuelgues de servidor / sesión** — un health check activo reinicia un servidor OpenCode colgado y reconcilia la sesión; una sesión genuinamente bloqueada se aborta y reintenta. Un circuit breaker se detiene tras `maxRecoveryAttempts` y reporta un diagnóstico completo en vez de quedar en bucle.
 - **Caída total** — el progreso mínimo se persiste de forma atómica en `.loop-state.json`. En el siguiente arranque OCLoop ofrece reanudar (automático con `--resume`). El apagado con `SIGINT`/`SIGTERM`/`SIGHUP` aborta la sesión activa para no dejar un servidor huérfano.
-- **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real.
+- **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real. Desde la detención puedes pulsar **`P`** para que el agente parta la tarea estancada en subtareas más pequeñas — OCLoop las muestra para aprobación y, si aceptas, reescribe `PLAN.md` (reemplazando la tarea estancada) y reanuda.
 
 El dashboard muestra un indicador `Guardián ●` (verde sano, amarillo verificando, rojo recuperando), y toda la actividad del guardián se registra en `.loop.log` como líneas estructuradas `[HEALTH]`, para auditar exactamente por qué actuó. Un `COOLDOWN` distingue un rate limit real (`COOLDOWN` con contador de reintentos) de un tropiezo de conexión transitorio (`WAITING`).
 
