@@ -15,6 +15,7 @@ import { useServer } from "./hooks/useServer"
 import { useSSE, classifySessionError } from "./hooks/useSSE"
 import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useKeybindings } from "./hooks/useKeybindings"
+import { useCooldown } from "./hooks/useCooldown"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -175,10 +176,15 @@ function AppContent(props: AppProps) {
   // silently overriding a user's config. Flips to true at the end of onMount.
   const [resilienceReady, setResilienceReady] = createSignal(false)
 
-  // --- Rate-limit cooldown bookkeeping ---
-  let rateLimitAttempts = 0
-  let cooldownTimer: ReturnType<typeof setTimeout> | null = null
-  let cooldownTicker: ReturnType<typeof setInterval> | null = null
+  // --- Rate-limit cooldown orchestration (extracted to useCooldown) ---
+  const cooldown = useCooldown({
+    resilience,
+    stateType: () => loop.state().type,
+    dispatch: (action) => loop.dispatch(action),
+    addEvent: (type, message, opts) => activityLog.addEvent(type as never, message, opts),
+    t,
+  })
+
   // Trailing debounce for PLAN.md-triggered refreshPlan() calls: a multi-edit
   // tool call fires several file.edited SSE events in quick succession; 150ms
   // coalesces the burst so setPlanProgress doesn't race and flicker the bar.
@@ -197,8 +203,6 @@ function AppContent(props: AppProps) {
   // correctness-breaking, but the user-visible duplicate activity entry warrants
   // the guard. Reset in a finally (unlike isShuttingDown) to allow sequential restarts.
   let restartServerInProgress = false
-  // Remaining cooldown time (ms) for the dashboard countdown.
-  const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
 
   // --- No-progress detector ---
   // Counts consecutive iterations starting with the same PLAN.md task; halts
@@ -214,18 +218,6 @@ function AppContent(props: AppProps) {
       )
     }
     return noProgressDetector
-  }
-
-  /** Clear any pending cooldown timers (on resume, quit, or success). */
-  function clearCooldownTimers(): void {
-    if (cooldownTimer) {
-      clearTimeout(cooldownTimer)
-      cooldownTimer = null
-    }
-    if (cooldownTicker) {
-      clearInterval(cooldownTicker)
-      cooldownTicker = null
-    }
   }
 
   // --- Sleep/suspension survival (Phase 2) ---
@@ -254,7 +246,7 @@ function AppContent(props: AppProps) {
     if (st.type === "cooldown") {
       // Cooldown deadline may have passed while we slept.
       if (monotonicNow() >= st.resumeAt) {
-        clearCooldownTimers()
+        cooldown.clearTimers()
         loop.dispatch({ type: "resume_cooldown" })
       }
     } else {
@@ -300,7 +292,7 @@ function AppContent(props: AppProps) {
       },
       synthesizeIdle: () => {
         activityLog.addEvent("session_idle", t("actGuardSynthIdle"))
-        rateLimitAttempts = 0
+        cooldown.resetAttempts()
         loop.dispatch({ type: "session_idle" })
       },
       abortAndRetry: async () => {
@@ -554,7 +546,7 @@ function AppContent(props: AppProps) {
           // `level: "warn"` is correct.
           const logKey = action.kind === "rate_limit" ? "actRateLimit" : "actSessionError"
           activityLog.addEvent("error", t(logKey, { message: action.message }), { level: "warn" })
-          enterCooldown(action.message, action.retryAfter, action.kind)
+          cooldown.enterCooldown(action.message, action.retryAfter, action.kind)
           return
         }
         if (action.type !== "error") return
@@ -578,7 +570,7 @@ function AppContent(props: AppProps) {
           // A clean idle means the iteration succeeded: clear the rate-limit
           // streak so a past cooldown doesn't penalize future iterations, and
           // reset the watchdog for the next iteration.
-          rateLimitAttempts = 0
+          cooldown.resetAttempts()
           watchdog.notifyIdle()
           loop.dispatch({ type: "session_idle" })
           activityLog.addEvent("session_idle", t("actSessionIdle"))
@@ -740,7 +732,7 @@ function AppContent(props: AppProps) {
         "session_idle",
         t("actReconciled", { result }),
       )
-      rateLimitAttempts = 0
+      cooldown.resetAttempts()
       loop.dispatch({ type: "session_idle" })
     }
     return result
@@ -773,106 +765,6 @@ function AppContent(props: AppProps) {
   }
 
   /**
-   * Enter a rate-limit cooldown: wait out a backoff (honoring Retry-After) and
-   * then retry the SAME iteration. A circuit breaker escalates to a recoverable
-   * error after `maxRateLimitRetries` consecutive rate limits so we never loop
-   * forever against a provider that is down.
-   */
-  function enterCooldown(
-    reason: string,
-    retryAfterSeconds?: number,
-    kind: "rate_limit" | "transient" = "rate_limit",
-  ): void {
-    const r = resilience()
-    rateLimitAttempts++
-
-    if (rateLimitAttempts > r.maxRateLimitRetries) {
-      const tried = rateLimitAttempts - 1
-      log.health("ratelimit", "exhausted", {
-        attempts: tried,
-        reason,
-        kind,
-        retryAfterSeconds: retryAfterSeconds ?? null,
-      })
-      activityLog.addEvent(
-        "error",
-        t(kind === "transient" ? "actRetryExhausted" : "actRateExhausted", { attempts: tried }),
-      )
-      loop.dispatch({
-        type: "error",
-        source: "api",
-        message: t(kind === "transient" ? "errRetryPersistent" : "errRatePersistent", {
-          attempts: tried,
-          reason,
-        }),
-        recoverable: true,
-      })
-      rateLimitAttempts = 0
-      clearCooldownTimers()
-      return
-    }
-
-    const delayMs = computeBackoff(rateLimitAttempts - 1, {
-      base: r.backoffBaseMs,
-      max: r.backoffMaxMs,
-      jitter: r.backoffJitter,
-      retryAfterSeconds,
-    })
-    const resumeAt = monotonicNow() + delayMs
-
-    log.health("ratelimit", "cooldown", {
-      attempt: rateLimitAttempts,
-      delayMs,
-      retryAfterSeconds: retryAfterSeconds ?? null,
-      reason,
-    })
-    activityLog.addEvent(
-      "error",
-      t(kind === "transient" ? "cooldownRetryText" : "cooldownText", {
-        secs: Math.ceil(delayMs / 1000),
-        attempt: rateLimitAttempts,
-      }),
-      { level: "warn", progress: { current: rateLimitAttempts, total: r.maxRateLimitRetries } },
-    )
-
-    // Clear stale timers before dispatching so any Solid effect subscribed
-    // to `state` cannot observe a window where stale timers are still alive
-    // after the reducer has already moved to the new `cooldown` value.
-    // Clear stale timers before dispatching so no Solid effect can observe a
-    // window where stale timers are still alive after the reducer moved to cooldown.
-    clearCooldownTimers()
-
-    loop.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
-
-    // Seed the countdown with the same formula the ticker uses so the dashboard
-    // doesn't briefly show the full delayMs if the renderer stalls before the first tick.
-    setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
-    // Capture the interval ID locally so the self-stop branch clears the exact
-    // timer it was scheduled by, independent of any concurrent clearCooldownTimers.
-    const tickerId = setInterval(() => {
-      const remaining = Math.max(0, resumeAt - monotonicNow())
-      setCooldownRemainingMs(remaining)
-      if (remaining <= 0) {
-        clearInterval(tickerId)
-        cooldownTicker = null
-      }
-    }, 250)
-    cooldownTicker = tickerId
-
-    // Resume after the backoff. The idle effect (running + empty session) then
-    // re-creates the session and re-sends the prompt for the same iteration.
-    cooldownTimer = setTimeout(() => {
-      cooldownTimer = null
-      // Invariant: all cooldown timers are cleared before leaving cooldown —
-      // holds for every dispatch path, not just the externally-driven one.
-      clearCooldownTimers()
-      if (loop.state().type === "cooldown") {
-        loop.dispatch({ type: "resume_cooldown" })
-      }
-    }, delayMs)
-  }
-
-  /**
    * Route an iteration-start failure. Rate limits AND transient connection blips
    * (dropped socket, reset, timeout, 5xx) both back off and retry the same
    * iteration automatically — an unattended harness shouldn't stop on a flaky
@@ -889,7 +781,7 @@ function AppContent(props: AppProps) {
     const action = routeSessionError(classified, loop.state().type, "api")
     if (!action) return
     if (action.type === "cooldown") {
-      enterCooldown(action.message, action.retryAfter, action.kind)
+      cooldown.enterCooldown(action.message, action.retryAfter, action.kind)
       return
     }
     // auth/fatal: the i18n key differs from the SSE path (errIterationStart vs
@@ -1195,7 +1087,7 @@ function AppContent(props: AppProps) {
     loop.dispatch({ type: "quit" })
 
     // Stop resilience machinery: cooldown timers, watchdog, sleep detector, caffeinate
-    clearCooldownTimers()
+    cooldown.clearTimers()
     watchdog.stop()
     sleepDetector?.stop()
     power.stop()
@@ -1460,7 +1352,7 @@ function AppContent(props: AppProps) {
    * us) we continue the loop with a fresh iteration, preserving the count.
    */
   async function doResume(p: PersistedLoopState): Promise<void> {
-    rateLimitAttempts = p.rateLimitAttempts || 0
+    cooldown.setAttempts(p.rateLimitAttempts || 0)
     const client = tryGetClient(server.url)
     let verdict: ReconcileResult = "missing"
     if (client && p.sessionId) {
@@ -1516,7 +1408,7 @@ function AppContent(props: AppProps) {
       // from cooldown (all others are state-gated). Clear the cooldown timers
       // before dispatch or they'd keep running with a stale resumeAt.
       if (loop.state().type === "cooldown") {
-        clearCooldownTimers()
+        cooldown.clearTimers()
       }
       loop.dispatch({
         type: "error",
@@ -1601,7 +1493,7 @@ function AppContent(props: AppProps) {
         iteration: s.iteration,
         sessionId: sid || null,
         stateType: s.type,
-        rateLimitAttempts,
+        rateLimitAttempts: cooldown.getAttempts(),
         updatedAt: new Date().toISOString(),
         // Persist the first-pending task so a resume after a crash can detect a
         // PLAN.md edit (insert/reorder/complete/remove) and warn that the saved
@@ -2024,7 +1916,7 @@ function AppContent(props: AppProps) {
           chaosCmd(t("chaosRevive"), "chaos_revive", () => chaos.reviveServer(), t("chaosReviveDone")),
           chaosCmd(t("chaosFreeze"), "chaos_freeze", () => chaos.freezeSession(), t("chaosFreezeDone")),
           chaosCmd(t("chaosUnfreeze"), "chaos_unfreeze", () => chaos.unfreezeSession(), t("chaosUnfreezeDone")),
-          chaosCmd(t("chaosRateLimit"), "chaos_429", () => enterCooldown("chaos: injected 429", 5), t("chaosRateLimitDone")),
+          chaosCmd(t("chaosRateLimit"), "chaos_429", () => cooldown.enterCooldown("chaos: injected 429", 5), t("chaosRateLimitDone")),
         )
       }
 
@@ -2083,7 +1975,7 @@ function AppContent(props: AppProps) {
         currentTask={currentTask() ?? null}
         model={activeModel()}
         agent={activeAgent()}
-        cooldownRemainingMs={cooldownRemainingMs()}
+        cooldownRemainingMs={cooldown.remainingMs()}
         watchdogHealth={watchdog.health()}
       />
 
