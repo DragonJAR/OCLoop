@@ -5,6 +5,39 @@
  * index.tsx would execute `main()` and render the TUI). Behavior is identical:
  * `--help`/`--version` print and exit(0); invalid arguments print to stderr and
  * exit(1); everything else fills a CLIArgs object.
+ *
+ * ## CLI surface (the authoritative reference)
+ *
+ * The `parseArgs` switch below is the source of truth for every flag OCLoop
+ * accepts. `showHelp` is generated from the same set; the user-facing
+ * `README.md` table mirrors it. Keep all three in sync.
+ *
+ * ### Entry point
+ * - Source: `src/index.tsx` (the only file with the `#!/usr/bin/env bun` shebang).
+ * - Built binary: `dist/index.js` (Bun bundler + `@opentui/solid` plugin).
+ * - Bin name: `ocloop` (see `package.json` `"bin"`).
+ *
+ * ### Execution modes (decided in `src/index.tsx: main()`)
+ * 1. **Help / version** — `-h` / `--help` / `-v` / `--version` print to stdout
+ *    and `exit(0)`. Never start the opencode server or the TUI; the
+ *    `tuiStarted` flag stays `false` so `restoreTerminal` is a no-op.
+ * 2. **Plan generator** — `-c` / `--create-plan` runs `runCreatePlan(args)`
+ *    headlessly: spawns an embedded opencode server, drives the `plan` agent
+ *    with `zai-coding-plan/glm-5.2` (overridable via `-m` / `-a`), shows the
+ *    proposed `PLAN.md`, and writes it on approval. TUI is never started.
+ * 3. **TUI loop (default)** — calls `validatePrerequisites` (skipped in
+ *    `--debug`) then `render(() => <App {...args} />)`. The same render
+ *    call backs both normal and debug TUI; `--debug` only changes the
+ *    reducer branch (`server_ready_debug` → `state.type === "debug"`) and
+ *    skips plan-file reads.
+ *
+ * ### Precedence at runtime
+ * `DEFAULT_RESILIENCE` / `DEFAULTS.PLAN_FILE` / `DEFAULTS.PROMPT_FILE`
+ *   < `ocloop.json` (loaded by `loadConfig`)
+ *   < CLI flags (output of `parseArgs`).
+ *
+ * The CLIArgs type is the post-parse shape; the resilience overrides are
+ * collected as a `Partial<ResilienceConfig>` and re-merged in `App.onMount`.
  */
 
 import { DEFAULTS } from "./constants"
