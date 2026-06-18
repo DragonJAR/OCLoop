@@ -689,6 +689,171 @@ describe("parseTaskLine", () => {
       expect(parseTaskLine("---")).toEqual({ type: "not-a-task", description: "" })
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.8 — look-alike but non-conforming task lines.
+  // The parser only treats `- [<marker>]` as a task, where `<marker>` is
+  // a closed set: empty (` `), x, X, MANUAL, BLOCKED[: reason]. Lines that
+  // look like tasks but use the wrong prefix, the wrong list marker, an
+  // unrecognised checkbox content, or embed checkbox-like text inside
+  // prose/HTML/code must all be classified as `not-a-task`. Each `it` pins
+  // one specific look-alike shape, so a regression that loosens the prefix
+  // check (e.g. starts accepting `* [x]`) fails with the exact shape that
+  // broke it. The whole-file mirror of this contract is in PLAN.md 2.8
+  // inside `parsePlan` and `getCurrentTaskFromContent` below.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.8 — look-alike but non-conforming task lines", () => {
+    it("rejects * as list marker (only - is recognised)", () => {
+      // Markdown allows `*` as a list marker. The parser is strict: only
+      // `-` is recognised. A regression that widened the prefix check to
+      // also accept `*` would silently start counting these as tasks and
+      // would not be caught by any existing test (the heading tests pin
+      // `#` rejection, not `*` rejection).
+      expect(parseTaskLine("* [x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("* [ ] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("* [MANUAL] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects + as list marker (only - is recognised)", () => {
+      // Same shape as the `*` test. The parser does not look at `+` at
+      // all. A regression that matched `[-+*]` instead of `-` only would
+      // fail here.
+      expect(parseTaskLine("+ [x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("+ [ ] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects numbered list markers (1. / 2. / etc.)", () => {
+      // Numbered lists are valid markdown but not OCLoop task syntax. The
+      // prefix check is `startsWith("- [")`, so any digit-led line is
+      // filtered out before the checkbox scan.
+      expect(parseTaskLine("1. [x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("2. [ ] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects blockquote-wrapped task-like lines", () => {
+      // `> ` is a blockquote prefix. A task inside a blockquote is a
+      // list inside a quote, not a top-level task. The parser sees
+      // `> - [x]` as one line; the leading `> ` makes the `- [` check
+      // fail at the prefix stage.
+      expect(parseTaskLine("> - [x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("> - [ ] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects lines with the space-after-dash missing", () => {
+      // The prefix is `- [` (dash + space + open bracket). `-[x]` is
+      // missing the space, so the prefix check fails. A regression that
+      // loosened the prefix to `-?\\s?\\[` would accept these and
+      // miscount them.
+      expect(parseTaskLine("-[x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("-[ ] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("-[ ]")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects lines that look like the checkbox syntax but lack the leading dash", () => {
+      // A bare `[x] Task` (no `-`) is a prose sentence, not a task.
+      // The prefix check is `startsWith("- [")`, so anything without the
+      // dash is filtered out — including the empty-bracket edge case
+      // `[] task` which would otherwise look like a pending task.
+      expect(parseTaskLine("[x] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("[ ] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("[] task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects unknown checkbox content (not x/X/MANUAL/BLOCKED)", () => {
+      // The four valid markers are: empty (after trim), x, X, MANUAL,
+      // BLOCKED[: reason]. Anything else in the brackets is not a task
+      // — the parser is deliberately a closed grammar, not a tolerant
+      // matcher. The existing "BLOCKEDABC" test pins the BLOCKED
+      // anchoring; this group pins the rest of the closed set.
+      expect(parseTaskLine("- [?] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [y] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [N/A] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [v] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [wip] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects unicode checkbox glyphs (only ASCII x and X are valid completed markers)", () => {
+      // ✓/✗/✘ are popular in rendered markdown for human readers, but
+      // the parser's `/^[xX]$/` regex is ASCII-only by design. A
+      // regression that widened the completed-marker regex to match
+      // unicode would also need to update the rendered-pending
+      // comparisons, which is out of scope.
+      expect(parseTaskLine("- [✓] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [✗] Task")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("- [✘] Task")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects checkbox-like text inside HTML comments", () => {
+      // `<!-- ... -->` is an HTML comment. A line that starts with
+      // `<!--` doesn't start with `- [`, so the parser skips it. The
+      // checkbox text inside the comment is just text and must not be
+      // treated as a task.
+      expect(parseTaskLine("<!-- - [x] Task -->")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("<!-- [ ] todo -->")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("rejects checkbox-like text inside prose and inline code", () => {
+      // A paragraph that says "use [x] for done" has checkbox-looking
+      // text but no `-` prefix. Even if a user pastes `- [x]` inside a
+      // backtick span, the backticks make the line not start with
+      // `- [`, so the line is not a task. The parser doesn't try to
+      // unwrap inline code or recognise prose mentions of the syntax.
+      expect(parseTaskLine("Use [x] for done and [ ] for pending")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("`- [x] inside`")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("does not parse the inner checkbox-like text of a description (description is opaque)", () => {
+      // The description AFTER the closing `]` is opaque. A description
+      // like "task with [BLOCKED] inside" is not a blocked task — the
+      // parser already committed to the marker in the checkbox slot,
+      // and any brackets in the description are just text. This pins
+      // that a regression that tried to re-parse the description would
+      // fail with a different `type` or `description` value.
+      expect(parseTaskLine("- [x] task with [BLOCKED] inside")).toEqual({
+        type: "completed",
+        description: "task with [BLOCKED] inside",
+      })
+      expect(parseTaskLine("- [ ] task with [x] reference inside")).toEqual({
+        type: "pending",
+        description: "task with [x] reference inside",
+      })
+    })
+
+    it("accepts tight punctuation in the description (no space after ] is fine)", () => {
+      // A regression that required a whitespace separator between `]`
+      // and the description (e.g. by reading `]` and validating an
+      // extra character) would reject these. The parser is
+      // intentionally permissive about the boundary — any non-empty
+      // description after `]` is valid.
+      expect(parseTaskLine("- [x]Task")).toEqual({ type: "completed", description: "Task" })
+      expect(parseTaskLine("- [ ]Task")).toEqual({ type: "pending", description: "Task" })
+      expect(parseTaskLine("- [x].Sentence continuation.")).toEqual({
+        type: "completed",
+        description: ".Sentence continuation.",
+      })
+    })
+
+    it("accepts internal whitespace inside the brackets (parses as the trimmed marker)", () => {
+      // `- [ x] Task` has an internal space inside the brackets. The
+      // .trim() of the checkbox content reduces the marker to `x`, so
+      // the line is a valid completed task. This is documented
+      // behaviour and pinned here so a regression that checked the raw
+      // slice (with the leading space) would fail.
+      expect(parseTaskLine("- [ x] Task")).toEqual({ type: "completed", description: "Task" })
+      expect(parseTaskLine("- [ X] Task")).toEqual({ type: "completed", description: "Task" })
+    })
+
+    it("accepts no space inside the brackets (- [] Task) as a pending task", () => {
+      // `- [] Task` (no space between `[` and `]`) has empty checkbox
+      // content and a non-empty description, so it parses as a pending
+      // task. This is the same branch as `- [ ] Task` (with a space)
+      // because the checkbox content is trimmed before the empty
+      // check. A regression that required exactly one space inside the
+      // brackets would fail this test.
+      expect(parseTaskLine("- [] Task")).toEqual({ type: "pending", description: "Task" })
+    })
+  })
 })
 
 describe("parsePlan", () => {
@@ -2043,6 +2208,164 @@ Some intro.
       expect(result.percentComplete).toBe(60)
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.8 — look-alike but non-conforming lines (whole-file).
+  // File-level mirror of the per-line contract pinned in
+  // `parseTaskLine` above. A plan that contains only look-alike
+  // non-conforming lines must resolve to 0 tasks in every bucket and
+  // 100% (denominator=0, nothing to do). A plan that mixes look-alike
+  // lines with real tasks must count only the real ones — the look-alike
+  // lines must never inflate `total` or shift a bucket.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.8 — look-alike but non-conforming lines (whole-file)", () => {
+    it("ignores lines that look like tasks but use the wrong list marker", () => {
+      // `* [x]`, `+ [x]`, `1. [x]`, `> - [x]` are all valid markdown
+      // list/blockquote items, but only the `- [x]` form is treated as a
+      // task. The other markers must not inflate `total` or shift
+      // `completed` counts.
+      const content = [
+        "* [x] Starred completed",
+        "+ [x] Plussed completed",
+        "1. [x] Numbered completed",
+        "> - [x] Blockquoted completed",
+        "- [x] Real completed",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(1)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      // percentComplete = 1 / (1 - 0 - 0) = 1/1 → 100
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("ignores lines with the space-after-dash missing", () => {
+      // `-[x]` is missing the space between `-` and `[`. These must be
+      // skipped, not counted as completed tasks. A regression that
+      // accepted `-[x]` would inflate the bucket and bias the
+      // percentComplete math.
+      const content = [
+        "-[x] No space completed",
+        "-[ ] No space pending",
+        "- [x] Real completed",
+        "- [ ] Real pending",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      // percentComplete = 1 / (2 - 0 - 0) = 1/2 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("ignores lines with unknown or unicode-only checkbox content", () => {
+      // The marker grammar is closed: only ` `, `x`, `X`, `MANUAL`,
+      // `BLOCKED` are recognised. `[?]`, `[y]`, `[N/A]`, `[v]`, unicode
+      // glyphs and other strings in the checkbox slot are noise to the
+      // parser. This is the file-level mirror of the per-line contract
+      // pinned in `parseTaskLine`'s PLAN.md 2.8.
+      const content = [
+        "- [?] Question",
+        "- [y] Why",
+        "- [N/A] Not applicable",
+        "- [v] Lowercase v",
+        "- [✓] Unicode check",
+        "- [x] Real completed",
+        "- [ ] Real pending",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("ignores checkbox-like text inside prose / HTML / code spans", () => {
+      // A paragraph that mentions the syntax, an HTML comment, a
+      // backtick-delimited code span — none of these are tasks. Only
+      // the actual `- [x]` and `- [ ]` lines should count. A regression
+      // that tried to unwrap code spans or strip HTML comments would
+      // inflate the buckets.
+      const content = [
+        "# PLAN",
+        "",
+        "Use `- [x]` for done and `- [ ]` for pending.",
+        "",
+        "<!-- TODO: clean up the legacy - [x] markers in old files -->",
+        "",
+        "Inline `code with - [x] inside` is just text.",
+        "",
+        "- [x] Real completed",
+        "- [ ] Real pending",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("does not parse inner checkbox markers in a task's description (description is opaque)", () => {
+      // A description that itself contains `[BLOCKED]` or `[x]` is not
+      // re-parsed. The marker in the checkbox slot is the only one
+      // that counts. So `- [x] task with [BLOCKED] inside` is one
+      // completed task with that exact description — not a completed
+      // task + a blocked task. A regression that tried to re-parse the
+      // description would shift the bucket counts and break
+      // percentComplete.
+      const content = [
+        "- [x] Real done (description has [BLOCKED] reference)",
+        "- [ ] Real pending (description has [x] reference)",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.percentComplete).toBe(50)
+    })
+
+    it("a plan with only look-alike non-conforming lines resolves to 0 total / 100% (denominator=0)", () => {
+      // The plan's effective task set is empty after the parser strips
+      // the look-alikes. percentComplete follows the "nothing to do"
+      // contract (denominator=0 → 100%), not 0%. This mirrors the
+      // heading-only shape pinned in PLAN.md 2.5: a PLAN.md with no
+      // actionable tasks is structurally complete.
+      const content = [
+        "* [x] Starred",
+        "+ [x] Plussed",
+        "1. [x] Numbered",
+        "- [?] Question",
+        "- [✓] Unicode",
+        "<!-- - [x] comment -->",
+        "> - [x] blockquote",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(0)
+      expect(result.completed).toBe(0)
+      expect(result.pending).toBe(0)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
@@ -2802,6 +3125,61 @@ describe("getCurrentTaskFromContent", () => {
       ].join("\n")
       const result = getCurrentTaskFromContent(content)
       expect(result).toBe("The last task to do")
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.8 — look-alike but non-conforming lines (selection).
+  // Selection-side mirror of the per-line contract pinned in
+  // `parseTaskLine` PLAN.md 2.8 and the file-level contract pinned in
+  // `parsePlan` PLAN.md 2.8. The function must skip look-alike lines
+  // (they are `not-a-task`) and land on the first real pending task.
+  // A regression that mis-classified a look-alike as pending would
+  // either return a wrong description (when a look-alike precedes the
+  // real pending) or return null (when the only pending-shaped lines
+  // are actually look-alikes, leaving the loop with nothing to do).
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.8 — look-alike but non-conforming lines (selection)", () => {
+    it("returns null when only look-alike lines look pending", () => {
+      // A plan where the only "task-shaped" lines are actually
+      // look-alikes (wrong marker, unknown content, embedded in HTML)
+      // should return null — there is no actionable pending task for
+      // the loop to pick. A regression that mis-classified any of
+      // these as pending would return a wrong description instead of
+      // null and confuse the user about what the loop is about to do.
+      const content = [
+        "* [ ] Starred pending",
+        "+ [ ] Plussed pending",
+        "1. [ ] Numbered pending",
+        "- [?] Question pending",
+        "- [✓] Unicode pending",
+        "<!-- - [ ] html comment -->",
+        "> - [ ] blockquote",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBeNull()
+    })
+
+    it("selects the real pending task even when surrounded by look-alike lines", () => {
+      // The real pending is the first (and only) `- [ ]` line. All the
+      // look-alike lines around it must be skipped, not selected. A
+      // regression that picked a look-alike as the "first pending" would
+      // return the wrong description and the loop would attempt to
+      // execute a line that is actually prose / a blockquote / a
+      // numbered list item.
+      const content = [
+        "* [ ] Starred look-alike",
+        "+ [ ] Plussed look-alike",
+        "- [x] Real completed (decoy)",
+        "1. [ ] Numbered look-alike",
+        "<!-- - [ ] html comment look-alike -->",
+        "- [ ] Real pending",
+        "> - [ ] blockquote look-alike",
+        "- [x] Another real completed",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("Real pending")
     })
   })
 })
