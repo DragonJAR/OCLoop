@@ -3,6 +3,10 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+// These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
+// produce) that the compile-time type forbids; cast at the boundary so the strict
+// production signature stays intact. Derived from the fn's own param (DRY).
+const withNull = (o: object) => o as Parameters<typeof resolveResilience>[0]
 
 // `loadConfig` reads from `${XDG_CONFIG_HOME}/ocloop/ocloop.json` (or
 // `~/.config/ocloop/ocloop.json` when the env var is unset). Redirect
@@ -358,7 +362,7 @@ describe("resolveResilience — null skip (Finding 12.3.A)", () => {
     // and reach `setTimeout(null, …)` → immediate timeout on every
     // `session.create`. With the fix, the null is skipped and the default
     // (15_000ms) survives.
-    const result = resolveResilience({ createTimeoutMs: null })
+    const result = resolveResilience(withNull({ createTimeoutMs: null }))
     expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
   })
 
@@ -366,15 +370,15 @@ describe("resolveResilience — null skip (Finding 12.3.A)", () => {
     // The CLI path is gated by `applyResilienceOverride` and never produces
     // a null, but `resolveResilience` defends itself in case a future
     // call site or a hand-rolled test path passes one.
-    const result = resolveResilience(undefined, { promptTimeoutMs: null })
+    const result = resolveResilience(undefined, withNull({ promptTimeoutMs: null }))
     expect(result.promptTimeoutMs).toBe(DEFAULT_RESILIENCE.promptTimeoutMs)
   })
 
   it("keeps non-null values mixed in alongside nulls in the same layer", () => {
-    const result = resolveResilience({
+    const result = resolveResilience(withNull({
       createTimeoutMs: 42_000,
       promptTimeoutMs: null,
-    })
+    }))
     expect(result.createTimeoutMs).toBe(42_000)
     expect(result.promptTimeoutMs).toBe(DEFAULT_RESILIENCE.promptTimeoutMs)
   })
@@ -387,7 +391,7 @@ describe("resolveResilience — null skip (Finding 12.3.A)", () => {
   it("lets a non-null CLI override win over a null file value", () => {
     // File says null (skipped → default), CLI says 99_000 → 99_000 wins.
     const result = resolveResilience(
-      { createTimeoutMs: null },
+      withNull({ createTimeoutMs: null }),
       { createTimeoutMs: 99_000 },
     )
     expect(result.createTimeoutMs).toBe(99_000)
@@ -396,7 +400,7 @@ describe("resolveResilience — null skip (Finding 12.3.A)", () => {
   it("treats a null boolean field the same way (uses default)", () => {
     // `caffeinate: null` would short-circuit every `if (caffeinate)` to
     // false; after the fix, the default (`true` on macOS) survives.
-    const result = resolveResilience({ caffeinate: null })
+    const result = resolveResilience(withNull({ caffeinate: null }))
     expect(result.caffeinate).toBe(DEFAULT_RESILIENCE.caffeinate)
   })
 })

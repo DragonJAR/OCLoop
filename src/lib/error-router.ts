@@ -110,7 +110,8 @@ export function routeSessionError(
       type: "error",
       source,
       errorMessage: classified.message,
-      recoverable: classified.kind === "transient",
+      // auth/fatal/aborted are non-recoverable; transient never reaches here.
+      recoverable: false,
     }
   }
   return null

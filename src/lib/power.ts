@@ -29,7 +29,7 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
   const platform = options.platform ?? process.platform
   const isMac = platform === "darwin"
 
-  let proc: { kill: () => void; pid?: number } | null = null
+  let proc: ReturnType<typeof Bun.spawn> | null = null
 
   function start(): void {
     if (proc) return

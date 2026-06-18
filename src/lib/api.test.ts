@@ -290,7 +290,7 @@ describe("Phase 4 — API layer edge cases", () => {
       // through because `typeof model !== "string"` is true for numbers, and
       // the function returns it as-is. This is a known type-safety gap that
       // the TypeScript type system prevents at compile time.
-      expect(toSdkModel(42 as unknown as string)).toBe(42)
+      expect(toSdkModel(42 as unknown as string) as unknown).toBe(42)
     })
   })
 

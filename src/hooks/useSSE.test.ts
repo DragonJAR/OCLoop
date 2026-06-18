@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { classifySessionError } from "./useSSE"
+import { classifySessionError, type SessionErrorKind } from "./useSSE"
 
 describe("classifySessionError", () => {
   describe("rate limits", () => {
@@ -135,7 +135,7 @@ describe("classifySessionError", () => {
     })
 
     it("each error kind with a representative error object", () => {
-      const cases: Array<[string, unknown, string]> = [
+      const cases: Array<[string, unknown, SessionErrorKind]> = [
         ["rate_limit", { message: "429 Too Many Requests" }, "rate_limit"],
         ["aborted", { name: "MessageAbortedError", message: "aborted" }, "aborted"],
         ["auth", { message: "401 Unauthorized" }, "auth"],

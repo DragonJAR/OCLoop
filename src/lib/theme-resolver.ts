@@ -6,6 +6,8 @@
  */
 
 import { type ThemeDefinition, themes, DEFAULT_THEME } from "./themes";
+// Re-export so consumers/tests can import the theme shape from this module too.
+export type { ThemeDefinition } from "./themes";
 
 /**
  * Resolved theme colors with all semantic tokens as hex strings

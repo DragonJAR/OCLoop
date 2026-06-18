@@ -107,7 +107,8 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
 
     // Write text to stdin, awaiting the flush + close so the child receives
     // the full payload before we wait on its exit (avoids truncation/hangs).
-    if (proc.stdin) {
+    // proc.stdin is number | FileSink | undefined; with stdin:"pipe" it's the FileSink — narrow off the numeric fd.
+    if (proc.stdin && typeof proc.stdin !== "number") {
       await proc.stdin.write(text);
       await proc.stdin.end();
     }
@@ -115,7 +116,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr).text();
+      const stderr = await new Response(proc.stderr as ReadableStream<Uint8Array>).text();
       return {
         success: false,
         error: stderr.trim() || `Clipboard command exited with code ${exitCode}`,

@@ -244,7 +244,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
  */
 function isValidResilienceValue(key: string, v: unknown): boolean {
   if (!(key in DEFAULT_RESILIENCE)) return false
-  const def = (DEFAULT_RESILIENCE as Record<string, unknown>)[key]
+  const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
   if (typeof def === "number") {
     return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
