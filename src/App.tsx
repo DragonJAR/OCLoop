@@ -418,6 +418,20 @@ function AppContent(props: AppProps) {
     ) {
       stats.markRunEnd()
     }
+
+    // Recoverable error was retried (R): the run resumes, so un-freeze the
+    // global timer that markRunEnd stamped at the error. Without this the
+    // wall-clock display stays frozen at the error instant for the whole
+    // retried run. complete/stopped are genuinely terminal (no retry), so we
+    // only un-freeze when leaving `error` for a non-terminal state.
+    if (
+      prev.type === "error" &&
+      state.type !== "error" &&
+      state.type !== "complete" &&
+      state.type !== "stopped"
+    ) {
+      stats.unfreezeRun()
+    }
   })
 
   // Plan progress tracking
@@ -695,6 +709,19 @@ function AppContent(props: AppProps) {
       // and restart-resilience work, then report complete.
       const progress = parsePlan(content)
       if (isStructurallyComplete(progress)) {
+        // Compare-and-swap against a concurrent PLAN.md edit by the agent: the
+        // read above and this write span two awaits, during which the model can
+        // legitimately edit PLAN.md (e.g. unchecking the last task, or adding a
+        // new one). Re-read and only proceed when the file is byte-identical to
+        // what we based the completion decision on — otherwise we'd clobber the
+        // agent's edit with stale content + a <plan-complete> tag and false-
+        // complete the run. If it changed, don't complete this cycle; the next
+        // check (after the edit settles) re-evaluates against fresh content.
+        const current = await Bun.file(planPath).text()
+        if (current !== content) {
+          log.debug("state", "Plan changed during completion check; deferring", {})
+          return false
+        }
         await Bun.write(planPath, withPlanCompleteTag(content, buildCompletionSummary(progress)))
         return true
       }

@@ -10,6 +10,16 @@
  *
  * `.loop-state.json` (and its `.tmp`) match the existing `.loop*` gitignore rule,
  * so they are never committed.
+ *
+ * Writes are SERIALIZED through a single promise chain (`persistChain`). This is
+ * not for atomicity (tmp+rename already gives that) — it's for ORDERING: the
+ * completion effect dispatches both `saveLoopState` (running) and `clearLoopState`
+ * (complete) as un-awaited `void` calls with no enforced order, and Node does not
+ * guarantee resolve order across independent promises. A `saveLoopState` in flight
+ * at the moment of completion could resolve AFTER the clear, re-creating the file
+ * and making the next launch offer a spurious resume. Serializing means the clear
+ * is queued strictly after any save dispatched before it, and a generation guard
+ * makes any save enqueued BEFORE the clear a no-op once the clear has run.
  */
 
 import { rename, writeFile, readFile, unlink } from "node:fs/promises"
@@ -60,11 +70,40 @@ function tmpPath(): string {
   return `${statePath()}.${randomBytes(6).toString("hex")}.tmp`
 }
 
+// --- Serialized write queue + generation guard ---
+//
+// persistChain: a tail of resolved promises; each write `.then()`s onto it so
+// writes execute strictly in dispatch order (save ... save ... clear all run
+// sequentially, not concurrently).
+//
+// clearedGeneration: bumped by clearLoopState. A save captures the generation at
+// enqueue time and, before writing, checks it is still >= the cleared
+// generation — if a clear has since run, the save is dropped. Belt-and-suspenders
+// with the chain ordering (which already runs the clear last): protects against
+// any future caller that awaits a save out-of-band.
+let persistChain: Promise<void> = Promise.resolve()
+let clearedGeneration = 0
+
 /**
  * Atomically persist the loop state. Never throws — persistence is best-effort
- * and must not crash the app.
+ * and must not crash the app. Serialized: the write is queued after any prior
+ * pending write/clear so order matches dispatch order.
  */
-export async function saveLoopState(state: PersistedLoopState): Promise<void> {
+export function saveLoopState(state: PersistedLoopState): Promise<void> {
+  // Capture the generation NOW (at dispatch time). If clearLoopState runs before
+  // this save's turn comes, the generation check inside will drop it.
+  const myGeneration = clearedGeneration
+  persistChain = persistChain.then(() => writeStateIfNotCleared(state, myGeneration))
+  return persistChain
+}
+
+async function writeStateIfNotCleared(
+  state: PersistedLoopState,
+  myGeneration: number,
+): Promise<void> {
+  // A clear dispatched after this save (but before its turn) raised the
+  // generation: writing now would resurrect a completed run's state file.
+  if (myGeneration < clearedGeneration) return
   // Capture the random tmp name once and reuse it across write/rename/unlink.
   // Each tmpPath() call returns a fresh random suffix; calling it twice would
   // produce two different names, so rename would target a file that writeFile
@@ -149,9 +188,18 @@ export async function loadLoopState(): Promise<PersistedLoopState | null> {
 
 /**
  * Remove the persisted state (clean shutdown, or after a successful resume
- * decision). Never throws.
+ * decision). Never throws. Bumps the generation so any save enqueued BEFORE
+ * this clear (and still in flight on the chain) is dropped instead of
+ * resurrecting the file. Serialized onto the same chain as saves so the clear
+ * runs strictly after all writes dispatched before it.
  */
-export async function clearLoopState(): Promise<void> {
+export function clearLoopState(): Promise<void> {
+  clearedGeneration++
+  persistChain = persistChain.then(() => doClear())
+  return persistChain
+}
+
+async function doClear(): Promise<void> {
   try {
     await unlink(statePath())
   } catch {

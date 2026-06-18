@@ -29,6 +29,7 @@
  */
 
 import { getCurrentTaskFromContent, parseTaskLine } from "./plan-parser"
+import { splitLines } from "./text"
 
 /**
  * Structured description of a misalignment between the saved task and the
@@ -86,7 +87,10 @@ export function describeResumeAlignment(
   // not handle indented sub-tasks or `[MANUAL]`/`[BLOCKED]` tagging the way
   // `parseTaskLine` does — `getCurrentTaskFromContent` already uses it, so
   // the saved `currentTask` and the scan here now share one grammar).
-  const lines = planContent.split("\n")
+  // splitLines tolerates CRLF/lone-CR so a Windows-edited PLAN.md scans the
+  // same as a Unix one (parseTaskLine trims per-line, but be consistent with
+  // the rest of the plan readers).
+  const lines = splitLines(planContent)
   let savedStillPending = false
   let savedNowCompleted = false
   for (const line of lines) {

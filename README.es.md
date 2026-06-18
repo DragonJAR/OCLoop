@@ -213,6 +213,7 @@ Las notas deben ser **prosa indentada o sub-bullets simples** (`  - Decisión: .
 | `?` | Cualquiera | Abrir el overlay de atajos/ayuda integrado |
 | `Q` | La mayoría | Salir (con confirmación; **sin** confirmación si ya está `Completado`) |
 | `R` | Error | Reintentar tras un error recuperable |
+| `P` | Error (alto por `errNoProgress`) | Dividir la tarea atascada en sub-tareas más pequeñas (ver [Loop atascado](#resiliencia)) |
 | `N` | Debug | Crear una sesión nueva |
 | `P` | Debug | Enviar un prompt a la sesión |
 | `I` | Debug | Insertar actividad de ejemplo (pruebas de UI) |
@@ -270,7 +271,7 @@ Lo que maneja:
 - **Caída total** — el progreso mínimo se persiste de forma atómica en `.loop-state.json`. En el siguiente arranque OCLoop ofrece reanudar (automático con `--resume`). El apagado con `SIGINT`/`SIGTERM`/`SIGHUP` aborta la sesión activa para no dejar un servidor huérfano.
 - **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real. Desde la detención puedes pulsar **`P`** para que el agente parta la tarea estancada en subtareas más pequeñas — OCLoop las muestra para aprobación y, si aceptas, reescribe `PLAN.md` (reemplazando la tarea estancada) y reanuda.
 
-El dashboard muestra un indicador `Guardián ●` (verde sano, amarillo verificando, rojo recuperando), y toda la actividad del guardián se registra en `.loop.log` como líneas estructuradas `[HEALTH]`, para auditar exactamente por qué actuó. Un `COOLDOWN` distingue un rate limit real (`COOLDOWN` con contador de reintentos) de un tropiezo de conexión transitorio (`WAITING`).
+El dashboard muestra un indicador `Salud ●` (verde `OK` sano, amarillo verificando, rojo recuperando), y toda la actividad del guardián se registra en `.loop.log` como líneas estructuradas `[HEALTH]`, para auditar exactamente por qué actuó. Un `COOLDOWN` distingue un rate limit real (`COOLDOWN` con contador de reintentos) de un tropiezo de conexión transitorio (`WAITING`).
 
 ### Ajustes
 
@@ -365,7 +366,7 @@ Todos los archivos `.loop*` se ignoran en git automáticamente.
 - **Total Time** — reloj de pared desde el inicio, **incluyendo** pausas; congelado al alcanzar un estado terminal.
 - **Tokens** — por iteración (`Task Tokens`, se reinicia cada iteración) y totales de toda la ejecución (entrada/salida, más lectura/escritura de caché en terminales anchas).
 - **Tokens/min** — throughput.
-- **Cost** — `~$X.XX` coste estimado en USD de toda la ejecución, a partir de una tabla estática de precios que cubre 33 modelos en 11 laboratorios (usa una media de respaldo cuando el modelo es desconocido).
+- **Cost** — `~$X.XX` coste estimado en USD de toda la ejecución, a partir de una tabla estática de precios que cubre 53 modelos en 11 laboratorios (usa una media de respaldo cuando el modelo es desconocido).
 
 ## Solución de problemas
 

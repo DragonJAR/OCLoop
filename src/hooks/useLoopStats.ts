@@ -33,6 +33,7 @@ export interface UseLoopStatsReturn {
   estimatedTotal: (remaining: number) => number | null; // Estimated time for remaining iterations
   globalElapsedTime: () => number; // Wall-clock ms since the run started (incl. pauses); frozen after markRunEnd
   markRunEnd: () => void; // Freeze the global timer (call on complete/stopped/error)
+  unfreezeRun: () => void; // Un-freeze the global timer (call when resuming after a recoverable error)
 }
 
 /**
@@ -238,6 +239,25 @@ export function useLoopStats(): UseLoopStatsReturn {
     setState({ ...s, runEndTime: Date.now() });
   }
 
+  /**
+   * Un-freeze the global timer — the symmetric counterpart to markRunEnd.
+   *
+   * When the run hits a recoverable `error`, markRunEnd() stamps runEndTime and
+   * globalElapsedTime stops advancing. If the user presses R (retry), the loop
+   * goes error → starting → ... → running again — but without clearing runEndTime
+   * the timer stays frozen at the error instant for the WHOLE retried run.
+   * Call this on the retry transition so the wall-clock clock resumes. A fresh
+   * startIteration keeps runStartTime (never reset mid-run), so we only need to
+   * drop runEndTime; the elapsed time then continues from runStartTime.
+   *
+   * No-op when nothing was frozen (idempotent, safe to call unconditionally).
+   */
+  function unfreezeRun(): void {
+    const s = state();
+    if (s.runEndTime === null) return;
+    setState({ ...s, runEndTime: null });
+  }
+
   return {
     startIteration,
     pause,
@@ -249,5 +269,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     estimatedTotal,
     globalElapsedTime,
     markRunEnd,
+    unfreezeRun,
   };
 }

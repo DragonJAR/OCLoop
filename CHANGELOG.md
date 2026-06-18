@@ -34,6 +34,72 @@ All notable changes to OCLoop are documented here. Format based on
   remaining), so neither row is overloaded.
 
 ### Fixed
+- **Cross-platform line-ending handling for user-authored files.** `PLAN.md`,
+  the `.gitignore` updater, the resume-alignment scan, and the subtask-split
+  rewrite now normalize CRLF / lone-CR to LF at the read boundary (new shared
+  `src/lib/text.ts` helpers `normalizeLineEndings` / `splitLines`, applied DRY
+  across every plan reader). On Windows a CRLF-saved `PLAN.md` previously left
+  a trailing `\r` on each line — task detection survived (per-line `trim()`),
+  but the `.gitignore` append glued `.loop*` onto the preceding line's `\r`
+  (a malformed `\r.loop*` entry) and the subtask-split write produced a file
+  with mixed line endings.
+- **Test suite now runs clean on Windows.** The `plan-parser` tests no longer
+  hardcode `/tmp/...` paths or shell out to `rm -f` (which don't exist on
+  Windows); they use `os.tmpdir()` + `mkdtempSync` / `rmSync` like the sibling
+  store tests.
+- **`Retry-After` parsing handles hours and days, not just seconds/minutes.**
+  A message like "retry after 1 hour" or "1h" was parsed as 1 *second* (the
+  default unit), causing far-too-aggressive retries. The unit alternation now
+  covers `h`/`hr`/`hours` (×3600) and `d`/`day`/`days` (×86400).
+- **The global wall-clock timer no longer freezes for a retried run.** On a
+  recoverable error `markRunEnd()` stamped `runEndTime`, and pressing `R`
+  (retry) left it set — so the Total Time display stayed frozen at the error
+  instant for the entire retried run. A symmetric `unfreezeRun()` (called on
+  leaving the `error` state for a non-terminal one) clears it so the clock
+  resumes. `complete`/`stopped` remain genuinely terminal.
+- **A completed run can no longer be spuriously offered for resume.** The
+  completion effect dispatches `saveLoopState` (running) and `clearLoopState`
+  (complete) as un-awaited `void` calls, and Node gives no ordering guarantee
+  between independent promises — so a save in flight at completion could
+  resolve *after* the clear and resurrect `.loop-state.json`, making the next
+  launch offer to resume a run that finished. Writes are now serialized
+  through a single promise chain with a generation guard: a clear bumps the
+  generation, so any save enqueued before it is dropped instead of written.
+- **Completion check no longer clobbers a concurrent agent edit to `PLAN.md`.**
+  The read→write in the structural-completion check spanned two `await`s during
+  which the model could edit `PLAN.md` (uncheck a task, add one); the write
+  then overwrote the file with stale content plus a `<plan-complete>` tag,
+  silently reverting the edit and false-completing the run. It now re-reads
+  and only writes when the file is byte-identical to what the decision was
+  based on (compare-and-swap); otherwise it defers to the next check.
+- **Inter-task memory is now part of the English loop prompt (EN/ES parity).**
+  The README documents that each completed task carries a short decision note
+  forward, and the *Spanish* prompt + example instructed the agent to leave
+  one — but the *English* runtime prompt and the English example omitted the
+  instruction entirely, so a default-locale (English) user never got the
+  behavior. Both the EN runtime prompt and `examples/loop-prompt.md` now
+  include it (matching the ES wording), and the broken "Solo del plan" fragment
+  in the Spanish example is fixed ("Estas notas son solo del plan").
+
+### Documentation
+- **README accuracy pass.** The pricing table now correctly reads "53 models
+  across 11 labs" (was stale at "33", conflated with the 33 themes); the
+  `P` (split stalled task) keybinding is now in the keybindings table (it was
+  only mentioned under Resilience); and the dashboard indicator is documented
+  as `Health ● OK` (matching the real label, was "Guard ●"). Applied to both
+  README.md and README.es.md.
+
+### Notes
+- **Watchdog `notifyIdle` intentionally keeps resetting `recoveryAttempts`.**
+  An audit flagged this as a circuit-breaker bypass for tasks that wedge then
+  idle between recoveries. On inspection it is deliberate and tested
+  (`useWatchdog.ts:140-154`, `useWatchdog.test.ts:694-782`): `notifyIdle`
+  represents a *legitimate* session.idle (the iteration succeeded), which is
+  exactly the "genuine progress" the budget is meant to reset on — and the
+  watchdog's own `abortAndRetry` does *not* emit an SSE idle (it dispatches
+  `session_idle` into the reducer directly, with the active session already
+  cleared), so it does not feed back into `notifyIdle`. A genuinely stuck loop
+  is still bounded by the independent `NoProgressDetector`. Left unchanged.
 - **Closed a type-safety hole in the extracted `useCooldown` hook's `addEvent` dep.**
   The interface narrowed `type` to `string` and `level` to `"warn"`, while the real
   types are `ActivityEventType` (a 10-literal union) and `Level = "info" | "warn" |

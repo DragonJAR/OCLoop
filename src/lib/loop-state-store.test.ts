@@ -173,4 +173,40 @@ describe("loop-state-store", () => {
       expect(loaded?.rateLimitAttempts).toBe(0)
     })
   })
+
+  // Regression for the "spurious resume after completion" bug: the completion
+  // effect dispatches BOTH a saveLoopState (for the running state just before
+  // completion) and a clearLoopState (for the complete state) as un-awaited
+  // `void` calls. Writes are serialized through a promise chain and a generation
+  // guard so a save enqueued before a clear is DROPPED by the clear (it bumps
+  // the generation), instead of resurrecting .loop-state.json after the clear.
+  // The outcome the user sees: no resume prompt on the next launch for a run
+  // that finished cleanly.
+  describe("serialization + generation guard (clear beats a prior save)", () => {
+    it("a save dispatched before a clear does NOT leave a state file behind", async () => {
+      // Enqueue a save, then immediately a clear — do NOT await the save first
+      // (that would mask the ordering bug; the real caller fires both blind).
+      const saveP = saveLoopState(sample)
+      const clearP = clearLoopState()
+      await Promise.all([saveP, clearP])
+      expect(await loadLoopState()).toBeNull()
+    })
+
+    it("a save dispatched after a clear persists normally (generation only affects prior saves)", async () => {
+      await clearLoopState()
+      await saveLoopState(sample)
+      const loaded = await loadLoopState()
+      expect(loaded?.iteration).toBe(sample.iteration)
+    })
+
+    it("the latest save wins when several are dispatched rapidly", async () => {
+      const p1 = saveLoopState({ ...sample, iteration: 1 })
+      const p2 = saveLoopState({ ...sample, iteration: 2 })
+      const p3 = saveLoopState({ ...sample, iteration: 3 })
+      await Promise.all([p1, p2, p3])
+      const loaded = await loadLoopState()
+      // Serialized in dispatch order → the last one (iteration 3) is on disk.
+      expect(loaded?.iteration).toBe(3)
+    })
+  })
 })

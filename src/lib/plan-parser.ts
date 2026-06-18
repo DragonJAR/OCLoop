@@ -1,4 +1,5 @@
 import type { PlanProgress } from "../types"
+import { splitLines, normalizeLineEndings } from "./text"
 
 type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
 
@@ -101,7 +102,9 @@ export function parseTaskLine(line: string): ParsedTask {
  * @returns PlanProgress object with task counts and percentages
  */
 export function parsePlan(content: string): PlanProgress {
-  const lines = content.split("\n")
+  // splitLines tolerates CRLF/lone-CR so a Windows-saved PLAN.md parses the
+  // same as a Unix one (parseTaskLine trims per-line, but be consistent).
+  const lines = splitLines(content)
   let total = 0
   let completed = 0
   let manual = 0
@@ -289,7 +292,7 @@ export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
  * @returns The task description or null if no unchecked tasks found
  */
 export function getCurrentTaskFromContent(content: string): string | null {
-  const lines = content.split("\n")
+  const lines = splitLines(content)
 
   for (const line of lines) {
     const task = parseTaskLine(line)
@@ -324,7 +327,7 @@ export async function getCurrentTask(planPath: string): Promise<string | null> {
  */
 export function parseSubtasksFromReply(text: string): string[] {
   const out: string[] = []
-  for (const line of text.split("\n")) {
+  for (const line of splitLines(text)) {
     const task = parseTaskLine(line)
     if (task.type === "pending" && task.description) {
       out.push(task.description)
@@ -352,7 +355,10 @@ export function replaceFirstPendingTaskWithSubtasks(
   subtasks: string[],
 ): string | null {
   if (subtasks.length === 0) return null
-  const lines = content.split("\n")
+  // Normalize endings up front: we rebuild the file with `join("\n")` below,
+  // so leaving a `\r` on original lines (CRLF file) would mix `\r\n` and `\n`.
+  // Normalizing first guarantees the written file is consistently `\n`.
+  const lines = splitLines(normalizeLineEndings(content))
   for (let i = 0; i < lines.length; i++) {
     if (parseTaskLine(lines[i]).type === "pending") {
       const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""

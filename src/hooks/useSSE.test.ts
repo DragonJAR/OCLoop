@@ -181,6 +181,21 @@ describe("classifySessionError", () => {
       expect(e.retryAfter).toBe(120)
     })
 
+    it("extracts retryAfter from message duration with hours", () => {
+      const e = classifySessionError({ message: "rate limit, retry after 1 hour" })
+      expect(e.retryAfter).toBe(3600)
+    })
+
+    it("extracts retryAfter from message duration with days", () => {
+      const e = classifySessionError({ message: "rate limit, try again in 1 day" })
+      expect(e.retryAfter).toBe(86400)
+    })
+
+    it("extracts retryAfter from message duration with the 'h' unit alias", () => {
+      const e = classifySessionError({ message: "rate limit, retry after 2h" })
+      expect(e.retryAfter).toBe(7200)
+    })
+
     it("extracts retryAfter from message with seconds unit", () => {
       // "retry after" only surfaces retryAfter when the kind is rate_limit,
       // so the message must also trigger rate_limit classification.

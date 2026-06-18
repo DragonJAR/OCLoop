@@ -213,6 +213,7 @@ Notes must be **indented prose or plain sub-bullets** (`  - Decision: ...`), nev
 | `?` | Any | Open the in-app keybindings/help overlay |
 | `Q` | Most states | Quit (with confirmation; **no** confirmation when already `Complete`) |
 | `R` | Error | Retry after a recoverable error |
+| `P` | Error (`errNoProgress` halt) | Split the stalled task into smaller subtasks (see [Stuck loop](#resilience)) |
 | `N` | Debug | Create a new session |
 | `P` | Debug | Send a prompt to the session |
 | `I` | Debug | Insert sample activity (UI testing) |
@@ -270,7 +271,7 @@ What it handles:
 - **Total crash** — minimal progress is persisted atomically to `.loop-state.json`. On the next start OCLoop offers to resume (automatic with `--resume`). Shutdown on `SIGINT`/`SIGTERM`/`SIGHUP` aborts the active session so no orphan server is left behind.
 - **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall. From the halt you can press **`P`** to have the agent split the stalled task into smaller subtasks — OCLoop shows them for approval and, if you accept, rewrites `PLAN.md` (replacing the stalled task) and resumes.
 
-The dashboard shows a `Guard ●` indicator (green healthy, yellow checking, red recovering), and all guardian activity is logged to `.loop.log` as structured `[HEALTH]` lines so you can audit exactly why it acted. A `COOLDOWN` distinguishes a real rate limit (`COOLDOWN` with a retry counter) from a transient connection blip (`WAITING`).
+The dashboard shows a `Health ●` indicator (green `OK` healthy, yellow checking, red recovering), and all guardian activity is logged to `.loop.log` as structured `[HEALTH]` lines so you can audit exactly why it acted. A `COOLDOWN` distinguishes a real rate limit (`COOLDOWN` with a retry counter) from a transient connection blip (`WAITING`).
 
 ### Tuning
 
@@ -365,7 +366,7 @@ All `.loop*` files are git-ignored automatically.
 - **Total Time** — wall-clock since start, **including** pauses; frozen once a terminal state is reached.
 - **Tokens** — per-iteration (`Task Tokens`, reset each iteration) and whole-run totals (input/output, plus cache read/write on wide terminals).
 - **Tokens/min** — throughput.
-- **Cost** — `~$X.XX` estimated USD for the whole run, from a static price table covering 33 models across 11 labs (falls back to an average when the model is unknown).
+- **Cost** — `~$X.XX` estimated USD for the whole run, from a static price table covering 53 models across 11 labs (falls back to an average when the model is unknown).
 
 ## Troubleshooting
 

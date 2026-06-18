@@ -156,12 +156,16 @@ function extractRetryAfter(e: Record<string, any>): number | undefined {
 
   if (typeof e?.message === "string") {
     const m = e.message.match(
-      /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes)?/i,
+      /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days)?/i,
     )
     if (m) {
       let v = parseFloat(m[1])
       const unit = (m[2] || "s").toLowerCase()
+      // Scale by the captured unit. Branch on the first letter so every alias
+      // of a unit resolves the same way (m*/min/minutes, h*/hours, d*/days).
       if (unit.startsWith("m")) v *= 60
+      else if (unit.startsWith("h")) v *= 3600
+      else if (unit.startsWith("d")) v *= 86400
       if (Number.isFinite(v) && v >= 0) return v
     }
   }

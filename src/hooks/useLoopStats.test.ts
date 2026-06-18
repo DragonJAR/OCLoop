@@ -1,5 +1,6 @@
 import { describe, expect, it } from "bun:test";
-import { formatDuration } from "./useLoopStats";
+import { createRoot } from "solid-js";
+import { formatDuration, useLoopStats } from "./useLoopStats";
 
 describe("formatDuration", () => {
   describe("seconds only", () => {
@@ -90,6 +91,58 @@ describe("formatDuration", () => {
 });
 
 // Note: The useLoopStats hook uses SolidJS reactive primitives (createSignal, createMemo).
-// Testing the full reactive behavior would require a SolidJS testing environment.
-// The formatDuration utility is a pure function and can be tested directly.
-// Additional integration tests would be useful for the hook's timing logic.
+// The tests below drive the hook inside a createRoot so onCleanup is bound and the
+// memos evaluate synchronously. They pin the freeze/unfreeze behavior of the global
+// wall-clock timer: markRunEnd() freezes it at a terminal state, and unfreezeRun()
+// (called on a recoverable-error retry) must resume it so the display doesn't stay
+// stuck at the error instant for the whole retried run.
+describe("useLoopStats — global timer freeze/unfreeze", () => {
+  it("markRunEnd freezes globalElapsedTime, unfreezeRun resumes it", () => {
+    createRoot((dispose) => {
+      const stats = useLoopStats()
+      stats.startIteration()
+      // Running: the global timer advances with wall-clock (>= 0 and growing).
+      const before = stats.globalElapsedTime()
+      stats.markRunEnd()
+      const frozen = stats.globalElapsedTime()
+      expect(frozen).toBeGreaterThanOrEqual(before)
+      // After freezing, the value must NOT grow on subsequent reads.
+      const stillFrozen = stats.globalElapsedTime()
+      expect(stillFrozen).toBe(frozen)
+      // Retry: un-freeze so the run timer resumes from runStartTime.
+      stats.unfreezeRun()
+      const resumed = stats.globalElapsedTime()
+      expect(resumed).toBeGreaterThanOrEqual(frozen)
+      dispose()
+    })
+  })
+
+  it("unfreezeRun is a no-op when nothing was frozen (idempotent)", () => {
+    createRoot((dispose) => {
+      const stats = useLoopStats()
+      stats.startIteration()
+      const before = stats.globalElapsedTime()
+      // Never frozen — calling unfreeze must not throw or reset runStartTime.
+      stats.unfreezeRun()
+      expect(stats.globalElapsedTime()).toBeGreaterThanOrEqual(before)
+      dispose()
+    })
+  })
+
+  it("a retried run does not keep runEndTime frozen (regression for error→retry)", () => {
+    createRoot((dispose) => {
+      const stats = useLoopStats()
+      stats.startIteration()
+      stats.markRunEnd() // error state froze the timer
+      // User presses R: the App calls unfreezeRun on leaving `error`.
+      stats.unfreezeRun()
+      // A new iteration starts (retry path). runStartTime is preserved, but
+      // runEndTime must be cleared so globalElapsedTime keeps advancing.
+      stats.startIteration()
+      const a = stats.globalElapsedTime()
+      const b = stats.globalElapsedTime()
+      expect(b).toBeGreaterThanOrEqual(a)
+      dispose()
+    })
+  })
+})

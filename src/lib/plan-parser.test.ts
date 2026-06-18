@@ -781,29 +781,33 @@ describe("PLAN.md 2.12 — [MANUAL] tasks are not auto-executed", () => {
 
 describe("getPlanCompleteSummary", () => {
   it("should return null for a non-existent file", async () => {
-    const result = await getPlanCompleteSummary("/tmp/ocloop-nonexistent-plan-summary-test-xyz.md")
+    // Cross-platform: build a path that genuinely won't exist on any OS rather
+    // than hardcoding "/tmp/..." (no /tmp on Windows).
+    const result = await getPlanCompleteSummary(join(tmpdir(), "ocloop-nonexistent-plan-summary-test-xyz.md"))
     expect(result).toBeNull()
   })
 
   it("should return the summary when the plan is complete", async () => {
-    const tmp = "/tmp/ocloop-getPlanCompleteSummary-test.md"
+    const dir = mkdtempSync(join(tmpdir(), "ocloop-planComplete-test-"))
+    const tmp = join(dir, "plan.md")
     try {
       await Bun.write(tmp, "Some preamble\n<plan-complete>the summary text</plan-complete>\n")
       const result = await getPlanCompleteSummary(tmp)
       expect(result).toBe("the summary text")
     } finally {
-      await Bun.$`rm -f ${tmp}`.quiet()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
   it("should return null when the plan is not complete", async () => {
-    const tmp = "/tmp/ocloop-getPlanCompleteSummary-incomplete-test.md"
+    const dir = mkdtempSync(join(tmpdir(), "ocloop-planComplete-incomplete-test-"))
+    const tmp = join(dir, "plan.md")
     try {
       await Bun.write(tmp, "- [ ] pending task\n")
       const result = await getPlanCompleteSummary(tmp)
       expect(result).toBeNull()
     } finally {
-      await Bun.$`rm -f ${tmp}`.quiet()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 
@@ -839,7 +843,8 @@ describe("getPlanCompleteSummary", () => {
 // this test catches that regression by asserting the throw.
 describe("parsePlanFile", () => {
   it("throws on a non-existent file (does not silently return null/empty)", async () => {
-    const missingPath = "/tmp/ocloop-no-such-plan-file-xyz-12345.md"
+    // Cross-platform: avoid hardcoding "/tmp/..." (no /tmp on Windows).
+    const missingPath = join(tmpdir(), "ocloop-no-such-plan-file-xyz-12345.md")
     // Sanity: the file really must not exist for this test to be meaningful.
     const exists = await Bun.file(missingPath).exists()
     expect(exists).toBe(false)
@@ -857,7 +862,8 @@ describe("parsePlanFile", () => {
   })
 
   it("parses a real file and returns PlanProgress", async () => {
-    const tmp = "/tmp/ocloop-parse-plan-file-test.md"
+    const dir = mkdtempSync(join(tmpdir(), "ocloop-parse-plan-file-test-"))
+    const tmp = join(dir, "plan.md")
     await Bun.write(tmp, "- [x] done\n- [ ] pending\n")
     try {
       const result = await parsePlanFile(tmp)
@@ -865,7 +871,7 @@ describe("parsePlanFile", () => {
       expect(result.completed).toBe(1)
       expect(result.pending).toBe(1)
     } finally {
-      await Bun.$`rm -f ${tmp}`.quiet()
+      rmSync(dir, { recursive: true, force: true })
     }
   })
 })
