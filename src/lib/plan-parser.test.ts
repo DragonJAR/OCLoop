@@ -620,6 +620,75 @@ describe("parseTaskLine", () => {
       })
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.5 — markdown headings are not task lines.
+  // Headings (`#`, `##`, …, `######`) and Setext-style underlines
+  // (`Heading\n===` / `Heading\n---`) are the primary way a PLAN.md is
+  // organized into phases and sections. The parser's `parseTaskLine` only
+  // matches the literal `- [` prefix, so any line that doesn't start with
+  // it — including a heading — must return `not-a-task`. Without this
+  // pin, a refactor that loosened the prefix (e.g. to "any bracket")
+  // would accidentally count headings as tasks and the loop would try
+  // to execute the heading text as a task description.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.5 — markdown headings are not task lines", () => {
+    it("h1 (#) heading is not-a-task", () => {
+      expect(parseTaskLine("# Top-level title")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("h2 (##) heading is not-a-task", () => {
+      expect(parseTaskLine("## Phase 1 — Setup")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("h3 (###) heading is not-a-task", () => {
+      expect(parseTaskLine("### Subsection")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("h4 (####) heading is not-a-task", () => {
+      expect(parseTaskLine("#### Deep heading")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("h5 (#####) heading is not-a-task", () => {
+      expect(parseTaskLine("##### Even deeper")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("h6 (######) heading is not-a-task (deepest)", () => {
+      expect(parseTaskLine("###### Deepest possible heading")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("empty heading (just #) is not-a-task", () => {
+      // A bare `#` with nothing after is malformed markdown but the
+      // parser still must not classify it as a task.
+      expect(parseTaskLine("#")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("heading without space after # is not-a-task (no markdown-tag form)", () => {
+      // `#Phase` is not a valid heading (CommonMark requires a space
+      // or end of line after the leading #'s). The parser must not
+      // treat it as a task either, since it doesn't start with "- [".
+      expect(parseTaskLine("#Phase")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("##NotAHeading")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("heading whose body contains checkbox-looking text is not-a-task", () => {
+      // A heading like "## Phase 1 — see [ ] for context" is just prose
+      // inside a heading. The literal `- [` prefix is what makes a line
+      // a task; the brackets inside a heading are noise.
+      expect(parseTaskLine("## Phase 1 — see [ ] for context")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("### [ ] empty checkbox inside heading")).toEqual({ type: "not-a-task", description: "" })
+    })
+
+    it("Setext-style heading underline is not-a-task", () => {
+      // Setext headings use an underline (`===` or `---`) below the
+      // heading text. The parser splits on `\n` and sees each line
+      // independently; neither is a task.
+      expect(parseTaskLine("Heading text")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("===")).toEqual({ type: "not-a-task", description: "" })
+      expect(parseTaskLine("---")).toEqual({ type: "not-a-task", description: "" })
+    })
+  })
 })
 
 describe("parsePlan", () => {
@@ -1638,6 +1707,150 @@ Some intro.
       expect(result.percentComplete).toBe(40)
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.5 — file-level surface: headings (alone or mixed) do not
+  // pollute the task counts. The existing PLAN.md 2.1 "only headings"
+  // case (line 918 of the pre-2.5 file) is the most degenerate shape;
+  // this block expands it with the realistic PLAN.md shapes: headings +
+  // prose, headings + tasks, headings that look like tasks (body text
+  // contains `[ ]`), and Setext-style headings. The contract: headings
+  // NEVER enter the total or any bucket, regardless of what text they
+  // contain.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.5 — heading-only and heading-mixed files", () => {
+    it("PLAN.md with only #, ##, ###, ####, ##### headings → 0 total", () => {
+      // 5 heading lines, no tasks. The whole-file walk must skip all of them.
+      const content = [
+        "# Top title",
+        "## Phase 1 — Setup",
+        "### Subsection",
+        "#### Deep heading",
+        "##### Even deeper",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result).toEqual({
+        total: 0,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 0,
+        automatable: 0,
+        percentComplete: 100,
+      })
+    })
+
+    it("PLAN.md with headings and prose but NO task lines → 0 total", () => {
+      // Realistic shape: an intro section with a title, a description
+      // paragraph, and a "Goals" heading. Nothing in this file is a
+      // task; the loop has nothing to do.
+      const content = [
+        "# My Plan",
+        "",
+        "This plan describes the work to ship OCLoop 0.6.0.",
+        "",
+        "## Goals",
+        "",
+        "Make the loop more robust, add tests, ship it.",
+        "",
+        "## Out of scope",
+        "",
+        "Anything that needs a human reviewer.",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(0)
+      expect(result.automatable).toBe(0)
+      expect(result.percentComplete).toBe(100)
+    })
+
+    it("PLAN.md with headings + tasks counts ONLY the tasks (headings don't inflate the total)", () => {
+      // The realistic PLAN.md shape from the project's own PLAN.md:
+      // a title, a phase heading, 3 tasks, another phase heading, 2 more.
+      const content = [
+        "# My Plan",
+        "",
+        "## Phase 1 — Inventario",
+        "- [x] Identify entry point",
+        "- [x] Document flags",
+        "- [ ] Map flows",
+        "",
+        "## Phase 2 — Tests",
+        "- [ ] Add test A",
+        "- [ ] Add test B",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(5)
+      expect(result.completed).toBe(2)
+      expect(result.pending).toBe(3)
+      expect(result.automatable).toBe(3)
+      // percentComplete = 2 / (5 - 0 - 0) = 2/5 → 40
+      expect(result.percentComplete).toBe(40)
+    })
+
+    it("PLAN.md with heading whose body contains [ ] is NOT a task (no false positives)", () => {
+      // A heading like "## Phase 1 — see [ ] for context" must not
+      // produce a pending task. The parser splits on \n and the heading
+      // line is one line that doesn't start with "- [", so it returns
+      // not-a-task; the brackets inside are noise.
+      const content = [
+        "## Phase 1 — see [ ] for context",
+        "- [x] Real task",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(1)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(0)
+    })
+
+    it("PLAN.md with Setext-style heading (text + === underline) + tasks counts only the tasks", () => {
+      // Setext-style: the heading is the text line, the `===` line
+      // is the underline. The parser sees two non-task lines plus
+      // the tasks; the underline is not-a-task.
+      const content = [
+        "Top-level title",
+        "===============",
+        "",
+        "- [x] Task one",
+        "- [ ] Task two",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(2)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+    })
+
+    it("PLAN.md with all heading levels + mixed task categories counts only the tasks", () => {
+      // Every heading level appears alongside every task category.
+      // The headings must not affect any bucket.
+      const content = [
+        "# h1",
+        "## h2",
+        "### h3",
+        "#### h4",
+        "##### h5",
+        "###### h6",
+        "- [x] completed",
+        "- [ ] pending",
+        "- [MANUAL] manual",
+        "- [BLOCKED: needs API] blocked",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(4)
+      expect(result.completed).toBe(1)
+      expect(result.pending).toBe(1)
+      expect(result.manual).toBe(1)
+      expect(result.blocked).toBe(1)
+      // percentComplete = 1 / (4 - 1 - 1) = 1/2 → 50
+      expect(result.percentComplete).toBe(50)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
@@ -2167,6 +2380,87 @@ describe("getCurrentTaskFromContent", () => {
     ].join("\n")
     const result = getCurrentTaskFromContent(content)
     expect(result).toBe("First pending (indented)")
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.5 — selection-level surface: headings are not selectable
+  // as the current task. Even when a file is full of headings,
+  // getCurrentTaskFromContent must return null — there is no pending
+  // task to do. And when a file mixes headings with one pending task,
+  // the function must skip all the headings and return the real task
+  // description. A regression that returned the heading text or the
+  // heading level marker would fail these tests.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.5 — headings are not selectable as the current task", () => {
+    it("returns null when the file is headings only (no task lines)", () => {
+      // 6 heading lines, no tasks. The function has nothing to return.
+      const content = [
+        "# My Plan",
+        "",
+        "## Phase 1 — Setup",
+        "### Subsection",
+        "",
+        "#### Deep heading",
+        "##### Even deeper",
+        "###### Deepest",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBeNull()
+    })
+
+    it("returns null when the file is headings + completed tasks only", () => {
+      // A file that LOOKS like a plan (has headings) but has no work
+      // left. The function must return null, not the first heading's
+      // text.
+      const content = [
+        "# My Plan",
+        "",
+        "## Phase 1",
+        "- [x] Done task",
+        "- [X] Another done",
+        "",
+        "## Phase 2",
+        "- [x] Phase 2 done",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBeNull()
+    })
+
+    it("returns the real pending task description when a file mixes headings + completed + pending", () => {
+      // Headings must be skipped, the first pending wins. A buggy
+      // implementation that returned the heading text or the heading
+      // level marker would fail this test.
+      const content = [
+        "# My Plan",
+        "",
+        "## Phase 1 — Setup",
+        "- [x] First done",
+        "- [x] Second done",
+        "",
+        "## Phase 2 — Build",
+        "- [ ] First pending of phase 2",
+        "- [ ] Second pending of phase 2",
+        "",
+        "## Phase 3 — Ship",
+        "- [ ] Phase 3 task",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("First pending of phase 2")
+    })
+
+    it("returns null when a heading body contains [ ] but no real task follows", () => {
+      // A heading like "## Phase 1 — see [ ] for context" must not
+      // cause the function to return that heading's text. The literal
+      // [ ] inside a heading is not a task; the function looks for
+      // lines that start with "- [" specifically.
+      const content = [
+        "## Phase 1 — see [ ] for context",
+        "## Phase 2 — also [ ] here",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBeNull()
+    })
   })
 })
 
