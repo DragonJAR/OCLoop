@@ -13,6 +13,15 @@
 - **No `--no-verify`**: pre-commit expectation is `bun test` passes.
 - **No `git add .`**: stage only the files the commit touches. `.loop*` is
   gitignored; never commit `.loop-state.json` / `.loop.log`.
+- **`PLAN.md` is a working file, not a tracked artifact** — it's intentionally
+  gitignored (`*.md` allowlist excludes it). OCLoop reads it from disk each
+  run; mark tasks done locally, do not try to commit it.
+- **`docs/` is closed for new files** — the `/docs` rule in `.gitignore`
+  (commit `c62e5ef`, "prevent tracking new audit-style docs") blocks new
+  untracked files there. Project knowledge belongs in source docblocks,
+  `README.md`, or `AGENTS.md`. The two existing files (`build-process.md`,
+  `terminal-compat.md`) are tracked from an earlier allowlist and should not
+  be taken as license to add more.
 - **Full project context (stack, layout, conventions, risks):** see the
   remaining docs under `docs/` (`build-process.md`, `terminal-compat.md`).
 
