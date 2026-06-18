@@ -26,7 +26,7 @@ Replace the paths and commands with your own. Re-read every iteration.
 - `openapi.json` or `docs/openapi.yaml` - the generated spec (create if missing).
 - `test/` - run with `<your-test-command>`; an API test framework (e.g. supertest) is ideal.
 
-## Phase 1: Inventory & conventions
+## Phase 1 — Inventory & conventions
 - [ ] **1.1 (recon)** Inventory every endpoint
   - List all routes (method + path) and record their current status codes, auth, and response shape in `docs/api-audit.md`; flag inconsistencies (mixed casing, wrong verbs, 200 for creates, non-uniform errors)
   - **Recursion:** for each discovered endpoint insert one `- [ ]` task below to normalize + contract-test it (e.g. `**1.1a** Normalize & test GET /users`)
@@ -34,7 +34,7 @@ Replace the paths and commands with your own. Re-read every iteration.
   - Decide: resource naming (plural, kebab-case), status codes per action, the standard error envelope, pagination shape; target RMM Level 2
   - Verify: the conventions are written down so each later task can apply them uniformly
 
-## Phase 2: Normalize the surface
+## Phase 2 — Normalize the surface
 - [ ] **2.1** Fix resource naming and routes
   - Apply the naming convention across `src/api/`; keep backward-compatible aliases if consumers exist
   - Verify: a test asserts routes match the convention; aliases still respond
@@ -45,7 +45,7 @@ Replace the paths and commands with your own. Re-read every iteration.
   - Apply the chosen pagination shape (cursor or offset) to list endpoints; standardize filter/sort params
   - Verify: a test walks a multi-page result and reaches the end correctly
 
-## Phase 3: Schemas & the OpenAPI spec
+## Phase 3 — Schemas & the OpenAPI spec
 - [ ] **3.1** Ensure every endpoint has a validated schema
   - Attach request/response schemas to each handler; reject invalid input at the boundary
   - Verify: a malformed request returns a clean 400 tied to the schema
@@ -56,7 +56,7 @@ Replace the paths and commands with your own. Re-read every iteration.
   - Run contract tests (Pact) that hit each route and assert the real response matches the documented schema
   - Verify: zero contract mismatches; the spec is provably in sync with the code
 
-## Phase 4: Docs & SDK readiness
+## Phase 4 — Docs & SDK readiness
 - [ ] **4.1** Publish API docs from the spec
   - Render the spec to readable docs (Redoc/Stoplight) or wire it into the existing docs site
   - Verify: a reader can find any endpoint, its params, and a valid example

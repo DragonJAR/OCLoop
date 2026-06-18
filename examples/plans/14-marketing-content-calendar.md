@@ -25,7 +25,7 @@ Replace the brand, channels, and tooling with your own. Re-read every iteration.
 - Voice & style guide: `docs/brand-voice.md` (create if missing) — tone, vocabulary, forbidden claims.
 - Working file: `content/calendar.md` — the single source of truth (dates, status, links).
 
-## Phase 1: Strategy & calendar
+## Phase 1 — Strategy & calendar
 - [ ] **1.1 (recon)** Define pillars, goals, and the cluster map
   - Record the objective, the `<persona>`, the key message, the success metric, and the 3-7 content pillars in `content/calendar.md`; map each pillar to its hub + spokes
   - **Recursion:** for each discovered pillar insert one `- [ ]` task below to build its cluster (e.g. `**1.1a** Build cluster for pillar "<pillar>"`)
@@ -33,7 +33,7 @@ Replace the brand, channels, and tooling with your own. Re-read every iteration.
   - Assign each sub-topic to a channel and a publish date; sequence for a narrative arc; tag funnel stage per asset
   - Verify: every calendar row has topic, channel, date, owner, status, and funnel stage; no gaps or clashes
 
-## Phase 2: Blog / long-form (the hub-and-spoke)
+## Phase 2 — Blog / long-form (the hub-and-spoke)
 - [ ] **2.1** Draft the pillar (hub) blog post
   - Write the cornerstone article for `<campaign>`; cite sources; follow `docs/brand-voice.md`; it links to every spoke
   - Verify: the draft hits the target word count, includes the key message, and has a CTA
@@ -41,7 +41,7 @@ Replace the brand, channels, and tooling with your own. Re-read every iteration.
   - Write each sub-topic post, cross-linking bidirectionally to the pillar; one post per task
   - Verify: each post stands alone, links to/from the pillar, and passes the voice-guide checklist
 
-## Phase 3: Social & email (COPE repurposing)
+## Phase 3 — Social & email (COPE repurposing)
 - [ ] **3.1** Create the social asset set (repurpose the hub)
   - Per channel, draft posts that repurpose the pillar (thread, carousel, short video script)
   - Verify: each post fits the channel's length/format limits and carries a consistent hook
@@ -51,7 +51,7 @@ Replace the brand, channels, and tooling with your own. Re-read every iteration.
 - [MANUAL] **3.3** Brand and legal review of all copy
   - Confirm claims are substantiated, compliance is met, and the voice is on-brand
 
-## Phase 4: Schedule & measure
+## Phase 4 — Schedule & measure
 - [ ] **4.1** Stage everything in the calendar
   - Update `content/calendar.md` with final asset links, publish times, and status per channel
   - Verify: the calendar is internally consistent and every asset is linked

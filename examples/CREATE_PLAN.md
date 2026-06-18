@@ -7,7 +7,7 @@ Structure (in this order):
 1. First line: a `# <title>` for the effort.
 2. A short objective (1-3 sentences) describing what we're implementing and why. An `## Overview` heading for it is fine.
 3. For non-trivial work, an `## Architecture context (read first)` section: the key files, entry points, and constraints an implementer must know - with exact paths (e.g. `src/hooks/useServer.ts`) and the core problem each phase solves. This is re-read every iteration, so keep it tight.
-4. `## Phase N: <title>` headings that group the work into ordered, independently shippable milestones. Phases run IN ORDER; each phase is a natural commit/checkpoint boundary.
+4. `## Phase N — <title>` headings that group the work into ordered, independently shippable milestones. Phases run IN ORDER; each phase is a natural commit/checkpoint boundary.
 5. `## Testing Notes`: how to verify the implementation - the exact test command (`bun test`) plus any manual steps. This project has NO lint script, so do not add lint steps.
 6. `## File Change Summary`: a markdown table of files created/modified and the purpose of each.
 7. `## Acceptance criteria`: a numbered definition of done - the concrete, checkable conditions that mean the whole plan is complete.

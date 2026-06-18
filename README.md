@@ -411,7 +411,7 @@ All `.loop*` files are git-ignored automatically.
 
 **Server fails to start** — make sure OpenCode is installed and on your `PATH`, your API keys are configured, and check OpenCode's logs.
 
-**The loop seems stuck** — the guardian detects a genuine stall automatically; watch the `Guard ●` indicator and the `[HEALTH]` lines in `.loop.log`. Press `T` to open OpenCode in a terminal and see what's happening. If recovery is exhausted, the error dialog includes a diagnostic (last heartbeat age, probe verdict, attempts).
+**The loop seems stuck** — the guardian detects a genuine stall automatically; watch the `Health ●` indicator (green `OK` healthy) and the `[HEALTH]` lines in `.loop.log`. Press `T` to open OpenCode in a terminal and see what's happening. If recovery is exhausted, the error dialog includes a diagnostic (last heartbeat age, probe verdict, attempts).
 
 **It got rate-limited** — that's expected and handled: OCLoop shows a `COOLDOWN` countdown and retries automatically.
 

@@ -23,7 +23,7 @@ Replace these paths and the feature name with your own. Re-read every iteration.
 - `src/api/` or `src/ui/` - the surface (REST handlers or components).
 - `test/` - test suite, run with `<your-test-command>`.
 
-## Phase 1: Foundations
+## Phase 1 — Foundations
 - [ ] **1.1** Define the data model
   - Add the schema/type for `<feature>` in `src/models/`; include validation
   - Verify: the model compiles and its types are exported
@@ -31,7 +31,7 @@ Replace these paths and the feature name with your own. Re-read every iteration.
   - Implement create/read/update/delete for `<feature>` in `src/services/` or `src/db/`
   - Verify: write a test that creates and retrieves a record
 
-## Phase 2: Core logic
+## Phase 2 — Core logic
 - [ ] **2.1** Implement the business rules
   - Add the service functions that encode `<feature>`'s rules and constraints
   - Verify: add tests covering the happy path and at least one error case (unit level)
@@ -39,7 +39,7 @@ Replace these paths and the feature name with your own. Re-read every iteration.
   - Cover: duplicate, not-found, invalid input, and permission checks
   - Verify: each case has a test asserting the correct behavior
 
-## Phase 3: Surface
+## Phase 3 — Surface
 - [ ] **3.1 (recon)** Decompose the feature into its surface touch-points and acceptance scenarios
   - List every handler/component to wire and every acceptance scenario (incl. edge cases) the outer test must cover
   - **Recursion:** for each discovered scenario/surface, insert one `- [ ]` task below to implement and test it
@@ -47,7 +47,7 @@ Replace these paths and the feature name with your own. Re-read every iteration.
   - Wire the service to handlers in `src/api/` (or components in `src/ui/`); validate and sanitize every input; return clean 400s
   - Verify: an end-to-end test hits the surface and returns the expected result; malformed input yields a clean 400
 
-## Phase 4: Integration & polish
+## Phase 4 — Integration & polish
 - [ ] **4.1** Integrate with existing features
   - Update anything that references the touched models/services to stay consistent
   - Verify: the full suite (`<your-test-command>`) passes with no regressions (pyramid intact: units + integration + the e2e slice)

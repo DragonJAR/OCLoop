@@ -26,7 +26,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
 - Record the review baseline in `docs/review-baseline.md` (create `docs/` if missing).
 - Run SAST first: `semgrep --config=auto` and/or `codeql database analyze`.
 
-## Phase 1: Baseline & triage
+## Phase 1 — Baseline & triage
 - [ ] **1.1 (recon)** Inventory the attack surface and risk hotspots
   - List every entry point and every module handling money, auth, external IO, or concurrency; record in `docs/review-baseline.md`
   - **Recursion:** for each discovered high-risk module/entry point, insert one `- [ ]` task below to review it (e.g. `**1.1a** Review src/auth/session.ts`)
@@ -34,7 +34,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Review the issue tracker and run SAST; group findings by area; classify each as true/false positive
   - Verify: every reported bug and every High/Critical SAST finding is mapped to a Phase 2-4 task or documented as wontfix
 
-## Phase 2: Authentication & authorization
+## Phase 2 — Authentication & authorization
 - [ ] **2.1** Review session and token handling in `src/auth/`
   - Check expiry, refresh, revocation, and secure storage; look for unvalidated redirects, missing `await`, timing leaks
   - Verify: add a test proving an expired/revoked token is rejected
@@ -42,7 +42,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Confirm each protected route checks permissions (not just authentication); check IDOR on object lookups
   - Verify: add a test proving an unauthorized user receives 403, not 200
 
-## Phase 3: Data layer
+## Phase 3 — Data layer
 - [ ] **3.1** Review queries and transactions in `src/db/`
   - Check for injection, missing transactions on multi-step writes, N+1 patterns
   - Verify: add a test for one query that lacked input validation
@@ -50,7 +50,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Look for missing constraints, nullable fields that shouldn't be, orphaned rows
   - Verify: migrations run cleanly on a fresh database
 
-## Phase 4: API surface & edge cases
+## Phase 4 — API surface & edge cases
 - [ ] **4.1** Review input validation in `src/api/`
   - Confirm every handler validates and sanitizes before use; errors leak no internals
   - Verify: probe one handler with malformed input and confirm a clean 400
@@ -58,7 +58,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Empty/huge/negative/unicode input, concurrent duplicate requests, deep nesting
   - Verify: add a regression test for one edge case that currently misbehaves
 
-## Phase 5: Regression guard
+## Phase 5 — Regression guard
 - [ ] **5.1** Confirm the full suite is green
   - Run `<your-test-command>` end-to-end; every Phase 2-4 fix has a covering test
   - Verify: zero failing tests; flaky tests either fixed or documented in `docs/review-baseline.md`

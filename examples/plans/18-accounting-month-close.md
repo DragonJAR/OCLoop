@@ -27,7 +27,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
 - Output workpapers: `close/<YYYY-MM>/`; close package: `close/<YYYY-MM>/close-package.md`.
 - Chart of accounts and close checklist: `docs/coa.md` and `docs/close-checklist.md`.
 
-## Phase 1: Pre-close preparation
+## Phase 1 — Pre-close preparation
 - [ ] **1.1** Lock the period and capture the trial balance
   - Confirm all expected source files are present; import `data/tb-<YYYY-MM>.csv`; record totals in the close package
   - Verify: TB debits = credits; every expected source file is present or flagged missing
@@ -35,7 +35,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Walk `docs/close-checklist.md`; note recurring JEs, accruals, and last month's open items; list every BS account, subledger, and accrual category to process
   - **Recursion:** for each discovered account/subledger/category insert one `- [ ]` task below (e.g. `**1.2a** Reconcile account 1010 Cash - Operating`, `**1.2b** Three-way tie for AR subledger`)
 
-## Phase 2: Reconciliations
+## Phase 2 — Reconciliations
 - [ ] **2.1** Reconcile the cash accounts
   - Match each bank account in `data/bank/` to the GL; list and explain every reconciling item
   - Verify: adjusted bank = GL cash per account; unreconciled differences are explained, not hidden
@@ -46,7 +46,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Tie AR/AP aging in `data/sub/` to the control accounts; investigate variances (subledger = GL control = independent schedule)
   - Verify: subledger total = GL control account; variances are listed with a cause
 
-## Phase 3: Accruals, prepaids & adjustments
+## Phase 3 — Accruals, prepaids & adjustments
 - [ ] **3.1** Post period accruals and deferrals
   - Compute and draft the JEs for accrued expenses, deferred revenue, and prepaid amortization
   - Verify: each draft JE references its support and a recomputation that ties to the source
@@ -57,7 +57,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Draft any remaining adjustments (reserve true-ups, FX revaluation) with support
   - Verify: every adjustment has a reviewer-ready support file
 
-## Phase 4: Close package & review
+## Phase 4 — Close package & review
 - [ ] **4.1** Produce the close package and variance analysis
   - Assemble `close/<YYYY-MM>/close-package.md`: P&L vs budget/prior, variance explanations, metrics
   - Verify: every material variance has a written explanation tied to a workpaper

@@ -25,7 +25,7 @@ Replace the paths, targets, and commands with your own. Re-read every iteration.
 - Suite: run with `<your-test-command>` — must stay green; correctness before speed.
 - Record baselines and gains in `docs/perf-notes.md` (create `docs/` if missing).
 
-## Phase 1: Measure & profile
+## Phase 1 — Measure & profile
 - [ ] **1.1** Establish the performance baseline
   - Run `<your-bench-command>` against the hot path; record p50/p95/p99 latency and throughput in `docs/perf-notes.md`
   - Define the target: e.g. "p95 under `<target-ms>` ms" or "throughput up `<target-x>`"
@@ -34,7 +34,7 @@ Replace the paths, targets, and commands with your own. Re-read every iteration.
   - **Recursion:** for each discovered hotspot (top-N functions/slowest endpoints/saturated resource) insert one `- [ ]` task below to optimize it, each with its own before/after
   - Record the top 3-5 cost centers in `docs/perf-notes.md`
 
-## Phase 2: Eliminate the biggest waste
+## Phase 2 — Eliminate the biggest waste
 - [ ] **2.1** Fix the N+1 query / redundant fetch
   - Batch or eager-load the most expensive repeated data access identified in 1.2
   - Verify: re-run the bench; latency drops; `<your-test-command>` still green
@@ -45,7 +45,7 @@ Replace the paths, targets, and commands with your own. Re-read every iteration.
   - Trim over-fetching (select only needed fields), compress large responses, avoid re-encoding
   - Verify: response size drops; bench improves; a test asserts the response shape is still correct
 
-## Phase 3: Concurrency & algorithmic gains
+## Phase 3 — Concurrency & algorithmic gains
 - [ ] **3.1** Parallelize independent work
   - Convert sequential awaits/loops over independent items into concurrent execution with bounded parallelism
   - Verify: bench improves under load; `<your-test-command>` green; no new race or ordering bug
@@ -53,7 +53,7 @@ Replace the paths, targets, and commands with your own. Re-read every iteration.
   - Swap an O(n²)/repeated-scan inner loop for an indexed/map-based approach where profiling showed cost
   - Verify: a micro-bench of that path shows the asymptotic gain; full suite green
 
-## Phase 4: Validate & guard
+## Phase 4 — Validate & guard
 - [ ] **4.1** Confirm the target is met and no regression
   - Run the full bench + `<your-test-command>`; confirm the target from 1.1 is hit and nothing regressed
   - Verify: record the before/after table in `docs/perf-notes.md`

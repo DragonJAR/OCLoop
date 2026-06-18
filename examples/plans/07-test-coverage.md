@@ -28,7 +28,7 @@ Replace the module paths, threshold, and command with your own. Re-read every it
 - Suite: run with `<your-test-command>`.
 - Record progress in `docs/coverage-progress.md` (create `docs/` if missing).
 
-## Phase 1: Baseline & targeting
+## Phase 1 — Baseline & targeting
 - [ ] **1.1 (recon)** Capture the coverage baseline and find the gaps
   - Run `<your-coverage-command>`; rank modules least→most covered, marking hot paths (money, auth, high churn) as priority; record per-file coverage in `docs/coverage-progress.md`
   - **Recursion:** for each discovered below-threshold module, insert one `- [ ]` task below to raise its coverage (e.g. `**1.1a** Cover src/services/payments.ts`)
@@ -36,7 +36,7 @@ Replace the module paths, threshold, and command with your own. Re-read every it
   - Note the branch vs line threshold and the intentionally-excluded files (entry points, generated code); if available, run the mutation tool to list surviving mutants
   - Verify: the exclusion list is documented; surviving mutants on hot paths are recorded as targets
 
-## Phase 2: Lowest-coverage modules
+## Phase 2 — Lowest-coverage modules
 - [ ] **2.1** Test the least-covered, highest-risk module
   - Write behavior tests for its public API + edge cases (not internal collaborators)
   - Verify: that module's coverage is now above `<target>%`; the mutation tool kills its mutants; `<your-test-command>` is green
@@ -47,7 +47,7 @@ Replace the module paths, threshold, and command with your own. Re-read every it
   - Cover the rest of the backlog below the threshold, one module per commit
   - Verify: every previously-below-threshold module is now above `<target>%`
 
-## Phase 3: Branch & mutation gaps
+## Phase 3 — Branch & mutation gaps
 - [ ] **3.1** Close branch gaps in the most complex module
   - Target error paths, null/undefined branches, and early returns the line metric missed
   - Verify: branch coverage on that module reaches `<target>%`
@@ -55,7 +55,7 @@ Replace the module paths, threshold, and command with your own. Re-read every it
   - For each surviving mutant the mutation tool reported on a hot path, add/strengthen the test that catches it
   - Verify: the mutation score on the targeted modules rises above the threshold; suite green
 
-## Phase 4: Confirm & document
+## Phase 4 — Confirm & document
 - [ ] **4.1** Confirm the overall threshold is met
   - Run `<your-coverage-command>` end-to-end; confirm `src/` is at or above `<target>%`
   - Verify: no module regressed below the threshold; the number and the mutation score are recorded in `docs/coverage-progress.md`

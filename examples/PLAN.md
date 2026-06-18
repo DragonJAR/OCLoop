@@ -14,7 +14,7 @@ so keep it tight and accurate.
 - `src/api/` - request handlers / controllers / routes.
 - `test/` - test suite, run with `<your-test-command>` (e.g. `bun test`, `npm test`).
 
-## Phase 1: Audit & triage
+## Phase 1 — Audit & triage
 - [ ] **1.1** Inventory error-prone areas and known issues
   - List every module that handles money, auth, external IO, or concurrency
   - Record the current test coverage gaps in `docs/review-coverage.md`
@@ -22,7 +22,7 @@ so keep it tight and accurate.
   - Record pass/fail counts and any flaky tests in `docs/review-coverage.md`
   - Verify: every existing test result is documented, flaky ones flagged
 
-## Phase 2: Authentication & authorization
+## Phase 2 — Authentication & authorization
 - [ ] **2.1** Review auth flows in `src/auth/`
   - Check token validation, expiry handling, and role checks
   - Look for: missing `await`, unvalidated redirect targets, timing leaks
@@ -30,7 +30,7 @@ so keep it tight and accurate.
   - Confirm every protected route checks permissions, not just authentication
   - Verify: write a test proving an unauthorized user gets 403, not 200
 
-## Phase 3: Data layer & state
+## Phase 3 — Data layer & state
 - [ ] **3.1** Review queries and transactions in `src/db/`
   - Check for SQL/NoSQL injection, missing indexes hinted by slow queries, N+1 patterns
   - Confirm every write that should be transactional actually is
@@ -38,7 +38,7 @@ so keep it tight and accurate.
   - Look for shared mutable state, missing locks, off-by-one loops
   - Verify: add or fix a test covering the concurrency case found
 
-## Phase 4: API surface & edge cases
+## Phase 4 — API surface & edge cases
 - [ ] **4.1** Review input validation in `src/api/`
   - Confirm every handler validates and sanitizes input before use
   - Check error responses leak no stack traces or internal details
@@ -46,7 +46,7 @@ so keep it tight and accurate.
   - Empty input, huge input, unicode, negative numbers, concurrent duplicate requests
   - Verify: add a test for at least one edge case that currently misbehaves
 
-## Phase 5: Regression guard
+## Phase 5 — Regression guard
 - [ ] **5.1** Consolidate fixes and confirm the full suite is green
   - Run `<your-test-command>` end-to-end; every fix from Phases 2-4 is covered
   - Verify: zero failing tests; any flaky test is either fixed or documented

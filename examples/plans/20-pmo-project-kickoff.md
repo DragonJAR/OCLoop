@@ -27,7 +27,7 @@ Replace the project name, dates, and tooling with your own. Re-read every iterat
 - PM standards and templates: `docs/pmo-standards.md` (create if missing).
 - Task/issue tracker: `<tracker>` (Jira/Linear/Asana) — the loop drafts, a human creates records.
 
-## Phase 1: Charter & scope
+## Phase 1 — Charter & scope
 - [ ] **1.1** Draft the project charter
   - Write the problem, objectives, **measurable success criteria**, sponsor, and high-level scope in `projects/<project>/charter.md`
   - Verify: the charter names a measurable success criterion and explicit out-of-scope items
@@ -36,7 +36,7 @@ Replace the project name, dates, and tooling with your own. Re-read every iterat
   - **Recursion:** for each discovered work package insert one `- [ ]` task below to detail/estimate it (e.g. `**1.2a** Detail work package "Auth module"`); for each deliverable insert a RACI-assignment task
   - Verify: every deliverable has an acceptance criterion and an owner role; the WBS decomposes to work-package level
 
-## Phase 2: Plan & resources
+## Phase 2 — Plan & resources
 - [ ] **2.1** Build the schedule and identify the critical path
   - Sequence the work packages with estimates and dependencies to `<end>`; identify the critical path (CPM)
   - Verify: every milestone has a date and an owner; the critical path is documented
@@ -47,7 +47,7 @@ Replace the project name, dates, and tooling with your own. Re-read every iterat
   - Estimate effort/cost by workstream; identify constraints (roles, availability, budget cap)
   - Verify: the plan fits within `<budget>` and `<end>`; constraints are explicit
 
-## Phase 3: Risks & governance
+## Phase 3 — Risks & governance
 - [ ] **3.1 (recon)** Build the risk register
   - Brainstorm and identify risks; rate each **probability × impact**; assign a mitigation/response (avoid/transfer/mitigate/accept) and owner in `projects/<project>/risks.md`
   - **Recursion:** for each discovered high/medium risk insert one `- [ ]` task below to plan its response
@@ -59,7 +59,7 @@ Replace the project name, dates, and tooling with your own. Re-read every iterat
   - A repeatable weekly status template (RAG, progress, risks, decisions needed) in `projects/<project>/status-template.md`
   - Verify: the template covers schedule, risks, decisions, and next-week focus
 
-## Phase 4: Kickoff & baseline
+## Phase 4 — Kickoff & baseline
 - [ ] **4.1** Assemble the kickoff pack
   - Compile charter + plan + RACI + risks + governance into `projects/<project>/kickoff.md`
   - Verify: the pack is internally consistent (scope, dates, owners align across artifacts)

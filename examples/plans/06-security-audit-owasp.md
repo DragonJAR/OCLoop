@@ -31,7 +31,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
 - `test/` - test suite, run with `<your-test-command>`.
 - Record findings and fixes in `docs/security-audit.md` (create `docs/` if missing).
 
-## Phase 1: Reconnaissance & baseline
+## Phase 1 — Reconnaissance & baseline
 - [ ] **1.1 (recon)** Inventory the attack surface
   - Crawl/spider the app; list every endpoint, public function, file upload, webhook, and background job; map each to its likely OWASP class in `docs/security-audit.md`
   - **Recursion:** for each discovered endpoint/surface insert one `- [ ]` task below to audit it (e.g. `**1.1a** Audit POST /api/orders for IDOR & injection`)
@@ -39,7 +39,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Run a dependency audit (`npm audit`, `pip-audit`, `trivy fs`, etc.); record CVEs
   - Grep for secrets/keys in the repo and config; confirm secrets come from env, not hardcoded
 
-## Phase 2: Broken access control & authentication (A01, A07)
+## Phase 2 — Broken access control & authentication (A01, A07)
 - [ ] **2.1** Audit authorization on every protected route
   - Confirm each handler enforces ownership/role, not just "is logged in"; check IDOR on object lookups (WSTG-ATHZ)
   - Verify: add a test that an authenticated-but-unauthorized user gets 403, not 200 or another user's data
@@ -47,7 +47,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Check password hashing (bcrypt/argon2), token expiry & rotation, logout invalidation, session fixation (WSTG-ATHN/SESS)
   - Verify: add a test that an expired/revoked token is rejected; a reused refresh token fails
 
-## Phase 3: Injection & data layer (A03)
+## Phase 3 — Injection & data layer (A03)
 - [ ] **3.1** Eliminate SQL/NoSQL/command injection
   - Confirm every query uses parameterization/prepared statements; no string-built queries, raw `$input`, or shell calls with user data (WSTG-INPV)
   - Verify: add a test feeding `' OR 1=1 --` / `;` / `$()` payloads to one previously-vulnerable input
@@ -55,7 +55,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Path traversal (resolve+prefix-check), SSRF (block internal hosts on outbound fetch), unsafe deserialization
   - Verify: add a test that `../../etc/passwd` style input is rejected or sandboxed
 
-## Phase 4: Input, output & state (A03 cont., A08, A10)
+## Phase 4 — Input, output & state (A03 cont., A08, A10)
 - [ ] **4.1** Validate and coerce all input at the boundary
   - Every handler validates type/range/length before use; reject early with a generic error
   - Verify: probe one handler with oversized/negative/unicode/malformed input and confirm a clean 400
@@ -66,7 +66,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - CSP, HSTS, X-Content-Type-Options, frame-ancestors; CSRF tokens on state-changing requests
   - Verify: a test asserts the response carries the expected headers; a forged cross-site POST is rejected
 
-## Phase 5: Secrets, logging & SSRF hardening (A02, A09)
+## Phase 5 — Secrets, logging & SSRF hardening (A02, A09)
 - [ ] **5.1** Remove secrets from code and history
   - Move any hardcoded key to env/secret manager; rotate any secret found committed; add the pattern to pre-commit
   - Verify: grep returns no secrets; the secret-manager load is tested
@@ -74,7 +74,7 @@ Replace these paths with your own. Re-read every iteration, so keep it accurate.
   - Never log passwords/tokens/PII; error responses to clients are generic, details server-side only
   - Verify: add a test that a failed-login log line contains no password, and a 500 body leaks no stack trace
 
-## Phase 6: Validate & report
+## Phase 6 — Validate & report
 - [ ] **6.1** Re-run the full suite, SAST, and the dependency audit
   - Run `<your-test-command>`, `semgrep`/`zap-baseline`, and the dependency audit; confirm every Phase 2-5 finding is fixed or filed
   - Verify: zero failing tests; every applicable WSTG category exercised; no new high/critical CVEs remain unfixed

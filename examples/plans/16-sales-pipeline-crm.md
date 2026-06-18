@@ -25,14 +25,14 @@ Replace the CRM export path and tooling with your own. Re-read every iteration.
 - Cleaned output: `data/pipeline-clean.csv`; outreach drafts: `outreach/`.
 - Never auto-send; the loop drafts and a human sends from the CRM.
 
-## Phase 1: Export & data-quality audit
+## Phase 1 — Export & data-quality audit
 - [ ] **1.1** Export and profile the pipeline
   - Profile `data/pipeline.csv`: row count, fill rate per field, duplicate rate; record in `docs/pipeline-audit.md`; flag required fields missing on money-stage deals
 - [ ] **1.2 (recon)** Define normalization rules and enumerate the segments
   - Standardize company/domain/region casing; define the "duplicate" key (normalized domain); list duplicate-account groups, stale deals (>N days), and open deals needing qualification
   - **Recursion:** for each discovered group/deal insert one `- [ ]` task below (e.g. `**1.2a** Merge duplicate group on domain "acme.com"`, `**1.2b** Re-engage stale deal #1234`)
 
-## Phase 2: Deduplicate & normalize
+## Phase 2 — Deduplicate & normalize
 - [ ] **2.1** Deduplicate accounts and contacts
   - Merge on the duplicate key from 1.2; keep the richest record; log merges in `docs/pipeline-audit.md`
   - Verify: `data/pipeline-clean.csv` has one row per account; the merge log explains each merge
@@ -40,7 +40,7 @@ Replace the CRM export path and tooling with your own. Re-read every iteration.
   - Apply casing/region rules; fill blanks from enrichment (firmographics) or mark `[unknown]`
   - Verify: every deal in the money stages has all required fields populated or explicitly `[unknown]`
 
-## Phase 3: Re-score & segment
+## Phase 3 — Re-score & segment
 - [ ] **3.1** Re-score every open deal against the ICP
   - Apply `docs/icp.md` to assign a score/tier (A/B/C) and a next-action; flag mis-staged deals
   - Verify: every open deal has a tier and a next-action; deals in the wrong stage are listed
@@ -48,7 +48,7 @@ Replace the CRM export path and tooling with your own. Re-read every iteration.
   - Apply BANT (transactional) or MEDDICC (enterprise) to each open deal; segment stale deals (>N days no activity) for re-engage or close-lost
   - Verify: every open deal has a qualification status and a recommended next action
 
-## Phase 4: Outreach & forecast
+## Phase 4 — Outreach & forecast
 - [ ] **4.1** Draft re-engagement outreach per segment
   - Write personalized first-touch drafts in `outreach/` per segment, referencing the deal context
   - Verify: each draft is specific (not template spam), under the length limit, and has a single CTA

@@ -26,7 +26,7 @@ Replace the target module and test command with your own. Re-read every iteratio
 - Run tests with `<your-test-command>`.
 - Notes go in `docs/refactor-notes.md` (create `docs/` if missing).
 
-## Phase 1: Map the current state
+## Phase 1 — Map the current state
 - [ ] **1.1 (recon)** Inventory the target module and its smells
   - List every file, its responsibilities, and the code smells present (Long Method, Large Class, Feature Envy, Duplicated blocks via jscpd, high cyclomatic complexity) in `docs/refactor-notes.md`
   - **Recursion:** for each discovered smell instance, insert one `- [ ]` task below to apply the matching Fowler move (e.g. `**1.1a** Extract Method in src/<target>/foo.ts:42`)
@@ -34,7 +34,7 @@ Replace the target module and test command with your own. Re-read every iteratio
   - Run `<your-test-command>` and confirm it is green before changing anything; on a hot path with thin coverage, add characterization tests first
   - Verify: the suite is green and the riskiest paths are covered
 
-## Phase 2: Extract & decompose
+## Phase 2 — Extract & decompose
 - [ ] **2.1** Extract the clearest tangled responsibility
   - Move one cohesive responsibility out of `src/<target>/` into its own module (behavior-preserving)
   - Verify: `<your-test-command>` stays green; behavior is unchanged
@@ -42,7 +42,7 @@ Replace the target module and test command with your own. Re-read every iteratio
   - Extract the next cohesive unit; update imports across the codebase
   - Verify: tests green; no lingering references to the old location
 
-## Phase 3: Tighten & deduplicate
+## Phase 3 — Tighten & deduplicate
 - [ ] **3.1** Remove duplication
   - Consolidate repeated logic into a single helper; update all call sites
   - Verify: tests green; grep confirms no orphaned copies remain
@@ -50,7 +50,7 @@ Replace the target module and test command with your own. Re-read every iteratio
   - Replace `any`/loose types with precise ones; narrow error handling to specific cases
   - Verify: tests green; the type checker reports no new errors
 
-## Phase 4: Polish & document
+## Phase 4 — Polish & document
 - [ ] **4.1** Rename for clarity
   - Rename misleading identifiers and files; update every reference
   - Verify: tests green; build succeeds with the new names

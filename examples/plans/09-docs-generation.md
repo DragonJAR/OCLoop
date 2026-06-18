@@ -26,7 +26,7 @@ Replace these paths with your own. Re-read every iteration.
 - `src/` - the source the docs must describe; API surface in `src/api/` or `src/routes/`.
 - `AGENTS.md` - project operations and architecture for coding agents.
 
-## Phase 1: Audit & outline
+## Phase 1 — Audit & outline
 - [ ] **1.1 (recon)** Inventory existing docs and gaps
   - List every doc file; classify each into a Diátaxis mode; mark stale/missing/contradictory sections in `docs/docs-audit.md`; compare doc claims against the code (wrong commands, renamed files, removed flags)
   - **Recursion:** for each discovered gap (missing page, broken link, undocumented symbol, mis-classified doc) insert one `- [ ]` task below to fix it
@@ -34,7 +34,7 @@ Replace these paths with your own. Re-read every iteration.
   - Decide the doc set (README, API reference, architecture, getting-started) and the Diátaxis mode + audience for each
   - Verify: the outline in `docs/docs-audit.md` covers every public surface and known gap
 
-## Phase 2: README & getting started
+## Phase 2 — README & getting started
 - [ ] **2.1** Rewrite the README for accuracy
   - Update install, run, test, and config instructions; verify each command against the real project
   - Verify: every command in the README runs exactly as written
@@ -42,7 +42,7 @@ Replace these paths with your own. Re-read every iteration.
   - A copy-paste path from zero to a running app, including env setup and the first call
   - Verify: follow the quickstart in a clean checkout; it works end-to-end
 
-## Phase 3: API & code reference
+## Phase 3 — API & code reference
 - [ ] **3.1** Generate the API reference from the code (Reference mode)
   - Document every public route/handler: method, path, params, request/response shape, errors; generate from source so it can't drift
   - Verify: each documented endpoint matches a live route in `src/api/`; examples are valid
@@ -50,7 +50,7 @@ Replace these paths with your own. Re-read every iteration.
   - Document exported functions/types with purpose, params, returns, and a one-line example
   - Verify: the doc tool reports no undocumented exports on the public surface
 
-## Phase 4: Architecture & decisions
+## Phase 4 — Architecture & decisions
 - [ ] **4.1** Write the architecture overview (Explanation mode)
   - Describe the layers, data flow, key modules, and external dependencies; include a simple diagram (ASCII or mermaid)
   - Verify: the description matches the actual structure in `src/`

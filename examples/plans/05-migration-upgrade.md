@@ -25,7 +25,7 @@ Replace the dependency, version, and test command with your own. Re-read every i
 - `test/` - the safety net; run with `<your-test-command>`. Must stay green throughout.
 - Notes go in `docs/upgrade-notes.md` (create `docs/` if missing).
 
-## Phase 1: Audit & prepare
+## Phase 1 — Audit & prepare
 - [ ] **1.1 (recon)** Audit current usage and the dependency graph
   - Grep for every use of `<dependency>`; record call sites and patterns; run `npm ls`/`pnpm why` to map the graph; record in `docs/upgrade-notes.md`
   - **Recursion:** list every outdated dependency and every open CVE; for each discovered dep/CVE insert one `- [ ]` task below to upgrade/patch it individually
@@ -33,7 +33,7 @@ Replace the dependency, version, and test command with your own. Re-read every i
   - Confirm `<your-test-command>` is green and the build is clean on the current version; commit the baseline so a partial upgrade can be reverted
   - Verify: lockfile committed; CI installs with `--frozen-lockfile` without drift
 
-## Phase 2: Bump the version
+## Phase 2 — Bump the version
 - [ ] **2.1** Update the dependency to `<target-version>`
   - Change the version in `package.json` (or equivalent); install and confirm it resolves; do NOT fix anything yet — capture every error in `docs/upgrade-notes.md`
   - Resolve any diamond conflict via overrides/resolutions
@@ -41,7 +41,7 @@ Replace the dependency, version, and test command with your own. Re-read every i
   - Apply required config file changes from the migration guide (formats, options, paths)
   - Verify: the build command runs (failures are allowed in tests; the toolchain itself must load)
 
-## Phase 3: Fix breaking changes (one per task)
+## Phase 3 — Fix breaking changes (one per task)
 - [ ] **3.1** Fix the highest-impact breaking change
   - Address one removed/changed API from `docs/upgrade-notes.md`; update every call site
   - Verify: the affected test file passes; full suite may still have other failures
@@ -52,7 +52,7 @@ Replace the dependency, version, and test command with your own. Re-read every i
   - Resolve every new deprecation warning the upgrade introduced
   - Verify: build runs with no new warnings beyond pre-existing ones
 
-## Phase 4: Validate & document
+## Phase 4 — Validate & document
 - [ ] **4.1** Confirm the full suite is green and CVEs are resolved
   - Run `<your-test-command>` end-to-end; re-run the dependency audit (`trivy fs --severity HIGH,CRITICAL --exit-code 1`)
   - Verify: zero failing tests; zero unpatched High/Critical CVEs (or documented accepted-risk)

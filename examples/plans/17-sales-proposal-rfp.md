@@ -27,7 +27,7 @@ Replace the prospect and source material with your own. Re-read every iteration.
 - Output: `proposals/<prospect>/proposal.md` and `proposals/<prospect>/compliance-matrix.md`.
 - Pricing/approvals must come from a human; the loop never invents numbers or commitments.
 
-## Phase 1: Parse requirements & plan
+## Phase 1 — Parse requirements & plan
 - [ ] **1.1 (recon)** Extract the requirement list and build the compliance matrix
   - Read `docs/rfp-<prospect>.md`; enumerate every explicit requirement/question in `compliance-matrix.md` with a status (addressed / needs-custom / missing); map each to a library section or flag for custom drafting; capture the evaluation criteria and win themes
   - **Recursion:** for each discovered requirement insert one `- [ ]` task below to answer/draft it (e.g. `**1.1a** Draft response to requirement "SOC 2 compliance evidence"`)
@@ -35,7 +35,7 @@ Replace the prospect and source material with your own. Re-read every iteration.
   - For each requirement, confirm the source (library file or a `needs-custom` task below)
   - Verify: every row points to a source or a drafting task; no requirement is orphaned
 
-## Phase 2: Executive summary & approach
+## Phase 2 — Executive summary & approach
 - [ ] **2.1** Draft the executive summary (Blue-team strategy)
   - Write the tailored summary: prospect pain, proposed value, why us, win themes — grounded in the brief
   - Verify: the summary references the prospect's stated goals and avoids unapproved claims
@@ -43,7 +43,7 @@ Replace the prospect and source material with your own. Re-read every iteration.
   - Describe the solution, scope, methodology, and timeline at a high level
   - Verify: every scope item maps to a requirement; out-of-scope items are listed explicitly
 
-## Phase 3: Fill the body sections
+## Phase 3 — Fill the body sections
 - [ ] **3.1** Draft the custom sections
   - Write each `needs-custom` section from 1.1, pulling facts from the brief and library
   - Verify: each section answers its requirement and is marked `addressed` in the matrix
@@ -54,7 +54,7 @@ Replace the prospect and source material with your own. Re-read every iteration.
   - Select 2-3 relevant case studies from the library and tailor the relevance to the prospect
   - Verify: each case study maps to a prospect pain point in the brief
 
-## Phase 4: Compliance, pricing, review
+## Phase 4 — Compliance, pricing, review
 - [ ] **4.1** Complete the compliance matrix (Pink/Green team checks)
   - Confirm every requirement row is `addressed` with a proposal section reference; run a proofing pass for format/page/deadline instructions
   - Verify: zero rows are `missing` or `needs-custom`; the matrix is internally consistent

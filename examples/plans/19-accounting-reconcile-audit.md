@@ -26,7 +26,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
 - Reconciliations: `recon/<account>.md`; audit binder index: `recon/INDEX.md`.
 - Materiality and risk ratings: `docs/audit-risk.md` (create if missing).
 
-## Phase 1: Scope & risk-rate
+## Phase 1 — Scope & risk-rate
 - [ ] **1.1 (recon)** List every balance-sheet account and risk-rate it
   - Enumerate all BS accounts from `data/gl/` with ending balances; assign a risk rating (high/medium/low) by materiality, volume, and complexity → set the cadence (monthly/quarterly/annual); record in `recon/INDEX.md` and `docs/audit-risk.md`
   - **Recursion:** for each discovered account insert one `- [ ]` task below to reconcile it (e.g. `**1.1a** Reconcile 1010 Cash - Operating (high-risk, monthly)`)
@@ -35,7 +35,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Cross-check the account list against the GL and prior-period binders
   - Verify: no account is missing; the list foots to the GL total
 
-## Phase 2: High-risk reconciliations
+## Phase 2 — High-risk reconciliations
 - [ ] **2.1** Reconcile cash and debt
   - Tie each cash and debt account to `data/external/` confirmations; list reconciling items and aging
   - Verify: adjusted balance = GL; items over `<aging-days>` are explained and flagged
@@ -46,7 +46,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Tie inventory to a count or rollforward; reserve for slow-moving/obsolete items
   - Verify: inventory GL = physical/rollforward; reserve methodology is documented
 
-## Phase 3: Remaining accounts & estimates
+## Phase 3 — Remaining accounts & estimates
 - [ ] **3.1** Reconcile prepaid, accrued, and deposit accounts
   - Support each balance with a schedule; clear stale items to the P&L
   - Verify: every balance has a support schedule; stale items are listed for write-off
@@ -57,7 +57,7 @@ Replace the entity, period, and source paths with your own. Re-read every iterat
   - Tie the equity rollforward (capital, retained earnings, distributions); agree intercompany between entities
   - Verify: equity rollforward foots; intercompany eliminates on consolidation
 
-## Phase 4: Audit binder & sign-off
+## Phase 4 — Audit binder & sign-off
 - [ ] **4.1** Assemble the audit binder index
   - Ensure `recon/INDEX.md` links each account to its recon, support, sign-off, and open items; summarize open items and risks at the top
   - Verify: every BS account has a recon; the index is complete

@@ -28,7 +28,7 @@ Replace the site root and tools with your own. Re-read every iteration.
 - Tools: `<seo-audit-tool>` (e.g. Lighthouse, Screaming Frog export) and `<rank-tracker>` (Search Console).
 - Record progress in `docs/seo-audit.md` (create `docs/` if missing).
 
-## Phase 1: Baseline & keyword map
+## Phase 1 — Baseline & keyword map
 - [ ] **1.1** Capture the SEO baseline
   - Run `<seo-audit-tool>`; record per-page scores (perf, SEO, accessibility) in `docs/seo-audit.md`
   - Pull current rankings from `<rank-tracker>`; record the target keywords and positions
@@ -36,7 +36,7 @@ Replace the site root and tools with your own. Re-read every iteration.
   - Assign a primary + secondary keyword/intent to each page; flag pages cannibalizing the same query; list orphan cluster pages and missing-schema pages
   - **Recursion:** for each discovered URL/cluster (and each cannibalization pair) insert one `- [ ]` task below to optimize/resolve it (e.g. `**1.2a** Optimize /pricing for "commercial" intent`)
 
-## Phase 2: On-page fundamentals
+## Phase 2 — On-page fundamentals
 - [ ] **2.1** Fix the technical on-page issues on the top page
   - Title, meta description, H1, URL slug, image alt text, and schema for the highest-value page; ensure the intent's keyword appears in title, H1, and first 100 words
   - Verify: `<seo-audit-tool>` score improves; the Rich Results Test validates the schema
@@ -47,7 +47,7 @@ Replace the site root and tools with your own. Re-read every iteration.
   - Repeat the on-page pass for the next page on the ranked list, one page per task
   - Verify: that page's audit score and keyword placement improve
 
-## Phase 3: Internal linking & structure
+## Phase 3 — Internal linking & structure
 - [ ] **3.1** Build a topic-cluster internal link structure
   - Link cluster pages to and from the pillar bidirectionally; add contextual links with descriptive anchors; link orphan pages in
   - Verify: every cluster page has a path to/from the pillar; no orphans remain
@@ -55,7 +55,7 @@ Replace the site root and tools with your own. Re-read every iteration.
   - Merge or differentiate cannibalizing pages (301/canonical/merge); fix broken internal links and chains
   - Verify: each query targets exactly one canonical URL (Search Console); no redirect chains longer than one hop
 
-## Phase 4: Measure & document
+## Phase 4 — Measure & document
 - [ ] **4.1** Re-run the audit and confirm gains
   - Run `<seo-audit-tool>` end-to-end; confirm per-page scores rose and no page regressed
   - Verify: record the before/after table in `docs/seo-audit.md`

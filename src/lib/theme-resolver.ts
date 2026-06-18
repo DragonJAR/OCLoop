@@ -210,8 +210,13 @@ export function toMonochrome(t: ThemeColors): ThemeColors {
  * @returns Hex color string for the text (either `#000000` or `#FFFFFF`)
  */
 export function selectedForeground(theme: ThemeColors): string {
-  // Parse hex color to RGB
+  // Parse hex color to RGB. Guard against non-6-digit hex (3-digit like `#fff`,
+  // malformed, or the `#808080` fallback): parseInt on a short/invalid string
+  // returns NaN, which would make luminance NaN and silently always pick
+  // `#FFFFFF` — a wrong contrast choice. Validate the shape first and bail to a
+  // safe default if it isn't a clean 6-digit hex.
   const hex = theme.primary.replace("#", "")
+  if (!/^[0-9a-fA-F]{6}$/.test(hex)) return "#FFFFFF"
   const r = parseInt(hex.substring(0, 2), 16)
   const g = parseInt(hex.substring(2, 4), 16)
   const b = parseInt(hex.substring(4, 6), 16)

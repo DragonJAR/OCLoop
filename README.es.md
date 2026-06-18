@@ -411,7 +411,7 @@ Todos los archivos `.loop*` se ignoran en git automáticamente.
 
 **El servidor no arranca** — asegúrate de que OpenCode esté instalado y en tu `PATH`, que tus claves de API estén configuradas, y revisa los logs de OpenCode.
 
-**El bucle parece atascado** — el guardián detecta un atasco real automáticamente; observa el indicador `Guardián ●` y las líneas `[HEALTH]` en `.loop.log`. Pulsa `T` para abrir OpenCode en una terminal y ver qué pasa. Si la recuperación se agota, el diálogo de error incluye un diagnóstico (antigüedad del último latido, veredicto de las sondas, intentos).
+**El bucle parece atascado** — el guardián detecta un atasco real automáticamente; observa el indicador `Salud ●` (verde `OK` sano) y las líneas `[HEALTH]` en `.loop.log`. Pulsa `T` para abrir OpenCode en una terminal y ver qué pasa. Si la recuperación se agota, el diálogo de error incluye un diagnóstico (antigüedad del último latido, veredicto de las sondas, intentos).
 
 **Recibió un rate limit** — es esperado y se maneja: OCLoop muestra una cuenta atrás `COOLDOWN` y reintenta automáticamente.
 

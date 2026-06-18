@@ -27,7 +27,7 @@ Replace the debt source and command with your own. Re-read every iteration.
 - `test/` - the safety net; run with `<your-test-command>`. Must stay green throughout.
 - Record what was paid down in `docs/debt-paydown.md` (create `docs/` if missing).
 
-## Phase 1: Inventory & prioritize
+## Phase 1 — Inventory & prioritize
 - [ ] **1.1 (recon)** Collect and classify every debt item
   - Grep for `TODO|FIXME|HACK|XXX|@deprecated`; run SonarQube/CodeScene if available; record each item (file, line, text, SQALE estimate) in `docs/debt-paydown.md`; pull matching issues from the tracker
   - **Recursion:** for each discovered debt item insert one `- [ ]` task below to resolve it
@@ -35,7 +35,7 @@ Replace the debt source and command with your own. Re-read every iteration.
   - Prioritize: debt on money/auth/data paths and in CodeScene hotspots (high churn × low health), then debt blocking feature work, then the rest
   - Verify: the ranked list in `docs/debt-paydown.md` justifies each priority with a one-line reason (quadrant + hotspot status)
 
-## Phase 2: High-risk debt (money / auth / data)
+## Phase 2 — High-risk debt (money / auth / data)
 - [ ] **2.1** Resolve the highest-risk item
   - Address the top item from 1.2 properly (not another workaround); add or update its test
   - Verify: the marker is gone; `<your-test-command>` is green
@@ -43,7 +43,7 @@ Replace the debt source and command with your own. Re-read every iteration.
   - Repeat for the next priority item; remove the marker and any now-dead workaround code
   - Verify: tests green; grep confirms no lingering references to the old workaround
 
-## Phase 3: Feature-blocking & cleanup debt
+## Phase 3 — Feature-blocking & cleanup debt
 - [ ] **3.1** Resolve the items blocking feature work
   - Clear the debt that other tasks/issues are waiting on; update the dependents
   - Verify: the blocked issue can now proceed; tests green
@@ -54,7 +54,7 @@ Replace the debt source and command with your own. Re-read every iteration.
   - Delete unreachable code and workarounds whose condition no longer applies; update imports
   - Verify: build + tests green; grep confirms no orphaned references remain
 
-## Phase 4: Confirm & prevent recurrence
+## Phase 4 — Confirm & prevent recurrence
 - [ ] **4.1** Confirm the debt count dropped and the suite is green
   - Re-grep and re-scan (SonarQube/CodeScene); confirm the marker count and the Tech Debt Ratio dropped; run the full suite
   - Verify: record the before/after counts and the maintainability rating in `docs/debt-paydown.md`; zero failing tests

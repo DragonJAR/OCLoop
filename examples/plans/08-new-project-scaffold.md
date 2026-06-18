@@ -26,7 +26,7 @@ Replace the stack and names with your own. Re-read every iteration.
 - Test command: `<your-test-command>`; lint: `<your-lint-command>`.
 - Layout: `src/` (code), `test/` (tests), `docs/` (documentation).
 
-## Phase 1: Foundations
+## Phase 1 — Foundations
 - [ ] **1.1** Initialize the project and tooling
   - `init` the project (`<pm> init`), set the language target/module type, add `.gitignore` (deps, build artifacts, env)
   - Verify: `<pm> install` runs clean; `git status` ignores the right files
@@ -34,7 +34,7 @@ Replace the stack and names with your own. Re-read every iteration.
   - Add the linter, formatter, and test runner configs; add a sample test that passes
   - Verify: `<your-lint-command>` and `<your-test-command>` both pass on the sample
 
-## Phase 2: Structure & config
+## Phase 2 — Structure & config
 - [ ] **2.1** Create the source layout, entry point, and healthcheck
   - Scaffold `src/` with the framework entry (`src/index.ts` / `src/main.ts`), env config loader, and a health endpoint/route
   - Verify: the app boots and the healthcheck returns 200
@@ -45,7 +45,7 @@ Replace the stack and names with your own. Re-read every iteration.
   - Set up a logger (levels, JSON in prod) and a central error handler that never leaks internals
   - Verify: a test triggers an error and asserts the response is generic while the log carries detail
 
-## Phase 3: First vertical slice (walking skeleton)
+## Phase 3 — First vertical slice (walking skeleton)
 - [ ] **3.1 (recon)** Inventory the Twelve-Factor compliance and the slice components
   - List each of the 12 factors and mark satisfied/unsatisfied; list the layers the slice must touch (model → service → route → test)
   - **Recursion:** for each unsatisfied factor insert one `- [ ]` task below to satisfy it
@@ -53,7 +53,7 @@ Replace the stack and names with your own. Re-read every iteration.
   - Build the smallest real feature through every layer as the pattern to copy; validate input at the boundary
   - Verify: an end-to-end test exercises the slice and returns the expected result; malformed input returns a clean 400
 
-## Phase 4: Automation & docs
+## Phase 4 — Automation & docs
 - [ ] **4.1** Add CI and pre-commit hooks
   - CI workflow: install, lint, test on every push; pre-commit runs lint/format on staged files
   - Verify: the CI workflow is valid YAML and runs the right commands; hooks fire on commit
