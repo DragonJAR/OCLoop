@@ -25,6 +25,7 @@ import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
+import { lookupCost, estimateCost } from "./lib/pricing"
 import { shutdownManager } from "./lib/shutdown"
 import {
   ensureGitignore,
@@ -83,6 +84,7 @@ import {
   BottomPanel,
   DialogTerminalConfig,
   createTerminalConfigState,
+  DialogThemePicker,
   DialogTerminalError,
   DialogInvalidAgent,
 } from "./components"
@@ -367,7 +369,9 @@ function AppContent(props: AppProps) {
 
   // Active model
   const [activeModel, setActiveModel] = createSignal<string | undefined>(props.model)
-  
+  // Estimated USD cost for the whole run (accumulated tokens × per-model price).
+  const costEstimate = createMemo(() => estimateCost(sessionStats.tokens(), lookupCost(activeModel())))
+
   // Active agent
   const [activeAgent, setActiveAgent] = createSignal<string | undefined>(props.agent)
 
@@ -535,15 +539,6 @@ function AppContent(props: AppProps) {
       onSessionCreated: (id) => {
         activityLog.addEvent("session_start", `Session started: ${id.substring(0, 8)}`)
         setLastSessionId(id)
-        sessionStats.reset()
-      },
-      onSessionDiff: (diffs) => {
-        // session.diff carries the session's accumulated file changes; the hook
-        // owns the reduction to SessionDiff ({additions, deletions, files}) so
-        // this stays a one-liner and the math is unit-tested in isolation.
-        // BottomPanel renders "+N/-M (F)" from the resulting signal. Reset on
-        // session change is handled by onSessionCreated → sessionStats.reset().
-        sessionStats.setDiffFromFiles(diffs)
       },
       onSessionError: (eventSessionId, error) => {
         const state = loop.state()
@@ -594,6 +589,7 @@ function AppContent(props: AppProps) {
           enterCooldown(action.message, action.retryAfter, action.kind)
           return
         }
+        if (action.type !== "error") return
         // action.type === "error" — auth/fatal surfaced mid-iteration.
         activityLog.addEvent("error", t("actSessionError", { message: action.errorMessage }))
         loop.dispatch({
@@ -659,7 +655,6 @@ function AppContent(props: AppProps) {
         sessionStats.addTokens({
           input: part.tokens.input,
           output: part.tokens.output,
-          reasoning: part.tokens.reasoning,
           cacheRead: part.tokens.cache.read,
           cacheWrite: part.tokens.cache.write,
         })
@@ -952,6 +947,7 @@ function AppContent(props: AppProps) {
     // action.type === "error" — auth/fatal. The i18n key differs from
     // the SSE path (`errIterationStart` vs `actSessionError`) so the
     // formatting stays at the call site.
+    if (action.type !== "error") return
     loop.dispatch({
       type: "error",
       source: "api",
@@ -1788,6 +1784,19 @@ function AppContent(props: AppProps) {
       }
    }
 
+  // Persist a theme chosen in the picker. The picker already applied it live
+  // (via onMove/onSelect → applyTheme); this only writes it to disk + syncs the
+  // in-memory config. Mirrors onConfigSelect's save→toast→setConfig contract.
+  const onSelectTheme = (name: string) => {
+    const newConfig: OcloopConfig = { ...ocloopConfig(), theme: name }
+    if (!saveConfig(newConfig)) {
+      toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+      return
+    }
+    setOcloopConfig(newConfig)
+    dialog.clear()
+  }
+
   // Create state for terminal config dialog
   const terminalConfigState = createTerminalConfigState(
     availableTerminals,
@@ -1937,6 +1946,18 @@ function AppContent(props: AppProps) {
           setOcloopConfig(newConfig)
           toast.show({ variant: "success", message: t("toastLanguageChanged") })
           dialog.clear()
+        },
+      },
+      // --- Appearance ---
+      {
+        title: t("cmdChooseTheme"),
+        value: "theme_picker",
+        category: t("catAppearance"),
+        onSelect: () => {
+          dialog.clear()
+          dialog.show(() => (
+            <DialogThemePicker onCommit={onSelectTheme} onClose={() => dialog.clear()} />
+          ))
         },
       },
       // --- General ---
@@ -2224,7 +2245,7 @@ function AppContent(props: AppProps) {
         stats={stats}
         tokens={sessionStats.tokens()}
         taskTokens={sessionStats.taskTokens()}
-        diff={sessionStats.diff()}
+        cost={costEstimate()}
       />
 
       {/* Overlays */}

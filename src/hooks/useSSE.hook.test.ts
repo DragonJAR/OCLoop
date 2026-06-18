@@ -220,13 +220,6 @@ function evMessagePartText(
   } as unknown as Event
 }
 
-function evSessionDiff(sessionId: string, diff: Array<{ file: string; additions: number; deletions: number }>): Event {
-  return {
-    type: "session.diff",
-    properties: { sessionID: sessionId, diff },
-  } as unknown as Event
-}
-
 /**
  * Build a `useSSE` instance inside a `createRoot` and run a callback
  * once any microtasks have settled. The callback receives the hook
@@ -657,35 +650,6 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           sub.push(evMessagePartText("part-t1", "msg-1", "sess-7", "hi"))
           await tick(5)
           expect(capturedRole).toBe("user")
-          wrapped.d()
-          dispose()
-        },
-      ))
-
-    it("session.diff → onSessionDiff with the diff array", () =>
-      withSSE(
-        { url: () => "http://x", handlers: {} },
-        async (_sse, dispose) => {
-          const sub = driveableSubscribe()
-          let captured: Array<{ file: string }> | undefined
-          const { useSSE } = await import("./useSSE")
-          const wrapped = createRoot((d) => {
-            const h = useSSE({
-              url: () => "http://x",
-              handlers: {
-                onSessionDiff: (diffs) => {
-                  captured = diffs
-                },
-              },
-            })
-            return { h, d }
-          })
-
-          await wrapped.h.reconnect()
-          await waitForStatus(wrapped.h, "connected")
-          sub.push(evSessionDiff("sess-8", [{ file: "/a.ts", additions: 3, deletions: 1 }]))
-          await tick(5)
-          expect(captured).toEqual([{ file: "/a.ts", additions: 3, deletions: 1 }])
           wrapped.d()
           dispose()
         },

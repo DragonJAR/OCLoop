@@ -6,127 +6,32 @@ describe("useSessionStats", () => {
   it("should initialize with zero values", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();
-      
-      expect(stats.tokens()).toEqual({
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
-      expect(stats.diff()).toEqual({
-        additions: 0,
-        deletions: 0,
-        files: 0,
-      });
+      expect(stats.tokens()).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
       expect(stats.totalTokens()).toBe(0);
-      
       dispose();
     });
   });
 
-  it("should accumulate tokens", () => {
+  it("accumulates tokens globally (no per-call reset)", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();
-      
       stats.addTokens({ input: 100, output: 50 });
-      expect(stats.tokens()).toEqual({
-        input: 100,
-        output: 50,
-        reasoning: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
+      expect(stats.tokens()).toEqual({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 });
       expect(stats.totalTokens()).toBe(150);
-
-      stats.addTokens({ input: 200, reasoning: 10 });
-      expect(stats.tokens()).toEqual({
-        input: 300,
-        output: 50,
-        reasoning: 10,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
-      expect(stats.totalTokens()).toBe(360);
-      
+      stats.addTokens({ input: 200 });
+      expect(stats.tokens()).toEqual({ input: 300, output: 50, cacheRead: 0, cacheWrite: 0 });
+      expect(stats.totalTokens()).toBe(350);
       dispose();
     });
   });
 
-  it("should update diff summary", () => {
+  it("resetTaskTokens zeroes ONLY the per-task counter, never the global run total (Parte D)", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();
-
-      stats.setDiff({ additions: 10, deletions: 5, files: 2 });
-      expect(stats.diff()).toEqual({
-        additions: 10,
-        deletions: 5,
-        files: 2,
-      });
-
-      dispose();
-    });
-  });
-
-  it("setDiffFromFiles reduces a session.diff payload into the aggregate", () => {
-    createRoot((dispose) => {
-      const stats = useSessionStats();
-
-      stats.setDiffFromFiles([
-        { file: "/a.ts", additions: 3, deletions: 1 },
-        { file: "/b.ts", additions: 7, deletions: 4 },
-        { file: "/c.md", additions: 0, deletions: 2 },
-      ]);
-      expect(stats.diff()).toEqual({ additions: 10, deletions: 7, files: 3 });
-
-      // Replaces (does not accumulate): the SSE event is the session's
-      // current accumulated state, not a per-edit delta.
-      stats.setDiffFromFiles([{ file: "/d.ts", additions: 5, deletions: 0 }]);
-      expect(stats.diff()).toEqual({ additions: 5, deletions: 0, files: 1 });
-
-      dispose();
-    });
-  });
-
-  it("setDiffFromFiles ignores non-finite counts in a malformed payload", () => {
-    createRoot((dispose) => {
-      const stats = useSessionStats();
-
-      stats.setDiffFromFiles([
-        { file: "/a.ts", additions: 3, deletions: 1 },
-        // @ts-expect-error -- simulating a malformed server payload
-        { file: "/b.ts", additions: "lots", deletions: undefined },
-      ]);
-      // files still counts the entry; the bad counts are dropped, not NaN.
-      expect(stats.diff()).toEqual({ additions: 3, deletions: 1, files: 2 });
-
-      dispose();
-    });
-  });
-
-  it("should reset stats", () => {
-    createRoot((dispose) => {
-      const stats = useSessionStats();
-      
       stats.addTokens({ input: 100, output: 50 });
-      stats.setDiff({ additions: 10, deletions: 5, files: 2 });
-      
-      stats.reset();
-      
-      expect(stats.tokens()).toEqual({
-        input: 0,
-        output: 0,
-        reasoning: 0,
-        cacheRead: 0,
-        cacheWrite: 0,
-      });
-      expect(stats.diff()).toEqual({
-        additions: 0,
-        deletions: 0,
-        files: 0,
-      });
-      expect(stats.totalTokens()).toBe(0);
-      
+      stats.resetTaskTokens();
+      expect(stats.taskTokens()).toEqual({ input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
+      expect(stats.tokens()).toEqual({ input: 100, output: 50, cacheRead: 0, cacheWrite: 0 });
       dispose();
     });
   });

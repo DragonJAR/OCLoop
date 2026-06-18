@@ -55,15 +55,9 @@ export interface StepFinishPart {
   tokens: {
     input: number
     output: number
-    reasoning: number
     cache: { read: number; write: number }
   }
 }
-
-// `FileDiff` is defined once in `useSessionStats` (the hook owns the shape the
-// UI consumes) and re-exported here so SSE consumers keep importing it from
-// the stream module. Single source of truth — avoids two divergent definitions.
-export type { FileDiff } from "./useSessionStats"
 
 /**
  * SSE connection status
@@ -230,8 +224,6 @@ export interface SSEEventHandlers {
   onReasoning?: (part: ReasoningPart) => void
   /** Called when a step finishes */
   onStepFinish?: (part: StepFinishPart) => void
-  /** Called when session diff is updated */
-  onSessionDiff?: (diffs: FileDiff[]) => void
 }
 
 /**
@@ -357,7 +349,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       // Per-session filter policy (uniform across session.idle, session.error,
-      // todo.updated, message.part.updated, session.diff): an event with no
+      // todo.updated, message.part.updated): an event with no
       // sessionID is dropped at the hook layer — the consumer filter has no
       // key to compare against, and a silent drop is easier to debug than a
       // silent dispatch into a state with no session context. The OpenCode
@@ -449,21 +441,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
             seenPartIds.add(part.id)
             handlers.onStepFinish?.(part as StepFinishPart)
           }
-        }
-        break
-      }
-
-      case "session.diff": {
-        const props = event.properties as any
-        const eventSessionId = props.sessionID
-
-        // Filter by session if a filter is set
-        if (filterSessionId && eventSessionId !== filterSessionId) {
-          return
-        }
-
-        if (props.diff) {
-          handlers.onSessionDiff?.(props.diff as FileDiff[])
         }
         break
       }

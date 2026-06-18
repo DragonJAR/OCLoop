@@ -33,7 +33,6 @@ const shared = {
   badgeDebug: "DEBUG",
   guardOk: "OK",
   // Keybind hints (same word in both locales)
-  hintTerminal: "terminal",
   hintPrompt: "prompt",
   // Command palette categories
   catTerminal: "Terminal",
@@ -46,7 +45,6 @@ const shared = {
   logTokens: "Tokens: ",
   logTokenIn: "in:",
   logTokenOut: "out:",
-  logDiff: "Diff: ",
   // BottomPanel metric (same abbrev in both locales)
   lblRate: "Tokens/min",
   // Activity-log event label (same word in both locales)
@@ -261,10 +259,9 @@ const en = {
   // --- BottomPanel labels ---
   lblTotal: "Total Time",
   lblTaskTokens: "Task Tokens",
+  lblCost: "Cost: ",
   // Overflow indicator when the bottom-panel task is capped to maxTaskLines.
   lblTaskMore: (p: Params) => `+${p.n} more`,
-  // Token breakdown: reasoning differs by locale (en reasoning / es razonando)
-  logTokenRsn: "reasoning:",
 
   // --- Dashboard: keybind hints ---
   hintStart: "start",
@@ -275,6 +272,7 @@ const en = {
   hintQuit: "quit",
   hintRetry: "retry",
   hintCopy: "copy attach",
+  hintTerminal: "open terminal",
   hintScroll: "scroll log",
   hintNewSession: "new session",
   hintSampleActivity: "sample activity",
@@ -344,6 +342,7 @@ const en = {
   // --- Command palette ---
   cmdCopyAttach: "Copy attach command",
   cmdChooseTerminal: "Choose default terminal",
+  cmdChooseTheme: "Choose theme",
   cmdToggleScrollbar: "Toggle scrollbar",
   cmdStart: "Start iterations",
   cmdPause: "Pause loop",
@@ -360,6 +359,7 @@ const en = {
   helpSectionSession: "Session & terminal",
   helpSectionDebug: "Debug mode",
   catView: "View",
+  catAppearance: "Appearance",
   catLanguage: "Language",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
@@ -418,10 +418,13 @@ const en = {
   dlgInstalledTerminals: "Installed Terminals",
   dlgCustomEllipsis: "Custom...",
   dlgManualConfig: "Manual Configuration",
+  dlgTerminalOptHint: "Opens a terminal attached to your session",
+  dlgCustomOptHint: "Define a custom terminal command",
   paletteTitle: "Command Palette",
   palettePlaceholder: "Type a command...",
   kbSelect: "Select",
   kbNavigate: "Navigate",
+  kbPreview: "Preview",
   kbSave: "save",
   kbSwitch: "switch",
   kbBack: "back",
@@ -641,8 +644,8 @@ const es: Record<MessageKey, Msg> = {
   lblGuard: "Salud",
   lblTotal: "Tiempo total",
   lblTaskTokens: "Tokens de Tarea",
+  lblCost: "Costo: ",
   lblTaskMore: (p: Params) => `+${p.n} líneas`,
-  logTokenRsn: "razonando:",
 
   hintStart: "iniciar",
   hintPause: "pausar",
@@ -652,6 +655,7 @@ const es: Record<MessageKey, Msg> = {
   hintQuit: "salir",
   hintRetry: "reintentar",
   hintCopy: "copiar attach",
+  hintTerminal: "abrir terminal",
   hintScroll: "mover log",
   hintNewSession: "nueva sesión",
   hintSampleActivity: "actividad de ejemplo",
@@ -716,6 +720,7 @@ const es: Record<MessageKey, Msg> = {
 
   cmdCopyAttach: "Copiar comando de conexión",
   cmdChooseTerminal: "Elegir terminal por defecto",
+  cmdChooseTheme: "Elegir tema",
   cmdToggleScrollbar: "Alternar barra de desplazamiento",
   cmdStart: "Iniciar iteraciones",
   cmdPause: "Pausar el loop",
@@ -732,6 +737,7 @@ const es: Record<MessageKey, Msg> = {
   helpSectionSession: "Sesión y terminal",
   helpSectionDebug: "Modo debug",
   catView: "Vista",
+  catAppearance: "Apariencia",
   catLanguage: "Idioma",
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
@@ -784,10 +790,13 @@ const es: Record<MessageKey, Msg> = {
   dlgInstalledTerminals: "Terminales instaladas",
   dlgCustomEllipsis: "Personalizada...",
   dlgManualConfig: "Configuración manual",
+  dlgTerminalOptHint: "Abre una terminal conectada a tu sesión",
+  dlgCustomOptHint: "Define un comando de terminal personalizado",
   paletteTitle: "Paleta de comandos",
   palettePlaceholder: "Escribe un comando...",
   kbSelect: "Seleccionar",
   kbNavigate: "Navegar",
+  kbPreview: "Vista previa",
   kbSave: "guardar",
   kbSwitch: "cambiar",
   kbBack: "atrás",

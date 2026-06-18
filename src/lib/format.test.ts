@@ -1,6 +1,6 @@
 
 import { describe, expect, test } from "bun:test";
-import { formatTokenCount, truncate, truncateText, formatDiffSummary, getToolPreview, stripMarkdown, tokensPerMin, wrapText, clampLines } from "./format";
+import { formatTokenCount, truncate, truncateText, getToolPreview, stripMarkdown, tokensPerMin, wrapText, clampLines } from "./format";
 
 describe("format utilities", () => {
   describe("truncate (width-exact, …)", () => {
@@ -57,10 +57,6 @@ describe("format utilities", () => {
     expect(truncateText("hello   world", 20)).toBe("hello world");
     expect(truncateText("  hello world  ", 20)).toBe("hello world");
     expect(truncateText("line 1\nline 2", 10)).toBe("line 1 ...");
-  });
-
-  test("formatDiffSummary formats correctly", () => {
-    expect(formatDiffSummary(10, 5, 2)).toBe("+10/-5 (2)");
   });
 
   test("getToolPreview extracts info correctly", () => {

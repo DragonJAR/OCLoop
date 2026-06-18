@@ -2,9 +2,8 @@ import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/ThemeContext"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
-import type { SessionDiff, SessionTokens } from "../hooks/useSessionStats"
+import type { SessionTokens } from "../hooks/useSessionStats"
 import {
-  formatDiffSummary,
   formatDuration,
   formatTokenCount,
   stripMarkdown,
@@ -13,6 +12,7 @@ import {
   clampLines,
 } from "../lib/format"
 import { getLayout, fitSegments, FILL_ROW } from "../lib/layout"
+import { formatCost } from "../lib/pricing"
 import { t } from "../lib/i18n"
 import { LabelValue } from "./LabelValue"
 
@@ -39,8 +39,8 @@ export interface BottomPanelProps {
   tokens: SessionTokens
   /** Per-task (current iteration) token counters. */
   taskTokens: SessionTokens
-  /** Session-level file diff (additions/deletions/files) — source: MEJORAS.md Finding 12.5.E. */
-  diff: SessionDiff
+  /** Estimated USD cost for the whole run (shown with ~). */
+  cost: number
 }
 
 export function BottomPanel(props: BottomPanelProps) {
@@ -53,13 +53,13 @@ export function BottomPanel(props: BottomPanelProps) {
   )
 
   const totalTokens = () =>
-    props.tokens.input + props.tokens.output + props.tokens.reasoning
+    props.tokens.input + props.tokens.output
   const taskTotal = () =>
-    props.taskTokens.input + props.taskTokens.output + props.taskTokens.reasoning
+    props.taskTokens.input + props.taskTokens.output
   const rate = () => tokensPerMin(totalTokens(), props.stats.globalElapsedTime())
 
   const tokenBreakdown = () =>
-    `${formatTokenCount(totalTokens())} (${t("logTokenIn")}${formatTokenCount(props.tokens.input)} ${t("logTokenOut")}${formatTokenCount(props.tokens.output)} ${t("logTokenRsn")}${formatTokenCount(props.tokens.reasoning)})`
+    `${formatTokenCount(totalTokens())} (${t("logTokenIn")}${formatTokenCount(props.tokens.input)} ${t("logTokenOut")}${formatTokenCount(props.tokens.output)})`
 
   // Text width inside the border (1) + padding (1) on each side: inner - 2.
   const textWidth = () => Math.max(8, layout().inner - 2)
@@ -83,7 +83,7 @@ export function BottomPanel(props: BottomPanelProps) {
         `${t("lblTaskPrefix")}${task() ?? t("lblWaiting")}`,
         `${t("lblTotal")} ${formatDuration(props.stats.globalElapsedTime()).trim()}`,
         `${t("logTokens").replace(/:\s*$/, "")} ${formatTokenCount(totalTokens())}`,
-        `${t("logDiff")}${formatDiffSummary(props.diff.additions, props.diff.deletions, props.diff.files)}`,
+        `${t("lblCost")}${formatCost(props.cost)}`,
       ],
       layout().inner,
     )
@@ -151,11 +151,8 @@ export function BottomPanel(props: BottomPanelProps) {
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
                      />
-          {/* Session file diff (additions/deletions/files) — wires up the previously-orphan i18n key. */}
-          <LabelValue
-            label={t("logDiff")}
-            value={formatDiffSummary(props.diff.additions, props.diff.deletions, props.diff.files)}
-          />
+          {/* Estimated USD cost for the whole run (always shown with ~). */}
+          <LabelValue label={t("lblCost")} value={formatCost(props.cost)} />
           {/* Per-task tokens (current iteration). */}
           <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} />
           <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} />

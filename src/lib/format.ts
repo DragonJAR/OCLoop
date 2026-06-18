@@ -46,10 +46,6 @@ export function truncateText(text: string, maxLen: number): string {
   return normalized.substring(0, maxLen - 3) + "...";
 }
 
-export function formatDiffSummary(additions: number, deletions: number, files: number): string {
-  return `+${additions}/-${deletions} (${files})`;
-}
-
 function getBasename(path: string): string {
   // Handle both forward and backward slashes
   return path.split(/[/\\]/).pop() || path;
