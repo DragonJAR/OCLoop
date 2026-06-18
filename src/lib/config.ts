@@ -169,22 +169,13 @@ export interface OcloopConfig {
 /**
  * Merge resilience config from defaults, the config file, and CLI overrides.
  *
- * `undefined` and `null` values in either override layer are ignored so a
- * partially specified file (or a flagless run) inherits the lower layer. A
- * hand-edited `ocloop.json` with a `null` field (e.g. `"createTimeoutMs":
- * null`) is therefore treated as "use the default" instead of silently
- * overwriting it with `null` — which would coerce to `0` in
- * `setTimeout`/`setInterval` and burn through retries in milliseconds. An
- * array passed as either layer is rejected for the same reason
- * (`Object.entries` would yield numeric keys and corrupt the first three
- * default slots). Keys that are not in `DEFAULT_RESILIENCE` are dropped too
- * — a stray `{"resilience": {"createTimeoutMs": 5000, "totallyMadeUpKey":
- * 42}}` does not leak the unknown key into the merged result, which would
- * otherwise sit there as a latent footgun for any future `for (const k of
- * Object.keys(resilience))` consumer (logging, validation, SDK forwarding).
- *
- * Source: MEJORAS.md Finding 12.3.A (null/array skip) + 12.3.C (unknown-key
- * skip).
+ * `undefined`/`null` in either override layer are ignored so a partial file
+ * inherits the lower layer. A null field ("createTimeoutMs": null) is treated
+ * as "use the default" rather than overwriting with null, which would coerce
+ * to 0 in setTimeout/setInterval and burn through retries in milliseconds.
+ * Arrays are rejected (Object.entries would yield numeric keys and corrupt the
+ * defaults). Unknown keys are dropped so they don't leak into the merged result
+ * as a latent footgun for future consumers.
  */
 export function resolveResilience(
   fileConfig?: Partial<ResilienceConfig>,
@@ -225,12 +216,9 @@ export function getConfigPath(): string {
 }
 
 /**
- * Top-level config keys accepted by `validateConfigShape`. Any other key in
- * the parsed JSON is dropped (and a warn is logged) so a typo like
- * `languaje: "es"` becomes visible instead of silently falling back to
- * English.
- *
- * Source: MEJORAS.md Finding 12.1.B.
+ * Top-level config keys accepted by validateConfigShape. Any other key is
+ * dropped (and a warn logged) so a typo like `languaje: "es"` surfaces instead
+ * of silently falling back to English.
  */
 const ALLOWED_CONFIG_KEYS = new Set([
   "terminal",
@@ -241,19 +229,11 @@ const ALLOWED_CONFIG_KEYS = new Set([
 ])
 
 /**
- * Per-field type guard for a single `ResilienceConfig` entry. Returns
- * `true` iff `key` is a known field of `DEFAULT_RESILIENCE` and `v` has the
- * expected runtime type with a value in range. The strictness mirrors the
- * CLI path in `applyResilienceOverride` (`cli-args.ts`): booleans must be
- * booleans, numbers must be finite, integer, and non-negative. The same
- * helper is the single source of truth for both layers — the CLI path keeps
- * its `string → boolean|number` coercion in `applyResilienceOverride`, then
- * routes the parsed value through this function so the file path cannot
- * silently accept a hand-edited `"createTimeoutMs": "fast"` (which would
- * reach `setTimeout("fast", …)` and coerce to `NaN`, burning retries in
- * milliseconds).
- *
- * Source: MEJORAS.md Finding 12.3.B.
+ * Per-field type guard for a single ResilienceConfig entry. Returns true iff
+ * key is known in DEFAULT_RESILIENCE and v has the expected runtime type and
+ * range. Shared by the file and CLI paths so neither can silently accept a
+ * hand-edited "createTimeoutMs": "fast" (which would reach setTimeout and
+ * coerce to NaN, burning retries in milliseconds).
  */
 function isValidResilienceValue(key: string, v: unknown): boolean {
   if (!(key in DEFAULT_RESILIENCE)) return false
@@ -266,21 +246,12 @@ function isValidResilienceValue(key: string, v: unknown): boolean {
 }
 
 /**
- * Per-field type validation for the parsed config. Returns a clean
- * `OcloopConfig` with only the fields that pass type checks; any malformed
- * field is dropped and a `warn` is logged so the user sees a hint in
- * `.loop.log`. `resilience` is deep-validated via `isValidResilienceValue`
- * — per-field type checks for its 20+ keys are enforced, and any malformed
- * field drops the whole `resilience` block (all-or-nothing) with a `warn`,
- * matching the `terminal` / `language` / `theme` / `scrollbar_visible`
- * policy of "either accept the field as-is or drop it entirely".
- *
- * The unknown-key check fires after per-field validation so a single warn
- * line surfaces every unrecognized top-level key (e.g. `languaje: "es"`)
- * instead of silently falling back to defaults.
- *
- * Source: MEJORAS.md Finding 12.1.A (per-field types) + 12.1.B (unknown
- * keys) + 12.3.B (resilience per-field types).
+ * Per-field type validation for the parsed config. Returns a clean OcloopConfig
+ * with only fields that pass type checks; any malformed field is dropped and a
+ * warn logged. resilience is deep-validated via isValidResilienceValue (all-or-
+ * nothing: one bad key drops the whole block, matching the terminal/language/
+ * theme policy). The unknown-key check fires after per-field validation so
+ * every unrecognized top-level key (e.g. languaje) surfaces in a single warn.
  */
 function validateConfigShape(raw: unknown): OcloopConfig {
   if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
@@ -399,55 +370,28 @@ export function loadConfig(): OcloopConfig {
 }
 
 /**
- * Save the configuration to disk.
- * Creates the config directory if it doesn't exist.
+ * Save the configuration to disk. Creates the config directory if missing.
  *
- * Synchronous: the function returns immediately (not a Promise). Callers
- * MUST NOT `await` it — there is nothing to await, and an `await` here
- * silently introduces a microtask delay that couples local-state updates
- * to the wrong tick. If this function is ever refactored to use
- * `fs/promises`, the four `App.tsx` call sites will need to be updated to
- * match the new `Promise<boolean>` shape.
+ * Synchronous — callers MUST NOT await it (it returns boolean, not a Promise).
+ * If refactored to async, the App.tsx call sites must be updated to match.
  *
- * Returns `true` on a successful write, `false` on I/O failure. The function
- * never throws — persistence is best-effort and must not crash the app. The
- * contract mirrors `saveLoopState` in `loop-state-store.ts`: any I/O failure
- * (EACCES on a read-only mount, ENOSPC on a full disk, EROFS on a sandbox,
- * EXDEV on a cross-device rename) is logged as a `warn`, the orphan tmp
- * file is best-effort cleaned up, and the boolean return lets the four
- * `App.tsx` call sites surface a user-visible error toast when persistence
- * fails. Source: MEJORAS.md Finding 17.3.B.
- *
- * Source: MEJORAS.md Finding 12.2.A. Side effects: also closes Finding 12.2.C
- * (stale `.tmp` cleanup) via the best-effort `unlinkSync` in the catch path,
- * Finding 12.2.D (the `mkdirSync({ recursive: true })` call is invoked
- * unconditionally — it is idempotent on an existing dir, so the previous
- * `existsSync` guard added a wasted syscall plus a TOCTOU window), and
- * Finding 12.2.E (the function is synchronous, not a Promise — see the
- * synchronous-contract paragraph above). The `boolean` return (vs the
- * previous `void`) is strictly additive; the four call sites that previously
- * discarded the result continue to compile unchanged if they ignore the
- * return value, but the Finding 17.3.B call sites now check it.
+ * Returns true on success, false on I/O failure. Never throws: persistence is
+ * best-effort and must not crash the app (mirrors saveLoopState). Any I/O
+ * failure is logged as warn; the boolean lets call sites surface a toast.
  */
 export function saveConfig(config: OcloopConfig): boolean {
   const configDir = getConfigDir()
   const configPath = getConfigPath()
-  // Random hex suffix on the tmp file: two `ocloop` processes pointing at
-  // the same `$XDG_CONFIG_HOME` (e.g. a TUI plus a `--create-plan` run in a
-  // second terminal) would otherwise race on the same fixed `.tmp` name and
-  // interleave each other's mid-write bytes. The final `renameSync` to
-  // `ocloop.json` is still last-writer-wins (atomic rename on POSIX), so the
-  // user-observable behavior is unchanged; the fix only prevents the
-  // intermediate-state clobbering of the tmp. Source: MEJORAS.md Finding
-  // 12.2.B.
+  // Random hex suffix on the tmp: two ocloop processes sharing the same
+  // $XDG_CONFIG_HOME (e.g. TUI + --create-plan) would otherwise race on a fixed
+  // .tmp name and interleave each other's mid-write bytes. The rename is still
+  // last-writer-wins (atomic on POSIX); this only prevents intermediate-state
+  // clobbering of the tmp.
   const tmpPath = `${configPath}.${randomBytes(6).toString("hex")}.tmp`
 
   try {
-    // Create directory if needed. `mkdirSync` with `recursive: true` is
-    // idempotent — no `existsSync` guard needed, and the guard would add a
-    // wasted syscall plus a TOCTOU window (between the check and the mkdir
-    // another process could create the dir; mkdir would still succeed but
-    // the syscall is wasted work). Source: MEJORAS.md Finding 12.2.D.
+    // mkdirSync with recursive is idempotent — no existsSync guard needed, and
+    // a guard would add a wasted syscall plus a TOCTOU window.
     mkdirSync(configDir, { recursive: true })
 
     // Write atomically: tmp file then rename (rename is atomic on the same
