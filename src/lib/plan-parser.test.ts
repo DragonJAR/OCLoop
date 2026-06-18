@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, isPlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -779,48 +779,6 @@ describe("PLAN.md 2.12 — [MANUAL] tasks are not auto-executed", () => {
 
 })
 
-describe("isPlanComplete", () => {
-  it("should return false for a non-existent file", async () => {
-    const result = await isPlanComplete("/tmp/ocloop-nonexistent-plan-test-xyz.md")
-    expect(result).toBe(false)
-  })
-
-  // Source: MEJORAS.md Finding 17.4.C. The pre-fix implementation did
-  // `await file.exists()` + `await file.text()` — two awaits with a
-  // window for the path to be removed, replaced with a directory, or
-  // have its permissions flipped. The fix wraps the read in a single
-  // try/catch that returns `false` on any I/O failure.
-  it("should return false when the path is a directory (EISDIR)", async () => {
-    const dir = mkdtempSync(join(tmpdir(), "ocloop-isPlanComplete-dir-"))
-    try {
-      const result = await isPlanComplete(dir)
-      expect(result).toBe(false)
-    } finally {
-      rmSync(dir, { recursive: true, force: true })
-    }
-  })
-
-  // Source: MEJORAS.md Finding 17.4.C. Cross-platform: Windows ACLs
-  // don't map to POSIX `chmod`, and root bypasses the read-only check.
-  // The pattern mirrors `loop-state-store.test.ts:71-92` (Mejora 30).
-  it.skipIf(process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0))(
-    "should return false when the file is unreadable (EACCES)",
-    async () => {
-      const dir = mkdtempSync(join(tmpdir(), "ocloop-isPlanComplete-eacces-"))
-      const filePath = join(dir, "plan.md")
-      try {
-        writeFileSync(filePath, "<plan-complete>done</plan-complete>\n", { mode: 0o000 })
-        const result = await isPlanComplete(filePath)
-        expect(result).toBe(false)
-      } finally {
-        // Restore permissions so the tempdir can be cleaned up.
-        chmodSync(filePath, 0o644)
-        rmSync(dir, { recursive: true, force: true })
-      }
-    },
-  )
-})
-
 describe("getPlanCompleteSummary", () => {
   it("should return null for a non-existent file", async () => {
     const result = await getPlanCompleteSummary("/tmp/ocloop-nonexistent-plan-summary-test-xyz.md")
@@ -849,8 +807,8 @@ describe("getPlanCompleteSummary", () => {
     }
   })
 
-  // Source: MEJORAS.md Finding 17.4.C. See the parallel `isPlanComplete`
-  // test for the rationale and the cross-platform guard rationale.
+  // TOCTOU-safe read: wraps the read in a single try/catch returning null.
+  // Cross-platform guard: Windows ACLs don't map to POSIX chmod, root bypasses it.
   it.skipIf(process.platform === "win32" || (typeof process.getuid === "function" && process.getuid() === 0))(
     "should return null when the file is unreadable (EACCES)",
     async () => {
@@ -868,14 +826,10 @@ describe("getPlanCompleteSummary", () => {
   )
 })
 
-// PLAN.md 2.9 — `parsePlanFile` behavior on a missing plan path.
-// The function signature (line 226-230 of plan-parser.ts) is:
-//   async function parsePlanFile(planPath: string): Promise<PlanProgress>
-// It calls `await file.text()` WITHOUT an `await file.exists()` guard.
-// Compare with `isPlanComplete` (line 199-204) which DOES check exists()
-// first and returns false. So `parsePlanFile` THROWS on a missing file
-// (Node-style ENOENT) and the caller (App.tsx:576, `refreshPlan`) is
-// expected to wrap it in a try/catch — which it does, at line 578.
+// `parsePlanFile` behavior on a missing plan path.
+// It calls `await file.text()` WITHOUT an `await file.exists()` guard,
+// so it THROWS on a missing file (ENOENT) and the caller (`refreshPlan`)
+// is expected to wrap it in a try/catch.
 //
 // The contract being pinned here: "parsePlanFile does NOT silently return
 // null/empty on a missing file — it throws, and that throw is what
