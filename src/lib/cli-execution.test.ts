@@ -1,26 +1,29 @@
 /**
- * Phase 2 base execution tests.
+ * Phase 2 base execution tests, updated for the Phase 3 non-TTY guard.
  *
- * Verifies the pre-TUI `validatePrerequisites` path in five shapes:
+ * Verifies the pre-TUI `validatePrerequisites` path in seven shapes:
  *  - task 1: no PLAN.md at the default path → `errPlanNotFound`, exit 1.
- *  - task 2: valid PLAN.md → past validation, into render (current bug:
- *           non-TTY hangs/segfaults; pinned with a 500 ms timeout).
+ *  - task 2: valid PLAN.md → past validation, then the non-TTY guard
+ *           fires `errNoTty`, exit 1 (Phase 3 fix; pre-fix this used to
+ *           segfault at 139 or hang until 124).
  *  - task 3: `--plan <custom-path>` pointing to a missing file → same
  *           `errPlanNotFound`, but with the custom path echoed in the
  *           message and NO prompt-file auto-create (proves validation
  *           aborted before reaching the prompt step).
  *  - task 4: empty PLAN.md (0 bytes) → passes pre-flight (existence-only
- *           check) the same as a valid one; the render path then
- *           hits the same non-TTY hang/segfault. Pins that the current
- *           pre-flight does NOT reject content-less files — Phase 3
- *           owns the fix to add a content check (matrix case 27).
+ *           check) the same as a valid one; the TTY guard then fires
+ *           `errNoTty` before render. Pins that the current pre-flight
+ *           does NOT reject content-less files — that content check
+ *           is a separate Phase 3 task (matrix case 27).
  *  - task 5: PLAN.md with no pending tasks → passes pre-flight like a
- *           valid one, then hits the render path's structural-completion
- *           detection. Same non-TTY pin as task 2.
+ *           valid one, then the TTY guard fires `errNoTty`. The
+ *           "no pending tasks" content check is a separate Phase 3
+ *           task (matrix case 51).
  *  - task 6: PLAN.md with exactly one pending task amid completed
- *           tasks above and below → passes pre-flight, into render
- *           (matrix case 52; the trailing completed tasks prove the
- *           selection is unambiguous, not just "first line").
+ *           tasks above and below → passes pre-flight, TTY guard
+ *           fires (matrix case 52; the trailing completed tasks prove
+ *           the selection is unambiguous, not just "first line", but
+ *           that assertion lives in plan-parser tests, not here).
  *  - task 7: `--prompt <custom-path>` pointing to a missing file with
  *           a valid PLAN.md present → `errPromptNotFound`, NOT the
  *           plan-step error and NOT a silent auto-create. Symmetric
@@ -28,9 +31,7 @@
  *           `validatePrerequisites` (the prompt file). Matrix case 29.
  *
  * ponytail: shared beforeEach/afterEach mkdtemp + chdir scaffolding;
- * one describe per matrix case. The TUI segfault case (matrix case 4)
- * lives in cli-runner.test.ts's `--run --debug` timeout test; it is
- * owned by Phase 3's non-TTY pre-flight fix, not here.
+ * one describe per matrix case.
  */
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
@@ -74,50 +75,47 @@ describe("CLI: ejecución sin parámetros", () => {
 })
 
 describe("CLI: ejecución con PLAN.md mínimo válido", () => {
-  it("passes pre-TUI validation and enters the render path (current bug: non-TTY hangs/segfaults)", async () => {
+  it("exits 1 with errNoTty after pre-TUI validation (non-TTY guard fires before render)", async () => {
     // Minimal valid PLAN.md: a single pending task is enough for
-    // validatePrerequisites to accept the file. We don't care about the
-    // content of the task here — this test pins the CLI's BEHAVIOR at
-    // the boundary between pre-flight validation and TUI render, not
-    // task semantics (those are covered by the parser unit tests).
+    // validatePrerequisites to accept the file. The TUI render path
+    // (matrix case 4 / Phase 3 fix) used to segfault here in non-TTY;
+    // the Phase 3 fix inserts an `errNoTty` guard between validation
+    // and render so this path now exits cleanly with code 1 and a
+    // localized "requires an interactive terminal" message.
     writeFileSync(
       join(dir, "PLAN.md"),
       "# Plan\n\n- [ ] Do something\n",
     )
 
-    // Short timeout: validatePrerequisites + render start take <500 ms
-    // in this environment, so 500 ms is enough for the side effect
-    // (.loop-prompt.md auto-create) to land on disk before the timeout
-    // kills the hung TUI input loop. Mirrors cli-runner.test.ts's
-    // 250 ms TUI hang test but with a bit more headroom because the
-    // non-debug path also has to validate the plan file and resolve
-    // locale.
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 500,
+      timeoutMs: 5_000,
     })
 
     // Side-effect proof: validatePrerequisites ran end-to-end. PLAN.md
     // was found AND, because no .loop-prompt.md existed yet, the
     // default was auto-created with `t("defaultLoopPrompt")`. That
-    // `Bun.write` happens BEFORE `tuiStarted = true`, so its presence
-    // on disk proves the CLI got past validation into the render path.
-    // If the file is missing, validation aborted earlier than expected
-    // (e.g. a regression that re-checks the plan file after the prompt
-    // step) and the test would catch it.
+    // `Bun.write` happens BEFORE the TTY guard, so its presence on
+    // disk proves the CLI got past validation. If the file is missing,
+    // validation aborted earlier than expected (e.g. a regression that
+    // re-checks the plan file after the prompt step) and the test
+    // would catch it.
     const promptFile = join(dir, ".loop-prompt.md")
     expect(existsSync(promptFile)).toBe(true)
 
-    // Current non-TTY behavior (matrix case 4 / Phase 3 fix target):
-    // the TUI input loop hangs on a closed stdin and gets killed by the
-    // timeout (124) — or, less often, Bun segfaults mid-render (139)
-    // when the input loop finally touches the dead handle. Either is
-    // acceptable for this "pin the current behavior" test. Phase 3
-    // replaces both with a clean `process.exit(1)` plus a friendly
-    // "OCLoop requires an interactive terminal" message — at which
-    // point this assertion tightens to `expect(result.exitCode).toBe(1)`
-    // and the prompt-file check stays.
-    expect([124, 139]).toContain(result.exitCode)
+    // Phase 3 fix: clean exit 1 with the localized TTY-required
+    // message. The pre-fix behavior (timeout-kill at 124, or SIGSEGV
+    // at 139) is gone — the guard fires before `render()` is reached.
+    //
+    // ponytail: don't assert `stdout === ""` here. The prompt auto-create
+    // emits a `promptCreated` notice via console.log (i18n.ts:217 +
+    // index.tsx:86) BEFORE the TTY guard runs, so stdout legitimately
+    // contains that banner. Asserting it empty would couple the test to
+    // a console.log call site that lives in validatePrerequisites, not
+    // in the guard we're testing. The stderr check + prompt-file
+    // existence + exit code is enough to pin the guard.
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
   })
 })
 
@@ -201,48 +199,38 @@ describe("CLI: ejecución con --prompt apuntando a un archivo inexistente", () =
 })
 
 describe("CLI: ejecución con PLAN.md vacío", () => {
-  it("passes pre-TUI validation (existence-only) and enters the render path (matrix case 27)", async () => {
+  it("exits 1 with errNoTty after pre-TUI validation (matrix case 27, existence-only pre-flight)", async () => {
     // Matrix case 27: PLAN.md exists but is 0 bytes. Today's `validatePrerequisites`
     // checks `Bun.file(planPath).exists()` (index.tsx:65) and nothing else — it
     // never reads the plan content. So an empty file passes pre-flight exactly
-    // like a valid one, the .loop-prompt.md auto-create runs, and the CLI enters
-    // the render path. That render then hits the same non-TTY hang/segfault
-    // pinned in the "valid PLAN.md" test above.
-    //
-    // This is the CURRENT (buggy) behavior. Phase 3 will tighten
-    // `validatePrerequisites` to also reject content-less plans with a clear
-    // error (`errPlanEmpty` or similar), at which point this test tightens to:
-    //   expect(result.exitCode).toBe(1)
-    //   expect(result.stderr).toContain("Error: ...")
-    //   expect(existsSync(promptFile)).toBe(false)  // auto-create didn't run
+    // like a valid one, the .loop-prompt.md auto-create runs, and the CLI then
+    // hits the non-TTY guard (Phase 3 fix) before `render()` segfaults. The
+    // content check is a separate Phase 3 task; this test only pins the
+    // pre-flight + TTY-guard flow.
     writeFileSync(join(dir, DEFAULTS.PLAN_FILE), "")
 
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 500,
+      timeoutMs: 5_000,
     })
 
     // Same side-effect proof as the valid-plan test: the pre-TUI validation ran
     // end-to-end, so the missing default `.loop-prompt.md` was auto-created
-    // BEFORE `tuiStarted = true`. If the file is missing, validation aborted
-    // earlier than expected (e.g. a regression that rejects empty plans
-    // pre-emptively, before the prompt step).
+    // BEFORE the TTY guard. If the file is missing, validation aborted earlier
+    // than expected.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(true)
 
-    // Same non-TTY behavior pinned as the valid-plan case: timeout-kill (124)
-    // or segfault (139) — either is acceptable for this "pin current behavior"
-    // test. Phase 3's non-TTY pre-flight fix replaces both with a clean
-    // `process.exit(1)` plus a friendly error message, and the assertion
-    // above (`existsSync(promptFile)`) will then need to flip to
-    // `expect(existsSync(promptFile)).toBe(false)` because validation will
-    // abort at the plan-content step before reaching the prompt step.
-    expect([124, 139]).toContain(result.exitCode)
+    // Phase 3 fix: clean exit 1 with the localized TTY-required message.
+    // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
+    // test above for why the promptCreated banner legitimately writes to stdout.)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
   })
 })
 
 describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
-  it("passes pre-TUI validation and enters the render path (matrix case 51)", async () => {
+  it("exits 1 with errNoTty after pre-TUI validation (matrix case 51, existence-only pre-flight)", async () => {
     // Matrix case 51: PLAN.md exists, has at least one task, but every
     // task is already marked `[x]` (or `[MANUAL]`/`[BLOCKED]`) — there is
     // no `- [ ]` line to act on. `isStructurallyComplete` from
@@ -262,13 +250,10 @@ describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
     //
     // This test pins the CURRENT pre-flight behavior: a no-pending plan
     // passes validation exactly like a valid one, the prompt auto-create
-    // runs, and the CLI enters the render path where it hits the same
-    // non-TTY hang/segfault pinned in the "valid PLAN.md" and "empty
-    // PLAN.md" tests. Phase 3 owns the decision: either tighten
-    // pre-flight to also reject "no pending tasks" with a clear error
-    // (matches the empty-plan fix shape), or leave it alone and let the
-    // TUI's `checkPlanComplete` handle it on `--run`/S. Either way this
-    // assertion set is the pre-fix baseline.
+    // runs, and the CLI then hits the non-TTY guard (Phase 3 fix) before
+    // `render()` segfaults. The "no pending tasks" content check is a
+    // separate Phase 3 task; this test only pins the pre-flight + TTY-guard
+    // flow.
     writeFileSync(
       join(dir, DEFAULTS.PLAN_FILE),
       "# Plan\n\n- [x] Done task one\n- [x] Done task two\n",
@@ -276,25 +261,25 @@ describe("CLI: ejecución con PLAN.md sin tareas pendientes", () => {
 
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 500,
+      timeoutMs: 5_000,
     })
 
     // Same side-effect proof: pre-TUI validation ran end-to-end, the
-    // default `.loop-prompt.md` was auto-created BEFORE `tuiStarted`.
+    // default `.loop-prompt.md` was auto-created BEFORE the TTY guard.
     // If the file is missing, validation aborted earlier than expected.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(true)
 
-    // Same non-TTY pin as the other pre-flight tests: timeout-kill (124)
-    // or segfault (139). The structurally-complete plan content does NOT
-    // change the pre-flight outcome today — it goes to render just like
-    // a valid plan.
-    expect([124, 139]).toContain(result.exitCode)
+    // Phase 3 fix: clean exit 1 with the localized TTY-required message.
+    // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
+    // test above for why the promptCreated banner legitimately writes to stdout.)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
   })
 })
 
 describe("CLI: ejecución con una sola tarea pendiente entre varias completadas", () => {
-  it("passes pre-TUI validation and enters the render path (matrix case 52)", async () => {
+  it("exits 1 with errNoTty after pre-TUI validation (matrix case 52, single pending among many)", async () => {
     // Matrix case 52: PLAN.md has several tasks, exactly one is pending,
     // and it sits in the middle of the file (surrounded by completed
     // tasks above AND below). The TUI's `getCurrentTaskFromContent`
@@ -309,10 +294,8 @@ describe("CLI: ejecución con una sola tarea pendiente entre varias completadas"
     // Companion to the "valid PLAN.md" test (which had ONE task total):
     // that test pinned the pre-TUI existence check at the minimum, this
     // test pins it at a representative non-trivial shape where the
-    // count matters, not just the existence. Phase 3's non-TTY
-    // pre-flight fix replaces both with a clean `process.exit(1)` plus
-    // a friendly "OCLoop requires an interactive terminal" message;
-    // until then both tests assert the same `[124, 139]` window.
+    // count matters, not just the existence. After the Phase 3 fix
+    // both tests assert the same clean exit 1 with errNoTty.
     writeFileSync(
       join(dir, DEFAULTS.PLAN_FILE),
       [
@@ -329,24 +312,20 @@ describe("CLI: ejecución con una sola tarea pendiente entre varias completadas"
 
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
-      timeoutMs: 500,
+      timeoutMs: 5_000,
     })
 
     // Same side-effect proof as the other pre-flight tests: the pre-TUI
     // validation ran end-to-end, the default `.loop-prompt.md` was
-    // auto-created BEFORE `tuiStarted`. If the file is missing,
+    // auto-created BEFORE the TTY guard. If the file is missing,
     // validation aborted earlier than expected.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
     expect(existsSync(promptFile)).toBe(true)
 
-    // Same non-TTY pin as the other pre-flight tests: timeout-kill (124)
-    // or segfault (139). The shape of the plan content (one pending
-    // among many) does NOT change the pre-flight outcome today — it
-    // goes to render just like the minimal valid case. Phase 3's non-TTY
-    // pre-flight fix replaces both with `exit 1` + a localized message,
-    // and the assertion above will then need to flip to
-    // `expect(existsSync(promptFile)).toBe(false)` (or stay true if the
-    // fix only guards the TUI step after validation).
-    expect([124, 139]).toContain(result.exitCode)
+    // Phase 3 fix: clean exit 1 with the localized TTY-required message.
+    // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
+    // test above for why the promptCreated banner legitimately writes to stdout.)
+    expect(result.exitCode).toBe(1)
+    expect(result.stderr).toContain("Error: OCLoop requires an interactive terminal")
   })
 })

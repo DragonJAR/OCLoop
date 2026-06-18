@@ -186,6 +186,31 @@ const en = {
       "Verify the path is writable, then try again.",
       "",
     ].join("\n"),
+  // Emitted when stdin or stdout is not a TTY (pipe, redirect, CI runner,
+  // editor-launched subprocess) right before the TUI render path. OpenTUI
+  // cannot render outside an interactive terminal and segfaults in that
+  // case, so this is a clean process.exit(1) with a localized message
+  // instead of a SIGSEGV (139) or a hung render loop. The check sits AFTER
+  // `validatePrerequisites` (so PLAN.md and .loop-prompt.md validation
+  // still runs, mirroring how the real TTY path works) and BEFORE
+  // `tuiStarted = true` (so the exit handler doesn't try to restore a
+  // terminal mode it never enabled). Source: MEJORAS.md Finding 17.6.A.
+  errNoTty: [
+    `Error: OCLoop requires an interactive terminal (TTY).`,
+    "",
+    "The current stdin or stdout is not connected to a real terminal",
+    "(detected: stdin.isTTY=false or stdout.isTTY=false).",
+    "",
+    "This typically happens when:",
+    "  - You pipe the command (e.g. `ocloop | less`)",
+    "  - You redirect output (e.g. `ocloop > out.log`)",
+    "  - You run from a CI runner or sandbox without a TTY",
+    "  - You launch from an editor / IDE process that doesn't expose a TTY",
+    "",
+    "Open a real terminal (Terminal.app, iTerm, gnome-terminal, Windows Terminal, etc.)",
+    "and run the command there.",
+    "",
+  ].join("\n"),
 
   // --- Default .loop-prompt.md (auto-created when missing) ---
   // Announced to the user; the body below is written to disk verbatim.
@@ -584,6 +609,23 @@ const es: Record<MessageKey, Msg> = {
       "Verifica que la ruta sea escribible, luego inténtalo de nuevo.",
       "",
     ].join("\n"),
+  // Espejo de `errNoTty` (en). Ver bloque en `en` para la nota de source.
+  errNoTty: [
+    `Error: OCLoop requiere una terminal interactiva (TTY).`,
+    "",
+    "El stdin o stdout actual no está conectado a una terminal real",
+    "(detectado: stdin.isTTY=false o stdout.isTTY=false).",
+    "",
+    "Esto ocurre normalmente cuando:",
+    "  - Canalizas la salida (p. ej. `ocloop | less`)",
+    "  - Rediriges la salida (p. ej. `ocloop > out.log`)",
+    "  - Ejecutas desde un runner de CI o un sandbox sin TTY",
+    "  - Lanzas desde un editor / IDE que no expone una TTY",
+    "",
+    "Abre una terminal real (Terminal.app, iTerm, gnome-terminal, Windows Terminal, etc.)",
+    "y ejecuta el comando allí.",
+    "",
+  ].join("\n"),
 
   promptCreated: (p) =>
     `No se encontró ${p.path} en esta carpeta — se creó un prompt de loop por defecto. Edítalo para personalizar lo que se ejecuta en cada iteración.`,

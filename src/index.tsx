@@ -427,6 +427,25 @@ async function main(): Promise<void> {
   // Validate prerequisites before rendering
   await validatePrerequisites(args)
 
+  // Reject non-TTY environments before reaching OpenTUI's render(). Without
+  // this guard, any invocation where stdin or stdout is not a real terminal —
+  // pipes (`ocloop | less`), redirects (`ocloop > out.log`), CI runners,
+  // editor-launched subprocesses, the bun:test harness — segfaults Bun inside
+  // `render()` (matrix case 4 / 20 / 47 / 55 of the flow matrix) or hangs
+  // forever on a closed stdin. The check sits AFTER `validatePrerequisites`
+  // so the PLAN.md / .loop-prompt.md checks still run exactly like the real
+  // TTY path (the side-effect of auto-creating the default prompt is
+  // preserved), and BEFORE `tuiStarted = true` so the exit handler skips
+  // its terminal-mode restore (it never enabled those modes). The
+  // `--create-plan` path above never reaches here — it has its own
+  // EOF-into-no-goal handling via `prompt()` and `process.exit()`s
+  // unconditionally.
+  // Source: MEJORAS.md Finding 17.6.A.
+  if (!process.stdout.isTTY || !process.stdin.isTTY) {
+    console.error(t("errNoTty"))
+    process.exit(1)
+  }
+
   // Render the application. From here the TUI owns mouse + alternate screen, so
   // mark it started: the exit-time restore must run for this path (and only this
   // path) — quick CLI paths above never enabled those modes.

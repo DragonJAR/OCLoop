@@ -39,11 +39,18 @@ describe("runCli", () => {
   })
 
   it("respects the timeout option when the child hangs", async () => {
-    // --run enters the TUI loop. Without a TTY it segfaults fast (139) or
-    // hangs; either way the test must not block the suite. We assert the
-    // child did NOT exit cleanly within the timeout budget.
-    const result = await runCli(["--run", "--debug"], { timeoutMs: 250 })
+    // Before the Phase 3 non-TTY guard, `--run --debug` in a non-TTY
+    // helper would segfault (139) or hang until the timeout killed it
+    // (124). The guard now makes that path exit 1 cleanly with an
+    // `errNoTty` message before the timeout ever fires. We assert the
+    // child still does NOT exit 0 within the timeout budget, but the
+    // exact code is now 1 (clean exit) rather than 124/139 (timeout/segv).
+    // The timeout budget is kept small to prove the runner returns
+    // promptly; a regression that re-introduces the hang would push
+    // durationMs > 250 and let us catch it.
+    const result = await runCli(["--run", "--debug"], { timeoutMs: 5_000 })
     expect(result.exitCode).not.toBe(0)
-    expect([124, 139]).toContain(result.exitCode)
+    expect(result.exitCode).toBe(1)
+    expect(result.durationMs).toBeLessThan(2_500)
   })
 })
