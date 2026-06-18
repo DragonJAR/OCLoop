@@ -173,10 +173,9 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
 
     case "rate_limited": {
       // Enter cooldown from running (or pausing) — a healthy wait, not an error.
-      // Carry `kind` so the dashboard can show "Connection issue" for
-      // transient blips and "Rate limited" for real provider 429s. See
-      // MEJORAS.md Finding 5.1.A. The `??` keeps callers that omit the field
-      // (e.g. the chaos 429 injector at App.tsx:1675) on the existing path.
+      // Carry kind so the dashboard can show "Connection issue" for transient
+      // blips vs "Rate limited" for real 429s. The ?? keeps callers that omit
+      // kind (e.g. the chaos 429 injector) on the existing path.
       if (state.type === "running" || state.type === "pausing") {
         return {
           type: "cooldown",
@@ -185,8 +184,8 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           resumeAt: action.resumeAt,
           attempt: action.attempt,
           kind: action.kind ?? "rate_limit",
-          // Bug #4: remember a pending pause so resume_cooldown restores it
-          // instead of silently auto-resuming the loop.
+          // Remember a pending pause so resume_cooldown restores it instead of
+          // silently auto-resuming the loop.
           ...(state.type === "pausing" ? { wasPausing: true } : {}),
         }
       }
@@ -197,8 +196,8 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
       // Cooldown elapsed: back to running with an empty session so the next
       // iteration is re-created and the prompt re-sent (same plan progress).
       if (state.type === "cooldown") {
-        // Bug #4: if the user asked to pause when the 429 hit, honor it (resume
-        // to `paused`) instead of silently auto-resuming into a new iteration.
+        // If the user asked to pause when the 429 hit, honor it (resume to
+        // paused) instead of silently auto-resuming into a new iteration.
         if (state.wasPausing) {
           return { type: "paused", iteration: state.iteration }
         }
@@ -284,10 +283,9 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     }
 
     case "error": {
-      // Transition to error state from most states. When the source state has
-      // an `iteration` field (running/pausing/paused/cooldown), carry it into
-      // `lastIteration` so a later `plan_complete` can report real progress
-      // instead of resetting to 0. See MEJORAS.md Finding 3.1.A.
+      // Transition to error from most states. When the source state has an
+      // iteration field (running/pausing/paused/cooldown), carry it into
+      // lastIteration so a later plan_complete reports real progress, not 0.
       if (
         state.type === "starting" ||
         state.type === "ready" ||

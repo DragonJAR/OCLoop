@@ -33,14 +33,14 @@ export interface PersistedLoopState {
   /** ISO wall-clock timestamp (human-facing). */
   updatedAt: string
   /**
-   * Description of the PLAN.md task this iteration was working on (or `null`
-   * when the plan had no pending task at save time). Used at resume to detect
-   * a misalignment: if PLAN.md was edited between crash and resume, the saved
-   * task may no longer be the first pending task. PLAN.md bug-hunt #4.
+   * Description of the PLAN.md task this iteration was working on (or null when
+   * the plan had no pending task at save time). Used at resume to detect a
+   * misalignment: if PLAN.md was edited between crash and resume, the saved task
+   * may no longer be the first pending task.
    *
-   * Optional for backward compatibility with state files written before this
-   * field was added — `loadLoopState` accepts files without it and the resume
-   * flow treats the missing field as "no alignment check".
+   * Optional for backward compat with state files written before this field was
+   * added — loadLoopState accepts files without it and the resume flow treats
+   * the missing field as "no alignment check".
    */
   currentTask?: string | null
 }
@@ -50,14 +50,11 @@ function statePath(): string {
 }
 
 /**
- * Per-save random tmp path. A fixed tmp name (`.loop-state.json.tmp`) let two
- * `ocloop` processes pointing at the same cwd (e.g. a TUI plus a `--create-plan`
- * run in a second terminal, or two TMUX panes) race on the same file and
- * interleave each other's mid-write bytes. The final `rename` to
- * `.loop-state.json` is still last-writer-wins (atomic rename on POSIX), so the
- * user-observable behavior is unchanged; the random suffix only prevents the
- * intermediate-state clobbering of the tmp. Mirrors the same fix in
- * `saveConfig` (config.ts, MEJORAS.md Finding 12.2.B) for consistency + DRY.
+ * Per-save random tmp path. A fixed tmp name let two ocloop processes sharing
+ * the same cwd race on the same file and interleave each other's mid-write
+ * bytes. The rename to .loop-state.json is still last-writer-wins (atomic on
+ * POSIX); the random suffix only prevents intermediate-state clobbering of the
+ * tmp. Mirrors saveConfig in config.ts for consistency.
  */
 function tmpPath(): string {
   return `${statePath()}.${randomBytes(6).toString("hex")}.tmp`
@@ -68,12 +65,10 @@ function tmpPath(): string {
  * and must not crash the app.
  */
 export async function saveLoopState(state: PersistedLoopState): Promise<void> {
-  // Capture the random tmp name ONCE and reuse it across write/rename/unlink.
-  // Each `tmpPath()` call returns a fresh random suffix; calling it twice would
-  // produce two different names, so `rename(tmpPath(), …)` would target a file
-  // that `writeFile(tmpPath(), …)` never wrote (and the cleanup `unlink` would
-  // miss it too). Mirrors the `const tmpPath = …` pattern in `saveConfig`
-  // (config.ts). Source: DRY with the config path + the concurrency fix above.
+  // Capture the random tmp name once and reuse it across write/rename/unlink.
+  // Each tmpPath() call returns a fresh random suffix; calling it twice would
+  // produce two different names, so rename would target a file that writeFile
+  // never wrote (and the cleanup unlink would miss it). Mirrors saveConfig.
   const tmp = tmpPath()
   try {
     const json = JSON.stringify(state, null, 2)
@@ -81,12 +76,9 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
     try {
       await rename(tmp, statePath())
     } catch (renameErr) {
-      // Best-effort cleanup of the orphan tmp file. The rename failed (e.g. the
-      // destination dir became read-only mid-flight, ENOSPC, EPERM) but the
-      // tmp is still in our control — unlink it so the next save starts from
-      // a clean slate. The unlink is itself best-effort: in a degraded-disk
-      // situation we cannot do better than log the original rename error.
-      // Source: MEJORAS.md Finding 8.1.A.
+      // Best-effort cleanup of the orphan tmp: the rename failed (read-only dir,
+      // ENOSPC, EPERM) but the tmp is still in our control — unlink it so the
+      // next save starts clean. The unlink is itself best-effort.
       try {
         await unlink(tmp)
       } catch {
@@ -100,13 +92,10 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
 }
 
 /**
- * Per-field type guard for `PersistedLoopState`. Validates every field so a
- * hand-edited or partially-written file with a wrong-typed `sessionId`,
- * `stateType`, `rateLimitAttempts`, or `updatedAt` is rejected at the trust
- * boundary, rather than slipping through and being serialized into a server
- * URL by the consumer in `App.tsx`.
- *
- * Source: MEJORAS.md Finding 8.2.A.
+ * Per-field type guard for PersistedLoopState. Validates every field so a
+ * hand-edited or partially-written file with a wrong-typed sessionId/stateType/
+ * rateLimitAttempts/updatedAt is rejected at the trust boundary, rather than
+ * slipping through and being serialized into a server URL by the consumer.
  */
 function isPersistedLoopState(p: unknown): p is PersistedLoopState {
   if (!p || typeof p !== "object") return false
