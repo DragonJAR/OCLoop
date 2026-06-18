@@ -170,93 +170,44 @@ function AppContent(props: AppProps) {
   const [resilience, setResilience] = createSignal<ResilienceConfig>(
     resolveResilience(undefined, props.resilience),
   )
-  // Race gate for the server-ready createEffect. The `resilience` signal above
-  // is seeded with the CLI-only layer; the on-disk config layer only lands
-  // after `onMount` resolves `loadConfig()` + `resolveResilience()`. If the
-  // opencode server becomes "ready" before that await completes, the
-  // createEffect (line 1180) would otherwise call `initializeSession` with
-  // `resilience().resume` still defaulting to `false`, silently overriding
-  // a user who set `resume: true` in their config for one startup window.
-  // The flag flips to `true` at the end of `onMount` (line 488), so the
-  // createEffect re-runs exactly once with the resolved resilience.
-  // Source: MEJORAS.md Finding 15.8.A.
+  // Race gate for the server-ready createEffect: resilience is seeded with the
+  // CLI layer only; the on-disk config layer lands after onMount awaits
+  // loadConfig. Without this gate, if the server becomes ready first the
+  // effect would run initializeSession with the default (resume=false),
+  // silently overriding a user's config. Flips to true at the end of onMount.
   const [resilienceReady, setResilienceReady] = createSignal(false)
 
-  // --- Rate-limit cooldown bookkeeping (Phase 1) ---
-  // Consecutive rate-limit attempts; reset whenever an iteration completes ok.
+  // --- Rate-limit cooldown bookkeeping ---
   let rateLimitAttempts = 0
-  // Timers for the cooldown wait and the dashboard countdown.
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
-  // Trailing debounce for PLAN.md-triggered refreshPlan() calls. A
-  // multi-edit tool call (e.g. the agent flipping several `- [ ]` to
-  // `- [x]`) fires several `file.edited` SSE events in quick
-  // succession; each would otherwise trigger an independent
-  // `Bun.file().text()` + parse cycle, racing in `setPlanProgress`
-  // and producing transient flicker in the progress bar. 150ms is
-  // short enough to feel real-time and long enough to coalesce a
-  // typical multi-edit burst. Closure-bound `let` (mirroring
-  // `cooldownTimer` / `startingIteration`); reset by component
-  // unmount via the onCleanup below. Source: MEJORAS.md
-  // Finding 15.5.A.
+  // Trailing debounce for PLAN.md-triggered refreshPlan() calls: a multi-edit
+  // tool call fires several file.edited SSE events in quick succession; 150ms
+  // coalesces the burst so setPlanProgress doesn't race and flicker the bar.
   let refreshPlanTimer: ReturnType<typeof setTimeout> | null = null
   // Monotonic timestamp of the last iteration kickoff, for minIterationGap.
   let lastIterationStartAt = 0
-  // Process-scoped in-flight guard. Guards startIteration against re-entry
-  // while createSession is in flight. Intentionally NOT persisted: a fresh
-  // process always starts with no in-flight iteration, even if
-  // `.loop-state.json` says the previous process was mid-start. The
-  // reducer's `iteration_started` dispatch is the source of truth for
-  // "we have a session".
+  // In-flight guard: createSession is async; without this a second trigger
+  // mid-flight would create a second session and orphan the first. Not
+  // persisted — iteration_started is the source of truth for "we have a session".
   let startingIteration = false
-  // Process-scoped re-entry guard for handleQuit. Closes the
-  // SIGINT-during-Q race window: a user who confirms the quit dialog
-  // and then hits Ctrl+C (or any other concurrent trigger) would
-  // otherwise enter handleQuit a second time while the first call's
-  // awaits are still in flight, producing a wasted `abortSession`
-  // HTTP request. Mirrors the `ShutdownManager.isShuttingDown` flag
-  // in `src/lib/shutdown.ts:17` for the SIGINT/SIGTERM path, and
-  // follows the same closure-bound `let` pattern as
-  // `startingIteration` above. Intentionally NOT persisted: a fresh
-  // process always starts with no in-flight quit, and `process.exit`
-  // at the end of handleQuit guarantees the flag is reset by process
-  // death. Source: MEJORAS.md Finding 15.4.A.
+  // Re-entry guard for handleQuit: abortSession is a non-idempotent HTTP call,
+  // so a concurrent trigger (quit confirm + Ctrl+C) would fire it twice.
   let isShuttingDown = false
-  // Process-scoped re-entry guard for restartServer. Closes the
-  // concurrent-call race window: the watchdog recovery path
-  // (`useWatchdog.ts:205` → `options.actions.restartServer()`) and
-  // the SSE-exhaustion path (`App.tsx:1421` → `void
-  // restartServer()`) and the user-driven command palette entry
-  // (`App.tsx:1711`) all call restartServer independently. Two
-  // concurrent callers would otherwise produce a duplicate
-  // `actGuardRestart` activity event, a duplicate
-  // `reconcileAndAdvance()` (wasted API round-trip), and two SSE
-  // reconnect attempts. The underlying hooks are individually
-  // idempotent or guard-protected (useServer.restart's
-  // `status() === "starting"` guard from Mejora 27, useSSE's
-  // `myController` pattern), so the duplicate is wasteful rather
-  // than correctness-breaking — but the user-visible duplicate
-  // activity entry is enough to warrant the guard. Unlike
-  // `isShuttingDown`, the function does NOT end in `process.exit`,
-  // so the flag is reset in a `finally` to allow subsequent
-  // sequential restarts. Source: MEJORAS.md Finding 15.7.B.
+  // Re-entry guard for restartServer: three callers (watchdog, SSE-exhaustion,
+  // command palette) can invoke it independently; the duplicate is wasteful not
+  // correctness-breaking, but the user-visible duplicate activity entry warrants
+  // the guard. Reset in a finally (unlike isShuttingDown) to allow sequential restarts.
   let restartServerInProgress = false
   // Remaining cooldown time (ms) for the dashboard countdown.
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
 
-  // --- No-progress detector (PLAN.md bug-hunt #1) ---
-  // A small stateful tracker that counts consecutive iterations that start
-  // with the same PLAN.md task description. When the count reaches
-  // `resilience().noProgressThreshold`, the loop halts with errNoProgress.
-  // Without this, an agent that fails to make progress (e.g. it produces
-  // a clean idle every time but never edits PLAN.md) would re-execute the
-  // same task forever — the watchdog stays quiet (idle != stuck) and the
-  // existing state machine treats a clean idle as success. The threshold
-  // is read from resilience so a user who wants a tighter or looser limit
-  // can override it via the config file or `--resilience
-  // noProgressThreshold=N`. The detector is created lazily (after
-  // resilience resolves) so the default seed in `resilience()` is
-  // available; see `initializeNoProgressDetector()` below.
+  // --- No-progress detector ---
+  // Counts consecutive iterations starting with the same PLAN.md task; halts
+  // with errNoProgress when it reaches noProgressThreshold. Without this an
+  // agent that idles cleanly without ever editing PLAN.md would loop forever
+  // (idle != stuck for the watchdog). Created lazily after resilience resolves
+  // so the threshold seed is available; overridden via --resilience noProgressThreshold=N.
   let noProgressDetector: NoProgressDetector | null = null
   function ensureNoProgressDetector(): NoProgressDetector {
     if (!noProgressDetector) {
@@ -341,7 +292,6 @@ function AppContent(props: AppProps) {
       reconcile: () =>
         chaos.reconcile(async () => {
           const sid = getActiveSessionId(loop.state())
-          // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
           const client = tryGetClient(server.url)
           if (!client || !sid) return "unknown"
           return reconcileSession(client, sid)
@@ -360,8 +310,7 @@ function AppContent(props: AppProps) {
       abortAndRetry: async () => {
         activityLog.addEvent("task", t("actGuardAbort"), { level: "warn" })
         const sid = getActiveSessionId(loop.state())
-        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
-        const client = tryGetClient(server.url)
+            const client = tryGetClient(server.url)
         if (client && sid) {
           try {
             await abortSession(client, sid)
@@ -995,11 +944,8 @@ function AppContent(props: AppProps) {
     // arriving mid-flight would create a second session and orphan the first
     // (it keeps running on the server, burning tokens, never aborted).
     if (startingIteration) return
-    // Resolve the SDK client once and reuse it across the whole iteration.
-    // tryGetClient collapses the url-read + createClient pair and the null
-    // guard (Finding 16.2.A). The same `client` is used in the catch below
-    // for the best-effort abort — no second createClient call, no
-    // re-resolve of server.url() mid-error.
+    // Resolve once and reuse across the iteration; the catch reuses the same
+    // client for the best-effort abort (no second createClient / url resolve).
     const client = tryGetClient(server.url)
     if (!client) {
       log.error("iteration", "Cannot start iteration: server not ready")
@@ -1190,7 +1136,6 @@ function AppContent(props: AppProps) {
    */
   async function createDebugSession(): Promise<void> {
     log.info("session", "Creating debug session...")
-    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
     const client = tryGetClient(server.url)
     if (!client) {
       log.error("session", "Cannot create debug session: server not ready")
@@ -1227,7 +1172,6 @@ function AppContent(props: AppProps) {
    */
   async function sendDebugPrompt(text: string): Promise<void> {
     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
     const client = tryGetClient(server.url)
 
     if (!client || !sid) {
@@ -1312,8 +1256,7 @@ function AppContent(props: AppProps) {
     const currentSessionId = sessionId()
     if (currentSessionId) {
       try {
-        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
-        const client = tryGetClient(server.url)
+            const client = tryGetClient(server.url)
         if (client) {
           await abortSession(client, currentSessionId)
         }
@@ -1366,8 +1309,7 @@ function AppContent(props: AppProps) {
 
       // Fetch active model from config if not already set via CLI
       if (!activeModel()) {
-        // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
-        const client = tryGetClient(server.url)
+            const client = tryGetClient(server.url)
         if (client) {
           withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
             .then(res => {
@@ -1393,8 +1335,7 @@ function AppContent(props: AppProps) {
       // start on it. Otherwise the validation (async) raced initializeSession
       // and the first prompt went out with a nonexistent agent, which the
       // server rejects mid-iteration as a fatal "agent not found".
-      // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
-      // We use server.url() again (cheap signal read) so the call site matches
+        // We use server.url() again (cheap signal read) so the call site matches
       // the pattern at every other createClient site in this file.
       if (props.agent) {
         const client = tryGetClient(server.url)
@@ -1575,7 +1516,6 @@ function AppContent(props: AppProps) {
    */
   async function doResume(p: PersistedLoopState): Promise<void> {
     rateLimitAttempts = p.rateLimitAttempts || 0
-    // tryGetClient collapses the url-read + createClient pair (Finding 16.2.A).
     const client = tryGetClient(server.url)
     let verdict: ReconcileResult = "missing"
     if (client && p.sessionId) {
