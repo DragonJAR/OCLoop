@@ -1961,6 +1961,88 @@ Some intro.
       expect(result.percentComplete).toBe(50)
     })
   })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.11 — completed-before-pending document order.
+  // The most common shape of a real, in-progress PLAN.md is "all
+  // completed tasks are grouped at the top of the file, all pending
+  // tasks are grouped at the bottom" — humans edit by marking the
+  // topmost pending `[x]` after the loop finishes, so the file evolves
+  // top-down through the task list. These tests pin the counter
+  // contract for that natural shape: the parser must count the
+  // completed and pending groups independently, never confuse a
+  // completed row for a pending one (or vice versa), and compute
+  // percentComplete as `completed / (completed + pending)` since
+  // manual and blocked rows are absent.
+  //
+  // The selection-side mirror of this contract lives in
+  // `getCurrentTaskFromContent` below (also "PLAN.md 2.11").
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.11 — completed-before-pending document order (counters and percentComplete math)", () => {
+    it("counts correctly when all completed tasks are grouped before all pending tasks (pure in-progress shape)", () => {
+      // 4 completed + 3 pending, no other categories, no headings, no
+      // blank lines. The simplest possible "in-progress" PLAN.md. A
+      // parser that confused `[x]` with `[ ]` would mis-distribute the
+      // 7 tasks between the buckets; a parser that double-counted
+      // would inflate the total. Both bugs are caught here.
+      const content = [
+        "- [x] Done 1",
+        "- [x] Done 2",
+        "- [x] Done 3",
+        "- [x] Done 4",
+        "- [ ] Pending 1",
+        "- [ ] Pending 2",
+        "- [ ] Pending 3",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      expect(result.total).toBe(7)
+      expect(result.completed).toBe(4)
+      expect(result.pending).toBe(3)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(3)
+      // percentComplete = 4 / (7 - 0 - 0) = 4/7 = 57.14… → 57
+      expect(result.percentComplete).toBe(57)
+    })
+
+    it("counts correctly for the completed-before-pending shape surrounded by headings and blank lines", () => {
+      // The same in-progress shape but with the file-level noise a
+      // real PLAN.md carries: title heading, prose, blank lines, and
+      // a section heading between the completed and pending groups.
+      // The document-order contract ("completeds at top, pendings
+      // below") must survive the noise without any bucket shifting.
+      const content = [
+        "# My Plan",
+        "",
+        "Some intro prose that the parser must ignore.",
+        "",
+        "## Phase 1 — Done",
+        "",
+        "- [x] Phase 1 done 1",
+        "- [x] Phase 1 done 2",
+        "- [x] Phase 1 done 3",
+        "",
+        "## Phase 2 — Pending",
+        "",
+        "- [ ] Phase 2 pending 1",
+        "- [ ] Phase 2 pending 2",
+        "",
+      ].join("\n")
+      const result = parsePlan(content)
+
+      // 3 completeds + 2 pendings, headings and blanks excluded.
+      expect(result.total).toBe(5)
+      expect(result.completed).toBe(3)
+      expect(result.pending).toBe(2)
+      expect(result.manual).toBe(0)
+      expect(result.blocked).toBe(0)
+      expect(result.automatable).toBe(2)
+      // percentComplete = 3 / 5 = 60
+      expect(result.percentComplete).toBe(60)
+    })
+  })
 })
 
 describe("parsePlanComplete", () => {
@@ -2658,6 +2740,68 @@ describe("getCurrentTaskFromContent", () => {
       ].join("\n")
       const result = getCurrentTaskFromContent(content)
       expect(result).toBe("Pending in deep subsection")
+    })
+  })
+
+  // ──────────────────────────────────────────────────────────────────────────
+  // PLAN.md 2.11 — completed-before-pending document order (selection).
+  // Mirror of the parsePlan-side block above. The natural in-progress
+  // PLAN.md shape has all completions grouped at the top of the file
+  // and all pendings at the bottom. The function must:
+  //   1. return the description of the FIRST pending task, never any
+  //      completed task (even if the completed task is the very first
+  //      line of the file);
+  //   2. not get confused by the size of the completion group — a
+  //      file with 10 completions + 1 pending must still land on that
+  //      one pending, not on a completion;
+  //   3. preserve the "first pending" contract even when the
+  //      completed group dominates by an order of magnitude.
+  // A bug that returned the first line, the last line, the longest
+  // description, or any completed row would be caught here.
+  // ──────────────────────────────────────────────────────────────────────────
+
+  describe("PLAN.md 2.11 — completed-before-pending document order (selection)", () => {
+    it("returns the first pending when all completed tasks are grouped before all pending tasks", () => {
+      // 4 completeds at the top + 3 pendings at the bottom. The
+      // function must return the first pending's description — not
+      // "Done 1" (the first line), not "Pending 3" (the last
+      // pending), not any of the completions. The order contract is
+      // "first pending in document order".
+      const content = [
+        "- [x] Done 1",
+        "- [x] Done 2",
+        "- [x] Done 3",
+        "- [x] Done 4",
+        "- [ ] Pending 1",
+        "- [ ] Pending 2",
+        "- [ ] Pending 3",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("Pending 1")
+    })
+
+    it("returns the only pending when many completeds dominate and one pending remains (almost-done shape)", () => {
+      // The "almost done" plan: 10 completions + 1 pending. A parser
+      // that returned the first line, the longest description, or
+      // any of the completions would fail this test. The function
+      // must walk past all 10 completions and land on the single
+      // pending. Pins that the selection is NOT position-biased
+      // toward the top of the file.
+      const content = [
+        "- [x] Done 1",
+        "- [x] Done 2",
+        "- [x] Done 3",
+        "- [x] Done 4",
+        "- [x] Done 5",
+        "- [x] Done 6",
+        "- [x] Done 7",
+        "- [x] Done 8",
+        "- [x] Done 9",
+        "- [x] Done 10",
+        "- [ ] The last task to do",
+      ].join("\n")
+      const result = getCurrentTaskFromContent(content)
+      expect(result).toBe("The last task to do")
     })
   })
 })
