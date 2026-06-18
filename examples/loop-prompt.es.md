@@ -20,7 +20,7 @@ Ejecuta:
 2. Ejecuta las comprobaciones del proyecto usando los comandos exactos de `## Project Operations` en AGENTS.md (p. ej. `bun test`). Si no hay ninguno definido y no existen archivos de test, omite este paso.
 3. Haz commit SOLO si las comprobaciones pasan (o si no hay ninguna).
    - Si una comprobación falla y puedes arreglarla en esta iteración, arréglala y vuelve a ejecutarla.
-   - Si no puedes arreglarla en esta iteración, revierte tus cambios de esta tarea (`git checkout -- .` y borra los archivos nuevos que hayas añadido), marca la tarea `[BLOCKED: <reason>]` y ve a "Después de completar".
+   - Si no puedes arreglarla en esta iteración, revierte SOLO los archivos que cambiaste en esta tarea (`git checkout -- <esos archivos>` y borra solo los archivos nuevos que hayas añadido) — nunca `git checkout -- .` ni `git clean`, que descartarían cambios sin commitear ajenos a la tarea. Marca la tarea `[BLOCKED: <reason>]` y ve a "Después de completar".
    - Nunca hagas commit de código que falla. Nunca uses `--no-verify` ni evites los hooks.
 4. Haz commit con un mensaje descriptivo, siguiendo las reglas de commit de AGENTS.md (un cambio lógico; nunca `git add .`; respeta `.gitignore`). NUNCA hagas push.
 

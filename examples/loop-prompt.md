@@ -20,7 +20,7 @@ Execute:
 2. Run the project's checks using the exact commands in AGENTS.md `## Project Operations` (e.g. `bun test`). If none are defined and no test files exist, skip this step.
 3. Commit ONLY if the checks pass (or there are none).
    - If a check fails and you can fix it this iteration, fix it and re-run.
-   - If you cannot fix it this iteration, revert your changes for this task (`git checkout -- .` and delete any new files you added), mark the task `[BLOCKED: <reason>]`, and go to "After completion".
+   - If you cannot fix it this iteration, revert ONLY the files you changed for this task (`git checkout -- <those files>` and delete only the new files you added) — never `git checkout -- .` or `git clean`, which would discard unrelated uncommitted changes in the working tree. Mark the task `[BLOCKED: <reason>]`, and go to "After completion".
    - Never commit failing code. Never use `--no-verify` or bypass hooks.
 4. Commit with a descriptive message, following the commit rules in AGENTS.md (one logical change; never `git add .`; respect `.gitignore`). NEVER push.
 
