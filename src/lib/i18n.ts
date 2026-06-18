@@ -449,6 +449,15 @@ const en = {
   actResuming: (p: Params) => `Resuming session ${p.id} (iter ${p.iteration})`,
   actContinuing: (p: Params) =>
     `Previous session ${p.verdict}; continuing the loop`,
+  // PLAN.md bug-hunt #4: PLAN.md was edited between crash and resume, so
+  // the task the loop was working on no longer matches the first pending
+  // task. The warning is informational; the loop still proceeds (the
+  // agent's prompt instructs it to pick the first pending task), but the
+  // user gets a single line in the activity log and `.loop.log` so they
+  // can confirm the change was intentional. The "kind" disambiguates the
+  // three sub-cases the helper returns (completed, reordered, removed).
+  actResumeMisalign: (p: Params) =>
+    `Resume: PLAN.md changed since crash (${p.kind}) — was on "${p.saved}", now starts on "${p.current ?? "—"}"`,
 
   // --- Command palette ---
   cmdCopyAttach: "Copy attach command",
@@ -907,6 +916,13 @@ const es: Record<MessageKey, Msg> = {
     ].join("\n"),
   actResuming: (p) => `Reanudando sesión ${p.id} (iter ${p.iteration})`,
   actContinuing: (p) => `Sesión previa ${p.verdict}; continuando el loop`,
+  // PLAN.md bug-hunt #4: PLAN.md fue editado entre el crash y la
+  // reanudación. La advertencia es informativa; el loop continúa, pero
+  // el usuario ve una línea en el log de actividad y en `.loop.log`
+  // para confirmar que el cambio fue intencional. "kind" distingue los
+  // tres sub-casos (completed, reordered, removed).
+  actResumeMisalign: (p) =>
+    `Reanudación: PLAN.md cambió desde el crash (${p.kind}) — estaba en "${p.saved}", ahora empieza en "${p.current ?? "—"}"`,
 
   cmdCopyAttach: "Copiar comando de conexión",
   cmdChooseTerminal: "Elegir terminal por defecto",

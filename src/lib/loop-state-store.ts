@@ -32,6 +32,17 @@ export interface PersistedLoopState {
   rateLimitAttempts: number
   /** ISO wall-clock timestamp (human-facing). */
   updatedAt: string
+  /**
+   * Description of the PLAN.md task this iteration was working on (or `null`
+   * when the plan had no pending task at save time). Used at resume to detect
+   * a misalignment: if PLAN.md was edited between crash and resume, the saved
+   * task may no longer be the first pending task. PLAN.md bug-hunt #4.
+   *
+   * Optional for backward compatibility with state files written before this
+   * field was added — `loadLoopState` accepts files without it and the resume
+   * flow treats the missing field as "no alignment check".
+   */
+  currentTask?: string | null
 }
 
 function statePath(): string {
@@ -100,13 +111,23 @@ export async function saveLoopState(state: PersistedLoopState): Promise<void> {
 function isPersistedLoopState(p: unknown): p is PersistedLoopState {
   if (!p || typeof p !== "object") return false
   const s = p as Record<string, unknown>
+  // `currentTask` is optional for backward compat with pre-#4 state files:
+  // older snapshots were saved without it, and `loadLoopState` must keep
+  // returning them. When present, validate the type so a hand-edited file
+  // with a wrong-typed value (e.g. an array) is rejected at the trust
+  // boundary — same defense-in-depth pattern as the other fields.
+  const currentTaskOk =
+    s.currentTask === undefined ||
+    s.currentTask === null ||
+    typeof s.currentTask === "string"
   return (
     s.version === 1 &&
     typeof s.iteration === "number" &&
     (s.sessionId === null || typeof s.sessionId === "string") &&
     typeof s.stateType === "string" &&
     typeof s.rateLimitAttempts === "number" &&
-    typeof s.updatedAt === "string"
+    typeof s.updatedAt === "string" &&
+    currentTaskOk
   )
 }
 

@@ -37,6 +37,7 @@ import {
   type PersistedLoopState,
 } from "./lib/loop-state-store"
 import { describeResumeAttempt } from "./lib/resume-decision"
+import { describeResumeAlignment } from "./lib/resume-alignment"
 import {
   loadConfig,
   saveConfig,
@@ -1092,6 +1093,20 @@ function AppContent(props: AppProps) {
 
       // Dispatch iteration started
       loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
+      // Race guard: `createSession` is async. If the user paused (Space) or
+      // quit (Q) DURING the await above, the reducer no-op'd `iteration_started`
+      // (state is no longer running/paused, see useLoopState `iteration_started`),
+      // so this session is untracked — nothing would ever abort it and it'd keep
+      // running on the server burning tokens. Abort it now and bail before sending
+      // the prompt. Best-effort, same pattern as the catch block / watchdog.
+      if (getActiveSessionId(loop.state()) !== newSessionId) {
+        try {
+          await abortSession(client, newSessionId)
+        } catch {
+          // Best effort — the session may already be gone.
+        }
+        return
+      }
       // Reset the watchdog's heartbeat baseline for this fresh iteration.
       watchdog.notifyIterationStart()
 
@@ -1456,6 +1471,59 @@ function AppContent(props: AppProps) {
           sessionId: persisted.sessionId,
           stateType: persisted.stateType,
         })
+        // PLAN.md bug-hunt #4: if the saved state has a `currentTask`,
+        // compare it against the current PLAN.md. A mismatch means the
+        // user edited/reordered/completed tasks between crash and resume,
+        // and a naive resume would silently start on a different task.
+        // The check is best-effort: a read failure logs a warn and
+        // continues (the next `getCurrentTask` call inside `startIteration`
+        // will retry), and the user-facing warning is purely informational
+        // — the loop proceeds either way.
+        if (persisted.currentTask) {
+          try {
+            const planPath = resolvePlanFile(props.planFile)
+            const planFile = Bun.file(planPath)
+            if (await planFile.exists()) {
+              const planContent = await planFile.text()
+              const alignment = describeResumeAlignment(
+                persisted.currentTask,
+                planContent,
+              )
+              if (alignment) {
+                // Both the audit log (`.loop.log`) and the activity panel
+                // get a line so the user sees the warning regardless of
+                // whether they read the log file or look at the TUI.
+                log.warn("plan", "Resume misalignment detected", {
+                  kind: alignment.kind,
+                  saved: alignment.saved,
+                  current: "current" in alignment ? alignment.current : null,
+                })
+                activityLog.addEvent(
+                  "error",
+                  t("actResumeMisalign", {
+                    kind: alignment.kind,
+                    saved: alignment.saved,
+                    current:
+                      "current" in alignment ? alignment.current : null,
+                  }),
+                  { level: "warn" },
+                )
+              }
+            }
+          } catch (err) {
+            // PLAN.md unreadable at resume time: don't fail the resume,
+            // just skip the alignment check. The next `startIteration`
+            // will re-read the plan and either proceed or hit its own
+            // error path (the missing-plan pre-flight in `main()` runs
+            // before this onMount, so a missing file is already
+            // rejected before we get here).
+            log.warn(
+              "plan",
+              "Resume alignment check skipped: cannot read PLAN.md",
+              err,
+            )
+          }
+        }
         if (resilience().resume) {
           await doResume(persisted)
         } else {
@@ -1652,6 +1720,15 @@ function AppContent(props: AppProps) {
         stateType: s.type,
         rateLimitAttempts,
         updatedAt: new Date().toISOString(),
+        // PLAN.md bug-hunt #4: persist the first-pending task the loop is
+        // working on so a resume after a crash can detect a PLAN.md edit
+        // (insertion, reordering, completion, or removal) and warn the user
+        // that the saved task is no longer the first pending task. The
+        // `currentTask` signal is updated by `refreshCurrentTask` after
+        // every plan refresh, so this reads the most recent value the
+        // loop has seen. `?? null` normalizes the `undefined` initial
+        // state to the JSON-safe `null`.
+        currentTask: currentTask() ?? null,
       }
       void saveLoopState(snapshot)
     } else if (s.type === "complete") {
