@@ -37,7 +37,8 @@ export interface TerminalLauncherDeps {
   t: typeof Tfn
   sessionId: () => string | undefined
   lastSessionId: () => string | undefined
-  serverUrl: () => string | undefined
+  // `() => string | null` matches useServer.url (the source) and tryGetClient.
+  serverUrl: () => string | null
   ocloopConfig: () => OcloopConfig
   setOcloopConfig: (c: OcloopConfig) => void
   availableTerminals: () => KnownTerminal[]

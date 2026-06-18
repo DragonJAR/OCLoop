@@ -314,3 +314,49 @@ export async function getCurrentTask(planPath: string): Promise<string | null> {
   const content = await file.text()
   return getCurrentTaskFromContent(content)
 }
+
+/**
+ * Extracts subtask descriptions from an agent reply.
+ *
+ * Scans for `- [ ]` pending task lines (reusing parseTaskLine) and returns
+ * their descriptions in document order, ignoring prose, headings, code fences,
+ * and any non-pending markers. Returns [] when the reply has no pending lines.
+ */
+export function parseSubtasksFromReply(text: string): string[] {
+  const out: string[] = []
+  for (const line of text.split("\n")) {
+    const task = parseTaskLine(line)
+    if (task.type === "pending" && task.description) {
+      out.push(task.description)
+    }
+  }
+  return out
+}
+
+/**
+ * Replaces the first pending task whose description matches `taskDescription`
+ * with `subtasks` rendered as pending `- [ ]` lines, preserving the original
+ * line's leading indentation. Returns `content` unchanged when no pending task
+ * matches or `subtasks` is empty.
+ *
+ * Pure string transform (mirrors withPlanCompleteTag); the caller persists the
+ * result with Bun.write.
+ */
+export function replaceTaskWithSubtasks(
+  content: string,
+  taskDescription: string,
+  subtasks: string[],
+): string {
+  if (subtasks.length === 0) return content
+  const lines = content.split("\n")
+  for (let i = 0; i < lines.length; i++) {
+    const task = parseTaskLine(lines[i])
+    if (task.type === "pending" && task.description === taskDescription) {
+      const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""
+      const replacement = subtasks.map((s) => `${indent}- [ ] ${s}`)
+      lines.splice(i, 1, ...replacement)
+      return lines.join("\n")
+    }
+  }
+  return content
+}

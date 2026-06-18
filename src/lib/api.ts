@@ -362,3 +362,55 @@ export async function reconcileSession(
     return "unknown"
   }
 }
+
+/** One session message (info + parts) as returned by `session.messages`. */
+export type SessionMessage = {
+  info?: { role?: string }
+  parts?: Array<{ type?: string; text?: string }>
+}
+
+/** Concatenated text parts of a single message. */
+function extractMessageText(
+  data: { parts?: Array<{ type?: string; text?: string }> } | undefined,
+): string {
+  if (!data?.parts) return ""
+  return data.parts
+    .filter((p) => p.type === "text" && typeof p.text === "string")
+    .map((p) => p.text as string)
+    .join("")
+    .trim()
+}
+
+/** Fetch a session's messages, surfacing transport/HTTP errors consistently. */
+export async function fetchMessages(
+  client: OpencodeClient,
+  sessionID: string,
+): Promise<SessionMessage[]> {
+  const res = await client.session.messages({ sessionID })
+  assertResponse(res, "read session messages")
+  return (res.data ?? []) as SessionMessage[]
+}
+
+/** Text of the most recent assistant message (the model's latest reply). */
+export function extractLastAssistantText(messages: SessionMessage[]): string {
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i]?.info?.role === "assistant") return extractMessageText(messages[i])
+  }
+  return ""
+}
+
+/** Count assistant messages in a session snapshot. */
+export function countAssistantMessages(messages: SessionMessage[]): number {
+  return messages.filter((message) => message.info?.role === "assistant").length
+}
+
+/** True once a new, non-empty assistant reply has landed after the prompt. */
+export function hasNewAssistantReply(
+  messages: SessionMessage[],
+  assistantCountBefore: number,
+): boolean {
+  return (
+    countAssistantMessages(messages) > assistantCountBefore &&
+    extractLastAssistantText(messages).length > 0
+  )
+}

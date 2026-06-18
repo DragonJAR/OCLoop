@@ -308,6 +308,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           message: action.message,
           recoverable: action.recoverable,
           ...(lastIteration !== undefined ? { lastIteration } : {}),
+          ...(action.decomposableTask ? { decomposableTask: action.decomposableTask } : {}),
         }
       }
       return state

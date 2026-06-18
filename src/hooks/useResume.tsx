@@ -34,9 +34,13 @@ import { tryGetClient, reconcileSession } from "../lib/api"
 import { log } from "../lib/debug-logger"
 
 export interface ResumeDeps {
-  // CLI flags
-  debug: boolean
-  run: boolean
+  // CLI flags. `boolean | undefined` matches CLIArgs (the props are optional):
+  // an absent flag is `undefined`, a present `--debug`/`--run` is `true`. Every
+  // internal use is a truthy check (`if (deps.run)`), so undefined behaves
+  // identically to false — the looser type just removes a false type error at
+  // the App.tsx call site without changing runtime behavior.
+  debug: boolean | undefined
+  run: boolean | undefined
   planFile: string | undefined
   // Loop + sibling hooks
   loop: ReturnType<typeof useLoopState>
@@ -47,7 +51,11 @@ export interface ResumeDeps {
   dialog: DialogContextValue
   t: typeof Tfn
   resilience: () => ResilienceConfig
-  serverUrl: () => string | undefined
+  // `() => string | null` matches useServer.url (the sole caller source) and
+  // tryGetClient's getter contract in api.ts. Was typed `string | undefined`,
+  // which diverged from the source and forced the App.tsx call site to pass a
+  // `() => string | null` into a `string | undefined` slot — a type error.
+  serverUrl: () => string | null
   // Imperative actions owned by AppContent
   createDebugSession: () => Promise<void>
   reconcileAndAdvance: () => Promise<ReconcileResult>
@@ -67,7 +75,12 @@ export function useResume(deps: ResumeDeps): ResumeApi {
    */
   async function doResume(p: PersistedLoopState): Promise<void> {
     cooldown.setAttempts(p.rateLimitAttempts || 0)
-    const client = tryGetClient(deps.serverUrl())
+    // Pass the GETTER (not its invoked value): tryGetClient's contract is
+    // `getUrl: () => string | null` and it invokes the getter once internally.
+    // The prior `deps.serverUrl()` passed a string where a function was
+    // expected — a type hole that would have thrown `serverUrl is not a
+    // function` at runtime the moment a resume ran with a live server URL.
+    const client = tryGetClient(deps.serverUrl)
     let verdict: ReconcileResult = "missing"
     if (client && p.sessionId) {
       verdict = await reconcileSession(client, p.sessionId)
@@ -168,8 +181,13 @@ export function useResume(deps: ResumeDeps): ResumeApi {
                   t("actResumeMisalign", {
                     kind: alignment.kind,
                     saved: alignment.saved,
+                    // Resolve to a string here: Params values are `string |
+                    // number`, and `alignment.current` is `string | null` for the
+                    // `removed` case. Collapsing null → "—" matches the i18n
+                    // template's own `?? "—"` fallback, so the rendered message
+                    // is identical and the type stays sound.
                     current:
-                      "current" in alignment ? alignment.current : null,
+                      ("current" in alignment ? alignment.current : null) ?? "—",
                   }),
                   { level: "warn" },
                 )

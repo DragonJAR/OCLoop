@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync, chmodSync, readdirSync } from "node:fs"
+import { mkdtempSync, rmSync, chmodSync, readdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -128,5 +128,49 @@ describe("loop-state-store", () => {
   it("returns null when updatedAt is not a string", async () => {
     await saveLoopState({ ...sample, updatedAt: 42 as unknown as string })
     expect(await loadLoopState()).toBeNull()
+  })
+
+  // The type guard must reject non-integer and negative count fields: a
+  // hand-edited .loop-state.json (JSON allows negative + decimal numbers) with
+  // a negative `rateLimitAttempts` would otherwise round-trip into
+  // `setAttempts(-5)` and the rate-limit circuit breaker could never trip
+  // (-5 > maxRateLimitRetries is always false). A decimal iteration would
+  // poison iteration+1 forever. NaN/Infinity are also rejected for defense in
+  // depth (JSON.parse already rejects those, but the guard is the trust
+  // boundary so it validates independently).
+  describe("count-field hardening (rejects negative / non-integer / NaN / Infinity)", () => {
+    // Write a hand-edited state file directly: saveLoopState would JSON.stringify
+    // and coerce, but the realistic threat is a user/tool editing the file raw.
+    function writeRawState(json: string): void {
+      writeFileSync(join(dir, ".loop-state.json"), json, "utf-8")
+    }
+
+    it("rejects a negative iteration", async () => {
+      writeRawState(JSON.stringify({ ...sample, iteration: -1 }))
+      expect(await loadLoopState()).toBeNull()
+    })
+
+    it("rejects a decimal (non-integer) iteration", async () => {
+      writeRawState(JSON.stringify({ ...sample, iteration: 1.5 }))
+      expect(await loadLoopState()).toBeNull()
+    })
+
+    it("rejects a negative rateLimitAttempts (would defeat the circuit breaker)", async () => {
+      writeRawState(JSON.stringify({ ...sample, rateLimitAttempts: -3 }))
+      expect(await loadLoopState()).toBeNull()
+    })
+
+    it("rejects a non-integer rateLimitAttempts", async () => {
+      writeRawState(JSON.stringify({ ...sample, rateLimitAttempts: 2.5 }))
+      expect(await loadLoopState()).toBeNull()
+    })
+
+    it("still accepts a valid zero rateLimitAttempts", async () => {
+      // Regression guard: 0 is a legitimate, schema-valid count. The hardening
+      // must not over-reject and break the normal fresh-resume path.
+      writeRawState(JSON.stringify({ ...sample, rateLimitAttempts: 0 }))
+      const loaded = await loadLoopState()
+      expect(loaded?.rateLimitAttempts).toBe(0)
+    })
   })
 })

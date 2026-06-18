@@ -24,7 +24,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceTaskWithSubtasks } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
@@ -60,6 +60,7 @@ import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
 import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
 import { NoProgressDetector } from "./lib/no-progress-detector"
+import { runOneShotAgent } from "./lib/one-shot-agent"
 import {
   detectInstalledTerminals,
   type KnownTerminal
@@ -207,6 +208,10 @@ function AppContent(props: AppProps) {
     }
     return noProgressDetector
   }
+  // Tasks already split via the no-progress "split task" recovery this run, so
+  // an already-decomposed task is not offered for splitting again.
+  // ponytail: in-memory Set; a PLAN.md marker would persist across restarts.
+  const decomposedTasks = new Set<string>()
 
   // --- Sleep/suspension survival (Phase 2) ---
   // Keep the Mac awake while the loop is doing or waiting on work.
@@ -866,6 +871,7 @@ function AppContent(props: AppProps) {
           source: "plan",
           message: t("errNoProgress", { count: streak, task: stuckTask }),
           recoverable: true,
+          decomposableTask: stuckTask,
         })
         return
       }
@@ -1355,29 +1361,121 @@ function AppContent(props: AppProps) {
     }
   })
 
-  // Error effect - show dialog when error occurs
+  // --- Error dialog + "split the stalled task" recovery ---
+  // DialogError is the window the user sees on a halt. For a no-progress halt
+  // it carries `decomposableTask`; we offer a "P" action there that asks the
+  // agent to split the stalled task into smaller subtasks, shows them for
+  // approval, and on approval rewrites PLAN.md and resumes. presentError is
+  // shared so the cancel/failure paths can re-show the exact same halt.
+  type ErrorView = {
+    source: string
+    message: string
+    recoverable: boolean
+    decomposableTask?: string
+  }
+
+  function presentError(view: ErrorView): void {
+    dialog.show(() => (
+      <DialogError
+        source={view.source}
+        message={view.message}
+        recoverable={view.recoverable}
+        onRetry={() => {
+          dialog.clear()
+          if (loop.canRetry()) {
+            // Reset the no-progress streak so the next run gets a fresh
+            // threshold window. The user explicitly chose to resume.
+            noProgressDetector?.reset()
+            loop.dispatch({ type: "retry" })
+          }
+        }}
+        onDecompose={
+          view.decomposableTask && !decomposedTasks.has(view.decomposableTask)
+            ? () => {
+                void handleDecompose(view)
+              }
+            : undefined
+        }
+        onQuit={() => handleQuit(1)}
+      />
+    ))
+  }
+
+  async function handleDecompose(view: ErrorView): Promise<void> {
+    const stuckTask = view.decomposableTask
+    if (!stuckTask) return
+    // Drop the halt dialog while we work; it's re-shown on cancel/failure so the
+    // user always lands back on R/Q. Avoids two stacked dialogs fighting over
+    // the keyboard.
+    dialog.clear()
+    const client = tryGetClient(server.url)
+    if (!client) {
+      toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+      presentError(view)
+      return
+    }
+    toast.show({ message: t("splitGenerating"), variant: "info" })
+
+    let subtasks: string[] = []
+    try {
+      const reply = await runOneShotAgent(
+        client,
+        t("splitPromptTemplate", { task: stuckTask }),
+        { agent: activeAgent(), model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
+      )
+      subtasks = parseSubtasksFromReply(reply)
+    } catch (err) {
+      log.warn("decompose", "subtask generation failed", {
+        message: err instanceof Error ? err.message : String(err),
+      })
+    }
+
+    if (subtasks.length === 0) {
+      toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+      presentError(view)
+      return
+    }
+
+    const approved = await DialogConfirm.show(
+      dialog,
+      t("dlgSplitTitle"),
+      t("dlgSplitBody") + "\n\n" + subtasks.map((s) => `• ${s}`).join("\n"),
+    )
+    if (!approved) {
+      presentError(view)
+      return
+    }
+
+    try {
+      const planPath = resolvePlanFile(props.planFile)
+      const content = await Bun.file(planPath).text()
+      await Bun.write(planPath, replaceTaskWithSubtasks(content, stuckTask, subtasks))
+      decomposedTasks.add(stuckTask)
+      await refreshPlan()
+      // The split IS the progress signal — clear the streak so the first
+      // subtask starts on a fresh threshold window.
+      noProgressDetector?.reset()
+      toast.show({ message: t("splitApplied", { count: subtasks.length }), variant: "success" })
+      loop.dispatch({ type: "retry" })
+    } catch (err) {
+      log.error("decompose", "failed to apply subtasks to PLAN.md", {
+        message: err instanceof Error ? err.message : String(err),
+      })
+      toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+      presentError(view)
+    }
+  }
+
+  // Error effect - show the halt dialog when the loop enters the error state.
   createEffect(() => {
     const state = loop.state()
     if (state.type === "error") {
-      dialog.show(() => (
-        <DialogError
-          source={state.source}
-          message={state.message}
-          recoverable={state.recoverable}
-          onRetry={() => {
-            dialog.clear()
-            if (loop.canRetry()) {
-              // Reset the no-progress streak so the next run gets a
-              // fresh threshold window. The user explicitly chose to
-              // resume, so the prior stuck-streak should not carry
-              // over.
-              noProgressDetector?.reset()
-              loop.dispatch({ type: "retry" })
-            }
-          }}
-          onQuit={() => handleQuit(1)}
-        />
-      ))
+      presentError({
+        source: state.source,
+        message: state.message,
+        recoverable: state.recoverable,
+        decomposableTask: state.decomposableTask,
+      })
     }
   })
   

@@ -194,3 +194,47 @@ describe("describeResumeAlignment — defensive parsing", () => {
     })
   })
 })
+
+// Regression coverage for the parser-divergence bug: the old scan used a
+// hand-rolled regex (`/^\[-\*\]\s+\[(x| )\]/`) that disagreed with the
+// canonical `parseTaskLine` grammar. These cases were misclassified before
+// the helper was switched to reuse `parseTaskLine`.
+describe("describeResumeAlignment — parser-divergence regressions (reuse parseTaskLine)", () => {
+  it("classifies a capital [X] completed task as 'completed' (not 'removed')", () => {
+    // parseTaskLine accepts both [x] and [X]; the old regex only matched
+    // lowercase [x], so a [X] line was missed and reported as 'removed'.
+    expect(
+      describeResumeAlignment("task B", "- [X] task B\n- [ ] task C"),
+    ).toEqual({ kind: "completed", saved: "task B" })
+  })
+
+  it("classifies as 'completed' when the saved task is [X] and a task was inserted above", () => {
+    expect(
+      describeResumeAlignment(
+        "task B",
+        "- [ ] task X\n- [X] task B\n- [ ] task C",
+      ),
+    ).toEqual({ kind: "completed", saved: "task B" })
+  })
+
+  it("reports 'removed' when the saved task was re-tagged [BLOCKED]", () => {
+    // A re-tag to BLOCKED is no longer pending nor completed; the helper
+    // surfaces it as 'removed' so the user notices the edit rather than
+    // silently resuming onto a different task.
+    expect(
+      describeResumeAlignment(
+        "task B",
+        "- [ ] task X\n- [BLOCKED: x] task B",
+      ),
+    ).toEqual({ kind: "removed", saved: "task B", current: "task X" })
+  })
+
+  it("classifies a completed indented sub-task as 'completed'", () => {
+    // parseTaskLine trims leading whitespace before parsing; the old
+    // `^[-*]`-anchored regex skipped indented lines entirely, so a
+    // completed sub-task was reported as 'removed'.
+    expect(
+      describeResumeAlignment("nested", "- [ ] top\n  - [x] nested"),
+    ).toEqual({ kind: "completed", saved: "nested" })
+  })
+})

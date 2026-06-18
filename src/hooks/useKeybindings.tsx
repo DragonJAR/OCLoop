@@ -26,15 +26,18 @@ import { DialogHelp, DialogTerminalConfig, type TerminalConfigState } from "../c
 import { DialogPrompt } from "../ui/DialogPrompt"
 
 export interface KeybindingDeps {
-  // CLI flags
-  debug: boolean
-  verbose: boolean
+  // CLI flags. `boolean | undefined` matches CLIArgs (optional props): an absent
+  // flag is undefined, present is true. All internal uses are truthy checks, so
+  // undefined behaves like false.
+  debug: boolean | undefined
+  verbose: boolean | undefined
   // Loop state machine
   loop: ReturnType<typeof useLoopState>
   // Reactive accessors
   sessionId: () => string | undefined
   lastSessionId: () => string | undefined
-  serverUrl: () => string | undefined
+  // `() => string | null` matches useServer.url (the source) and tryGetClient.
+  serverUrl: () => string | null
   ocloopConfig: () => OcloopConfig
   terminalConfigState: TerminalConfigState
   // Context APIs
