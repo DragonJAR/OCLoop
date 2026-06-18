@@ -18,6 +18,7 @@ import { useKeybindings } from "./hooks/useKeybindings"
 import { useCooldown } from "./hooks/useCooldown"
 import { useCommandPalette } from "./hooks/useCommandPalette"
 import { useTerminalLauncher } from "./hooks/useTerminalLauncher"
+import { useResume } from "./hooks/useResume"
 import { useWatchdog } from "./hooks/useWatchdog"
 import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
@@ -31,16 +32,10 @@ import { getToolPreview } from "./lib/format"
 import { lookupCost, estimateCost } from "./lib/pricing"
 import { shutdownManager } from "./lib/shutdown"
 import {
-  ensureGitignore,
-} from "./lib/project"
-import {
   saveLoopState,
-  loadLoopState,
   clearLoopState,
   type PersistedLoopState,
 } from "./lib/loop-state-store"
-import { describeResumeAttempt } from "./lib/resume-decision"
-import { describeResumeAlignment } from "./lib/resume-alignment"
 import {
   loadConfig,
   saveConfig,
@@ -1217,182 +1212,22 @@ function AppContent(props: AppProps) {
    * - In normal mode: ensures .gitignore is updated
    * - Starts immediately if --run is passed
    */
-  async function initializeSession(): Promise<void> {
-    // In debug mode, create a session immediately and return
-    if (props.debug) {
-      await createDebugSession()
-      return
-    }
-
-    try {
-      // Ensure .loop* is in .gitignore
-      await ensureGitignore()
-
-      // Resume after a crash: a persisted state means the OCLoop process itself
-      // died mid-run. Reconcile/continue automatically with --resume, otherwise
-      // offer the choice.
-      const persisted = await loadLoopState()
-      // Finding 1.8.B: when --resume is passed on a clean run (no .loop-state.json
-      // or a stale one with iteration=0), the flag is parsed and stored but
-      // produces zero observable effect. Log the no-op here so anyone reading
-      // .loop.log can see the user's intent and the runtime outcome together.
-      const resumeAttempt = describeResumeAttempt(
-        { resilience: resilience() },
-        persisted,
-      )
-      if (resumeAttempt) {
-        log.health(resumeAttempt.event, "requested", resumeAttempt.payload)
-      }
-      if (persisted && persisted.iteration > 0) {
-        log.health("resume", "found", {
-          iteration: persisted.iteration,
-          sessionId: persisted.sessionId,
-          stateType: persisted.stateType,
-        })
-        // If the saved state has a currentTask, compare it against the current
-        // PLAN.md: a mismatch means the user edited/reordered/completed tasks
-        // between crash and resume, and a naive resume would silently start on a
-        // different task. Best-effort — a read failure logs a warn and the loop
-        // proceeds (the warning is informational).
-        if (persisted.currentTask) {
-          try {
-            const planPath = resolvePlanFile(props.planFile)
-            const planFile = Bun.file(planPath)
-            if (await planFile.exists()) {
-              const planContent = await planFile.text()
-              const alignment = describeResumeAlignment(
-                persisted.currentTask,
-                planContent,
-              )
-              if (alignment) {
-                // Both the audit log (`.loop.log`) and the activity panel
-                // get a line so the user sees the warning regardless of
-                // whether they read the log file or look at the TUI.
-                log.warn("plan", "Resume misalignment detected", {
-                  kind: alignment.kind,
-                  saved: alignment.saved,
-                  current: "current" in alignment ? alignment.current : null,
-                })
-                activityLog.addEvent(
-                  "error",
-                  t("actResumeMisalign", {
-                    kind: alignment.kind,
-                    saved: alignment.saved,
-                    current:
-                      "current" in alignment ? alignment.current : null,
-                  }),
-                  { level: "warn" },
-                )
-              }
-            }
-          } catch (err) {
-            // PLAN.md unreadable at resume time: don't fail the resume,
-            // just skip the alignment check. The next `startIteration`
-            // will re-read the plan and either proceed or hit its own
-            // error path (the missing-plan pre-flight in `main()` runs
-            // before this onMount, so a missing file is already
-            // rejected before we get here).
-            log.warn(
-              "plan",
-              "Resume alignment check skipped: cannot read PLAN.md",
-              err,
-            )
-          }
-        }
-        if (resilience().resume) {
-          await doResume(persisted)
-        } else {
-          dialog.show(() => (
-            <DialogConfirm
-              title={t("dlgResumeTitle")}
-              message={t("dlgResumeMsg", { iteration: persisted.iteration })}
-              confirmLabel={t("dlgResumeConfirm")}
-              cancelLabel={t("dlgResumeCancel")}
-              onConfirm={() => {
-                dialog.clear()
-                void doResume(persisted)
-              }}
-              onCancel={() => {
-                dialog.clear()
-                void clearLoopState()
-                if (props.run) loop.dispatch({ type: "start" })
-              }}
-            />
-          ))
-        }
-        return
-      }
-
-      if (props.run) {
-        // --run flag set: start immediately. The iteration-driver effect picks
-        // up the running+empty-session state and kicks off the first iteration.
-        loop.dispatch({ type: "start" })
-      }
-    } catch (err) {
-      // Log error but don't block startup
-      log.error("session", "Failed to initialize session", err)
-
-      // If --run flag is set, start anyway
-      if (props.run) {
-        loop.dispatch({ type: "start" })
-      }
-    }
-  }
-
-  /**
-   * Resume a persisted run. If the old session is still working on the server we
-   * re-attach to it; otherwise (the usual case — the embedded server died with
-   * us) we continue the loop with a fresh iteration, preserving the count.
-   */
-  async function doResume(p: PersistedLoopState): Promise<void> {
-    cooldown.setAttempts(p.rateLimitAttempts || 0)
-    const client = tryGetClient(server.url)
-    let verdict: ReconcileResult = "missing"
-    if (client && p.sessionId) {
-      verdict = await reconcileSession(client, p.sessionId)
-    }
-    log.health("resume", verdict, {
-      iteration: p.iteration,
-      sessionId: p.sessionId,
-    })
-
-    if (verdict === "working" && p.sessionId) {
-      activityLog.addEvent(
-        "session_start",
-        t("actResuming", { id: p.sessionId.substring(0, 8), iteration: p.iteration }),
-      )
-      loop.dispatch({
-        type: "resume_session",
-        iteration: p.iteration,
-        sessionId: p.sessionId,
-      })
-      watchdog.notifyIterationStart()
-      void reconcileAndAdvance()
-    } else {
-      activityLog.addEvent(
-        "task",
-        t("actContinuing", { verdict }),
-      )
-      await clearLoopState()
-      // Finding 8.5.A: when verdict === "idle", the in-flight session
-      // already finished its work in a previous run (the process crashed
-      // between the session idling and plan_complete being detected). The
-      // upcoming startIteration + iteration_started would otherwise bump
-      // the counter to p.iteration + 1, over-counting the actual work done.
-      // Dispatch `iteration_resumed` (instead of `resume_session`) so the
-      // next `iteration_started` skips the increment; the count stays at
-      // p.iteration, matching the work that was already done. For
-      // `missing`/`unknown` verdicts the in-flight session's outcome is
-      // unknown, so we use `resume_session` to start a genuinely new
-      // iteration that correctly counts as p.iteration + 1.
-      const isIdleResume = verdict === "idle"
-      loop.dispatch({
-        type: isIdleResume ? "iteration_resumed" : "resume_session",
-        iteration: p.iteration,
-        sessionId: "",
-      })
-    }
-  }
+  // --- Crash-resume flow (useResume) ---
+  const { initializeSession } = useResume({
+    debug: props.debug,
+    run: props.run,
+    planFile: props.planFile,
+    loop,
+    cooldown,
+    watchdog,
+    activityLog,
+    dialog,
+    t,
+    resilience,
+    serverUrl: server.url,
+    createDebugSession,
+    reconcileAndAdvance,
+  })
 
   // Server error effect - transition to error state
   createEffect(() => {
