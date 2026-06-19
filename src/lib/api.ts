@@ -385,8 +385,18 @@ function extractMessageText(
 export async function fetchMessages(
   client: OpencodeClient,
   sessionID: string,
+  opts: ApiCallOptions = {},
 ): Promise<SessionMessage[]> {
-  const res = await client.session.messages({ sessionID })
+  // Bounded like every other call here: a wedged server whose `messages()`
+  // hangs (socket open, no response) must not freeze the poll loops in
+  // one-shot-agent / runCreatePlan — their deadline checks only run AFTER this
+  // await returns, so an unbounded call would defeat their timeouts entirely.
+  const res = await withTimeout(
+    (signal) => client.session.messages({ sessionID }, { signal }),
+    opts.timeoutMs ?? apiTimeouts.status,
+    "session.messages",
+    opts.signal,
+  )
   assertResponse(res, "read session messages")
   return (res.data ?? []) as SessionMessage[]
 }

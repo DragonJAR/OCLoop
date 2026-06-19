@@ -1439,11 +1439,17 @@ function AppContent(props: AppProps) {
       // Connect SSE
       sse.reconnect()
 
-      // Start the session lifecycle exactly once.
+      // Start the session lifecycle exactly once on first boot; on any later
+      // re-entry (a recoverable error's `retry` goes error → starting →
+      // server_ready → ready), RESUME the loop instead of stranding it on the
+      // idle "press S" screen. `start` only transitions from `ready` (which we
+      // just reached), so this resumes a genuine retry and is a no-op otherwise.
       const startOnce = () => {
         if (!sessionInitialized) {
           sessionInitialized = true
           initializeSession()
+        } else {
+          loop.dispatch({ type: "start" })
         }
       }
       const applyResolved = (r: ResolvedAgentModel) => {
