@@ -431,6 +431,24 @@ const en = {
   dlgSplitTask: "Split task",
   dlgSplitTitle: "Split stalled task?",
   dlgSplitBody: "Replace the stalled task with these subtasks:",
+  dlgSplitAccept: "Accept",
+  dlgSplitEdit: "Edit",
+  dlgSplitReject: "Reject",
+  dlgSplitEditPrompt: "What should change? Describe how to adjust the subtasks:",
+  splitRefinePrompt: (p: Params) =>
+    [
+      "You previously broke this stalled PLAN.md task into subtasks:",
+      "",
+      `    ${p.task}`,
+      "",
+      "Current subtasks:",
+      String(p.subtasks),
+      "",
+      "Revise them according to this feedback:",
+      String(p.feedback),
+      "",
+      'Reply with ONLY the revised subtasks, one per line as "- [ ] <subtask>". No prose, no numbering, no commentary. Do NOT edit any files.',
+    ].join("\n"),
   splitPromptTemplate: (p: Params) =>
     [
       "The following PLAN.md task has stalled — repeated attempts finished without completing it, most likely because it is too large or too vague:",
@@ -934,6 +952,24 @@ const es: Record<MessageKey, Msg> = {
   dlgSplitTask: "Partir tarea",
   dlgSplitTitle: "¿Partir la tarea estancada?",
   dlgSplitBody: "Reemplazar la tarea estancada con estas subtareas:",
+  dlgSplitAccept: "Aceptar",
+  dlgSplitEdit: "Editar",
+  dlgSplitReject: "Rechazar",
+  dlgSplitEditPrompt: "¿Qué cambiar? Describe cómo ajustar las subtareas:",
+  splitRefinePrompt: (p) =>
+    [
+      "Antes dividiste esta tarea estancada de PLAN.md en subtareas:",
+      "",
+      `    ${p.task}`,
+      "",
+      "Subtareas actuales:",
+      String(p.subtasks),
+      "",
+      "Revísalas según este feedback:",
+      String(p.feedback),
+      "",
+      'Responde SOLO con las subtareas revisadas, una por línea como "- [ ] <subtarea>". Sin prosa, sin numeración, sin comentarios. NO edites ningún archivo.',
+    ].join("\n"),
   splitPromptTemplate: (p) =>
     [
       "La siguiente tarea de PLAN.md se estancó — varios intentos terminaron sin completarla, probablemente porque es demasiado grande o demasiado vaga:",

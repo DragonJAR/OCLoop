@@ -152,8 +152,12 @@ DialogTierPicker.show = (
         tiers={tiers}
         options={options}
         onDone={(mapping) => {
-          dialog.clear()
+          // Settle BEFORE clear: clear() unmounts this dialog synchronously,
+          // firing onCleanup -> onUnmount -> settle({}). Settling the real
+          // mapping first makes that a no-op; otherwise "done" would discard the
+          // user's selection and resolve {}.
           settle(mapping)
+          dialog.clear()
         }}
       />
     ))

@@ -147,12 +147,16 @@ DialogConfirm.show = (
         message={message}
         {...options}
         onConfirm={() => {
-          dialog.pop()
+          // Settle BEFORE pop: pop() unmounts this dialog synchronously
+          // (DialogStack renders only the top via <Show keyed>), which fires
+          // onCleanup -> onUnmount -> settle(false). Settling true first makes
+          // that a no-op; otherwise "confirm" would resolve false.
           settle(true)
+          dialog.pop()
         }}
         onCancel={() => {
-          dialog.pop()
           settle(false)
+          dialog.pop()
         }}
         // If the dialog is removed by anything other than the confirm/cancel
         // buttons (an external dialog.clear()/replace(), app teardown, the

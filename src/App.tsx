@@ -78,6 +78,8 @@ import { DialogProvider, DialogStack, useDialog } from "./context/DialogContext"
 import { CommandProvider, useCommand } from "./context/CommandContext"
 import { ToastProvider, Toast, useToast } from "./context/ToastContext"
 import { DialogConfirm } from "./ui/DialogConfirm"
+import { DialogPrompt } from "./ui/DialogPrompt"
+import { DialogDecomposeApproval } from "./ui/DialogDecomposeApproval"
 import {
   Dashboard,
   DialogCompletion,
@@ -1776,45 +1778,74 @@ function AppContent(props: AppProps) {
       return
     }
 
-    const message =
-      `${t("dlgSplitBody")}\n\n"${stuckTask}"\n\n→\n\n` +
-      subtasks.map((s) => `• ${s}`).join("\n")
-    const approved = await DialogConfirm.show(dialog, t("dlgSplitTitle"), message, {
-      width: 72,
-      height: 18,
-      scrollableMessage: true,
-    })
-    if (!approved) {
-      presentError(view)
-      return
-    }
+    // Approval loop: Accept applies, Edit refines (feedback → regenerate),
+    // Reject returns to the halt.
+    for (;;) {
+      const message =
+        `${t("dlgSplitBody")}\n\n"${stuckTask}"\n\n→\n\n` +
+        subtasks.map((s) => `• ${s}`).join("\n")
+      const choice = await DialogDecomposeApproval.show(dialog, t("dlgSplitTitle"), message)
 
-    try {
-      const planPath = resolvePlanFile(props.planFile)
-      const content = await Bun.file(planPath).text()
-      const updated = replaceFirstPendingTaskWithSubtasks(content, subtasks)
-      if (updated === null) {
-        // No pending task to replace (plan changed underfoot, or nothing
-        // actionable). Surface a real failure instead of writing an unchanged
-        // file and falsely reporting success.
-        toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+      if (choice === "reject") {
         presentError(view)
         return
       }
-      await Bun.write(planPath, updated)
-      decomposedTasks.add(stuckTask)
-      await refreshPlan()
-      // The split IS the progress signal — clear the streak so the first
-      // subtask starts on a fresh threshold window.
-      noProgressDetector?.reset()
-      toast.show({ message: t("splitApplied", { count: subtasks.length }), variant: "success" })
-      loop.dispatch({ type: "retry" })
-    } catch (err) {
-      log.error("decompose", "failed to apply subtasks to PLAN.md", {
-        message: err instanceof Error ? err.message : String(err),
-      })
-      toast.show({ message: t("errDecomposeFailed"), variant: "error" })
-      presentError(view)
+
+      if (choice === "edit") {
+        const feedback = await DialogPrompt.show(dialog, t("dlgSplitEditPrompt"))
+        if (feedback && feedback.trim()) {
+          toast.show({ message: t("splitGenerating"), variant: "info" })
+          try {
+            const refined = await runOneShotAgent(
+              client,
+              t("splitRefinePrompt", {
+                task: stuckTask,
+                subtasks: subtasks.join("\n"),
+                feedback: feedback.trim(),
+              }),
+              { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
+            )
+            const next = parseSubtasksFromReply(refined)
+            if (next.length > 0) subtasks = next
+            else toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+          } catch (err) {
+            log.warn("decompose", "subtask refine failed", {
+              message: err instanceof Error ? err.message : String(err),
+            })
+            toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+          }
+        }
+        continue // re-show the approval (with refined subtasks, or unchanged)
+      }
+
+      // choice === "accept": apply to PLAN.md and resume.
+      try {
+        const planPath = resolvePlanFile(props.planFile)
+        const content = await Bun.file(planPath).text()
+        const updated = replaceFirstPendingTaskWithSubtasks(content, subtasks)
+        if (updated === null) {
+          // No pending task to replace (plan changed underfoot). Surface a real
+          // failure instead of writing an unchanged file and reporting success.
+          toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+          presentError(view)
+          return
+        }
+        await Bun.write(planPath, updated)
+        decomposedTasks.add(stuckTask)
+        await refreshPlan()
+        // The split IS the progress signal — clear the streak so the first
+        // subtask starts on a fresh threshold window.
+        noProgressDetector?.reset()
+        toast.show({ message: t("splitApplied", { count: subtasks.length }), variant: "success" })
+        loop.dispatch({ type: "retry" })
+      } catch (err) {
+        log.error("decompose", "failed to apply subtasks to PLAN.md", {
+          message: err instanceof Error ? err.message : String(err),
+        })
+        toast.show({ message: t("errDecomposeFailed"), variant: "error" })
+        presentError(view)
+      }
+      return
     }
   }
 
