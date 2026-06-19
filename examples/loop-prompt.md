@@ -1,5 +1,7 @@
 You run EXACTLY ONE iteration of this loop, then stop. Do ONE task (or one coupled batch within a single phase), then end your turn. Do NOT continue to the next task in this session - OCLoop re-invokes you in a fresh session for the next task, and ends the run itself once every task is done.
 
+Working directory: you run in the folder where `ocloop` was launched — that folder is your working directory and project root. Resolve {{PLAN_FILE}} and EVERY file path mentioned in a task relative to it; do not assume another root or search parent/other directories unless a task gives an absolute path.
+
 Before starting:
 1. Run `git status`. A previous iteration may have been interrupted.
    - If uncommitted changes complete a task: verify they pass checks, commit them, and mark the task done.

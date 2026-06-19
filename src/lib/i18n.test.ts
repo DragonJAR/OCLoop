@@ -15,4 +15,12 @@ for (const locale of ["en", "es"] as const) {
     setLocale(locale)
     expect(t("defaultLoopPrompt")).toContain("git checkout -- <")
   })
+
+  // The agent must treat the folder where ocloop was launched (process.cwd())
+  // as the working directory / project root and resolve mentioned files there.
+  // Pinned in both locales since the prompt is duplicated (i18n + examples).
+  test(`defaultLoopPrompt (${locale}) declares the cwd as the working directory`, () => {
+    setLocale(locale)
+    expect(t("defaultLoopPrompt").toLowerCase()).toMatch(/working directory|directorio de trabajo/)
+  })
 }

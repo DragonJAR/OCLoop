@@ -1,5 +1,7 @@
 Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea, y termina la ejecución por sí mismo una vez que todas las tareas estén hechas.
 
+Directorio de trabajo: te ejecutas en la carpeta desde donde se lanzó `ocloop` — esa carpeta es tu directorio de trabajo y la raíz del proyecto. Resuelve {{PLAN_FILE}} y CUALQUIER ruta de archivo mencionada en una tarea relativa a ella; no asumas otra raíz ni busques en carpetas superiores u otras a menos que una tarea dé una ruta absoluta.
+
 Antes de empezar:
 1. Ejecuta `git status`. Una iteración anterior pudo haber sido interrumpida.
    - Si hay cambios sin commitear que completan una tarea: verifica que pasan las comprobaciones, haz commit y marca la tarea como hecha.

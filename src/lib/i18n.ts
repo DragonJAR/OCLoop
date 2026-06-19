@@ -291,6 +291,8 @@ const en = {
     [
       "You run EXACTLY ONE iteration of this loop, then stop. Do ONE task (or one coupled batch within a single phase), then end your turn. Do NOT continue to the next task in this session - OCLoop re-invokes you in a fresh session for the next task, and ends the run itself once every task is done.",
       "",
+      "Working directory: you run in the folder where `ocloop` was launched — that folder is your working directory and project root. Resolve {{PLAN_FILE}} and EVERY file path mentioned in a task relative to it; do not assume another root or search parent/other directories unless a task gives an absolute path.",
+      "",
       "Before starting:",
       "1. Run `git status`. A previous iteration may have been interrupted.",
       "   - If uncommitted changes complete a task: verify they pass checks, commit them, and mark the task done.",
@@ -819,6 +821,8 @@ const es: Record<MessageKey, Msg> = {
   defaultLoopPrompt:
     [
       "Ejecutas EXACTAMENTE UNA iteración de este loop y luego paras. Haz UNA tarea (o un lote acoplado dentro de una sola fase) y termina tu turno. NO continúes a la siguiente tarea en esta sesión - OCLoop te vuelve a invocar en una sesión nueva para la siguiente tarea, y termina la ejecución por sí mismo una vez que todas las tareas estén hechas.",
+      "",
+      "Directorio de trabajo: te ejecutas en la carpeta desde donde se lanzó `ocloop` — esa carpeta es tu directorio de trabajo y la raíz del proyecto. Resuelve {{PLAN_FILE}} y CUALQUIER ruta de archivo mencionada en una tarea relativa a ella; no asumas otra raíz ni busques en carpetas superiores u otras a menos que una tarea dé una ruta absoluta.",
       "",
       "Antes de empezar:",
       "1. Ejecuta `git status`. Una iteración anterior pudo haber sido interrumpida.",
