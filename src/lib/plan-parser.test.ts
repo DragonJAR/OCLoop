@@ -904,6 +904,31 @@ describe("parseSubtasksFromReply", () => {
     expect(parseSubtasksFromReply("No tasks here, just prose.")).toEqual([])
     expect(parseSubtasksFromReply("")).toEqual([])
   })
+
+  it("accepts plain bullets (-, *, +) when the model omits checkboxes", () => {
+    expect(parseSubtasksFromReply("- First\n* Second\n+ Third")).toEqual(["First", "Second", "Third"])
+  })
+
+  it("accepts numbered lists (1. and 2))", () => {
+    expect(parseSubtasksFromReply("1. First\n2) Second\n3. Third")).toEqual(["First", "Second", "Third"])
+  })
+
+  it("extracts the list items from a numbered list surrounded by prose", () => {
+    const reply = [
+      "Here's how I'd split it:",
+      "1. Audit the cli-args tests",
+      "2. Audit the api tests",
+      "Let me know if that works.",
+    ].join("\n")
+    expect(parseSubtasksFromReply(reply)).toEqual([
+      "Audit the cli-args tests",
+      "Audit the api tests",
+    ])
+  })
+
+  it("strips a leftover checkbox carried by a non-dash bullet (* [ ] x)", () => {
+    expect(parseSubtasksFromReply("* [ ] First\n* [ ] Second")).toEqual(["First", "Second"])
+  })
 })
 
 describe("replaceFirstPendingTaskWithSubtasks", () => {

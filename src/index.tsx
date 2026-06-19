@@ -5,7 +5,7 @@ import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
 import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient, fetchMessages, extractLastAssistantText, countAssistantMessages, hasNewAssistantReply, type SessionMessage } from "./lib/api"
-import { DEFAULTS } from "./lib/constants"
+import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
 import type { CLIArgs } from "./types"
@@ -18,14 +18,10 @@ import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
 
-/**
- * Defaults for the interactive plan generator (`--create-plan`).
- * Overridable with -m/--model and -a/--agent.
- */
-const DEFAULT_PLAN_MODEL = "zai-coding-plan/glm-5.2"
-const DEFAULT_PLAN_AGENT = "plan"
-// Plan-generation budget is configurable via `resilience.planTimeoutMs`
-// (default in DEFAULT_RESILIENCE); resolved per-run in runCreatePlan.
+// DEFAULT_PLAN_MODEL / DEFAULT_PLAN_AGENT now live in ./lib/constants (shared
+// with the stalled-task split in App.tsx). Plan-generation budget is
+// configurable via `resilience.planTimeoutMs` (default in DEFAULT_RESILIENCE);
+// resolved per-run in runCreatePlan.
 
 /**
  * Check a file's existence, printing a localized error and exiting 1 if the

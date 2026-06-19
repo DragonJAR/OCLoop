@@ -321,17 +321,38 @@ export async function getCurrentTask(planPath: string): Promise<string | null> {
 /**
  * Extracts subtask descriptions from an agent reply.
  *
- * Scans for `- [ ]` pending task lines (reusing parseTaskLine) and returns
- * their descriptions in document order, ignoring prose, headings, code fences,
- * and any non-pending markers. Returns [] when the reply has no pending lines.
+ * The split agent is asked for `- [ ]` checkbox lines, but models routinely
+ * reply with plain bullets (`-`, `*`, `+`) or numbered items (`1.`, `2)`), and
+ * may wrap the list in a ``` fence or pad it with prose. To be robust we accept
+ * any of those list shapes: strip the leading marker (and any leftover
+ * `[ ]`/`[x]` checkbox) and take the remainder as the description. Blank lines,
+ * markdown headings (`#`), fence delimiters, prose without a list marker, and
+ * already-`[x]`/`[MANUAL]`/`[BLOCKED]` checkboxes are skipped. Returns [] when
+ * no list items are found.
  */
 export function parseSubtasksFromReply(text: string): string[] {
   const out: string[] = []
-  for (const line of splitLines(text)) {
-    const task = parseTaskLine(line)
+  for (const raw of splitLines(text)) {
+    const line = raw.trim()
+    // Skip blank lines, markdown headings, and fence delimiters themselves —
+    // but DO parse content "inside" a fence: agents often wrap the whole list
+    // in a ```markdown block, so the subtasks live between the delimiters.
+    if (!line || line.startsWith("#") || line.startsWith("```")) continue
+    // Canonical form first: `- [ ] desc` (reuse the task parser so the exact
+    // checkbox semantics stay in one place).
+    const task = parseTaskLine(raw)
     if (task.type === "pending" && task.description) {
       out.push(task.description)
+      continue
     }
+    // A completed/manual/blocked checkbox is not a fresh subtask — skip it.
+    if (task.type !== "not-a-task") continue
+    // Lenient: a bullet (-, *, +) or numbered (`1.` / `1)`) list item.
+    const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*)$/)
+    if (!m) continue
+    // Strip a leftover checkbox if the bullet still carried one (e.g. `* [ ] x`).
+    const desc = m[1].replace(/^\[[ xX]?\]\s*/, "").trim()
+    if (desc) out.push(desc)
   }
   return out
 }

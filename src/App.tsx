@@ -25,7 +25,7 @@ import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
 import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./lib/plan-parser"
-import { DEFAULTS } from "./lib/constants"
+import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
@@ -1748,11 +1748,14 @@ function AppContent(props: AppProps) {
     toast.show({ message: t("splitGenerating"), variant: "info" })
 
     let subtasks: string[] = []
+    let reply = ""
     try {
-      const reply = await runOneShotAgent(
+      // Use the PLANNING agent, not the active "doing" agent: it returns a
+      // structured list instead of trying to execute the task with tools.
+      reply = await runOneShotAgent(
         client,
         t("splitPromptTemplate", { task: stuckTask }),
-        { agent: activeAgent(), model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
+        { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
       )
       subtasks = parseSubtasksFromReply(reply)
     } catch (err) {
@@ -1762,6 +1765,12 @@ function AppContent(props: AppProps) {
     }
 
     if (subtasks.length === 0) {
+      // Surface WHY it failed: log a preview of the agent's reply so a parse
+      // miss (unexpected format) or an empty/tool-only reply is diagnosable in
+      // .loop.log instead of the window silently vanishing.
+      log.warn("decompose", "no subtasks parsed from reply", {
+        replyPreview: reply.slice(0, 500),
+      })
       toast.show({ message: t("errDecomposeFailed"), variant: "error" })
       presentError(view)
       return
