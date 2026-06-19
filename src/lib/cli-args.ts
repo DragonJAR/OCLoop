@@ -101,6 +101,7 @@ Options:
   -c, --create-plan        Interactively generate PLAN.md (model zai-coding-plan/glm-5.2, agent plan)
   -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
   --verbose                Enable verbose logging (keyboard events, etc.)
+  --routing                Show the model-routing panel at startup (assign models to heavy/cheap/judge roles)
   --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
   --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
   --lang <en|es>           UI language (default: en; also settable in Ctrl+P)
@@ -310,6 +311,10 @@ export function parseArgs(argv: string[]): CLIArgs {
 
       case "--verbose":
         args.verbose = true
+        break
+
+      case "--routing":
+        args.routing = true
         break
 
       case "--lang":

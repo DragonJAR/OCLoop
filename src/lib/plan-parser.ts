@@ -369,3 +369,83 @@ export function replaceFirstPendingTaskWithSubtasks(
   }
   return null
 }
+
+/**
+ * Extract the eval rubric declared under a pending task, if any.
+ *
+ * The rubric is a single sub-bullet of the form `  - eval: <rubric prose>`
+ * placed immediately after the `- [ ] <task>` line (and before the next task).
+ * That syntax is NOT counted as a task by `parseTaskLine` (it lacks the `- [`
+ * checkbox prefix), so it is safe to use as metadata — the plan's task counts
+ * are unaffected.
+ *
+ * Returns the trimmed rubric text, or `null` when the task has no `eval:`
+ * sub-bullet (the caller skips the eval in that case). Only the rubric on the
+ * FIRST pending task whose description matches `taskDescription` is returned,
+ * so a re-read mid-iteration stays stable against later tasks.
+ *
+ * Pure string scan (mirrors the other readers); the caller owns the file read.
+ */
+export function getEvalRubricForTask(
+  content: string,
+  taskDescription: string,
+): string | null {
+  const lines = splitLines(content)
+  // Find the first pending task matching the description.
+  let taskLineIdx = -1
+  for (let i = 0; i < lines.length; i++) {
+    const task = parseTaskLine(lines[i])
+    if (task.type === "pending" && task.description === taskDescription) {
+      taskLineIdx = i
+      break
+    }
+  }
+  if (taskLineIdx === -1) return null
+
+  // Scan the indented sub-bullets immediately following the task line. Stop at
+  // the next top-level task (a `- [` line) or a non-indented, non-empty line.
+  const evalRe = /^\s*-\s*eval:\s*(.+?)\s*$/i
+  for (let i = taskLineIdx + 1; i < lines.length; i++) {
+    const line = lines[i]
+    if (line.trim() === "") continue // blank lines between a task and its notes are tolerated
+    // A new task line ends the rubric window.
+    if (/^\s*-\s*\[/.test(line)) break
+    const m = line.match(evalRe)
+    if (m) return m[1]
+    // Any other non-indented content also closes the window.
+    if (!/^\s/.test(line)) break
+  }
+  return null
+}
+
+/**
+ * Mark the FIRST pending task (`- [ ]`) as `- [BLOCKED: <reason>]`, preserving
+ * the original line's leading indentation and the rest of the description.
+ *
+ * The eval layer calls this when an eval has failed and the retry budget is
+ * exhausted — the task is halted rather than looped forever. Mirrors the
+ * pattern of `replaceFirstPendingTaskWithSubtasks` (splice the first pending
+ * line, keep everything else byte-identical).
+ *
+ * Returns the new content, or `null` when there is no pending task to block —
+ * so the caller can surface a real failure instead of writing an unchanged
+ * file. The caller MUST persist with a compare-and-swap (re-read + byte
+ * compare before `Bun.write`) to avoid clobbering a concurrent agent edit of
+ * PLAN.md — see `checkPlanComplete` in App.tsx for the established pattern.
+ */
+export function replaceFirstPendingTaskWithBlocked(
+  content: string,
+  reason: string,
+): string | null {
+  const cleanReason = reason.replace(/[\r\n]+/g, " ").trim()
+  const lines = splitLines(normalizeLineEndings(content))
+  for (let i = 0; i < lines.length; i++) {
+    const task = parseTaskLine(lines[i])
+    if (task.type === "pending") {
+      const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""
+      lines[i] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
+      return lines.join("\n")
+    }
+  }
+  return null
+}

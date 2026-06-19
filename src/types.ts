@@ -132,6 +132,12 @@ export interface CLIArgs {
   lang?: import("./lib/i18n").Locale  // UI language override (en|es)
   verbose?: boolean  // Enable verbose logging (keyboard events, etc.)
   /**
+   * Show the model-routing panel at startup, letting the user assign concrete
+   * models to roles (heavy/cheap/judge) from the live opencode catalog. Opt-in:
+   * when absent, the loop uses the single resolved model for everything.
+   */
+  routing?: boolean
+  /**
    * Agent to use for all sessions in this run.
    * If not specified, uses the default agent from OpenCode config.
    */

@@ -59,6 +59,11 @@ describe("parseArgs — defaults & single flags", () => {
     expect(runParse(["-c"]).args?.createPlan).toBe(true)
     expect(runParse(["--create-plan"]).args?.createPlan).toBe(true)
     expect(runParse(["--verbose"]).args?.verbose).toBe(true)
+    expect(runParse(["--routing"]).args?.routing).toBe(true)
+  })
+
+  it("--routing is opt-in: absent flag leaves routing undefined (no behavior change)", () => {
+    expect(runParse([]).args?.routing).toBeUndefined()
   })
 
   it("value flags capture their argument (long & short)", () => {

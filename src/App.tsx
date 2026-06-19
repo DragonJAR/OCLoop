@@ -24,7 +24,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./lib/plan-parser"
 import { DEFAULTS } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
@@ -40,8 +40,10 @@ import {
   loadConfig,
   saveConfig,
   resolveResilience,
+  DEFAULT_EVALS,
   type OcloopConfig,
   type ResilienceConfig,
+  type EvalConfig,
 } from "./lib/config"
 import {
   createSession,
@@ -61,6 +63,10 @@ import { createPowerManager } from "./lib/power"
 import { createChaos } from "./lib/chaos"
 import { NoProgressDetector } from "./lib/no-progress-detector"
 import { runOneShotAgent } from "./lib/one-shot-agent"
+import { runEval, type EvalResult } from "./lib/eval-runner"
+import { fetchModelCatalog, type ModelCatalogEntry } from "./lib/fetch-models"
+import { DialogTierPicker, ROUTING_TIERS } from "./ui/DialogTierPicker"
+import type { DialogSelectOption } from "./ui/DialogSelect"
 import { resolveAgentAndModel, type OcAgent, type OcConfig, type ResolvedAgentModel } from "./lib/resolve-agent-model"
 import {
   detectInstalledTerminals,
@@ -165,6 +171,15 @@ function AppContent(props: AppProps) {
   // effect would run initializeSession with the default (resume=false),
   // silently overriding a user's config. Flips to true at the end of onMount.
   const [resilienceReady, setResilienceReady] = createSignal(false)
+
+  // Resolved eval-layer config (DEFAULT_EVALS < config file). Seeded with the
+  // disabled default so the loop is byte-identical to today until onMount
+  // resolves the on-disk layer. The eval layer is opt-in: `enabled === false`
+  // means `runEvalIfPending` returns true immediately (no behavior change).
+  const [evalsConfig, setEvalsConfig] = createSignal<EvalConfig>({
+    ...DEFAULT_EVALS,
+    ...loadConfig().evals,
+  })
 
   // --- Rate-limit cooldown orchestration (extracted to useCooldown) ---
   const cooldown = useCooldown({
@@ -334,6 +349,12 @@ function AppContent(props: AppProps) {
 
   // Track if we've initialized (to prevent double initialization)
   let sessionInitialized = false
+  // Model-routing: opt-in via --routing. Null when the feature is off or the
+  // user cancelled the panel — in that case the loop uses the single resolved
+  // model (activeModel) for everything, byte-identical to today. `routingPanelShown`
+  // guarantees the panel opens exactly once even if the server-ready effect re-fires.
+  const [tierMapping, setTierMapping] = createSignal<Record<string, string> | null>(null)
+  let routingPanelShown = false
 
   // Track previous state for detecting transitions
   let prevState: LoopState | null = null
@@ -341,6 +362,12 @@ function AppContent(props: AppProps) {
   // SAME iteration, so stats resume (preserving the timer) instead of restarting
   // it and discarding the pre-cooldown active time.
   let pendingCooldownResume = false
+  // Eval-retry counter for the current task, and the task it tracks. Kept OUT
+  // of the reducer (unlike resumedFromIdle) so it survives session_idle
+  // transitions without being dropped — see the iteration-driver effect. Reset
+  // whenever the task changes (genuine progress) or on completion/retry.
+  let evalAttemptsForTask = 0
+  let evalTaskKey: string | null = null
 
   // Wire stats hook to loop state transitions
   createEffect(() => {
@@ -471,6 +498,23 @@ function AppContent(props: AppProps) {
     setResilience(resolved)
     configureApiTimeouts(resolved)
     log.info("config", "Resolved resilience config", resolved as unknown as Record<string, unknown>)
+
+    // Resolve eval-layer config: defaults < config file. Opt-in — disabled by
+    // default so the loop is unchanged unless the user sets `evals.enabled`.
+    // Safety invariant: maxEvalRetries must stay ≤ noProgressThreshold - 1, or
+    // an eval-retry loop would trip NoProgressDetector before the budget is
+    // spent. Warn (don't fail) if a user config breaks it.
+    const resolvedEvals: EvalConfig = { ...DEFAULT_EVALS, ...config.evals }
+    if (
+      resolvedEvals.enabled &&
+      resolvedEvals.maxEvalRetries > resolved.noProgressThreshold - 1
+    ) {
+      log.warn("config", "evals.maxEvalRetries exceeds noProgressThreshold - 1; eval retries may trip the no-progress halt", {
+        maxEvalRetries: resolvedEvals.maxEvalRetries,
+        noProgressThreshold: resolved.noProgressThreshold,
+      })
+    }
+    setEvalsConfig(resolvedEvals)
 
     // Sleep/suspension detector — always on while the app runs.
     sleepDetector = createSleepDetector({
@@ -817,6 +861,219 @@ function AppContent(props: AppProps) {
   }
 
   /**
+   * Build the evidence string for the LM-judge from the activity log: the
+   * events of the iteration that just finished (from the last `session_start`
+   * to the end). Returns "" when there is nothing usable — the caller treats
+   * an empty evidence as "skip the eval" (judging on nothing yields noise).
+   *
+   * `session_start` events can collapse (identical message bumps `count`
+   * instead of appending a new entry), so we locate the LAST entry whose type
+   * is `session_start` regardless of count, then slice from there.
+   */
+  function sliceIterationEvidence(): string {
+    const events = activityLog.events()
+    let startIdx = -1
+    for (let i = events.length - 1; i >= 0; i--) {
+      if (events[i].type === "session_start") {
+        startIdx = i
+        break
+      }
+    }
+    if (startIdx === -1) return ""
+    return events
+      .slice(startIdx)
+      .map((e) => {
+        const detail = e.detail ? ` (${e.detail})` : ""
+        return `${e.type}:${e.message}${detail}`
+      })
+      .join("\n")
+  }
+
+  /**
+   * Run the eval layer for the just-finished task BEFORE starting the next
+   * iteration. Returns `true` to proceed (start the next session / advance),
+   * `false` to abort this startIteration (the iteration-driver will re-fire
+   * `running("")` and call startIteration again for the eval-driven retry).
+   *
+   * Opt-in: `evals.enabled === false` (the default) returns `true`
+   * immediately — the loop is byte-identical to today. A task without a
+   * declared `  - eval:` rubric also returns `true`.
+   *
+   * Safety: every PLAN.md write uses compare-and-swap (re-read + byte-compare
+   * before Bun.write) to avoid clobbering a concurrent agent edit, mirroring
+   * `checkPlanComplete`. A broken judge (timeout/network) does NOT block the
+   * task — after judgeRetries it is treated as a skip, never a [BLOCKED].
+   */
+  async function runEvalIfPending(): Promise<boolean> {
+    const cfg = evalsConfig()
+    if (!cfg.enabled) return true
+
+    const task = currentTask() ?? null
+    if (!task) return true
+
+    // Reset the per-task eval counter when the task genuinely changes.
+    if (task !== evalTaskKey) {
+      evalTaskKey = task
+      evalAttemptsForTask = 0
+    }
+
+    // Read the rubric for this task from PLAN.md (best-effort).
+    let rubric: string | null = null
+    try {
+      const planPath = resolvePlanFile(props.planFile)
+      const content = await Bun.file(planPath).text()
+      rubric = getEvalRubricForTask(content, task)
+    } catch (err) {
+      // PLAN.md unreadable: skip the eval (can't read the rubric). The
+      // next startIteration re-reads the plan and either proceeds or hits
+      // its own error path.
+      log.warn("eval", "Eval skipped: cannot read PLAN.md for rubric", err)
+      return true
+    }
+    if (!rubric) return true // no rubric declared → skip
+
+    const evidence = sliceIterationEvidence()
+    if (evidence === "") {
+      // Empty evidence (events evicted by MAX_EVENTS, or no session_start
+      // marker): skip rather than judge on nothing.
+      log.warn("eval", "Eval skipped: no iteration evidence available", { task })
+      return true
+    }
+
+    const client = tryGetClient(server.url)
+    if (!client) return true // server gone — don't block on a missing judge
+
+    // Run the judge with bounded retries on transient failure (timeout/network).
+    // A consistently broken judge is a SKIP, not a [BLOCKED] — we don't halt
+    // the user's task because the judge service is down.
+    let result: EvalResult | null = null
+    const judgeAttempts = Math.max(1, cfg.judgeRetries)
+    for (let attempt = 1; attempt <= judgeAttempts; attempt++) {
+      try {
+        result = await runEval({
+          client,
+          rubric,
+          evidence,
+          // Precedence: the routing panel's "judge" role > the evals config >
+          // activeModel (runEval defaults to the active model when undefined).
+          // Without --routing, tierMapping() is null so this is cfg.judgeModel
+          // exactly as before.
+          model: tierMapping()?.judge ?? cfg.judgeModel,
+          timeoutMs: cfg.judgeTimeoutMs,
+        })
+        break
+      } catch (err) {
+        log.warn("eval", "Judge call failed", {
+          attempt,
+          of: judgeAttempts,
+          message: err instanceof Error ? err.message : String(err),
+        })
+        if (attempt === judgeAttempts) {
+          // Judge consistently broken: skip the eval entirely.
+          log.warn("eval", "Eval skipped: judge unavailable after retries", { task })
+          return true
+        }
+      }
+    }
+    if (!result) return true
+
+    log.health("eval", result.pass ? "passed" : "failed", {
+      task,
+      score: result.score,
+      failures: result.rubricFailures,
+      attempt: evalAttemptsForTask + 1,
+    })
+
+    if (result.pass) {
+      evalAttemptsForTask = 0
+      return true
+    }
+
+    // Eval failed. Decide retry vs block based on the remaining budget.
+    if (evalAttemptsForTask < cfg.maxEvalRetries) {
+      evalAttemptsForTask++
+      // Tell the no-progress detector this retry is intentional, not a stuck
+      // loop — otherwise it would trip isStuck() on the next same-task record.
+      noProgressDetector?.notifyEvalRetry()
+      activityLog.addEvent("error", t("actEvalRetry", { task: task.slice(0, 40) }), {
+        level: "warn",
+        detail: result.reasoning,
+      })
+      // Write the eval feedback as a note so the next iteration sees it. The
+      // note uses the same prose sub-bullet convention as inter-task notes
+      // (never a `- [ ]` line). Compare-and-swap to avoid clobbering the agent.
+      await writeEvalNote(task, result.reasoning)
+      // Return false: don't start a new session. The state stays running("")
+      // and the iteration-driver re-fires startIteration for the retry.
+      return false
+    }
+
+    // Budget exhausted: mark the task [BLOCKED] with compare-and-swap.
+    await blockTaskWithCompareAndSwap(task, `eval failed — ${result.reasoning}`)
+    evalAttemptsForTask = 0
+    // Fall through: advance to the next task.
+    return true
+  }
+
+  /**
+   * Append an eval-feedback note under the task in PLAN.md. Compare-and-swap:
+   * re-read + byte-compare before writing so a concurrent agent edit is never
+   * clobbered. Best-effort — a failure to write the note is logged but does
+   * not abort the retry (the iteration re-reads the plan regardless).
+   */
+  async function writeEvalNote(task: string, feedback: string): Promise<void> {
+    try {
+      const planPath = resolvePlanFile(props.planFile)
+      const before = await Bun.file(planPath).text()
+      // Insert the note right after the task line. Keep it simple and safe:
+      // append a single indented prose line (never a `- [ ]`).
+      const lines = before.split("\n")
+      const idx = lines.findIndex(
+        (l) => parseTaskLine(l).type === "pending" && parseTaskLine(l).description === task,
+      )
+      if (idx === -1) return // task gone (plan edited) — nothing to annotate
+      const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
+      lines.splice(idx + 1, 0, note)
+      const after = lines.join("\n")
+      // Compare-and-swap: re-read and only write if unchanged since `before`.
+      const current = await Bun.file(planPath).text()
+      if (current !== before) {
+        log.debug("eval", "PLAN.md changed during eval-note write; deferring", {})
+        return
+      }
+      await Bun.write(planPath, after)
+    } catch (err) {
+      log.warn("eval", "Failed to write eval feedback note", err)
+    }
+  }
+
+  /**
+   * Mark a task [BLOCKED] in PLAN.md with compare-and-swap: re-read + byte
+   * compare before Bun.write, mirroring checkPlanComplete. If the plan
+   * changed underfoot, defer (the next check re-evaluates against fresh
+   * content) rather than clobbering the agent's edit.
+   */
+  async function blockTaskWithCompareAndSwap(task: string, reason: string): Promise<void> {
+    try {
+      const planPath = resolvePlanFile(props.planFile)
+      const before = await Bun.file(planPath).text()
+      const updated = replaceFirstPendingTaskWithBlocked(before, reason)
+      if (updated === null) return // no pending task to block
+      const current = await Bun.file(planPath).text()
+      if (current !== before) {
+        log.debug("eval", "PLAN.md changed during eval-block write; deferring", {})
+        return
+      }
+      await Bun.write(planPath, updated)
+      activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
+        level: "warn",
+      })
+    } catch (err) {
+      log.warn("eval", "Failed to mark task [BLOCKED] from eval", err)
+    }
+  }
+
+  /**
    * Create a new session and start an iteration
    */
   async function startIteration(): Promise<void> {
@@ -840,6 +1097,15 @@ function AppContent(props: AppProps) {
     let newSessionId: string | undefined
 
     try {
+      // Eval layer: verify the just-finished task against its rubric BEFORE
+      // starting the next session. Returns false to abort this startIteration
+      // for an eval-driven retry (the iteration-driver re-fires running("")
+      // and calls startIteration again). Opt-in: a no-op when evals disabled
+      // or the task has no rubric. MUST sit inside the try so `startingIteration`
+      // is released by the finally on every return path.
+      if (!(await runEvalIfPending())) {
+        return
+      }
       // Check for plan completion first
       if (await checkPlanComplete()) {
         const planPath = resolvePlanFile(props.planFile)
@@ -961,12 +1227,14 @@ function AppContent(props: AppProps) {
         )
       }
 
-      // Send the prompt asynchronously
+      // Send the prompt asynchronously. With --routing, the "heavy" role's model
+      // (if mapped) overrides the single resolved model; without --routing,
+      // tierMapping() is null and this is exactly activeModel() (byte-identical).
       await sendPromptAsync(client, {
         sessionID: newSessionId,
         parts: [{ type: "text", text: prompt }],
         agent: activeAgent(),
-        model: activeModel(),
+        model: tierMapping()?.heavy ?? activeModel(),
       })
 
       // Refresh plan progress
@@ -1229,6 +1497,41 @@ function AppContent(props: AppProps) {
               return
             }
             applyResolved(resolved)
+            // --routing: show the model-routing panel ONCE before starting, so the
+            // user can assign concrete models to the heavy/judge/cheap roles from
+            // the live opencode catalog. The flag gate + routingPanelShown guarantee
+            // (a) it never runs without the flag (byte-identical happy path) and
+            // (b) it opens exactly once even if the effect re-fires. A failure or
+            // cancel degrades gracefully to "no mapping" = the single resolved model.
+            if (props.routing && !routingPanelShown) {
+              routingPanelShown = true
+              void (async () => {
+                try {
+                  const catalog = await fetchModelCatalog(client)
+                  if (catalog.length === 0) {
+                    log.warn("routing", "No connected models found; skipping routing panel")
+                    startOnce()
+                    return
+                  }
+                  const options: DialogSelectOption[] = catalog.map((m) => ({
+                    title: m.name,
+                    value: m.id,
+                    category: m.provider,
+                  }))
+                  const mapping = await DialogTierPicker.show(dialog, ROUTING_TIERS, options)
+                  setTierMapping(Object.keys(mapping).length > 0 ? mapping : null)
+                  if (mapping.heavy) {
+                    log.info("routing", "Routing enabled", mapping as unknown as Record<string, unknown>)
+                  }
+                  startOnce()
+                } catch (err) {
+                  log.error("routing", "Tier picker failed; continuing without routing", err)
+                  setTierMapping(null)
+                  startOnce()
+                }
+              })()
+              return // startOnce() is driven inside the async block above
+            }
             startOnce()
           })
           .catch((err) => {

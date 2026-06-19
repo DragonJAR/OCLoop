@@ -36,3 +36,9 @@ Completion check:
 - When every non-[MANUAL] task in {{PLAN_FILE}} is `[x]` or `[BLOCKED]`, just end your turn — OCLoop detects completion automatically (you do NOT need to write any completion marker).
 - Otherwise, end your turn now - OCLoop starts the next task in a fresh session.
 - Do NOT skip automatable tasks: if a task looks hard but doable, attempt it.
+
+Eval rubrics (optional, opt-in via `evals.enabled` in ocloop.json):
+- A task may declare an evaluation rubric as a single indented sub-bullet IMMEDIATELY after its `- [ ]` line: `  - eval: <what "correct" means for this task>`. The rubric is NOT counted as a task (it lacks the `- [` checkbox prefix).
+- When `evals.enabled` is on, after your iteration finishes and tests pass, an LM-judge scores your work against the rubric. If it fails, the loop re-runs the SAME task once (default) with the judge's feedback written back as `  - eval feedback: ...` under the task. If it fails again, the task is marked `[BLOCKED: eval failed — <reason>]` and the loop moves on.
+- You do NOT write the `eval:` line yourself during execution — it is authored in the plan (by a human or the `--create-plan` generator). You MAY read `  - eval feedback: ...` notes left by a prior eval retry and address them.
+- A task with no `eval:` rubric is never evaluated — the loop trusts the test gate as before.

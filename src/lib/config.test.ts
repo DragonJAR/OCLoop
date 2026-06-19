@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RESILIENCE, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -303,6 +303,94 @@ describe("loadConfig — resilience per-field type validation (Finding 12.3.B)",
       caffeinate: false,
       backoffJitter: true,
     })
+  })
+})
+
+describe("loadConfig — evals block validation (mirrors resilience all-or-nothing)", () => {
+  it("drops a malformed evals field (string)", () => {
+    writeConfig("ocloop.json", JSON.stringify({ evals: "fast" }))
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops a malformed evals field (array)", () => {
+    writeConfig("ocloop.json", JSON.stringify({ evals: [] }))
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when enabled is non-boolean", () => {
+    writeConfig("ocloop.json", JSON.stringify({ evals: { enabled: 1 } }))
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when maxEvalRetries is a string", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { maxEvalRetries: "lots" } }),
+    )
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when maxEvalRetries is negative", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { maxEvalRetries: -1 } }),
+    )
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when judgeModel is non-string", () => {
+    writeConfig("ocloop.json", JSON.stringify({ evals: { judgeModel: 42 } }))
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when an unknown key is present", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { enabled: true, madeUpKey: 1 } }),
+    )
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when valid and invalid fields are mixed", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { enabled: true, judgeTimeoutMs: "slow" } }),
+    )
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("keeps the whole block when every field is valid", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({
+        evals: {
+          enabled: true,
+          judgeModel: "anthropic/claude-haiku-4-5",
+          maxEvalRetries: 2,
+          judgeTimeoutMs: 90_000,
+          judgeRetries: 2,
+        },
+      }),
+    )
+    expect(loadConfig().evals).toEqual({
+      enabled: true,
+      judgeModel: "anthropic/claude-haiku-4-5",
+      maxEvalRetries: 2,
+      judgeTimeoutMs: 90_000,
+      judgeRetries: 2,
+    })
+  })
+
+  it("keeps a partial block with only some fields (rest default at resolve time)", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { enabled: true } }),
+    )
+    expect(loadConfig().evals).toEqual({ enabled: true })
+  })
+
+  it("DEFAULT_EVALS is disabled by default (no behavior change out of the box)", () => {
+    expect(DEFAULT_EVALS.enabled).toBe(false)
   })
 })
 

@@ -200,4 +200,73 @@ describe("NoProgressDetector", () => {
       expect(d.isStuck()).toBe(true) // streak=3, threshold=3
     })
   })
+
+  describe("notifyEvalRetry", () => {
+    it("the next same-task record does NOT increment the streak (eval retry is intentional)", () => {
+      // The headline contract: an eval-driven retry must not be counted as
+      // no-progress, or the detector would halt a task that just needs one
+      // more eval-guided attempt.
+      const d = new NoProgressDetector(3)
+      d.recordIterationStart("task A") // streak 1
+      d.notifyEvalRetry()
+      expect(d.recordIterationStart("task A")).toBe(1) // unchanged
+      expect(d.count).toBe(1)
+    })
+
+    it("the eval-retry flag is one-shot (consumed after one same-task record)", () => {
+      // A second same-task record after the consumed flag must increment
+      // normally — notifyEvalRetry is not sticky.
+      const d = new NoProgressDetector(3)
+      d.recordIterationStart("task A") // 1
+      d.notifyEvalRetry()
+      d.recordIterationStart("task A") // consumed → still 1
+      expect(d.recordIterationStart("task A")).toBe(2) // normal increment resumes
+    })
+
+    it("a different task after notifyEvalRetry resets normally and clears the flag", () => {
+      const d = new NoProgressDetector(3)
+      d.recordIterationStart("task A") // 1
+      d.notifyEvalRetry()
+      // Genuine progress (new task) must reset regardless of the flag.
+      expect(d.recordIterationStart("task B")).toBe(1)
+      expect(d.currentTask).toBe("task B")
+      // And the flag is gone: a return to A counts as a fresh task.
+      d.recordIterationStart("task A")
+      expect(d.count).toBe(1)
+    })
+
+    it("notifyEvalRetry prevents an eval retry from tripping isStuck", () => {
+      // End-to-end: at the edge of the threshold, an eval retry that would
+      // otherwise trip isStuck must not.
+      const d = new NoProgressDetector(2)
+      d.recordIterationStart("task A") // 1
+      d.recordIterationStart("task A") // 2 → stuck
+      expect(d.isStuck()).toBe(true)
+      // The loop halts; the user retries; one eval-driven retry happens:
+      d.reset()
+      d.recordIterationStart("task A") // 1
+      d.notifyEvalRetry()
+      d.recordIterationStart("task A") // consumed → still 1, NOT stuck
+      expect(d.isStuck()).toBe(false)
+    })
+
+    it("reset() clears the eval-retry flag too", () => {
+      const d = new NoProgressDetector(3)
+      d.recordIterationStart("task A")
+      d.notifyEvalRetry()
+      d.reset()
+      // After reset, no flag: a same-task record increments from a fresh 1.
+      expect(d.recordIterationStart("task A")).toBe(1)
+    })
+
+    it("a null task after notifyEvalRetry clears the flag and resets", () => {
+      const d = new NoProgressDetector(3)
+      d.recordIterationStart("task A")
+      d.notifyEvalRetry()
+      d.recordIterationStart(null)
+      expect(d.count).toBe(0)
+      // Flag gone: next same-task seeds fresh.
+      expect(d.recordIterationStart("task A")).toBe(1)
+    })
+  })
 })

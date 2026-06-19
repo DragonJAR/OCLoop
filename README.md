@@ -137,6 +137,7 @@ Usage: ocloop [options]
 | `-c, --create-plan` | Interactively generate `PLAN.md`, then exit (model zai-coding-plan/glm-5.2, agent plan) |
 | `-d, --debug` | Debug/sandbox mode (no plan-file validation, manual sessions) |
 | `--verbose` | Enable verbose logging (keyboard events, etc.) |
+| `--routing` | Show the model-routing panel at startup (assign models to heavy/judge/cheap roles from the live opencode catalog) |
 | `--prompt <path>` | Path to the loop prompt file (default: `.loop-prompt.md`) |
 | `--plan <path>` | Path to the plan file (default: `PLAN.md`) |
 | `--lang <en\|es>` | UI language (default: `en`; also settable in `Ctrl+P`; `--language` is an alias) |
@@ -348,9 +349,45 @@ OCLoop reads optional settings from `~/.config/ocloop/ocloop.json` (or `$XDG_CON
   "resilience": {                // any subset of the Tuning keys
     "watchdogSuspectMs": 120000,
     "maxRateLimitRetries": 12
+  },
+  "evals": {                     // optional — LM-judge layer (disabled by default)
+    "enabled": true,
+    "judgeModel": "anthropic/claude-haiku-4-5",  // omit to use the active model
+    "maxEvalRetries": 1,
+    "judgeTimeoutMs": 60000,
+    "judgeRetries": 1
   }
 }
 ```
+
+### Eval layer (optional)
+
+The eval layer adds **non-deterministic verification** on top of the test gate: after a task passes its tests, an LM-judge scores the iteration against a rubric declared in the plan. This is the differentiator the *New SDLC With Vibe Coding* paper draws between "vibe coding" and "agentic engineering" — *"Without both [tests and evals], the practice is always vibe coding."*
+
+It is **opt-in** (`evals.enabled`, default `false`) and **per-task**: only tasks that declare a rubric are evaluated; the rest run exactly as before. Declare a rubric as a single indented sub-bullet right after the task line:
+
+```markdown
+- [ ] Implement the input validator
+  - eval: must reject empty strings and return null, never throw
+```
+
+On a failed eval, the loop re-runs the same task once (default `maxEvalRetries: 1`) with the judge's feedback written back under the task, then marks it `[BLOCKED: eval failed — <reason>]` if it fails again. A broken judge (timeout/network after `judgeRetries`) is treated as a **skip**, never a block — the user's task is not halted because the judge service is down. Safety invariant: `maxEvalRetries` must stay `≤ noProgressThreshold - 1` (1 ≤ 2 with defaults) so eval retries can't trip the stuck-task detector.
+
+### Model routing (optional, `--routing`)
+
+The *New SDLC With Vibe Coding* paper describes **intelligent model routing** as the financial lever of the token economy: *"a well-designed factory model routes deterministic, lower-complexity tasks to smaller, faster, and significantly cheaper models."*
+
+Launch with `ocloop --routing` and, after the server boots, a panel lists **every connected model** from your opencode config and asks you to assign three roles:
+
+| Role | Used for |
+| --- | --- |
+| **heavy** | Every plan task (the main model) |
+| **judge** | The eval layer's LM-judge (pair with `evals.enabled`) |
+| **cheap** | Reserved for future deterministic work (test-gen, review) |
+
+The mapping is **ephemeral** (this run only). Press `Enter` to pick a model, `S` to skip a role (it falls back to the default), `Esc` to cancel routing entirely (the loop uses the single resolved model, exactly as without the flag). Without `--routing`, nothing changes — the loop uses one model for everything.
+
+The `judge` role composes with the eval layer: if you set both `--routing` and `evals.enabled`, the evals judge uses the model you picked in the panel (precedence: panel > `evals.judgeModel` config > active model).
 
 The `terminal` block can be a **known** terminal `{ "type": "known", "name": "<name>" }` (one of the four below) or a **custom** one `{ "type": "custom", "command": "<bin>", "args": "<args with {cmd}>" }` for any other terminal — for example `{ "type": "custom", "command": "gnome-terminal", "args": "-- bash -lc '{cmd}'" }`. The `{cmd}` placeholder is replaced with the full `opencode attach <url> --session <id>` command. You can also configure it interactively with `T` (or `Ctrl+P` → Choose default terminal).
 

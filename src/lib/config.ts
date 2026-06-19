@@ -150,6 +150,42 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 }
 
 /**
+ * Eval-layer configuration — the LM-judge that runs after each task (opt-in).
+ *
+ * Resolution + defaults live here so the validation all-or-nothing policy can
+ * mirror `resilience`: `DEFAULT_EVALS` is the single source of truth for field
+ * types (truth-in-defaults, the same DRY pattern as `DEFAULT_RESILIENCE`).
+ *
+ * Safety invariant: `maxEvalRetries` MUST stay `≤ noProgressThreshold - 1`, or
+ * an eval-retry loop would trip `NoProgressDetector` before the budget is
+ * spent. With defaults (1 ≤ 3-1=2) this holds; `resolveResilience`/App log a
+ * warn if a user configures a value that breaks it.
+ */
+export interface EvalConfig {
+  /** Master switch. Default false — the loop is byte-identical to today when off. */
+  enabled: boolean
+  /** Optional judge model ("provider/model"); falls back to the active model. */
+  judgeModel?: string
+  /** Max eval-driven retries of the SAME task before marking it [BLOCKED]. */
+  maxEvalRetries: number
+  /** Per-call judge budget (ms). Default 60s. */
+  judgeTimeoutMs: number
+  /** Judge-call retries on timeout/network failure before declaring an eval failure. */
+  judgeRetries: number
+}
+
+/**
+ * Sensible defaults for the eval layer. `enabled: false` by design — the loop
+ * must not change behavior unless the user opts in.
+ */
+export const DEFAULT_EVALS: EvalConfig = {
+  enabled: false,
+  maxEvalRetries: 1,
+  judgeTimeoutMs: 60_000,
+  judgeRetries: 1,
+}
+
+/**
  * OCLoop configuration file structure
  */
 export interface OcloopConfig {
@@ -164,6 +200,8 @@ export interface OcloopConfig {
   language?: import("./i18n").Locale
   /** Optional persisted resilience overrides (partial; merged over defaults). */
   resilience?: Partial<ResilienceConfig>
+  /** Optional eval-layer (LM-judge) overrides (partial; merged over defaults). */
+  evals?: Partial<EvalConfig>
 }
 
 /**
@@ -226,6 +264,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "theme",
   "language",
   "resilience",
+  "evals",
 ])
 
 /**
@@ -238,6 +277,23 @@ const ALLOWED_CONFIG_KEYS = new Set([
 function isValidResilienceValue(key: string, v: unknown): boolean {
   if (!(key in DEFAULT_RESILIENCE)) return false
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
+  if (typeof def === "boolean") return typeof v === "boolean"
+  if (typeof def === "number") {
+    return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+  }
+  return false
+}
+
+/**
+ * Per-field type guard for a single EvalConfig entry. Mirrors
+ * `isValidResilienceValue` (truth-in-defaults) but handles the `judgeModel`
+ * string field that resilience never needs. `judgeModel` is OPTIONAL, so a
+ * valid config may omit it; when present it must be a non-empty string.
+ */
+function isValidEvalsValue(key: string, v: unknown): boolean {
+  if (key === "judgeModel") return typeof v === "string" && v.length > 0
+  if (!(key in DEFAULT_EVALS)) return false
+  const def = (DEFAULT_EVALS as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
   if (typeof def === "number") {
     return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
@@ -308,6 +364,26 @@ function validateConfigShape(raw: unknown): OcloopConfig {
         )
       } else {
         out.resilience = r.resilience as Partial<ResilienceConfig>
+      }
+    }
+  }
+  if ("evals" in r) {
+    if (typeof r.evals !== "object" || r.evals === null || Array.isArray(r.evals)) {
+      log.warn("config", "Ignoring malformed 'evals' field", r.evals)
+    } else {
+      // All-or-nothing, mirroring resilience: one bad field drops the whole
+      // block so a hand-edited `{"maxEvalRetries": "lots"}` can't reach the
+      // loop as NaN and burn through the retry budget.
+      const entries = Object.entries(r.evals as Record<string, unknown>)
+      const invalid = entries.filter(([k, v]) => !isValidEvalsValue(k, v))
+      if (invalid.length > 0) {
+        log.warn(
+          "config",
+          `Ignoring 'evals' block — contains ${invalid.length} invalid field(s)`,
+          invalid.map(([k, v]) => ({ key: k, value: v })),
+        )
+      } else {
+        out.evals = r.evals as Partial<EvalConfig>
       }
     }
   }

@@ -137,6 +137,7 @@ Uso: ocloop [opciones]
 | `-c, --create-plan` | Genera `PLAN.md` interactivamente y sale (modelo zai-coding-plan/glm-5.2, agente plan) |
 | `-d, --debug` | Modo debug/sandbox (sin validación del plan, sesiones manuales) |
 | `--verbose` | Activa el registro detallado (eventos de teclado, etc.) |
+| `--routing` | Muestra el panel de routing de modelos al arranque (asigna modelos a los roles heavy/judge/cheap desde el catálogo en vivo de opencode) |
 | `--prompt <ruta>` | Ruta del archivo de prompt de bucle (por defecto: `.loop-prompt.md`) |
 | `--plan <ruta>` | Ruta del archivo de plan (por defecto: `PLAN.md`) |
 | `--lang <en\|es>` | Idioma de la interfaz (por defecto: `en`; también en `Ctrl+P`; `--language` es un alias) |
@@ -348,9 +349,45 @@ OCLoop lee ajustes opcionales de `~/.config/ocloop/ocloop.json` (o `$XDG_CONFIG_
   "resilience": {                // cualquier subconjunto de las claves de Ajustes
     "watchdogSuspectMs": 120000,
     "maxRateLimitRetries": 12
+  },
+  "evals": {                     // opcional — capa LM-judge (desactivada por defecto)
+    "enabled": true,
+    "judgeModel": "anthropic/claude-haiku-4-5",  // omítelo para usar el modelo activo
+    "maxEvalRetries": 1,
+    "judgeTimeoutMs": 60000,
+    "judgeRetries": 1
   }
 }
 ```
+
+### Capa de evaluación (opcional)
+
+La capa de evaluación añade **verificación no determinista** sobre el gate de tests: tras pasar los tests de una tarea, un LM-judge puntúa la iteración contra una rúbrica declarada en el plan. Este es el diferenciador que el paper *The New SDLC With Vibe Coding* traza entre "vibe coding" y "agentic engineering" — *"Without both [tests and evals], the practice is always vibe coding."*
+
+Es **opt-in** (`evals.enabled`, por defecto `false`) y **por tarea**: solo las tareas que declaran una rúbrica son evaluadas; el resto funciona exactamente igual que antes. Declara una rúbrica como un sub-bullet indentado justo después de la línea de la tarea:
+
+```markdown
+- [ ] Implementar el validador de entrada
+  - eval: debe rechazar cadenas vacías y retornar null, nunca lanzar excepción
+```
+
+Ante un eval fallido, el loop re-ejecuta la misma tarea una vez (`maxEvalRetries: 1` por defecto) con la retroalimentación del judge escrita debajo de la tarea, y luego la marca `[BLOCKED: eval failed — <motivo>]` si falla de nuevo. Un judge roto (timeout/red tras `judgeRetries`) se trata como **skip**, nunca como bloqueo — la tarea del usuario no se detiene porque el servicio del judge esté caído. Invariante de seguridad: `maxEvalRetries` debe ser `≤ noProgressThreshold - 1` (1 ≤ 2 con los valores por defecto) para que los reintentos por eval no disparen el detector de tareas atascadas.
+
+### Routing de modelos (opcional, `--routing`)
+
+El paper *The New SDLC With Vibe Coding* describe el **routing inteligente de modelos** como la palanca financiera de la token economy: *"un modelo de fábrica bien diseñado enruta las tareas deterministas y de menor complejidad a modelos más pequeños, rápidos y significativamente más baratos."*
+
+Lanza con `ocloop --routing` y, tras arrancar el servidor, un panel lista **todos los modelos conectados** de tu configuración de opencode y te pide asignar tres roles:
+
+| Rol | Usado para |
+| --- | --- |
+| **heavy** | Cada tarea del plan (el modelo principal) |
+| **judge** | El LM-judge de la capa de evaluación (combínalo con `evals.enabled`) |
+| **cheap** | Reservado para trabajo determinista futuro (tests, revisión) |
+
+El mapeo es **efímero** (solo este run). Presiona `Enter` para elegir un modelo, `S` para saltar un rol (cae al modelo por defecto), `Esc` para cancelar el routing por completo (el loop usa el único modelo resuelto, igual que sin el flag). Sin `--routing`, no cambia nada — el loop usa un solo modelo para todo.
+
+El rol `judge` se compone con la capa de evaluación: si activas `--routing` y `evals.enabled`, el juez de los evals usa el modelo que elegiste en el panel (precedencia: panel > config `evals.judgeModel` > modelo activo).
 
 El bloque `terminal` puede ser una terminal **conocida** `{ "type": "known", "name": "<nombre>" }` (una de las cuatro de abajo) o **personalizada** `{ "type": "custom", "command": "<bin>", "args": "<args con {cmd}>" }` para cualquier otra terminal — por ejemplo `{ "type": "custom", "command": "gnome-terminal", "args": "-- bash -lc '{cmd}'" }`. El placeholder `{cmd}` se reemplaza con el comando completo `opencode attach <url> --session <id>`. También puedes configurarlo interactivamente con `T` (o `Ctrl+P` → Elegir terminal por defecto).
 

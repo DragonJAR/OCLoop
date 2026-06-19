@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -933,5 +933,100 @@ describe("replaceFirstPendingTaskWithSubtasks", () => {
 
   it("returns null when subtasks is empty", () => {
     expect(replaceFirstPendingTaskWithSubtasks("- [ ] keep me", [])).toBeNull()
+  })
+})
+
+describe("getEvalRubricForTask", () => {
+  it("returns the rubric text from the eval: sub-bullet", () => {
+    const content = [
+      "- [ ] implement feature X",
+      "  - eval: must handle the empty-list edge case and return null",
+      "- [ ] next task",
+    ].join("\n")
+    expect(getEvalRubricForTask(content, "implement feature X")).toBe(
+      "must handle the empty-list edge case and return null",
+    )
+  })
+
+  it("returns null when the task has no eval: sub-bullet", () => {
+    const content = "- [ ] no rubric here\n  - just a note"
+    expect(getEvalRubricForTask(content, "no rubric here")).toBeNull()
+  })
+
+  it("returns null when the task is not found in the plan", () => {
+    expect(getEvalRubricForTask("- [ ] some task", "nonexistent task")).toBeNull()
+  })
+
+  it("only reads the rubric of the FIRST matching pending task", () => {
+    const content = [
+      "- [ ] do thing",
+      "  - eval: first rubric",
+      "- [ ] do thing",
+      "  - eval: second rubric",
+    ].join("\n")
+    expect(getEvalRubricForTask(content, "do thing")).toBe("first rubric")
+  })
+
+  it("stops the rubric window at the next task line", () => {
+    // An eval: after the NEXT task must NOT be attributed to the first task.
+    const content = [
+      "- [ ] first task",
+      "- [ ] second task",
+      "  - eval: belongs to second",
+    ].join("\n")
+    expect(getEvalRubricForTask(content, "first task")).toBeNull()
+    expect(getEvalRubricForTask(content, "second task")).toBe("belongs to second")
+  })
+
+  it("tolerates a blank line between the task and its eval: note", () => {
+    const content = "- [ ] task\n\n  - eval: rubric after blank"
+    expect(getEvalRubricForTask(content, "task")).toBe("rubric after blank")
+  })
+
+  it("is case-insensitive on the eval: keyword", () => {
+    const content = "- [ ] task\n  - EVAL: uppercase keyword"
+    expect(getEvalRubricForTask(content, "task")).toBe("uppercase keyword")
+  })
+
+  it("does NOT count the eval: sub-bullet as a task (parsePlan counts unaffected)", () => {
+    const content = "- [ ] task\n  - eval: rubric\n- [ ] other"
+    expect(parsePlan(content).total).toBe(2)
+    expect(parsePlan(content).automatable).toBe(2)
+  })
+})
+
+describe("replaceFirstPendingTaskWithBlocked", () => {
+  it("marks the first pending task as [BLOCKED: reason]", () => {
+    expect(replaceFirstPendingTaskWithBlocked("- [ ] do thing", "eval failed")).toBe(
+      "- [BLOCKED: eval failed] do thing",
+    )
+  })
+
+  it("preserves the original description and indentation", () => {
+    expect(replaceFirstPendingTaskWithBlocked("  - [ ] indented task", "nope")).toBe(
+      "  - [BLOCKED: nope] indented task",
+    )
+  })
+
+  it("only blocks the first pending task, leaving later pendings intact", () => {
+    expect(
+      replaceFirstPendingTaskWithBlocked("- [ ] one\n- [ ] two", "x"),
+    ).toBe("- [BLOCKED: x] one\n- [ ] two")
+  })
+
+  it("skips completed/manual/blocked lines and targets the first pending", () => {
+    const content = "- [x] done\n- [MANUAL] human\n- [BLOCKED] wait\n- [ ] target"
+    expect(replaceFirstPendingTaskWithBlocked(content, "r")).toBe(
+      "- [x] done\n- [MANUAL] human\n- [BLOCKED] wait\n- [BLOCKED: r] target",
+    )
+  })
+
+  it("collapses newlines in the reason to a single line (no multiline BLOCKED tag)", () => {
+    const out = replaceFirstPendingTaskWithBlocked("- [ ] task", "line1\nline2")
+    expect(out).toBe("- [BLOCKED: line1 line2] task")
+  })
+
+  it("returns null when there is no pending task", () => {
+    expect(replaceFirstPendingTaskWithBlocked("- [x] done", "x")).toBeNull()
   })
 })

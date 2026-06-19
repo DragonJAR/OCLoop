@@ -29,6 +29,15 @@
 export class NoProgressDetector {
   private lastTask: string | null = null
   private streak: number = 0
+  /**
+   * One-shot flag set by `notifyEvalRetry()`: the NEXT `recordIterationStart`
+   * with the SAME task must NOT increment the streak — an eval-driven retry is
+   * intentional progress (re-running the task to fix an eval failure), not
+   * the "stuck redoing the same work" symptom this detector exists to catch.
+   * Consumed and cleared on the next same-task record, mirroring the
+   * `resumedFromIdle` one-shot-flag pattern in the loop reducer.
+   */
+  private evalRetryPending: boolean = false
 
   constructor(private readonly threshold: number) {
     if (!Number.isInteger(threshold) || threshold < 1) {
@@ -51,13 +60,23 @@ export class NoProgressDetector {
       // pending task starts fresh and the next halt is fair.
       this.lastTask = null
       this.streak = 0
+      this.evalRetryPending = false
       return 0
     }
     if (task === this.lastTask) {
+      // An eval-driven retry on the same task is intentional, not a stuck
+      // loop: consume the flag and leave the streak unchanged so the budget
+      // isn't burned by the eval layer's own retries.
+      if (this.evalRetryPending) {
+        this.evalRetryPending = false
+        return this.streak
+      }
       this.streak += 1
     } else {
+      // A genuinely different task clears any stale eval-retry flag too.
       this.lastTask = task
       this.streak = 1
+      this.evalRetryPending = false
     }
     return this.streak
   }
@@ -87,11 +106,24 @@ export class NoProgressDetector {
   }
 
   /**
+   * Tell the detector that the next same-task `recordIterationStart` is an
+   * eval-driven retry, not genuine no-progress. Call this right before the
+   * loop re-runs the same task because its eval failed (and there is budget
+   * left). Without it, the eval retry would increment the streak and could
+   * trip `isStuck()` prematurely, halting a task that just needed one more
+   * eval-guided attempt.
+   */
+  notifyEvalRetry(): void {
+    this.evalRetryPending = true
+  }
+
+  /**
    * Reset all state. Useful when the user resumes from pause, or after
    * a manual retry that should not inherit the previous streak.
    */
   reset(): void {
     this.lastTask = null
     this.streak = 0
+    this.evalRetryPending = false
   }
 }
