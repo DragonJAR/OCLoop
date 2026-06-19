@@ -587,7 +587,7 @@ function AppContent(props: AppProps) {
       onTodoUpdated: (_eventSessionId, todos) => {
         heartbeat()
         // Update current task display from todos
-        const inProgress = todos.find((t) => t.status === "in_progress")
+        const inProgress = todos.find((todo) => todo.status === "in_progress")
         if (inProgress) {
           setCurrentTask(inProgress.content)
           activityLog.addEvent("task", inProgress.content)

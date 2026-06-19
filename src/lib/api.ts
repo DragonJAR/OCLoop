@@ -168,10 +168,6 @@ export function toSdkModel(model: string | PromptModel | undefined): PromptModel
   return { providerID: model.slice(0, slash), modelID: model.slice(slash + 1) }
 }
 
-/**
- * Create a new session
- * @returns The created session data
- */
 /** Extract a human-readable message from a thrown SDK transport error. */
 function sdkErrorMessage(error: unknown): string {
   if (error instanceof Error) return error.message
@@ -217,6 +213,10 @@ export function assertResponse(
   }
 }
 
+/**
+ * Create a new session
+ * @returns The created session data
+ */
 export async function createSession(
   client: OpencodeClient,
   opts: ApiCallOptions = {},
