@@ -1,6 +1,7 @@
 import { For } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
+import { DialogHeader } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { t } from "../lib/i18n"
 
@@ -86,17 +87,10 @@ export function DialogHelp(props: DialogHelpProps) {
   )
 
   return (
-    <Dialog onClose={props.onClose} width={64} height={24}>
+    <Dialog onClose={props.onClose} width={72} height={24}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
-        <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
-          <text>
-            <span style={{ fg: theme().accent, bold: true }}>{t("helpTitle")}</span>
-          </text>
-          <text>
-            <span style={{ fg: theme().textMuted }}>{t("helpDismissHint")}</span>
-          </text>
-        </box>
+        <DialogHeader title={t("helpTitle")} accent={theme().accent} hint={t("helpDismissHint")} />
 
         {/* Intro */}
         <text style={{ marginBottom: 1 }}>

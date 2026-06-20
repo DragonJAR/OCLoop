@@ -1763,7 +1763,7 @@ function AppContent(props: AppProps) {
       reply = await runOneShotAgent(
         client,
         t("splitPromptTemplate", { task: stuckTask }),
-        { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
+        { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
       )
       subtasks = parseSubtasksFromReply(reply)
     } catch (err) {
@@ -1809,7 +1809,7 @@ function AppContent(props: AppProps) {
                 subtasks: subtasks.join("\n"),
                 feedback: feedback.trim(),
               }),
-              { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().promptTimeoutMs },
+              { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
             )
             const next = parseSubtasksFromReply(refined)
             if (next.length > 0) subtasks = next

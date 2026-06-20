@@ -1,6 +1,7 @@
 import { Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
+import { DialogHeader } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { t } from "../lib/i18n"
 
@@ -45,14 +46,7 @@ export function DialogError(props: DialogErrorProps) {
     <Dialog onClose={props.onQuit} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
-        <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
-          <text>
-            <span style={{ fg: theme().error, bold: true }}>{t("errorTitle")}</span>
-          </text>
-          <text>
-            <span style={{ fg: theme().textMuted }}>esc</span>
-          </text>
-        </box>
+        <DialogHeader title={t("errorTitle")} accent={theme().error} hint="esc" />
 
         {/* Source badge */}
         <text style={{ marginTop: 1 }}>
@@ -78,18 +72,23 @@ export function DialogError(props: DialogErrorProps) {
           </text>
         </scrollbox>
 
-        {/* Actions */}
-        <text style={{ marginTop: 2 }}>
+        {/* Actions — a flex row so the chips space evenly via `gap` instead of
+            literal "  " spacer spans. */}
+        <box style={{ flexDirection: "row", gap: 2, marginTop: 1 }}>
           <Show when={props.recoverable}>
-            <span style={{ bold: true }}>{t("dlgRetry")}</span> R
-            <span style={{ fg: theme().textMuted }}>  </span>
+            <text>
+              <span style={{ bold: true }}>{t("dlgRetry")}</span> R
+            </text>
           </Show>
           <Show when={props.onDecompose}>
-            <span style={{ bold: true }}>{t("dlgSplitTask")}</span> P
-            <span style={{ fg: theme().textMuted }}>  </span>
+            <text>
+              <span style={{ bold: true }}>{t("dlgSplitTask")}</span> P
+            </text>
           </Show>
-          <span style={{ bold: true }}>{t("dlgQuitConfirm")}</span> Q
-        </text>
+          <text>
+            <span style={{ bold: true }}>{t("dlgQuitConfirm")}</span> Q
+          </text>
+        </box>
       </box>
     </Dialog>
   )

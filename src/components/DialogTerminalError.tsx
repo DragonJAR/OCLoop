@@ -1,4 +1,5 @@
 import { Dialog } from "../ui/Dialog"
+import { DialogHeader } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { getConfigPath } from "../lib/config"
 import { t } from "../lib/i18n"
@@ -47,8 +48,8 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
   // scrollbox (below) that wraps and scrolls, so the height no longer depends
   // on guessing wrap-line counts from message length — that guess previously
   // inflated the box while the error rendered as a single unwrapped line that
-  // overflowed horizontally.
-  const dialogHeight = 16
+  // overflowed horizontally. Shares the error-family height with DialogError.
+  const dialogHeight = 14
 
   const configPath = getConfigPath()
 
@@ -56,14 +57,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
     <Dialog onClose={props.onClose} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
-        <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1 }}>
-          <text>
-            <span style={{ fg: theme().error, bold: true }}>{t("dlgTerminalFailed")}</span>
-          </text>
-          <text>
-            <span style={{ fg: theme().textMuted }}>esc</span>
-          </text>
-        </box>
+        <DialogHeader title={t("dlgTerminalFailed")} accent={theme().error} hint="esc" />
 
         {/* Terminal name */}
         <text style={{ marginTop: 1 }}>
@@ -74,7 +68,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
             instead of overflowing the dialog width on a single line. */}
         <scrollbox
           marginTop={1}
-          maxHeight={5}
+          maxHeight={4}
           verticalScrollbarOptions={{
             visible: true,
             trackOptions: {
@@ -102,12 +96,16 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
           <span style={{ fg: theme().text }}>{props.attachCommand}</span>
         </text>
 
-        {/* Footer */}
-        <text style={{ marginTop: 2 }}>
-          <span style={{ bold: true }}>{t("dlgCopy")}</span> C
-          <span style={{ fg: theme().textMuted }}>  </span>
-          <span style={{ bold: true }}>{t("dlgClose")}</span> esc
-        </text>
+        {/* Footer — a flex row so the chips space via `gap` instead of literal
+            "  " spacer spans. */}
+        <box style={{ flexDirection: "row", gap: 2, marginTop: 1 }}>
+          <text>
+            <span style={{ bold: true }}>{t("dlgCopy")}</span> C
+          </text>
+          <text>
+            <span style={{ bold: true }}>{t("dlgClose")}</span> esc
+          </text>
+        </box>
       </box>
     </Dialog>
   )

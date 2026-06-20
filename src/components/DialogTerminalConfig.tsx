@@ -141,7 +141,7 @@ function CustomTerminalForm(props: {
   })
 
   return (
-    <Dialog onClose={props.onCancel} width={55} height={12}>
+    <Dialog onClose={props.onCancel} width={60} height={12}>
       <box style={{ flexDirection: "column" }}>
         {/* Title */}
         <text>
@@ -160,7 +160,7 @@ function CustomTerminalForm(props: {
             focusedBackgroundColor={theme().backgroundElement}
             cursorColor={theme().primary}
             focusedTextColor={theme().text}
-            width={40}
+            width="100%"
           />
         </box>
 
@@ -176,7 +176,7 @@ function CustomTerminalForm(props: {
             focusedBackgroundColor={theme().backgroundElement}
             cursorColor={theme().primary}
             focusedTextColor={theme().text}
-            width={40}
+            width="100%"
           />
         </box>
 
@@ -188,7 +188,7 @@ function CustomTerminalForm(props: {
         </text>
 
         {/* Footer */}
-        <text style={{ marginTop: 2 }}>
+        <text style={{ marginTop: 1 }}>
           <span style={{ fg: theme().text }}>Enter</span>
           <span style={{ fg: theme().textMuted }}> {t("kbSave")}  </span>
           <span style={{ fg: theme().text }}>Tab</span>

@@ -21,7 +21,7 @@ export interface DialogConfirmProps {
    * <DialogConfirm> usage.
    */
   onUnmount?: () => void
-  /** Dialog width (default 50). */
+  /** Dialog width (default 60). */
   width?: number
   /** Dialog height (default 10). Use a larger value for long messages. */
   height?: number
@@ -63,7 +63,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
   return (
     <Dialog
       onClose={() => props.onCancel && props.onCancel()}
-      width={props.width ?? 50}
+      width={props.width ?? 60}
       height={props.height ?? 10}
     >
       <DialogHeader title={props.title} />

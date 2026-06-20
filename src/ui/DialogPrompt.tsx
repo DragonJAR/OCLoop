@@ -2,6 +2,7 @@ import { createSignal, onMount, onCleanup } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { InputRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
+import { DialogHeader } from "./DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
@@ -51,11 +52,7 @@ export function DialogPrompt(props: DialogPromptProps) {
       height={8}
     >
       {/* Header */}
-      <box style={{ width: "100%", flexDirection: "row", justifyContent: "space-between", marginBottom: 1 }}>
-        <text>
-          <span style={{ bold: true, fg: theme().text }}>{props.title ?? t("dlgSendPrompt")}</span>
-        </text>
-      </box>
+      <DialogHeader title={props.title ?? t("dlgSendPrompt")} hint="esc" />
 
       {/* Input */}
       <box style={{ flexGrow: 1, marginBottom: 1 }}>
@@ -66,7 +63,7 @@ export function DialogPrompt(props: DialogPromptProps) {
           focusedBackgroundColor={theme().backgroundElement}
           cursorColor={theme().primary}
           focusedTextColor={theme().text}
-          width={58}
+          width="100%"
         />
       </box>
 

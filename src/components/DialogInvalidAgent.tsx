@@ -57,11 +57,25 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
           <text>
             <span style={{ fg: theme().textMuted }}>{t("dlgAvailableAgents")}</span>
           </text>
-          {props.availableAgents.map(agent => (
-            <text>
-              <span style={{ fg: theme().text }}>  - {agent}</span>
-            </text>
-          ))}
+          {/* Scrollbox so a long agent roster (8+) scrolls instead of pushing
+              the buttons off the fixed-height dialog. Mirrors DialogError's
+              scrollbar styling. */}
+          <scrollbox
+            maxHeight={5}
+            verticalScrollbarOptions={{
+              visible: true,
+              trackOptions: {
+                backgroundColor: theme().backgroundPanel,
+                foregroundColor: theme().borderSubtle,
+              },
+            }}
+          >
+            {props.availableAgents.map(agent => (
+              <text>
+                <span style={{ fg: theme().text }}>  - {agent}</span>
+              </text>
+            ))}
+          </scrollbox>
         </box>
       </box>
 

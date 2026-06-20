@@ -4,6 +4,7 @@ import type { InputRenderable } from "@opentui/core"
 import fuzzysort from "fuzzysort"
 import { ScrollBoxRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
+import { DialogHeader } from "./DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { selectedForeground } from "../lib/theme-resolver"
 import { truncate } from "../lib/format"
@@ -197,14 +198,7 @@ export function DialogSelect(props: DialogSelectProps) {
       height={14}
     >
       {/* Header */}
-      <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1, flexDirection: "row" }}>
-        <text>
-          <span style={{ bold: true, fg: theme().text }}>{props.title}</span>
-        </text>
-        <text>
-          <span style={{ fg: theme().textMuted }}>esc</span>
-        </text>
-      </box>
+      <DialogHeader title={props.title} />
 
       {/* Search Input */}
       <box style={{ 
@@ -236,7 +230,13 @@ export function DialogSelect(props: DialogSelectProps) {
         <scrollbox
           ref={(r) => scroll = r}
           maxHeight={6}
-          scrollbarOptions={{ visible: false }}
+          verticalScrollbarOptions={{
+            visible: true,
+            trackOptions: {
+              backgroundColor: theme().backgroundPanel,
+              foregroundColor: theme().borderSubtle,
+            },
+          }}
           style={{ flexDirection: "column", flexGrow: 1 }}
         >
           <For each={filteredOptions()}>

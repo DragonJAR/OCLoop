@@ -115,6 +115,15 @@ export interface ResilienceConfig {
    * on a single task before halting. Must be >= 1.
    */
   noProgressThreshold: number
+
+  // --- Phase 8: stalled-task split (decompose) ---
+  /**
+   * Overall budget (ms) for the one-shot agent call that splits a stalled task
+   * into subtasks (and the "edit"/refine call). Separate from `promptTimeoutMs`
+   * (the loop's per-iteration kickoff) because generating a plan/list takes
+   * longer. Override via `--resilience decomposeTimeoutMs=<ms>`.
+   */
+  decomposeTimeoutMs: number
 }
 
 /**
@@ -147,6 +156,8 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
   chaos: false,
 
   noProgressThreshold: 3,
+
+  decomposeTimeoutMs: 240_000,
 }
 
 /**

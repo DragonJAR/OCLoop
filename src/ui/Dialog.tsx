@@ -46,7 +46,6 @@ export interface DialogProps {
  * Renders a modal overlay with:
  * - Full-screen semi-transparent backdrop
  * - Centered content box with themed background
- * - Border using theme.borderActive
  *
  * @example
  * ```tsx

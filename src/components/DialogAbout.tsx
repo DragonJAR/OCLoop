@@ -50,7 +50,7 @@ export function DialogAbout(props: DialogAboutProps) {
   )
 
   return (
-    <Dialog onClose={props.onClose} width={74} height={20}>
+    <Dialog onClose={props.onClose} width={72} height={20}>
       <box style={{ flexDirection: "column" }}>
         {/* Header: title + version, dismiss hint */}
         <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1, flexDirection: "row" }}>
