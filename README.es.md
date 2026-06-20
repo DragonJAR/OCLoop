@@ -60,7 +60,7 @@
 ## Requisitos
 
 - Runtime [Bun](https://bun.sh) (v1.0 o superior)
-- [OpenCode](https://opencode.ai) instalado y configurado (claves de API, modelo, agentes)
+- [OpenCode](https://opencode.ai) instalado **y ya funcionando** — OCLoop no trae modelo propio; solo orquesta OpenCode. Por eso OpenCode debe estar ya configurado con un proveedor/clave de API **y un modelo utilizable** antes de que OCLoop pueda hacer nada. Verifícalo por su cuenta primero: ejecuta `opencode`, envía un mensaje y confirma que el modelo responde. Si OpenCode no puede alcanzar un modelo, OCLoop tampoco. Consulta la [documentación de OpenCode](https://opencode.ai/docs) para configurar proveedor y modelo.
 
 ## Instalación
 
@@ -120,6 +120,14 @@ El plan generado sigue el [idioma de la interfaz](#idioma-i18n). Cambia el model
 ocloop --create-plan                       # zai-coding-plan/glm-5.2 + agente plan
 ocloop --create-plan --model openai/gpt-5  # modelo personalizado
 ocloop --create-plan --plan roadmap.md     # escribir en una ruta personalizada
+```
+
+**Objetivos de planes recursivos (auto-expansibles)** — formula el objetivo para que la primera tarea sea de reconocimiento: OCLoop descubre los elementos y luego genera una tarea de seguimiento por cada uno. Buenas frases de partida:
+
+```bash
+ocloop --create-plan "audita esta API REST según el OWASP Top 10"
+ocloop --create-plan "encuentra y corrige cada TODO/FIXME del código"
+ocloop --create-plan "investiga y elige una base de datos para un proyecto nuevo"
 ```
 
 ## Opciones de línea de comandos
@@ -449,7 +457,7 @@ Todos los archivos `.loop*` se ignoran en git automáticamente.
 
 **"Error: archivo de prompt no encontrado"** — esto solo ocurre con un `--prompt <ruta>` personalizado. Crea ese archivo, u omite `--prompt` y deja que OCLoop cree automáticamente el `.loop-prompt.md` por defecto.
 
-**El servidor no arranca** — asegúrate de que OpenCode esté instalado y en tu `PATH`, que tus claves de API estén configuradas, y revisa los logs de OpenCode.
+**El servidor no arranca** — asegúrate de que OpenCode esté instalado y en tu `PATH`, que tu proveedor/claves de API **y un modelo** estén configurados (ejecuta `opencode` por su cuenta y confirma que puede alcanzar un modelo), y revisa los logs de OpenCode.
 
 **El bucle parece atascado** — el guardián detecta un atasco real automáticamente; observa el indicador `Salud ●` (verde `OK` sano) y las líneas `[HEALTH]` en `.loop.log`. Pulsa `T` para abrir OpenCode en una terminal y ver qué pasa. Si la recuperación se agota, el diálogo de error incluye un diagnóstico (antigüedad del último latido, veredicto de las sondas, intentos).
 

@@ -60,7 +60,7 @@
 ## Requirements
 
 - [Bun](https://bun.sh) runtime (v1.0 or later)
-- [OpenCode](https://opencode.ai) installed and configured (API keys, model, agents)
+- [OpenCode](https://opencode.ai) installed **and already working** — OCLoop has no model of its own; it only drives OpenCode. So OpenCode must already be configured with a provider/API key **and a usable model** before OCLoop can do anything. Verify it on its own first: run `opencode`, send a message, and confirm the model replies. If OpenCode can't reach a model, neither can OCLoop. See the [OpenCode docs](https://opencode.ai/docs) for provider and model setup.
 
 ## Installation
 
@@ -120,6 +120,14 @@ The generated plan follows the current [UI language](#language-i18n). Override t
 ocloop --create-plan                       # zai-coding-plan/glm-5.2 + plan agent
 ocloop --create-plan --model openai/gpt-5  # custom model
 ocloop --create-plan --plan roadmap.md     # write to a custom path
+```
+
+**Recursive (self-expanding) plan goals** — phrase the goal so the first task is reconnaissance: OCLoop discovers the items, then fans out one follow-up task per item. Good starting phrases:
+
+```bash
+ocloop --create-plan "audit this REST API for the OWASP Top 10"
+ocloop --create-plan "find and fix every TODO/FIXME in the codebase"
+ocloop --create-plan "research and choose a database for a new project"
 ```
 
 ## Command-line options
@@ -449,7 +457,7 @@ All `.loop*` files are git-ignored automatically.
 
 **"Error: Prompt file not found"** — this only happens for a custom `--prompt <path>`. Create that file, or omit `--prompt` and let OCLoop auto-create the default `.loop-prompt.md`.
 
-**Server fails to start** — make sure OpenCode is installed and on your `PATH`, your API keys are configured, and check OpenCode's logs.
+**Server fails to start** — make sure OpenCode is installed and on your `PATH`, your provider/API keys **and a model** are configured (run `opencode` by itself and confirm it can reach a model), and check OpenCode's logs.
 
 **The loop seems stuck** — the guardian detects a genuine stall automatically; watch the `Health ●` indicator (green `OK` healthy) and the `[HEALTH]` lines in `.loop.log`. Press `T` to open OpenCode in a terminal and see what's happening. If recovery is exhausted, the error dialog includes a diagnostic (last heartbeat age, probe verdict, attempts).
 
