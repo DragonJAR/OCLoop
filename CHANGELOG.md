@@ -197,6 +197,15 @@ All notable changes to OCLoop are documented here. Format based on
   modes before the process terminates. SIGKILL / OOM kills remain uncatchable by
   definition.
 
+### Removed
+- **Test suite audit removed two dead source exports.** A full audit of the
+  49-file, 1000-test suite found no duplicates, tautological tests, or
+  low-value files (artifacts under `docs/test-audit/`, gitignored). The only
+  actionable finding was two runtime functions with no external importer,
+  exercised solely by their own test: `isSameEvent` (`src/lib/activity-format.ts`)
+  and `isTimeoutError` (`src/lib/with-timeout.ts`). Both functions and their
+  tests were removed (999 tests pass, coverage on live code unchanged).
+
 ### Changed
 - **Watchdog T2 default raised 5 min → 10 min** (`watchdogConfirmMs`). A single
   silent, output-free tool (large build, test suite, install, download, or a
