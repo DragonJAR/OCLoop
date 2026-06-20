@@ -1,9 +1,10 @@
-import { createSignal, onCleanup } from "solid-js"
+import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
 import { DialogHeader, DialogButton } from "./DialogControls"
 import { DialogContextValue } from "../context/DialogContext"
+import { AUTO_SELECT_MS } from "../lib/constants"
 import { t } from "../lib/i18n"
 
 export type DecomposeChoice = "accept" | "edit" | "reject"
@@ -34,10 +35,27 @@ const ORDER: DecomposeChoice[] = ["reject", "edit", "accept"]
 export function DialogDecomposeApproval(props: DialogDecomposeApprovalProps) {
   const { theme } = useTheme()
   const [active, setActive] = createSignal<DecomposeChoice>("accept")
+  const [remaining, setRemaining] = createSignal(Math.ceil(AUTO_SELECT_MS / 1000))
 
+  // Unattended auto-accept: if nobody chooses within AUTO_SELECT_MS, accept the
+  // proposal so a stall resolves itself. Any keypress (below) cancels it.
+  let autoTimer: ReturnType<typeof setInterval> | null = null
+  const cancelAuto = () => {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null }
+    setRemaining(0)
+  }
+  onMount(() => {
+    autoTimer = setInterval(() => {
+      const next = remaining() - 1
+      if (next <= 0) { cancelAuto(); props.onChoice("accept") }
+      else setRemaining(next)
+    }, 1000)
+  })
+  onCleanup(cancelAuto)
   onCleanup(() => props.onUnmount?.())
 
   useKeyboard((key) => {
+    cancelAuto() // user took control — stop the auto-accept countdown
     if (key.name === "escape") {
       props.onChoice("reject")
       return
@@ -77,7 +95,15 @@ export function DialogDecomposeApproval(props: DialogDecomposeApprovalProps) {
         </text>
       </scrollbox>
 
-      <box style={{ width: "100%", flexDirection: "row", justifyContent: "flex-end", gap: 2 }}>
+      <box style={{ width: "100%", flexDirection: "row", alignItems: "center", gap: 2 }}>
+        {/* flexGrow spacer holds the auto-accept countdown, left of the buttons */}
+        <box style={{ flexGrow: 1 }}>
+          <Show when={remaining() > 0}>
+            <text>
+              <span style={{ fg: theme().textMuted }}>{t("autoSelectHint", { secs: remaining() })}</span>
+            </text>
+          </Show>
+        </box>
         <DialogButton
           label={t("dlgSplitReject")}
           active={active() === "reject"}

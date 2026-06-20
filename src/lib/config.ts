@@ -130,16 +130,17 @@ export interface ResilienceConfig {
  * Sensible defaults for every resilience threshold.
  */
 export const DEFAULT_RESILIENCE: ResilienceConfig = {
-  // Deliberate 10-min (600_000) floor on EVERY timeout (user request): no agent
-  // operation should be cut short. Trade-off, accepted: hung-server / dead-socket
-  // detection is correspondingly slower (a wedged call takes up to 10 min to
-  // surface instead of seconds). Override any one via `--resilience <key>=<ms>`.
+  // Proportional-but-bounded timeouts (user request): a 10-min (600_000) floor on
+  // every operation, with the longer agent-work calls scaled above it by how much
+  // work they can legitimately do — decompose 15 min, plan 20 min, watchdog kill
+  // 30 min (see below). Trade-off, accepted: hung-server / dead-socket detection
+  // is correspondingly slower. Override any one via `--resilience <key>=<ms>`.
   createTimeoutMs: 600_000,
   promptTimeoutMs: 600_000,
   abortTimeoutMs: 600_000,
   statusTimeoutMs: 600_000,
   pingTimeoutMs: 600_000,
-  planTimeoutMs: 600_000,
+  planTimeoutMs: 1_200_000, // 20 min: a full PLAN.md generation does the most work
 
   backoffBaseMs: 1_000,
   backoffMaxMs: 60_000,
@@ -153,7 +154,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 
   watchdogTickMs: 15_000,
   watchdogSuspectMs: 90_000,
-  watchdogConfirmMs: 600_000,
+  watchdogConfirmMs: 1_800_000, // 30 min: max silent agent work before kill
   maxRecoveryAttempts: 3,
 
   resume: false,
@@ -161,7 +162,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 
   noProgressThreshold: 3,
 
-  decomposeTimeoutMs: 600_000,
+  decomposeTimeoutMs: 900_000, // 15 min: split a stalled task into subtasks
 }
 
 /**

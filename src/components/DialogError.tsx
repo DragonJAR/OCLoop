@@ -1,8 +1,9 @@
-import { Show } from "solid-js"
+import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
 import { DialogHeader } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
+import { AUTO_SELECT_MS } from "../lib/constants"
 import { t } from "../lib/i18n"
 
 export interface DialogErrorProps {
@@ -17,10 +18,30 @@ export interface DialogErrorProps {
 
 export function DialogError(props: DialogErrorProps) {
   const { theme } = useTheme()
+  const [remaining, setRemaining] = createSignal(Math.ceil(AUTO_SELECT_MS / 1000))
+
+  // Unattended auto-split: ONLY when this halt offers the split (onDecompose
+  // present, i.e. the no-progress halt) auto-press P after AUTO_SELECT_MS so a
+  // stall resolves itself. Plain errors (no onDecompose) stay fully manual.
+  let autoTimer: ReturnType<typeof setInterval> | null = null
+  const cancelAuto = () => {
+    if (autoTimer) { clearInterval(autoTimer); autoTimer = null }
+    setRemaining(0)
+  }
+  onMount(() => {
+    if (!props.onDecompose) return
+    autoTimer = setInterval(() => {
+      const next = remaining() - 1
+      if (next <= 0) { cancelAuto(); props.onDecompose?.() }
+      else setRemaining(next)
+    }, 1000)
+  })
+  onCleanup(cancelAuto)
 
   // Own the keyboard while open. The global handler in App ignores input when a
   // dialog is shown, so retry/quit MUST be handled here (R only when recoverable).
   useKeyboard((key) => {
+    cancelAuto() // user took control — stop the auto-split countdown
     if (key.name === "escape" || key.name === "q") {
       props.onQuit()
       return
@@ -88,6 +109,11 @@ export function DialogError(props: DialogErrorProps) {
           <text>
             <span style={{ bold: true }}>{t("dlgQuitConfirm")}</span> Q
           </text>
+          <Show when={props.onDecompose && remaining() > 0}>
+            <text>
+              <span style={{ fg: theme().textMuted }}>{t("autoSelectHint", { secs: remaining() })}</span>
+            </text>
+          </Show>
         </box>
       </box>
     </Dialog>

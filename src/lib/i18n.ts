@@ -52,6 +52,9 @@ const shared = {
   logLblError: "error",
   // Runtime
   actRateLimit: (p: Params) => `Rate limit: ${p.message}`,
+  // Countdown hint shown on a dialog's default action while it auto-selects
+  // (same shape in both locales): "auto 12s".
+  autoSelectHint: (p: Params) => `auto ${p.secs}s`,
 } satisfies Record<string, Msg>
 
 const en = {
