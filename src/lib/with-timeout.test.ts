@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { withTimeout, TimeoutError, isTimeoutError } from "./with-timeout"
+import { withTimeout, TimeoutError } from "./with-timeout"
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -23,7 +23,7 @@ describe("withTimeout", () => {
     } catch (err) {
       thrown = err
     }
-    expect(isTimeoutError(thrown)).toBe(true)
+    expect(thrown).toBeInstanceOf(TimeoutError)
     expect((thrown as TimeoutError).label).toBe("slow")
     expect((thrown as TimeoutError).timeoutMs).toBe(20)
     expect((thrown as TimeoutError).name).toBe("TimeoutError")
@@ -44,7 +44,7 @@ describe("withTimeout", () => {
     await expect(withTimeout(task, 15, "abortable")).rejects.toThrow("aborted")
     // Give the microtask/event a tick to land
     await delay(5)
-    expect(isTimeoutError(abortedReason)).toBe(true)
+    expect(abortedReason).toBeInstanceOf(TimeoutError)
   })
 
   it("does not abort the signal when the task wins the race", async () => {

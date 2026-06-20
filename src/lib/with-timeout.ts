@@ -33,11 +33,6 @@ export class TimeoutError extends Error {
   }
 }
 
-/** Type guard for `TimeoutError` that survives bundling / cross-realm. */
-export function isTimeoutError(err: unknown): err is TimeoutError {
-  return err instanceof Error && err.name === "TimeoutError"
-}
-
 export type TimeoutTask<T> = Promise<T> | ((signal: AbortSignal) => Promise<T>)
 
 /**

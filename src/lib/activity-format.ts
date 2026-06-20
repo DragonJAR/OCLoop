@@ -133,14 +133,6 @@ export function formatTime(date: Date): string {
   return `${p(date.getHours())}:${p(date.getMinutes())}:${p(date.getSeconds())}`
 }
 
-/** Whether two consecutive events should collapse into one "(×N)" line. */
-export function isSameEvent(
-  a: { type: string; message: string },
-  b: { type: string; message: string },
-): boolean {
-  return a.type === b.type && a.message === b.message
-}
-
 // --- Preview harness: `bun run src/lib/activity-format.ts` ---------------------
 if (import.meta.main) {
   const { bar, titleBar, fitSegments } = await import("./layout")

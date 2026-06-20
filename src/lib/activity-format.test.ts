@@ -2,7 +2,6 @@ import { describe, expect, it } from "bun:test"
 import {
   formatActivityLine,
   formatTime,
-  isSameEvent,
   LEVEL_GLYPH,
   LABEL_WIDTH,
 } from "./activity-format"
@@ -65,12 +64,8 @@ describe("formatActivityLine — content, progress, collapse, width", () => {
   })
 })
 
-describe("formatTime & isSameEvent", () => {
+describe("formatTime", () => {
   it("formats HH:MM:SS zero-padded", () => {
     expect(formatTime(new Date(2026, 0, 1, 9, 4, 7))).toBe("09:04:07")
-  })
-  it("treats same type+message as the same event (for collapsing)", () => {
-    expect(isSameEvent({ type: "task", message: "a" }, { type: "task", message: "a" })).toBe(true)
-    expect(isSameEvent({ type: "task", message: "a" }, { type: "task", message: "b" })).toBe(false)
   })
 })
