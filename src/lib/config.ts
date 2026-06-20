@@ -130,11 +130,15 @@ export interface ResilienceConfig {
  * Sensible defaults for every resilience threshold.
  */
 export const DEFAULT_RESILIENCE: ResilienceConfig = {
-  createTimeoutMs: 15_000,
-  promptTimeoutMs: 30_000,
-  abortTimeoutMs: 15_000,
-  statusTimeoutMs: 15_000,
-  pingTimeoutMs: 5_000,
+  // Deliberate 10-min (600_000) floor on EVERY timeout (user request): no agent
+  // operation should be cut short. Trade-off, accepted: hung-server / dead-socket
+  // detection is correspondingly slower (a wedged call takes up to 10 min to
+  // surface instead of seconds). Override any one via `--resilience <key>=<ms>`.
+  createTimeoutMs: 600_000,
+  promptTimeoutMs: 600_000,
+  abortTimeoutMs: 600_000,
+  statusTimeoutMs: 600_000,
+  pingTimeoutMs: 600_000,
   planTimeoutMs: 600_000,
 
   backoffBaseMs: 1_000,
@@ -157,7 +161,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
 
   noProgressThreshold: 3,
 
-  decomposeTimeoutMs: 240_000,
+  decomposeTimeoutMs: 600_000,
 }
 
 /**
@@ -192,7 +196,7 @@ export interface EvalConfig {
 export const DEFAULT_EVALS: EvalConfig = {
   enabled: false,
   maxEvalRetries: 1,
-  judgeTimeoutMs: 60_000,
+  judgeTimeoutMs: 600_000,
   judgeRetries: 1,
 }
 
