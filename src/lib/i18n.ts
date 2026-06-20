@@ -653,7 +653,7 @@ const es: Record<MessageKey, Msg> = {
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
   cpProposedTitle: "PLAN PROPUESTO",
-  cpAskApprove: "\n¿Apruebas el plan? [s = guardar · y = guardar · e = editar · n = cancelar]: ",
+  cpAskApprove: "\n¿Apruebas el plan? [s = guardar · e = editar · n = cancelar]: ",
   cpSaved: (p) => `\n✓ Guardado en ${p.path}`,
   cpRunHint: (p) => `Ahora ejecuta 'ocloop'${p.planArg} para empezar.`,
   cpAskEdit: "¿Qué quieres cambiar o añadir?\n> ",
