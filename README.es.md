@@ -300,7 +300,7 @@ Lo que maneja:
 - **Suspensión** — al cerrar la tapa, se detecta al despertar; OCLoop reconecta el stream de eventos y reconcilia la sesión en curso (recuperando una finalización perdida). En macOS ejecuta `caffeinate` mientras trabaja para no suspenderse (desactívalo con `--no-caffeinate`).
 - **Cuelgues de servidor / sesión** — un health check activo reinicia un servidor OpenCode colgado y reconcilia la sesión; una sesión genuinamente bloqueada se aborta y reintenta. Un circuit breaker se detiene tras `maxRecoveryAttempts` y reporta un diagnóstico completo en vez de quedar en bucle.
 - **Caída total** — el progreso mínimo se persiste de forma atómica en `.loop-state.json`. En el siguiente arranque OCLoop ofrece reanudar (automático con `--resume`). El apagado con `SIGINT`/`SIGTERM`/`SIGHUP` aborta la sesión activa para no dejar un servidor huérfano.
-- **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real. Desde la detención puedes pulsar **`P`** para que el agente parta la tarea estancada en subtareas más pequeñas — OCLoop las muestra para aprobación y, si aceptas, reescribe `PLAN.md` (reemplazando la tarea estancada) y reanuda.
+- **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real. Desde la detención puedes pulsar **`P`** para que el agente parta la tarea estancada en subtareas más pequeñas — OCLoop las muestra para aprobación y, si aceptas, reescribe `PLAN.md` (reemplazando la tarea estancada) y reanuda. Ambas ventanas de decisión avanzan solas si nadie interviene — la detención auto-selecciona **`P`** a los 30 s y la propuesta se auto-acepta a los 30 s, así una ejecución desatendida sigue avanzando; cualquier tecla cancela la cuenta atrás y te devuelve el control.
 
 El dashboard muestra un indicador `Salud ●` (verde `OK` sano, amarillo verificando, rojo recuperando), y toda la actividad del guardián se registra en `.loop.log` como líneas estructuradas `[HEALTH]`, para auditar exactamente por qué actuó. Un `COOLDOWN` distingue un rate limit real (`COOLDOWN` con contador de reintentos) de un tropiezo de conexión transitorio (`WAITING`).
 
@@ -312,6 +312,8 @@ Los umbrales de resiliencia se resuelven así: `valores por defecto` < `~/.confi
 ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 ```
 
+Cada operación tiene un piso de 10 minutos; los presupuestos de trabajo del agente escalan por encima — la partición de tarea atascada 15 min, `--create-plan` 20 min, y el umbral de muerte del watchdog 30 min.
+
 | Clave | Significado |
 | --- | --- |
 | `createTimeoutMs` | Timeout para crear una sesión |
@@ -319,7 +321,8 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `abortTimeoutMs` | Timeout para abortar una sesión |
 | `statusTimeoutMs` | Timeout para reconciliar el estado de la sesión |
 | `pingTimeoutMs` | Timeout del health check del servidor |
-| `planTimeoutMs` | Presupuesto total para que `--create-plan` termine de generar (por defecto 600000 = 10 min; súbelo para planes grandes/lentos) |
+| `planTimeoutMs` | Presupuesto total para que `--create-plan` termine de generar (por defecto 1200000 = 20 min; súbelo para planes grandes/lentos) |
+| `decomposeTimeoutMs` | Presupuesto total para que la partición de tarea atascada genere subtareas (por defecto 900000 = 15 min) |
 | `backoffBaseMs` | Retardo base del backoff exponencial |
 | `backoffMaxMs` | Retardo máximo del backoff |
 | `backoffJitter` | Aplicar jitter completo al backoff (`true`/`false`) |
@@ -330,7 +333,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `caffeinate` | Mantener el sistema despierto mientras corre (`true`/`false`) |
 | `watchdogTickMs` | Intervalo de evaluación del watchdog |
 | `watchdogSuspectMs` | T1 — sin latido antes de sospechar |
-| `watchdogConfirmMs` | T2 — sin latido (estando "working") antes de declarar bloqueo (por defecto 10 min; súbelo si tu agente corre herramientas largas y silenciosas como builds/test suites/instalaciones grandes) |
+| `watchdogConfirmMs` | T2 — sin latido (estando "working") antes de declarar bloqueo (por defecto 30 min; súbelo aún más si tu agente corre herramientas largas y silenciosas como builds/test suites/instalaciones grandes) |
 | `maxRecoveryAttempts` | Intentos de recuperación antes de escalar a error recuperable |
 | `noProgressThreshold` | Iteraciones consecutivas que arrancan con la misma tarea antes de que el bucle se detenga con `errNoProgress` (por defecto 3 — le da al agente N-1 reintentos antes de detenerse en vez de quedar en bucle infinito) |
 | `resume` | Reanudar automáticamente una ejecución persistida al arrancar |

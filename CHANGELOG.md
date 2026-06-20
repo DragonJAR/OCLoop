@@ -19,10 +19,21 @@ All notable changes to OCLoop are documented here. Format based on
   N times in a row without `PLAN.md` advancing, the loop stops with a recoverable
   `errNoProgress` instead of burning iterations on a task the agent can't finish.
 - **`resilience.planTimeoutMs`** — the `--create-plan` generation budget (default
-  10 min) is now configurable: `--resilience planTimeoutMs=<ms>` or in the config
+  20 min) is now configurable: `--resilience planTimeoutMs=<ms>` or in the config
   file. The timeout message names the parameter and how to raise it.
+- **`resilience.decomposeTimeoutMs`** — the stalled-task split budget (default
+  15 min) is configurable the same way.
+- **Unattended split auto-select.** Both split decision dialogs auto-advance after
+  30 s if left untouched: the no-progress halt auto-presses `P`, and the subtask
+  proposal auto-accepts. A visible countdown shows on the default action, and any
+  keypress cancels it and hands control back.
 
 ### Changed
+- **Proportional-but-bounded timeouts.** Every resilience timeout now has a
+  10-minute floor, with the longer agent-work budgets scaled above it: the
+  stalled-task split 15 min, `--create-plan` 20 min (was 10), and the watchdog
+  kill threshold (`watchdogConfirmMs`) 30 min (was 10). Quick server operations
+  (create/prompt/abort/status/ping) sit at the 10-minute floor.
 - **The activity log now fills the space between the panels and bottom-anchors.**
   It grows to occupy the full gap between the dashboard and the bottom panel
   (recomputed on every resize) and hugs the bottom panel, so the newest events sit

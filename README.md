@@ -300,7 +300,7 @@ What it handles:
 - **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects the event stream and reconciles the in-flight session (recovering a missed completion). On macOS it runs `caffeinate` while working to avoid sleeping at all (disable with `--no-caffeinate`).
 - **Server / session hangs** — an active health check restarts a hung OpenCode server and reconciles the session; a genuinely wedged session is aborted and retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full diagnostic instead of looping forever.
 - **Total crash** — minimal progress is persisted atomically to `.loop-state.json`. On the next start OCLoop offers to resume (automatic with `--resume`). Shutdown on `SIGINT`/`SIGTERM`/`SIGHUP` aborts the active session so no orphan server is left behind.
-- **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall. From the halt you can press **`P`** to have the agent split the stalled task into smaller subtasks — OCLoop shows them for approval and, if you accept, rewrites `PLAN.md` (replacing the stalled task) and resumes.
+- **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall. From the halt you can press **`P`** to have the agent split the stalled task into smaller subtasks — OCLoop shows them for approval and, if you accept, rewrites `PLAN.md` (replacing the stalled task) and resumes. Both decision windows auto-advance if left unattended — the halt auto-selects **`P`** after 30 s and the proposal auto-accepts after 30 s, so an unattended run keeps moving; any keypress cancels the countdown and hands control back to you.
 
 The dashboard shows a `Health ●` indicator (green `OK` healthy, yellow checking, red recovering), and all guardian activity is logged to `.loop.log` as structured `[HEALTH]` lines so you can audit exactly why it acted. A `COOLDOWN` distinguishes a real rate limit (`COOLDOWN` with a retry counter) from a transient connection blip (`WAITING`).
 
@@ -312,6 +312,8 @@ Resilience thresholds resolve as `defaults` < `~/.config/ocloop/ocloop.json` (`r
 ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 ```
 
+Every operation has a 10-minute floor; the longer agent-work budgets scale above it — the stalled-task split 15 min, `--create-plan` 20 min, and the watchdog kill threshold 30 min.
+
 | Key | Meaning |
 | --- | --- |
 | `createTimeoutMs` | Timeout for creating a session |
@@ -319,7 +321,8 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `abortTimeoutMs` | Timeout for aborting a session |
 | `statusTimeoutMs` | Timeout for session-status reconciliation |
 | `pingTimeoutMs` | Timeout for the server health ping |
-| `planTimeoutMs` | Overall budget for `--create-plan` to finish generating (default 600000 = 10 min; raise for big/slow plans) |
+| `planTimeoutMs` | Overall budget for `--create-plan` to finish generating (default 1200000 = 20 min; raise for big/slow plans) |
+| `decomposeTimeoutMs` | Overall budget for the stalled-task split to generate subtasks (default 900000 = 15 min) |
 | `backoffBaseMs` | Base delay for exponential backoff |
 | `backoffMaxMs` | Maximum backoff delay |
 | `backoffJitter` | Apply full jitter to backoff (`true`/`false`) |
@@ -330,7 +333,7 @@ ocloop --resilience watchdogSuspectMs=120000 --resilience maxRateLimitRetries=12
 | `caffeinate` | Keep the system awake while running (`true`/`false`) |
 | `watchdogTickMs` | Watchdog evaluation interval |
 | `watchdogSuspectMs` | T1 — no heartbeat before suspecting |
-| `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged (default 10 min; raise it if your agent runs long, output-free tools like big builds/test suites/installs) |
+| `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged (default 30 min; raise it further if your agent runs long, output-free tools like big builds/test suites/installs) |
 | `maxRecoveryAttempts` | Recovery attempts before escalating to a recoverable error |
 | `noProgressThreshold` | Consecutive iterations that start with the same task before halting with `errNoProgress` (default 3 — gives the agent N-1 retries before halting instead of looping forever) |
 | `resume` | Auto-resume a persisted run on startup |
