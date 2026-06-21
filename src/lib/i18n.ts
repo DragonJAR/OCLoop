@@ -65,7 +65,7 @@ const en = {
   cpConfig: (p: Params) => `Model: ${p.model}${p.note} · Agent: ${p.agent}`,
   cpModelNote:
     " (not 'provider/model' → opencode's default model will be used)",
-  cpAskGoal: "What do you want OCLoop to build? Describe your goal:\n> ",
+  cpAskGoal: "What do you want OCLoop to build? Describe your goal — end with a line containing only '.' (or press Ctrl-D):",
   cpNoGoal: "No goal provided. Cancelled.",
   cpStartingServer: "Starting the OpenCode server…",
   cpSessionFail:
@@ -643,7 +643,7 @@ const es: Record<MessageKey, Msg> = {
   cpConfig: (p) => `Modelo: ${p.model}${p.note} · Agente: ${p.agent}`,
   cpModelNote:
     " (no es 'provider/model' → se usará el modelo por defecto de opencode)",
-  cpAskGoal: "¿Qué quieres que OCLoop construya? Describe tu objetivo:\n> ",
+  cpAskGoal: "¿Qué quieres que OCLoop construya? Describe tu objetivo — termina con una línea que contenga solo '.' (o pulsa Ctrl-D):",
   cpNoGoal: "No se indicó ningún objetivo. Cancelado.",
   cpStartingServer: "Arrancando el servidor OpenCode…",
   cpSessionFail:

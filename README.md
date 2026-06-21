@@ -109,7 +109,7 @@ A complete, reliable run from zero:
 
 `ocloop --create-plan` (or `-c`) launches an interactive generator instead of the TUI:
 
-1. It asks what you want OCLoop to build.
+1. It asks what you want OCLoop to build (the goal can span multiple lines — finish with a line containing only `.`, or press Ctrl-D).
 2. It uses **zai-coding-plan/glm-5.2** and the **`plan`** agent by default to draft a `PLAN.md` in OCLoop's format. We recommend this provider — it offers the best quality-to-price ratio for OCLoop, and [this link](https://z.ai/subscribe?ic=FXSFEPRECU) gets you 10% off.
 3. It shows you the proposed plan and asks to **save**, **save & run** (save then start the loop immediately, like `ocloop -r`), **edit** (refine with feedback), or **cancel**.
 4. On save, it writes the file (to `--plan <path>`, default `PLAN.md`) and tells you how to start.

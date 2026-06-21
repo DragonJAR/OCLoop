@@ -239,8 +239,18 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   )
   console.log("")
 
-  const goal = prompt(t("cpAskGoal"))
-  if (!goal || !goal.trim()) {
+  // Read a possibly multi-line goal: print the instructions once, then collect
+  // lines until a lone "." or EOF (Ctrl-D), joined with newlines. Lets the user
+  // type/paste a long, multi-line goal instead of a single terminal line.
+  console.log(t("cpAskGoal"))
+  const goalLines: string[] = []
+  for (;;) {
+    const line = prompt("> ")
+    if (line === null || line.trim() === ".") break
+    goalLines.push(line)
+  }
+  const goal = goalLines.join("\n").trim()
+  if (!goal) {
     console.error(t("cpNoGoal"))
     process.exit(1)
   }
@@ -258,7 +268,7 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
     }
     const sessionID = created.data.id
 
-    let currentPrompt = buildPlanPrompt(goal.trim())
+    let currentPrompt = buildPlanPrompt(goal)
     let plan = ""
 
     for (;;) {

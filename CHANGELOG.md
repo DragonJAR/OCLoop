@@ -6,6 +6,9 @@ All notable changes to OCLoop are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Multi-line goal in `--create-plan`.** The goal prompt now accepts multiple
+  lines — type or paste a long, multi-line goal and finish with a line containing
+  only `.` (or press Ctrl-D), instead of being limited to a single terminal line.
 - **Save & run from `--create-plan`.** The plan-approval prompt now offers `r`
   ("save & run") alongside save/edit/cancel: it writes `PLAN.md` and immediately
   starts the loop in-process (equivalent to `ocloop -r`), so you go from goal to
