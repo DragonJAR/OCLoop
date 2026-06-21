@@ -120,8 +120,11 @@ async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
  * Validate that required files exist before starting
  */
 async function validatePrerequisites(args: CLIArgs): Promise<void> {
-  // Skip validation in debug mode
+  // Debug skips the PLAN.md checks (it runs without a real plan), but still
+  // ensure the loop prompt exists: it's read on every iteration, so a debug run
+  // that actually loops (S / --run) would otherwise hit "Prompt file not found".
   if (args.debug) {
+    await ensureLoopPrompt(args)
     return
   }
 
@@ -454,11 +457,6 @@ async function main(): Promise<void> {
       process.exit(process.exitCode ?? 0)
     }
     args.run = true
-    // Guarantee the loop prompt exists before the TUI auto-runs (run=true).
-    // validatePrerequisites below also creates it, but it early-returns under
-    // --debug, so without this save & run would hit "Prompt file not found" on
-    // the first iteration.
-    await ensureLoopPrompt(args)
   }
 
   // Boot pre-flight: cwd must be writable. The state store and the debug
