@@ -27,6 +27,8 @@ import { log } from "./lib/debug-logger"
 import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./lib/plan-parser"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
+import { compareAndSwapPlan } from "./lib/plan-cas"
+import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
 import { lookupCost, estimateCost } from "./lib/pricing"
@@ -779,13 +781,12 @@ function AppContent(props: AppProps) {
         // agent's edit with stale content + a <plan-complete> tag and false-
         // complete the run. If it changed, don't complete this cycle; the next
         // check (after the edit settles) re-evaluates against fresh content.
-        const current = await Bun.file(planPath).text()
-        if (current !== content) {
-          log.debug("state", "Plan changed during completion check; deferring", {})
-          return false
-        }
-        await Bun.write(planPath, withPlanCompleteTag(content, buildCompletionSummary(progress)))
-        return true
+        const cas = await compareAndSwapPlan(
+          planPath,
+          (c) => withPlanCompleteTag(c, buildCompletionSummary(progress)),
+          "state",
+        )
+        return cas.wrote
       }
       return false
     } catch {
@@ -1045,21 +1046,20 @@ function AppContent(props: AppProps) {
       const before = await Bun.file(planPath).text()
       // Insert the note right after the task line. Keep it simple and safe:
       // append a single indented prose line (never a `- [ ]`).
-      const lines = before.split("\n")
-      const idx = lines.findIndex(
-        (l) => parseTaskLine(l).type === "pending" && parseTaskLine(l).description === task,
-      )
-      if (idx === -1) return // task gone (plan edited) — nothing to annotate
       const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
-      lines.splice(idx + 1, 0, note)
-      const after = lines.join("\n")
-      // Compare-and-swap: re-read and only write if unchanged since `before`.
-      const current = await Bun.file(planPath).text()
-      if (current !== before) {
-        log.debug("eval", "PLAN.md changed during eval-note write; deferring", {})
-        return
-      }
-      await Bun.write(planPath, after)
+      await compareAndSwapPlan(
+        planPath,
+        (c) => {
+          const lines = c.split("\n")
+          const idx = lines.findIndex(
+            (l) => parseTaskLine(l).type === "pending" && parseTaskLine(l).description === task,
+          )
+          if (idx === -1) return null // task gone (plan edited) — nothing to annotate
+          lines.splice(idx + 1, 0, note)
+          return lines.join("\n")
+        },
+        "eval",
+      )
     } catch (err) {
       log.warn("eval", "Failed to write eval feedback note", err)
     }
@@ -1074,15 +1074,12 @@ function AppContent(props: AppProps) {
   async function blockTaskWithCompareAndSwap(task: string, reason: string): Promise<void> {
     try {
       const planPath = resolvePlanFile(props.planFile)
-      const before = await Bun.file(planPath).text()
-      const updated = replaceFirstPendingTaskWithBlocked(before, reason)
-      if (updated === null) return // no pending task to block
-      const current = await Bun.file(planPath).text()
-      if (current !== before) {
-        log.debug("eval", "PLAN.md changed during eval-block write; deferring", {})
-        return
-      }
-      await Bun.write(planPath, updated)
+      const cas = await compareAndSwapPlan(
+        planPath,
+        (c) => replaceFirstPendingTaskWithBlocked(c, reason), // null = no pending task to block
+        "eval",
+      )
+      if (!cas.wrote) return // no pending task, or PLAN.md changed underfoot
       activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
         level: "warn",
       })
@@ -1836,16 +1833,24 @@ function AppContent(props: AppProps) {
       // choice === "accept": apply to PLAN.md and resume.
       try {
         const planPath = resolvePlanFile(props.planFile)
-        const content = await Bun.file(planPath).text()
-        const updated = replaceFirstPendingTaskWithSubtasks(content, subtasks)
-        if (updated === null) {
-          // No pending task to replace (plan changed underfoot). Surface a real
-          // failure instead of writing an unchanged file and reporting success.
+        // Apply the split via compare-and-swap. `wrote:false` covers both "no
+        // pending task to replace" (transform returned null — plan changed
+        // underfoot) AND "PLAN.md changed between our read and write" (deferred
+        // to avoid clobbering a concurrent agent edit). Previously this path
+        // wrote unconditionally and could silently overwrite an agent edit;
+        // routing through compareAndSwapPlan closes that window, matching the
+        // guard the other three PLAN.md writers (checkPlanComplete,
+        // blockTaskWithCompareAndSwap, writeEvalNote) already had.
+        const cas = await compareAndSwapPlan(
+          planPath,
+          (c) => replaceFirstPendingTaskWithSubtasks(c, subtasks),
+          "decompose",
+        )
+        if (!cas.wrote) {
           toast.show({ message: t("errDecomposeFailed"), variant: "error" })
           presentError(view)
           return
         }
-        await Bun.write(planPath, updated)
         decomposedTasks.add(stuckTask)
         await refreshPlan()
         // The split IS the progress signal — clear the streak so the first
