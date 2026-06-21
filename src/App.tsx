@@ -1109,158 +1109,47 @@ function AppContent(props: AppProps) {
     let newSessionId: string | undefined
 
     try {
-      // Eval layer: verify the just-finished task against its rubric BEFORE
-      // starting the next session. Returns false to abort this startIteration
-      // for an eval-driven retry (the iteration-driver re-fires running("")
-      // and calls startIteration again). Opt-in: a no-op when evals disabled
-      // or the task has no rubric. MUST sit inside the try so `startingIteration`
-      // is released by the finally on every return path.
-      if (!(await runEvalIfPending())) {
-        return
-      }
-      // Check for plan completion first
-      if (await checkPlanComplete()) {
-        const planPath = resolvePlanFile(props.planFile)
-        // We know it's complete, but getPlanCompleteSummary re-reads the file
-        // to extract the summary text. A FS error between the two awaits
-        // (e.g. file replaced with a directory, permission flip) must not
-        // be misclassified as an iteration error — the plan IS complete,
-        // only the human-readable summary is best-effort. Source: MEJORAS.md
-        // Finding 17.4.A.
-        let summaryContent: string | null = null
-        try {
-          summaryContent = await getPlanCompleteSummary(planPath)
-        } catch (err) {
-          log.warn("plan", "Plan complete but summary unreadable", err)
-        }
-
-        // A real completion is itself the strongest "progress" signal
-        // possible — drop the streak so the next plan (or a manual
-        // resume) starts fresh.
-        noProgressDetector?.reset()
-        loop.dispatch({
-          type: "plan_complete",
-          summary: { summary: summaryContent || t("dlgPlanCompleteFallback") }
-        })
-        return
-      }
-
-      // No-progress halt: compare the current first-pending task against the
-      // previous iteration's. If they match for N consecutive iterations the
-      // agent is stuck redoing the same work without editing PLAN.md, so we halt
-      // with an actionable error instead of burning another session. This read
-      // is the single source of truth for "what is the loop working on now"; a
-      // null task (no pending work) resets the streak — nothing to be stuck on.
-      let currentTask: string | null = null
-      try {
-        currentTask = await getCurrentTask(resolvePlanFile(props.planFile))
-      } catch (err) {
-        // The task read is best-effort for the detector — the real
-        // completion check above already verified the file is readable.
-        // If this throws (race with a file replace, perm flip), treat
-        // it as "no task" so the detector resets rather than
-        // misclassifying the error as progress.
-        log.warn("plan", "No-progress detector task read failed", err)
-        currentTask = null
-      }
-      const detector = ensureNoProgressDetector()
-      const streak = detector.recordIterationStart(currentTask)
-      if (detector.isStuck()) {
-        const stuckTask = detector.currentTask ?? ""
-        log.error(
-          "loop",
-          "No-progress halt",
-          { streak, threshold: resilience().noProgressThreshold, task: stuckTask },
-        )
-        loop.dispatch({
-          type: "error",
-          source: "plan",
-          message: t("errNoProgress", { count: streak, task: stuckTask }),
-          recoverable: true,
-          decomposableTask: stuckTask,
-        })
-        return
-      }
-
-      // Enforce a minimum spacing between iterations so very short iterations
-      // don't hammer the provider. Uses the monotonic clock; default 0 = off.
-      const gap = resilience().minIterationGapMs
-      if (gap > 0) {
-        const since = monotonicNow() - lastIterationStartAt
-        if (since < gap) {
-          await new Promise((r) => setTimeout(r, gap - since))
-        }
-      }
-      lastIterationStartAt = monotonicNow()
-
-      // Create a new session
-      const session = await createSession(client)
-      newSessionId = session.id
-
-      // Dispatch iteration started
-      loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
-      // Race guard: `createSession` is async. If the user paused (Space) or
-      // quit (Q) DURING the await above, the reducer no-op'd `iteration_started`
-      // (state is no longer running/paused, see useLoopState `iteration_started`),
-      // so this session is untracked — nothing would ever abort it and it'd keep
-      // running on the server burning tokens. Abort it now and bail before sending
-      // the prompt. Best-effort, same pattern as the catch block / watchdog.
-      if (getActiveSessionId(loop.state()) !== newSessionId) {
-        try {
-          await abortSession(client, newSessionId)
-        } catch {
-          // Best effort — the session may already be gone.
-        }
-        return
-      }
-      // Reset the watchdog's heartbeat baseline for this fresh iteration.
-      watchdog.notifyIterationStart()
-
-      // Record the task this iteration will run, for the manifest written when it
-      // completes (session_idle effect). Captured here because currentTask() may
-      // have advanced by then; this is the same first-pending task the no-progress
-      // detector read above.
-      pendingManifestTask = currentTask
-
-      // Read the prompt file
-      const promptFile = Bun.file(props.promptFile || DEFAULTS.PROMPT_FILE)
-      const promptExists = await promptFile.exists()
-
-      if (!promptExists) {
-        throw new Error(
-          `Prompt file not found: ${props.promptFile || DEFAULTS.PROMPT_FILE}`,
-        )
-      }
-
-      const promptContent = await promptFile.text()
-      // Replace {{PLAN_FILE}} placeholder with actual plan file path
-      const prompt = promptContent.replaceAll("{{PLAN_FILE}}", resolvePlanFile(props.planFile))
-      // Guard: an empty / whitespace-only prompt would either 4xx the server
-      // (classified fatal) or, worse, idle the session and re-fire the same
-      // empty prompt in a tight loop. Fail fast with the same path the
-      // missing-file branch uses (top-level catch → fatal → recoverable error).
-      if (prompt.trim() === "") {
-        throw new Error(
-          `Prompt file is empty: ${props.promptFile || DEFAULTS.PROMPT_FILE}`,
-        )
-      }
-
-      // Send the prompt asynchronously. With --routing, the "heavy" role's model
-      // (if mapped) overrides the single resolved model; without --routing,
-      // tierMapping() is null and this is exactly activeModel() (byte-identical).
-      await sendPromptAsync(client, {
-        sessionID: newSessionId,
-        parts: [{ type: "text", text: prompt }],
-        agent: activeAgent(),
-        model: tierMapping()?.heavy ?? activeModel(),
+      // The procedural body (eval gate → plan completion → no-progress halt →
+      // spacing → createSession → race guard → watchdog → prompt → send →
+      // refresh) lives in runIteration (src/lib/start-iteration.ts), extracted
+      // so the race guards and completion paths are unit-testable without a
+      // Solid mount. This wrapper owns the in-flight guard and the
+      // error-funnel catch/finally, which can't move (they close over
+      // startingIteration, client, newSessionId and handleIterationError).
+      await runIteration({
+        planPath: resolvePlanFile(props.planFile),
+        promptPath: props.promptFile || DEFAULTS.PROMPT_FILE,
+        loop: { state: loop.state, dispatch: loop.dispatch },
+        client,
+        watchdog,
+        noProgressDetector: ensureNoProgressDetector(),
+        activeAgent: () => activeAgent() ?? "",
+        activeModel,
+        tierMapping,
+        resilience,
+        monotonicNow,
+        t,
+        fallbackSummary: () => t("dlgPlanCompleteFallback"),
+        setPendingManifestTask: (task) => {
+          pendingManifestTask = task
+        },
+        onSessionCreated: (id) => {
+          newSessionId = id
+        },
+        getLastIterationStartAt: () => lastIterationStartAt,
+        setLastIterationStartAt: (n) => {
+          lastIterationStartAt = n
+        },
+        runEvalIfPending,
+        checkPlanComplete,
+        getCurrentTask,
+        refreshPlan,
+        getPlanCompleteSummary,
       })
-
-      // Refresh plan progress
-      await refreshPlan()
     } catch (err) {
       // Best-effort: abort the session we just created so a failure after
-      // createSession (e.g. sendPromptAsync) doesn't leave it running on
-      // the server. If createSession itself failed, newSessionId is still
+      // createSession (e.g. sendPromptAsync) doesn't leave it running on the
+      // server. If createSession itself failed, newSessionId is still
       // undefined and we skip. Mirrors the abortAndRetry cleanup.
       if (newSessionId) {
         try {
