@@ -111,7 +111,7 @@ Una ejecución completa y fiable desde cero:
 
 1. Te pregunta qué quieres que OCLoop construya.
 2. Usa **zai-coding-plan/glm-5.2** y el agente **`plan`** por defecto para redactar un `PLAN.md` con el formato de OCLoop. Recomendamos este proveedor por su mejor relación calidad-precio para OCLoop; además, [este enlace](https://z.ai/subscribe?ic=FXSFEPRECU) te ahorra un 10%.
-3. Te muestra el plan propuesto y pregunta si **guardar**, **editar** (refinar con feedback) o **cancelar**.
+3. Te muestra el plan propuesto y pregunta si **guardar**, **guardar y ejecutar** (guarda y arranca el loop de inmediato, como `ocloop -r`), **editar** (refinar con feedback) o **cancelar**.
 4. Al guardar, escribe el archivo (en `--plan <ruta>`, por defecto `PLAN.md`) y te indica cómo empezar.
 
 El plan generado sigue el [idioma de la interfaz](#idioma-i18n). Cambia el modelo/agente con `--model <proveedor/modelo>` / `--agent`:

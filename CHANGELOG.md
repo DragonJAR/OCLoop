@@ -6,6 +6,10 @@ All notable changes to OCLoop are documented here. Format based on
 ## [Unreleased]
 
 ### Added
+- **Save & run from `--create-plan`.** The plan-approval prompt now offers `r`
+  ("save & run") alongside save/edit/cancel: it writes `PLAN.md` and immediately
+  starts the loop in-process (equivalent to `ocloop -r`), so you go from goal to
+  running without a second command.
 - **Split a stalled task into subtasks.** When the no-progress detector halts the
   loop, the halt dialog offers `P` to have the agent break the stalled task into
   smaller, coordinated subtasks; after you approve them, OCLoop replaces the

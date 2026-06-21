@@ -76,9 +76,10 @@ const en = {
   cpNoContent:
     "The model returned no content. Try again with a different goal.",
   cpProposedTitle: "PROPOSED PLAN",
-  cpAskApprove: "\nApprove this plan? [y = save · e = edit · n = cancel]: ",
+  cpAskApprove: "\nApprove this plan? [y = save · r = save & run · e = edit · n = cancel]: ",
   cpSaved: (p: Params) => `\n✓ Saved to ${p.path}`,
   cpRunHint: (p: Params) => `Now run 'ocloop'${p.planArg} to start.`,
+  cpStarting: "Starting OCLoop…",
   cpAskEdit: "What would you like to change or add?\n> ",
   cpNoChanges: "No changes.",
   cpCancelled: "Cancelled. No file was written.",
@@ -653,9 +654,10 @@ const es: Record<MessageKey, Msg> = {
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
   cpProposedTitle: "PLAN PROPUESTO",
-  cpAskApprove: "\n¿Apruebas el plan? [s = guardar · e = editar · n = cancelar]: ",
+  cpAskApprove: "\n¿Apruebas el plan? [s = guardar · r = guardar y ejecutar · e = editar · n = cancelar]: ",
   cpSaved: (p) => `\n✓ Guardado en ${p.path}`,
   cpRunHint: (p) => `Ahora ejecuta 'ocloop'${p.planArg} para empezar.`,
+  cpStarting: "Iniciando OCLoop…",
   cpAskEdit: "¿Qué quieres cambiar o añadir?\n> ",
   cpNoChanges: "Sin cambios.",
   cpCancelled: "Cancelado. No se guardó ningún archivo.",

@@ -200,9 +200,11 @@ function buildRefinePrompt(previousPlan: string, feedback: string): string {
  *
  * Headless CLI flow: asks what you want to build, uses zai-coding-plan/glm-5.2 + the `plan`
  * agent to draft a PLAN.md in OCLoop's format, shows it, and lets you approve,
- * refine, or cancel before writing the file. Runs instead of the TUI.
+ * refine, save & run, or cancel before writing the file. Runs instead of the
+ * TUI. Returns true only when the user chose "save & run", so the caller boots
+ * the TUI with run=true instead of exiting.
  */
-async function runCreatePlan(args: CLIArgs): Promise<void> {
+async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   const planPath = resolvePlanFile(args.planFile)
   const modelStr = args.model || DEFAULT_PLAN_MODEL
   const agent = args.agent || DEFAULT_PLAN_AGENT
@@ -319,7 +321,15 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
         console.log(t("cpSaved", { path: planPath }))
         const planArg = planPath === DEFAULTS.PLAN_FILE ? "" : ` --plan ${planPath}`
         console.log(t("cpRunHint", { planArg }))
-        break
+        return false
+      }
+      if (["r", "run", "ejecutar"].includes(choice)) {
+        // Save AND launch the loop now (equivalent to `ocloop -r`). Returning
+        // true tells the caller to boot the TUI with run=true in-process.
+        await Bun.write(planPath, plan.endsWith("\n") ? plan : plan + "\n")
+        console.log(t("cpSaved", { path: planPath }))
+        console.log(t("cpStarting"))
+        return true
       }
       if (["e", "edit", "editar"].includes(choice)) {
         const feedback = prompt(t("cpAskEdit"))
@@ -332,7 +342,7 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
       }
 
       console.log(t("cpCancelled"))
-      break
+      return false
     }
   } catch (err) {
     console.error(
@@ -346,6 +356,9 @@ async function runCreatePlan(args: CLIArgs): Promise<void> {
       // ignore
     }
   }
+  // Reached only on the error path (the approval loop returns directly); never
+  // auto-run a plan whose generation failed.
+  return false
 }
 
 /**
@@ -420,8 +433,14 @@ async function main(): Promise<void> {
     if (ignored.length > 0) {
       console.error(t("cpIgnoredFlags", { flags: ignored.join(", ") }))
     }
-    await runCreatePlan(args)
-    process.exit(process.exitCode ?? 0)
+    // "Save & run" returns true: fall through to the TUI with run=true (the
+    // generator's OpenCode server is already closed in its finally). Otherwise
+    // the generator is terminal — exit so its server child can't outlive us.
+    const runAfter = await runCreatePlan(args)
+    if (!runAfter) {
+      process.exit(process.exitCode ?? 0)
+    }
+    args.run = true
   }
 
   // Boot pre-flight: cwd must be writable. The state store and the debug
