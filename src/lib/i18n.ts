@@ -72,7 +72,7 @@ const en = {
     "Could not create the planning session. Make sure opencode is installed and the port isn't in use (try --port <number>).",
   cpGenerating: "Generating plan… (this may take a few minutes — please be patient)\n",
   cpTimeout: (p: Params) =>
-    `Plan generation timed out after ${p.secs}s. Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=900000 for 15 min), or set "resilience": { "planTimeoutMs": <ms> } in ~/.config/ocloop/ocloop.json — or simplify the goal.`,
+    `Plan generation timed out after ${p.secs}s (~${Math.round(Number(p.secs) / 60)} min). Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=1800000 for 30 min), or set "resilience": { "planTimeoutMs": <ms> } in ~/.config/ocloop/ocloop.json — or simplify the goal.`,
   cpNoContent:
     "The model returned no content. Try again with a different goal.",
   cpProposedTitle: "PROPOSED PLAN",
@@ -650,7 +650,7 @@ const es: Record<MessageKey, Msg> = {
     "No se pudo crear la sesión de planificación. Verifica que opencode esté instalado y que el puerto no esté en uso (usa --port <número>).",
   cpGenerating: "Generando plan… (esto puede tardar unos minutos, ten paciencia)\n",
   cpTimeout: (p) =>
-    `La generación del plan superó el tiempo límite (${p.secs}s). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=900000 para 15 min), o pon "resilience": { "planTimeoutMs": <ms> } en ~/.config/ocloop/ocloop.json — o simplifica el objetivo.`,
+    `La generación del plan superó el tiempo límite (${p.secs}s, ~${Math.round(Number(p.secs) / 60)} min). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=1800000 para 30 min), o pon "resilience": { "planTimeoutMs": <ms> } en ~/.config/ocloop/ocloop.json — o simplifica el objetivo.`,
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
   cpProposedTitle: "PLAN PROPUESTO",
