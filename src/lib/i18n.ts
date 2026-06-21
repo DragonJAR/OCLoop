@@ -70,7 +70,7 @@ const en = {
   cpStartingServer: "Starting the OpenCode server…",
   cpSessionFail:
     "Could not create the planning session. Make sure opencode is installed and the port isn't in use (try --port <number>).",
-  cpGenerating: "Generating plan… (this may take a moment)\n",
+  cpGenerating: "Generating plan… (this may take a few minutes — please be patient)\n",
   cpTimeout: (p: Params) =>
     `Plan generation timed out after ${p.secs}s. Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=900000 for 15 min), or set "resilience": { "planTimeoutMs": <ms> } in ~/.config/ocloop/ocloop.json — or simplify the goal.`,
   cpNoContent:
@@ -648,7 +648,7 @@ const es: Record<MessageKey, Msg> = {
   cpStartingServer: "Arrancando el servidor OpenCode…",
   cpSessionFail:
     "No se pudo crear la sesión de planificación. Verifica que opencode esté instalado y que el puerto no esté en uso (usa --port <número>).",
-  cpGenerating: "Generando plan… (esto puede tardar un momento)\n",
+  cpGenerating: "Generando plan… (esto puede tardar unos minutos, ten paciencia)\n",
   cpTimeout: (p) =>
     `La generación del plan superó el tiempo límite (${p.secs}s). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=900000 para 15 min), o pon "resilience": { "planTimeoutMs": <ms> } en ~/.config/ocloop/ocloop.json — o simplifica el objetivo.`,
   cpNoContent:
