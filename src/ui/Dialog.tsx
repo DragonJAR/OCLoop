@@ -84,7 +84,6 @@ export function Dialog(props: DialogProps) {
 
   // Handle backdrop click
   const handleBackdropClick = () => {
-    // Don't close if user is selecting text
     // @ts-ignore - selection property exists at runtime
     if (renderer.selection?.active) return
     props.onClose()
@@ -92,8 +91,7 @@ export function Dialog(props: DialogProps) {
 
   return (
     <>
-      {/* Backdrop - full screen semi-transparent overlay */}
-      {/* Using opacity 0.6 as RGBA(0, 0, 0, 150) translates to ~59% opacity */}
+      {/* Backdrop */}
       <box
         onMouseUp={handleBackdropClick}
         style={{

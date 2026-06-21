@@ -108,9 +108,7 @@ export function DialogSelect(props: DialogSelectProps) {
     moveTo(next)
   }
 
-  // Handle keyboard input
   useKeyboard((key) => {
-    // Escape handled by Dialog backdrop/onClose
     if (key.name === "escape") {
       key.preventDefault()
       props.onClose()

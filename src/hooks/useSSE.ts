@@ -307,14 +307,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   const [error, setError] = createSignal<Error | undefined>(undefined)
   const [reconnectAttempts, setReconnectAttempts] = createSignal(0)
 
-  // Abort controller for canceling the SSE connection
   let abortController: AbortController | null = null
-  // Flag to track if we should keep trying to reconnect
   let shouldReconnect = true
 
-  // Track message roles: messageID -> role
   const messageRoles = new Map<string, "user" | "assistant">()
-  // Track seen part IDs to avoid duplicates
   const seenPartIds = new Set<string>()
 
   /**
@@ -323,22 +319,17 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   function processEvent(event: Event): void {
     log.debug("sse", "Event received", { type: event.type, sessionId: sessionId?.(), data: truncateForLog(event.properties) })
 
-    // Call the generic handler first
     if (handlers.onAnyEvent) {
       handlers.onAnyEvent(event)
     }
 
-    // Get the current session filter
     const filterSessionId = sessionId?.()
 
-    // Handle specific event types
     switch (event.type) {
       case "session.created": {
-        // Extract session ID from event.properties.info.id
         const eventSessionId = (event.properties as { info?: { id?: string } })
           .info?.id
         if (eventSessionId) {
-          // Filter by session if a filter is set
           if (filterSessionId && eventSessionId !== filterSessionId) {
             return
           }
@@ -360,7 +351,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       // sessionID, so this path is dormant in practice.
       case "session.idle": {
         const eventSessionId = event.properties.sessionID
-        // Filter by session if a filter is set
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
@@ -384,7 +374,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
       case "todo.updated": {
         const eventSessionId = event.properties.sessionID
-        // Filter by session if a filter is set
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
@@ -412,7 +401,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const messageId = part?.messageID
         const eventSessionId = part?.sessionID
 
-        // Filter by session if a filter is set
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
@@ -456,10 +444,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       return
     }
 
-    // Get the current URL value from the accessor
     const currentUrl = url()
-    
-    // Validate URL before attempting to connect
+
     if (!currentUrl) {
       log.warn("sse", "Cannot connect: URL is empty")
       return
@@ -479,13 +465,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     log.info("sse", "Connecting", { url: currentUrl, directory })
 
     try {
-      // Create the SDK client
       const client = createOpencodeClient({
         baseUrl: currentUrl,
         directory,
       })
 
-      // Subscribe to events
       const events = await client.event.subscribe(
         { directory },
         { signal: myController.signal },
@@ -494,7 +478,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       // Superseded while awaiting the subscription? Leave status to the winner.
       if (abortController !== myController) return
 
-      // Check if subscription was successful
       if (!events.stream) {
         throw new Error("Failed to subscribe to SSE events: no stream returned")
       }
@@ -531,7 +514,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       setStatus("disconnected")
       log.health("sse", "stream_ended", { willReconnect: shouldReconnect })
 
-      // Attempt reconnection if appropriate
       if (shouldReconnect) {
         scheduleReconnect()
       }
@@ -554,7 +536,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         onError(connectionError)
       }
 
-      // Attempt reconnection on error
       if (shouldReconnect) {
         scheduleReconnect()
       }
@@ -614,11 +595,9 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
    * Manually trigger a reconnection
    */
   function reconnect(): void {
-    // Reset reconnection state
     setReconnectAttempts(0)
     shouldReconnect = true
 
-    // Cancel any existing connection
     if (abortController) {
       abortController.abort()
       abortController = null
@@ -634,18 +613,15 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     // stays bound to the dead URL.
     setStatus("disconnected")
 
-    // Start fresh connection
     connect()
   }
 
-  // Auto-connect on mount if enabled
   onMount(() => {
     if (autoConnect) {
       connect()
     }
   })
 
-  // Cleanup on unmount
   onCleanup(() => {
     disconnect()
   })

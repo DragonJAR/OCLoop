@@ -30,6 +30,7 @@ import { resolvePlanFile } from "./lib/plan-file"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
 import { lookupCost, estimateCost } from "./lib/pricing"
+import { appendManifest } from "./lib/manifest"
 import { shutdownManager } from "./lib/shutdown"
 import {
   saveLoopState,
@@ -55,7 +56,6 @@ import {
   type ReconcileResult,
 } from "./lib/api"
 import { withTimeout } from "./lib/with-timeout"
-import { computeBackoff } from "./lib/backoff"
 import { monotonicNow } from "./lib/clock"
 import { t } from "./lib/i18n"
 import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
@@ -64,7 +64,7 @@ import { createChaos } from "./lib/chaos"
 import { NoProgressDetector } from "./lib/no-progress-detector"
 import { runOneShotAgent } from "./lib/one-shot-agent"
 import { runEval, type EvalResult } from "./lib/eval-runner"
-import { fetchModelCatalog, type ModelCatalogEntry } from "./lib/fetch-models"
+import { fetchModelCatalog } from "./lib/fetch-models"
 import { DialogTierPicker, ROUTING_TIERS } from "./ui/DialogTierPicker"
 import type { DialogSelectOption } from "./ui/DialogSelect"
 import { resolveAgentAndModel, type OcAgent, type OcConfig, type ResolvedAgentModel } from "./lib/resolve-agent-model"
@@ -90,9 +90,6 @@ import {
 } from "./components"
 import type { CLIArgs, PlanProgress, LoopState } from "./types"
 
-/**
- * Props for the App component
- */
 export interface AppProps extends CLIArgs {}
 
 /**
@@ -370,6 +367,11 @@ function AppContent(props: AppProps) {
   // whenever the task changes (genuine progress) or on completion/retry.
   let evalAttemptsForTask = 0
   let evalTaskKey: string | null = null
+  // Task description for the in-flight iteration, captured at startIteration so
+  // the manifest (written at session_idle) records the task that actually ran —
+  // currentTask() may have advanced to the next pending task by then. Same
+  // out-of-reducer pattern as the eval counters above.
+  let pendingManifestTask: string | null = null
 
   // Wire stats hook to loop state transitions
   createEffect(() => {
@@ -435,7 +437,24 @@ function AppContent(props: AppProps) {
     ) {
       log.iterationEnd(state.iteration)
       log.debug("state", "Iteration ended", { iteration: state.iteration })
-      stats.endIteration()
+      const durationMs = stats.endIteration()
+      // Durable per-iteration record (append-only JSONL) for post-run reports and
+      // cost attribution. Best-effort: appendManifest never throws. Reuses the
+      // dashboard's own token + pricing accounting (taskTokens + estimateCost) so
+      // the numbers match. taskTokens() still holds THIS iteration's tokens here —
+      // it is zeroed at the next iteration_started, not now.
+      const taskTokens = sessionStats.taskTokens()
+      const manifestModel = activeModel()
+      appendManifest({
+        ts: new Date().toISOString(),
+        iteration: state.iteration,
+        task: pendingManifestTask,
+        model: manifestModel ?? null,
+        durationMs,
+        tokens: taskTokens,
+        costUsd: estimateCost(taskTokens, lookupCost(manifestModel)),
+      })
+      pendingManifestTask = null
     }
 
     // Run reached a terminal state: freeze the global wall-clock timer (once).
@@ -529,7 +548,7 @@ function AppContent(props: AppProps) {
     // `detectInstalledTerminals` shells out per entry in KNOWN_TERMINALS
     // via `Bun.spawn`; a rejection here (FD exhaustion, weird $PATH, killed
     // mid-spawn) would propagate out of this onMount body and trigger the
-    // unhandledRejection handler in `index.tsx:300-304`, exiting the process
+    // unhandledRejection handler in `index.tsx`, exiting the process
     // before the TUI ever renders. Wrapped following the pattern of
     // detectInstalledTerminals shells out per entry; a rejection here would crash
     // the process before the TUI renders. Wrapped so degraded UX (empty list) is
@@ -542,7 +561,7 @@ function AppContent(props: AppProps) {
     }
     // Finding 15.8.A: release the server-ready createEffect now that the
     // on-disk config layer has been merged into `resilience`. The order
-    // matters — set AFTER both `setResilience(resolved)` (line 475) and
+    // matters — set AFTER both `setResilience(resolved)` and
     // `setAvailableTerminals(terminals)` so the first effect re-run sees
     // the fully-resolved state. Mirrors the timing of the synchronous
     // `setResilience` in `onMount`'s body.
@@ -697,9 +716,6 @@ function AppContent(props: AppProps) {
     },
   })
 
-  /**
-   * Parse the plan file and update progress
-   */
   async function refreshPlan(): Promise<void> {
     // Skip in debug mode - no plan file required
     if (props.debug) {
@@ -1075,9 +1091,6 @@ function AppContent(props: AppProps) {
     }
   }
 
-  /**
-   * Create a new session and start an iteration
-   */
   async function startIteration(): Promise<void> {
     // In-flight guard: the iteration driver re-runs whenever state becomes
     // running(""), and createSession is async. Without this, a second trigger
@@ -1206,6 +1219,12 @@ function AppContent(props: AppProps) {
       // Reset the watchdog's heartbeat baseline for this fresh iteration.
       watchdog.notifyIterationStart()
 
+      // Record the task this iteration will run, for the manifest written when it
+      // completes (session_idle effect). Captured here because currentTask() may
+      // have advanced by then; this is the same first-pending task the no-progress
+      // detector read above.
+      pendingManifestTask = currentTask
+
       // Read the prompt file
       const promptFile = Bun.file(props.promptFile || DEFAULTS.PROMPT_FILE)
       const promptExists = await promptFile.exists()
@@ -1245,8 +1264,7 @@ function AppContent(props: AppProps) {
       // Best-effort: abort the session we just created so a failure after
       // createSession (e.g. sendPromptAsync) doesn't leave it running on
       // the server. If createSession itself failed, newSessionId is still
-      // undefined and we skip. Mirrors the abortAndRetry cleanup at line
-      // ~274. Finding 4.1.C.
+      // undefined and we skip. Mirrors the abortAndRetry cleanup.
       if (newSessionId) {
         try {
           await abortSession(client, newSessionId)
@@ -1261,9 +1279,6 @@ function AppContent(props: AppProps) {
     }
   }
 
-  /**
-   * Helper to insert localized sample activity for UI testing.
-   */
   const insertSampleActivity = () => {
     activityLog.addEvent("session_start", t("sampleSessionStarted"))
     activityLog.addEvent("user_message", t("sampleUserMessage"))
@@ -1315,9 +1330,6 @@ function AppContent(props: AppProps) {
     }
   }
 
-  /**
-   * Send a prompt in debug mode
-   */
   async function sendDebugPrompt(text: string): Promise<void> {
     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
     const client = tryGetClient(server.url)
@@ -1343,9 +1355,6 @@ function AppContent(props: AppProps) {
     }
   }
 
-  /**
-   * Show quit confirmation dialog
-   */
   const showQuitConfirmation = () => {
     dialog.show(() => (
       <DialogConfirm
@@ -1870,12 +1879,7 @@ function AppContent(props: AppProps) {
   
   // --- External-terminal attach + config-dialog handlers (useTerminalLauncher) ---
   const {
-    showTerminalError,
     launchConfiguredTerminal,
-    onConfigSelect,
-    onConfigCustom,
-    onConfigCopy,
-    onErrorCopy,
     copyAttachCommand,
     terminalConfigState,
   } = useTerminalLauncher({
@@ -1993,8 +1997,6 @@ function AppContent(props: AppProps) {
         taskTokens={sessionStats.taskTokens()}
         cost={costEstimate()}
       />
-
-      {/* Overlays */}
 
     </box>
   )

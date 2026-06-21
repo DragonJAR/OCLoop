@@ -4,7 +4,7 @@ import { render } from "@opentui/solid"
 import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
-import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, type OpencodeClient, fetchMessages, extractLastAssistantText, countAssistantMessages, hasNewAssistantReply, type SessionMessage } from "./lib/api"
+import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, fetchMessages, extractLastAssistantText, countAssistantMessages, hasNewAssistantReply, type SessionMessage } from "./lib/api"
 import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
@@ -116,9 +116,6 @@ async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
   }
 }
 
-/**
- * Validate that required files exist before starting
- */
 async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // Debug skips the PLAN.md checks (it runs without a real plan), but still
   // ensure the loop prompt exists: it's read on every iteration, so a debug run
@@ -430,9 +427,6 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1)
 })
 
-/**
- * Main entry point
- */
 async function main(): Promise<void> {
   // Pre-scan --lang/--language so argparse errors localize correctly. Without
   // this, a user passing `--lang es` still gets every parseArgs error

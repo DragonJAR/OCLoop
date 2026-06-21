@@ -31,9 +31,7 @@ export function DialogPrompt(props: DialogPromptProps) {
     }, 10)
   })
 
-  // Handle keyboard input
   useKeyboard((key) => {
-    // Escape handled by Dialog backdrop/onClose
     if (key.name === "escape") {
       props.onCancel()
       return true

@@ -213,14 +213,12 @@ export function Dashboard(props: DashboardProps) {
   })
 
   // Truncate current task if needed (rough estimate for terminal width)
-  // In debug mode, show the session ID instead
   const truncatedTask = createMemo(() => {
     const state = props.state
-    
+
     // In debug mode, show session ID if available
     if (state.type === "debug") {
       if (state.sessionId) {
-        // Truncate session ID if too long
         const maxLen = 20
         const sessionId = state.sessionId
         if (sessionId.length <= maxLen) return `Session: ${sessionId}`

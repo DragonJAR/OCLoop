@@ -1,13 +1,7 @@
-/**
- * Summary of remaining tasks when plan is complete
- */
 export interface CompletionSummary {
   summary: string
 }
 
-/**
- * Error categories for OCLoop
- */
 export type ErrorSource = "server" | "sse" | "pty" | "api" | "plan"
 
 /**

@@ -104,7 +104,6 @@ export interface UseActivityLogReturn {
 export function useActivityLog(): UseActivityLogReturn {
   const [events, setEvents] = createSignal<ActivityEvent[]>([]);
 
-  // Counter for generating unique IDs
   let nextId = 1;
 
   /**
@@ -147,7 +146,6 @@ export function useActivityLog(): UseActivityLogReturn {
         count: 1,
       };
       const updated = [...prev, event];
-      // Cap at MAX_EVENTS by removing from the beginning
       if (updated.length > MAX_EVENTS) {
         return updated.slice(updated.length - MAX_EVENTS);
       }

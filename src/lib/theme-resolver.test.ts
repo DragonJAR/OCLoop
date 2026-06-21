@@ -5,9 +5,8 @@ import {
   resolveTheme,
   toMonochrome,
   type ThemeColors,
-  type ThemeDefinition,
 } from "./theme-resolver"
-import { themes } from "./themes"
+import { themes, type ThemeDefinition } from "./themes"
 
 function makeTheme(theme: Record<string, string>): ThemeDefinition {
   return { defs: {}, theme }

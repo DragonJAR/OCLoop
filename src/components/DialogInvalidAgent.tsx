@@ -17,9 +17,7 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
   const { theme } = useTheme()
   const [activeButton, setActiveButton] = createSignal<"default" | "quit">("default")
 
-  // Handle keyboard input
   useKeyboard((key) => {
-    // Escape handled by Dialog backdrop/onClose
     if (key.name === "escape") {
       props.onQuit()
       return

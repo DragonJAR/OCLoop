@@ -38,9 +38,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
   // usage where onUnmount is undefined.
   onCleanup(() => props.onUnmount?.())
 
-  // Handle keyboard input
   useKeyboard((key) => {
-    // Escape handled by Dialog backdrop/onClose
     if (key.name === "escape") {
       if (props.onCancel) props.onCancel()
       return

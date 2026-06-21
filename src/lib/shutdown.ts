@@ -44,18 +44,11 @@ class ShutdownManager {
     this.handler = handler
   }
 
-  /**
-   * Unregister the current shutdown handler
-   */
   unregister(): void {
     this.handler = null
   }
 
-  /**
-   * Handle a signal by calling the registered shutdown handler
-   */
   private async handleSignal(signal: string): Promise<void> {
-    // Prevent multiple concurrent shutdowns
     if (this.isShuttingDown) {
       return
     }
@@ -95,15 +88,9 @@ class ShutdownManager {
     }
   }
 
-  /**
-   * Trigger a programmatic shutdown (useful for testing or explicit shutdown)
-   */
   async shutdown(): Promise<void> {
     await this.handleSignal("programmatic")
   }
 }
 
-/**
- * Global shutdown manager instance - singleton
- */
 export const shutdownManager = new ShutdownManager()

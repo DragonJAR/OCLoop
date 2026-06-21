@@ -74,7 +74,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     runEndTime: null,
   });
 
-  // Timer for updating elapsed time every second
   const [tick, setTick] = createSignal(0);
   const interval = setInterval(() => setTick((t) => t + 1), 1000);
   onCleanup(() => clearInterval(interval));

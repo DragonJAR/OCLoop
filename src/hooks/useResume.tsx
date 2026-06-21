@@ -124,7 +124,6 @@ export function useResume(deps: ResumeDeps): ResumeApi {
   }
 
   async function initializeSession(): Promise<void> {
-    // In debug mode, create a session immediately and return.
     if (deps.debug) {
       await deps.createDebugSession()
       return

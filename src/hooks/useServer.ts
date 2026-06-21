@@ -82,7 +82,6 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   const [error, setError] = createSignal<Error | undefined>(undefined)
   const [lastHealthyAt, setLastHealthyAt] = createSignal<number>(0)
 
-  // Store reference to the server for cleanup
   let serverRef: { url: string; close: () => void } | null = null
   let abortController: AbortController | null = null
 
@@ -252,14 +251,12 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     setStatus("stopped")
   }
 
-  // Auto-start server on mount if enabled
   onMount(() => {
     if (autoStart) {
       startServer()
     }
   })
 
-  // Cleanup on unmount
   onCleanup(() => {
     stop()
   })
