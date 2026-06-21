@@ -10,6 +10,18 @@ interface ParsedTask {
 }
 
 /**
+ * Strip a surrounding ```fence``` if the model wrapped its output in one.
+ * Used by --create-plan to clean the generated plan before saving. Lives here
+ * alongside the other plan content transforms (withPlanCompleteTag,
+ * replaceFirstPendingTaskWithSubtasks, …).
+ */
+export function stripCodeFences(text: string): string {
+  const trimmed = text.trim()
+  const m = trimmed.match(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/)
+  return m ? m[1].trim() : trimmed
+}
+
+/**
  * Parses a single line from PLAN.md to determine its task type and content.
  * 
  * Handles various formats:

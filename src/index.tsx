@@ -4,10 +4,18 @@ import { render } from "@opentui/solid"
 import { createOpencodeServer } from "@opencode-ai/sdk/server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
-import { assertResponse, configureApiTimeouts, reconcileSession, sendPromptAsync, toSdkModel, fetchMessages, extractLastAssistantText, countAssistantMessages, hasNewAssistantReply, type SessionMessage } from "./lib/api"
+import {
+  assertResponse,
+  configureApiTimeouts,
+  toSdkModel,
+  reconcileSession,
+  sendPromptAsync,
+  fetchMessages,
+} from "./lib/api"
 import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
+import { runCreatePlanFlow } from "./lib/create-plan-flow"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
 import { parseArgs, preScanLang } from "./lib/cli-args"
@@ -191,23 +199,6 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
 }
 
 
-/** Strip a surrounding ```fence``` if the model wrapped its output in one. */
-function stripCodeFences(text: string): string {
-  const t = text.trim()
-  const m = t.match(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/)
-  return m ? m[1].trim() : t
-}
-
-/** Build the plan-generation prompt for a fresh goal (localized via i18n). */
-function buildPlanPrompt(goal: string): string {
-  return t("cpPrompt", { goal })
-}
-
-/** Build a refinement prompt given the previous plan and user feedback. */
-function buildRefinePrompt(previousPlan: string, feedback: string): string {
-  return t("cpRefine", { feedback, plan: previousPlan })
-}
-
 /**
  * Interactive plan generator (`--create-plan`).
  *
@@ -216,6 +207,13 @@ function buildRefinePrompt(previousPlan: string, feedback: string): string {
  * refine, save & run, or cancel before writing the file. Runs instead of the
  * TUI. Returns true only when the user chose "save & run", so the caller boots
  * the TUI with run=true instead of exiting.
+ *
+ * The flow logic lives in src/lib/create-plan-flow.ts (runCreatePlanFlow),
+ * extracted so the timeout/choices/poll branches are unit-testable. This
+ * wrapper owns the four I/O seams the flow needs (server spawn + client, the
+ * global prompt(), Bun.write, Bun.sleep/Date.now), maps the CreatePlanOutcome
+ * to process exit semantics, and renders the title/proposed-plan chrome. The
+ * flow itself never calls process.exit.
  */
 async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   const planPath = resolvePlanFile(args.planFile)
@@ -235,11 +233,10 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
     t("cpConfig", { model: modelStr, note: model ? "" : t("cpModelNote"), agent }),
   )
   console.log("")
-
-  // Read a possibly multi-line goal: print the instructions once, then collect
-  // lines until a lone "." or EOF (Ctrl-D), joined with newlines. Lets the user
-  // type/paste a long, multi-line goal instead of a single terminal line.
   console.log(t("cpAskGoal"))
+
+  // Read the goal BEFORE spawning the server, so the server log doesn't
+  // interrupt the goal prompt and we don't hold a port while the user thinks.
   const goalLines: string[] = []
   for (;;) {
     const line = prompt("> ")
@@ -255,118 +252,74 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   console.log("\n" + t("cpStartingServer"))
   let server: { url: string; close: () => void } | null = null
   try {
-    server = await createOpencodeServer({ hostname: "127.0.0.1", port: args.port, timeout: 15000 })
+    server = await createOpencodeServer({
+      hostname: "127.0.0.1",
+      port: args.port,
+      timeout: 15000,
+    })
     const client = createOpencodeClient({ baseUrl: server.url })
-
     const created = await client.session.create({})
     assertResponse(created, "create session")
-    if (!created.data) {
-      throw new Error(t("cpSessionFail"))
-    }
+    if (!created.data) throw new Error(t("cpSessionFail"))
     const sessionID = created.data.id
 
-    let currentPrompt = buildPlanPrompt(goal)
-    let plan = ""
-
-    for (;;) {
-      console.log("\n" + t("cpGenerating"))
-
-      // Kick off asynchronously and poll for completion. The synchronous
-      // `session.prompt` holds ONE HTTP request open for the whole (multi-minute)
-      // generation; on a long hold the connection drops and fetch throws. Doing
-      // it async means only short requests, robust on every OS / shell.
-      const assistantCountBefore = countAssistantMessages(
-        await fetchMessages(client, sessionID),
-      )
-      await sendPromptAsync(
-        client,
-        { sessionID, agent, model, parts: [{ type: "text", text: currentPrompt }] },
-        { timeoutMs: 30_000 },
-      )
-
-      const deadline = Date.now() + planTimeoutMs
-      let messages: SessionMessage[] = []
-      for (;;) {
-        await Bun.sleep(1500)
-        // reconcileSession never throws (it returns "unknown" on any error),
-        // but fetchMessages can throw on a transient localhost blip — a 5xx
-        // momentáneo, a GC pause in the opencode child, or assertResponse
-        // failing on a half-formed reply. A generation can run up to
-        // planTimeoutMs (default 10 min); aborting the whole run on a single
-        // flaky poll would discard minutes of model work. Swallow the failure
-        // for this tick and retry next interval; the deadline below is the
-        // real backstop. Matches the resilience already built into
-        // reconcileSession and the SSE reconnect path in the TUI.
-        const verdict = await reconcileSession(client, sessionID)
+    // Delegate the poll/choices flow to runCreatePlanFlow. The four I/O seams
+    // are wired to the real primitives; the outcome maps back to exit semantics.
+    const outcome = await runCreatePlanFlow({
+      client,
+      createSessionID: async () => sessionID,
+      onClose: () => {
         try {
-          messages = await fetchMessages(client, sessionID)
-        } catch (err) {
-          log.warn("create-plan", "Transient fetchMessages failure, will retry", {
-            message: err instanceof Error ? err.message : String(err),
-          })
-          if (Date.now() > deadline) {
-            throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
-          }
-          continue
+          server?.close()
+        } catch {
+          // ignore
         }
-        // Done only when the session is idle AND a new non-empty assistant
-        // reply landed. Counting assistant messages avoids mistaking the newly
-        // added user prompt for a completed generation.
-        if (
-          (verdict === "idle" || verdict === "missing") &&
-          hasNewAssistantReply(messages, assistantCountBefore)
-        ) {
-          break
+      },
+      planPath,
+      model,
+      agent,
+      planTimeoutMs,
+      // SDK call seams: wire to the real api.ts implementations.
+      sendPrompt: (c, params, opts) =>
+        sendPromptAsync(c, params, opts).then(() => undefined),
+      reconcile: (c, sid) => reconcileSession(c, sid),
+      fetchMessages: (c, sid) => fetchMessages(c, sid),
+      readGoal: () => goal, // already collected above
+      readChoice: () => (prompt(t("cpAskApprove")) || ""),
+      readEditFeedback: () => prompt(t("cpAskEdit")),
+      writePlan: async (path, content) => {
+        await Bun.write(path, content)
+      },
+      sleep: (ms) => Bun.sleep(ms),
+      now: () => Date.now(),
+      emit: (line) => {
+        // Wrap the proposed plan with the title bar chrome; pass other lines
+        // through verbatim.
+        if (line === "\n") {
+          console.log("")
+          return
         }
-        if (Date.now() > deadline) {
-          throw new Error(t("cpTimeout", { secs: Math.round(planTimeoutMs / 1000) }))
-        }
-      }
+        console.log(line)
+      },
+    })
 
-      const text = extractLastAssistantText(messages)
-      if (!text) {
-        console.error(t("cpNoContent"))
-        process.exitCode = 1
-        break
-      }
-      plan = stripCodeFences(text)
-
-      const w = terminalCols()
-      console.log("\n" + titleBar(t("cpProposedTitle"), w) + "\n")
-      console.log(plan)
-      console.log("\n" + bar(w))
-
-      const choice = (prompt(t("cpAskApprove")) || "").trim().toLowerCase()
-
-      // Accept both English and Spanish letters regardless of UI language.
-      if (["y", "yes", "s", "si", "sí"].includes(choice)) {
-        await Bun.write(planPath, plan.endsWith("\n") ? plan : plan + "\n")
-        console.log(t("cpSaved", { path: planPath }))
-        const planArg = planPath === DEFAULTS.PLAN_FILE ? "" : ` --plan ${planPath}`
-        console.log(t("cpRunHint", { planArg }))
-        return false
-      }
-      if (["r", "run", "ejecutar"].includes(choice)) {
-        // Save AND launch the loop now (equivalent to `ocloop -r`). Returning
-        // true tells the caller to boot the TUI with run=true in-process.
-        await Bun.write(planPath, plan.endsWith("\n") ? plan : plan + "\n")
-        console.log(t("cpSaved", { path: planPath }))
-        console.log(t("cpStarting"))
-        return true
-      }
-      if (["e", "edit", "editar"].includes(choice)) {
-        const feedback = prompt(t("cpAskEdit"))
-        if (!feedback || !feedback.trim()) {
-          console.log(t("cpNoChanges"))
-          continue
-        }
-        currentPrompt = buildRefinePrompt(plan, feedback.trim())
-        continue
-      }
-
-      console.log(t("cpCancelled"))
+    // Map the outcome to exit semantics.
+    if (outcome.type === "saved") {
+      if (outcome.runAfter) return true
+      const planArg = planPath === DEFAULTS.PLAN_FILE ? "" : ` --plan ${planPath}`
+      console.log(t("cpRunHint", { planArg }))
       return false
     }
+    if (outcome.type === "cancelled") {
+      return false
+    }
+    // no-content / timeout / error → exit 1 (no-content/timeout were already
+    // surfaced via emit; the error case needs the cpError wrapper).
+    if (outcome.type === "error") {
+      console.error(t("cpError", { message: outcome.message }))
+    }
+    process.exitCode = 1
+    return false
   } catch (err) {
     console.error(
       t("cpError", { message: err instanceof Error ? err.message : String(err) }),
@@ -379,8 +332,6 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
       // ignore
     }
   }
-  // Reached only on the error path (the approval loop returns directly); never
-  // auto-run a plan whose generation failed.
   return false
 }
 
