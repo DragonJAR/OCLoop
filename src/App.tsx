@@ -432,6 +432,24 @@ function AppContent(props: AppProps) {
       stats.resume()
     }
 
+    // Reset the cooldown-resume flag when we leave cooldown WITHOUT a matching
+    // iteration_started. The reducer allows cooldown → complete / error / stopped
+    // (plan_complete, fatal error, quit mid-cooldown); none of those re-enter
+    // running with a sessionId, so the flag set at running→cooldown above would
+    // otherwise stay stuck true. On the NEXT run's first iteration_started it
+    // would then take the `pendingCooldownResume` branch (stats.resume() instead
+    // of startIteration() + sessionStats.resetTaskTokens()), silently corrupting
+    // per-iteration token/cost accounting. resume_cooldown → running/paused is
+    // excluded because it DOES reach iteration_started and consumes the flag
+    // there. Single DRY guard covering all three leak paths.
+    if (
+      prev.type === "cooldown" &&
+      state.type !== "running" &&
+      state.type !== "paused"
+    ) {
+      pendingCooldownResume = false
+    }
+
     // Detect session_idle: transitioning from running/pausing with sessionId to running without
     // or from pausing to paused
     if (
