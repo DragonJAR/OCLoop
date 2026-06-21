@@ -31,6 +31,7 @@ import { describeResumeAlignment } from "../lib/resume-alignment"
 import { resolvePlanFile } from "../lib/plan-file"
 import { ensureGitignore } from "../lib/project"
 import { tryGetClient, reconcileSession } from "../lib/api"
+import { doResumeFlow } from "../lib/resume-flow"
 import { log } from "../lib/debug-logger"
 
 export interface ResumeDeps {
@@ -69,58 +70,31 @@ export function useResume(deps: ResumeDeps): ResumeApi {
   const { loop, cooldown, watchdog, activityLog, dialog, t } = deps
 
   /**
-   * Resume a persisted run. If the old session is still working on the server
-   * we re-attach to it; otherwise (the usual case — the embedded server died
-   * with us) we continue the loop with a fresh iteration, preserving the count.
+   * Resume a persisted run. Delegates to `doResumeFlow` (the extracted,
+   * unit-tested logic in `src/lib/resume-flow.ts`); this wrapper just adapts
+   * the full `ResumeDeps` (live hooks/services) to the minimal collaborator
+   * surface the extracted function needs, and keeps the health-log line that
+   * records the reconcile verdict for `.loop.log` replay.
    */
   async function doResume(p: PersistedLoopState): Promise<void> {
-    cooldown.setAttempts(p.rateLimitAttempts || 0)
-    // Pass the GETTER (not its invoked value): tryGetClient's contract is
-    // `getUrl: () => string | null` and it invokes the getter once internally.
-    // The prior `deps.serverUrl()` passed a string where a function was
-    // expected — a type hole that would have thrown `serverUrl is not a
-    // function` at runtime the moment a resume ran with a live server URL.
-    const client = tryGetClient(deps.serverUrl)
-    let verdict: ReconcileResult = "missing"
-    if (client && p.sessionId) {
-      verdict = await reconcileSession(client, p.sessionId)
-    }
-    log.health("resume", verdict, {
+    const outcome = await doResumeFlow(
+      {
+        loop,
+        cooldown,
+        watchdog,
+        activityLog,
+        t,
+        resolveClient: () => tryGetClient(deps.serverUrl),
+        reconcile: (client, sessionId) => reconcileSession(client, sessionId),
+        clearLoopState,
+        reconcileAndAdvance: deps.reconcileAndAdvance,
+      },
+      p,
+    )
+    log.health("resume", outcome.verdict, {
       iteration: p.iteration,
       sessionId: p.sessionId,
     })
-
-    if (verdict === "working" && p.sessionId) {
-      activityLog.addEvent(
-        "session_start",
-        t("actResuming", { id: p.sessionId.substring(0, 8), iteration: p.iteration }),
-      )
-      loop.dispatch({
-        type: "resume_session",
-        iteration: p.iteration,
-        sessionId: p.sessionId,
-      })
-      watchdog.notifyIterationStart()
-      void deps.reconcileAndAdvance()
-    } else {
-      activityLog.addEvent("task", t("actContinuing", { verdict }))
-      await clearLoopState()
-      // When verdict === "idle", the in-flight session already finished its
-      // work in a previous run (the process crashed between the session idling
-      // and plan_complete being detected). The upcoming startIteration +
-      // iteration_started would otherwise bump the counter to p.iteration + 1,
-      // over-counting the work done. Dispatch iteration_resumed (instead of
-      // resume_session) so the next iteration_started skips the increment. For
-      // missing/unknown verdicts the in-flight session's outcome is unknown, so
-      // we use resume_session to start a genuinely new iteration counted as
-      // p.iteration + 1.
-      const isIdleResume = verdict === "idle"
-      loop.dispatch({
-        type: isIdleResume ? "iteration_resumed" : "resume_session",
-        iteration: p.iteration,
-        sessionId: "",
-      })
-    }
   }
 
   async function initializeSession(): Promise<void> {
