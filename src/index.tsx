@@ -80,6 +80,43 @@ async function preflightCwdWritable(): Promise<{ ok: true } | { ok: false; messa
 }
 
 /**
+ * Ensure the loop prompt file exists. When the DEFAULT path is missing, auto-
+ * create it with a starter template (in the active language) so a fresh project
+ * just works. A user-supplied --prompt path that's missing stays a hard error —
+ * they meant that specific file.
+ *
+ * Extracted so both validatePrerequisites and the --create-plan "save & run"
+ * path can guarantee the prompt before the TUI starts. validatePrerequisites
+ * early-returns under --debug, so save & run (run=true) cannot rely on it alone
+ * — without this the first auto-run iteration fails with "Prompt file not found".
+ */
+async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
+  const promptExists = await fileExists(args.promptFile)
+  if (!promptExists) {
+    if (args.promptFile === DEFAULTS.PROMPT_FILE) {
+      // Bun.write() can reject on EACCES/EROFS/ENOENT/ENOSPC/EISDIR; wrap so the
+      // rejection doesn't escape to main().catch() as a raw stack trace. Mirrors
+      // the errPlanNotFound / errPromptNotFound pattern.
+      try {
+        await Bun.write(args.promptFile, t("defaultLoopPrompt"))
+        console.log(t("promptCreated", { path: args.promptFile }))
+      } catch (err) {
+        console.error(
+          t("errCannotCreatePrompt", {
+            path: args.promptFile,
+            message: err instanceof Error ? err.message : String(err),
+          }),
+        )
+        process.exit(1)
+      }
+    } else {
+      console.error(t("errPromptNotFound", { path: args.promptFile }))
+      process.exit(1)
+    }
+  }
+}
+
+/**
  * Validate that required files exist before starting
  */
 async function validatePrerequisites(args: CLIArgs): Promise<void> {
@@ -148,33 +185,9 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
     process.exit(0)
   }
 
-  // Loop prompt file. When the DEFAULT path is missing, auto-create it with a
-  // starter template (in the active language) so a fresh project just works. A
-  // user-supplied --prompt path that's missing stays a hard error — they meant
-  // that specific file.
-  const promptExists = await fileExists(args.promptFile)
-  if (!promptExists) {
-    if (args.promptFile === DEFAULTS.PROMPT_FILE) {
-      // Bun.write() can reject on EACCES/EROFS/ENOENT/ENOSPC/EISDIR; wrap so the
-      // rejection doesn't escape to main().catch() as a raw stack trace. Mirrors
-      // the errPlanNotFound / errPromptNotFound pattern.
-      try {
-        await Bun.write(args.promptFile, t("defaultLoopPrompt"))
-        console.log(t("promptCreated", { path: args.promptFile }))
-      } catch (err) {
-        console.error(
-          t("errCannotCreatePrompt", {
-            path: args.promptFile,
-            message: err instanceof Error ? err.message : String(err),
-          }),
-        )
-        process.exit(1)
-      }
-    } else {
-      console.error(t("errPromptNotFound", { path: args.promptFile }))
-      process.exit(1)
-    }
-  }
+  // Loop prompt file: auto-create the default when missing (shared helper, also
+  // used by the --create-plan "save & run" path).
+  await ensureLoopPrompt(args)
 }
 
 
@@ -441,6 +454,11 @@ async function main(): Promise<void> {
       process.exit(process.exitCode ?? 0)
     }
     args.run = true
+    // Guarantee the loop prompt exists before the TUI auto-runs (run=true).
+    // validatePrerequisites below also creates it, but it early-returns under
+    // --debug, so without this save & run would hit "Prompt file not found" on
+    // the first iteration.
+    await ensureLoopPrompt(args)
   }
 
   // Boot pre-flight: cwd must be writable. The state store and the debug
