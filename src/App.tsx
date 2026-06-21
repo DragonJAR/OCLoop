@@ -29,6 +29,7 @@ import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
+import { resolveTierMapping } from "./lib/resolve-tier-mapping"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview } from "./lib/format"
 import { lookupCost, estimateCost } from "./lib/pricing"
@@ -1408,32 +1409,26 @@ function AppContent(props: AppProps) {
             // cancel degrades gracefully to "no mapping" = the single resolved model.
             if (props.routing && !routingPanelShown) {
               routingPanelShown = true
-              void (async () => {
-                try {
-                  const catalog = await fetchModelCatalog(client)
-                  if (catalog.length === 0) {
-                    log.warn("routing", "No connected models found; skipping routing panel")
-                    startOnce()
-                    return
-                  }
-                  const options: DialogSelectOption[] = catalog.map((m) => ({
-                    title: m.name,
-                    value: m.id,
-                    category: m.provider,
-                  }))
-                  const mapping = await DialogTierPicker.show(dialog, ROUTING_TIERS, options)
-                  setTierMapping(Object.keys(mapping).length > 0 ? mapping : null)
-                  if (mapping.heavy) {
-                    log.info("routing", "Routing enabled", mapping as unknown as Record<string, unknown>)
-                  }
-                  startOnce()
-                } catch (err) {
-                  log.error("routing", "Tier picker failed; continuing without routing", err)
-                  setTierMapping(null)
-                  startOnce()
-                }
-              })()
-              return // startOnce() is driven inside the async block above
+              // Delegate to resolveTierMapping (src/lib/resolve-tier-mapping.ts),
+              // extracted so the four branches (empty catalog / success / cancel
+              // / failure) are unit-testable. `onComplete` (= startOnce) runs in
+              // the helper's finally, so the loop always advances to session
+              // init regardless of which branch fires — a hardening over the
+              // original, which called startOnce explicitly in three spots and
+              // could stall on a fourth unhandled path. fetchModelCatalog and
+              // DialogTierPicker.show are passed in so the .ts helper imports
+              // no .tsx and no SDK client.
+              void resolveTierMapping({
+                routing: !!props.routing,
+                client,
+                dialog,
+                tiers: ROUTING_TIERS,
+                fetchCatalog: fetchModelCatalog,
+                showPicker: DialogTierPicker.show,
+                setTierMapping,
+                onComplete: startOnce,
+              })
+              return // startOnce() is driven inside resolveTierMapping's finally
             }
             startOnce()
           })
