@@ -259,14 +259,17 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     }
 
     case "plan_complete": {
-      // The plan can be detected as complete from any active/waiting state
-      // (running/pausing/paused/ready/cooldown/error). Carry the iteration
-      // count forward so the completion summary reports real progress:
-      //   - running/pausing/paused/cooldown carry `iteration` directly
+      // The plan can be detected as complete from these active/waiting states:
+      // running/paused/ready/cooldown/error. `pausing` is intentionally NOT here
+      // (it's a no-op, asserted by the state-matrix audit test): a pausing run
+      // transitions to `paused` via session_idle first, so completion is observed
+      // from `paused`, never mid-pause. Carry the iteration count forward so the
+      // completion summary reports real progress:
+      //   - running/paused/cooldown carry `iteration` directly
       //   - error carries `lastIteration` (set when entering error; see below)
       //   - ready never ran an iteration → 0
       // `"iteration" in state` is the single DRY source of truth across the
-      // four iteration-bearing states, replacing the per-state ternary.
+      // iteration-bearing states, replacing the per-state ternary.
       if (
         state.type === "ready" ||
         state.type === "running" ||
