@@ -98,13 +98,17 @@ describe("compareAndSwapPlan", () => {
   it("writes the full updated content, not a patch", async () => {
     // Sanity: result is the complete new file body, exercising multi-line.
     const original = "# Plan\n\n- [ ] one\n- [ ] two\n"
+    const expected = "# Plan\n\n- [x] one\n- [x] two\n"
     writeFileSync(planPath, original, "utf-8")
     const res = await compareAndSwapPlan(planPath, (c) =>
       c.replace("- [ ] one\n", "- [x] one\n").replace("- [ ] two\n", "- [x] two\n"),
     )
     expect(res.wrote).toBe(true)
-    expect(res.result).toBe("# Plan\n\n- [x] one\n- [x] two\n")
-    expect(await Bun.file(planPath).text()).toBe(res.result)
+    expect(res.result).toBe(expected)
+    // res.result is `string | null` by type, but `wrote === true` guarantees it
+    // is the written string; compare the on-disk content against the same
+    // literal rather than the union-typed field so the assertion stays sound.
+    expect(await Bun.file(planPath).text()).toBe(expected)
   })
 
   it("does not leave temp files behind on any path", async () => {

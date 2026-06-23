@@ -1,7 +1,7 @@
 import { For } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
-import { DialogHeader } from "../ui/DialogControls"
+import { DialogHeader, dialogScrollbarOptions } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { t } from "../lib/i18n"
 
@@ -100,13 +100,7 @@ export function DialogHelp(props: DialogHelpProps) {
         {/* Sections in a scrollbox so they fit any terminal height */}
         <scrollbox
           maxHeight={17}
-          verticalScrollbarOptions={{
-            visible: true,
-            trackOptions: {
-              backgroundColor: theme().backgroundPanel,
-              foregroundColor: theme().borderSubtle,
-            },
-          }}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <Section title={t("helpSectionLoop")} rows={loopKeys} />
           <Section title={t("helpSectionSession")} rows={sessionKeys} />

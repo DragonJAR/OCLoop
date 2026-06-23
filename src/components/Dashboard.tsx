@@ -221,8 +221,12 @@ export function Dashboard(props: DashboardProps) {
       if (state.sessionId) {
         const maxLen = 20
         const sessionId = state.sessionId
-        if (sessionId.length <= maxLen) return `Session: ${sessionId}`
-        return `Session: ${sessionId.substring(0, maxLen - 3)}...`
+        // The prefix ("Session: ") is i18n'd via lblSessionPrefix so the debug
+        // dashboard stays localized; the truncation math reserves 3 cols for the
+        // ellipsis when the id overflows maxLen.
+        const prefix = t("lblSessionPrefix")
+        if (sessionId.length <= maxLen) return `${prefix}${sessionId}`
+        return `${prefix}${sessionId.substring(0, maxLen - 3)}...`
       }
       return null
     }

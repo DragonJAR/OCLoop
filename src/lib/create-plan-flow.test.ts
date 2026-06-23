@@ -329,7 +329,12 @@ describe("runCreatePlanFlow", () => {
     // do not pin it here to avoid a test that would have to lie about the
     // inputs. (If hasNewAssistantReply's text check is ever relaxed, add a
     // test here using assistantNoTextMsg().)
-    it.todo("returns no-content when the assistant reply has no extractable text")
+    //
+    // NOTE: there used to be an `it.todo(name)` placeholder here, but Bun's
+    // type defs declare `it.todo` as `Test<T>` (requires label + fn), so the
+    // 1-arg form — valid at runtime — failed `tsc --noEmit` (TS2554). The
+    // placeholder carried no executable assertion and the rationale is fully
+    // captured by this comment, so it was removed rather than worked around.
   })
 
   describe("error handling", () => {

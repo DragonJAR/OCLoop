@@ -15,6 +15,7 @@
 
 import { type Clock, systemClock } from "./clock"
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 export interface SleepDetectorOptions {
   /** Sampling interval in ms (default 5000). */
@@ -69,7 +70,7 @@ export function createSleepDetector(options: SleepDetectorOptions): SleepDetecto
       } catch (err) {
         log.warn("sleep", "onWake handler threw; wake handling skipped", {
           gapMs: gap,
-          message: err instanceof Error ? err.message : String(err),
+          message: toErrorMessage(err),
         })
       }
     }

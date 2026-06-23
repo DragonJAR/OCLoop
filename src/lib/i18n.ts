@@ -356,6 +356,7 @@ const en = {
   lblAvg: "Avg/task",
   lblEta: "Remaining",
   lblTaskPrefix: "Task: ",
+  lblSessionPrefix: "Session: ",
   lblWaiting: "waiting...",
   lblGuard: "Health",
   // --- BottomPanel labels ---
@@ -422,6 +423,7 @@ const en = {
       "",
     ].join("\n"),
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
+  errCreateDebugSession: (p: Params) => `Failed to create debug session: ${p.message}`,
   errNoProgress: (p: Params) =>
     [
       `Loop halted: ${p.count} consecutive iterations started on the same task without progress.`,
@@ -886,6 +888,7 @@ const es: Record<MessageKey, Msg> = {
   lblAvg: "Prom/tarea",
   lblEta: "Restante",
   lblTaskPrefix: "Tarea: ",
+  lblSessionPrefix: "Sesión: ",
   lblWaiting: "esperando...",
   lblGuard: "Salud",
   lblTotal: "Tiempo total",
@@ -946,6 +949,7 @@ const es: Record<MessageKey, Msg> = {
       "",
     ].join("\n"),
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
+  errCreateDebugSession: (p) => `Fallo al crear la sesión de depuración: ${p.message}`,
   errNoProgress: (p) =>
     [
       `Bucle detenido: ${p.count} iteraciones consecutivas comenzaron en la misma tarea sin progreso.`,

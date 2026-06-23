@@ -1,4 +1,22 @@
 
+/**
+ * Narrow an unknown caught value to a human-readable message string.
+ *
+ * Used at every error-display / error-log site (there were 22 inline copies of
+ * `err instanceof Error ? err.message : String(err)` across the codebase). One
+ * helper means one place to change error-rendering policy (e.g. including
+ * `err.cause`, redacting secrets, or prefixing with the error name) instead of
+ * editing every call site in lockstep.
+ *
+ * - `Error` instances → their `.message`.
+ * - Anything else → `String(value)` (objects stringify to `"[object Object]"`,
+ *   which is intentionally lossy — caught non-Errors are almost always bugs in
+ *   a throw site, and a structured dump belongs in `log.error`, not the toast).
+ */
+export function toErrorMessage(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
 export function formatTokenCount(n: number): string {
   // NaN/Infinity would render as "NaN"/"∞" — fall back to "0" so a corrupted
   // or missing token count shows a clean zero instead of a broken label.
@@ -70,13 +88,10 @@ export function getToolPreview(toolName: string, input: Record<string, unknown>)
         // Normalize whitespace to a single line; let the log fit it to width.
         return truncateText(String(input.command || ""), PREVIEW_MAX);
       case "read":
-        return getBasename(String(input.filePath || ""));
       case "write":
-        return getBasename(String(input.filePath || ""));
       case "edit":
         return getBasename(String(input.filePath || ""));
       case "glob":
-        return String(input.pattern || "");
       case "grep":
         return String(input.pattern || "");
       case "task":

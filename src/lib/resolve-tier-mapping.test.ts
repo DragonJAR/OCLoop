@@ -42,7 +42,7 @@ interface StubState {
   fetchThrows: boolean
 }
 
-function makeDeps(over: Partial<StubState> = {}): { deps: ResolveTierMappingDeps; state: StubState } {
+function makeDeps(over: Partial<StubState> = {}): { deps: ResolveTierMappingDeps<unknown, unknown>; state: StubState } {
   const state: StubState = {
     setMappingCalls: [],
     onCompleteCalls: 0,
@@ -52,7 +52,7 @@ function makeDeps(over: Partial<StubState> = {}): { deps: ResolveTierMappingDeps
     fetchThrows: false,
     ...over,
   }
-  const deps: ResolveTierMappingDeps = {
+  const deps: ResolveTierMappingDeps<unknown, unknown> = {
     routing: true,
     client: {},
     dialog: {},

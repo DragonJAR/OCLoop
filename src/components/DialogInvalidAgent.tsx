@@ -2,7 +2,7 @@ import { createSignal } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
 import { useTheme } from "../context/ThemeContext"
-import { DialogHeader, DialogButton } from "../ui/DialogControls"
+import { DialogHeader, DialogButton, dialogScrollbarOptions } from "../ui/DialogControls"
 import { t } from "../lib/i18n"
 
 export interface DialogInvalidAgentProps {
@@ -60,13 +60,7 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
               scrollbar styling. */}
           <scrollbox
             maxHeight={5}
-            verticalScrollbarOptions={{
-              visible: true,
-              trackOptions: {
-                backgroundColor: theme().backgroundPanel,
-                foregroundColor: theme().borderSubtle,
-              },
-            }}
+            verticalScrollbarOptions={dialogScrollbarOptions(theme())}
           >
             {props.availableAgents.map(agent => (
               <text>

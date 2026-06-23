@@ -12,6 +12,7 @@
 import {
   type OpencodeClient,
   type SessionMessage,
+  type ReconcileResult,
   createSession,
   sendPromptAsync,
   reconcileSession,
@@ -22,6 +23,7 @@ import {
   abortSession,
 } from "./api"
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 export interface OneShotOptions {
   agent?: string
@@ -60,13 +62,21 @@ export async function runOneShotAgent(
     let messages: SessionMessage[] = []
     for (;;) {
       await Bun.sleep(pollMs)
-      const verdict = await reconcileSession(client, sessionID)
+      // Both reconcileSession and fetchMessages hit the SAME localhost opencode
+      // server. fetchMessages was already retried on a transient blip, but
+      // reconcileSession (one line above, in the original) was awaited
+      // unguarded — so a reconcile blip would throw, run the finally (aborting
+      // the session), and surface as a hard failure even though the identical
+      // failure mode in fetchMessages was tolerated. Merging them into one try
+      // applies the same "localhost blips are transient" policy to both: retry
+      // next tick, with the deadline as the backstop.
+      let verdict: ReconcileResult | undefined
       try {
+        verdict = await reconcileSession(client, sessionID)
         messages = await fetchMessages(client, sessionID)
       } catch (err) {
-        // Transient localhost blip — retry next tick; the deadline is the backstop.
-        log.warn("one-shot", "Transient fetchMessages failure, will retry", {
-          message: err instanceof Error ? err.message : String(err),
+        log.warn("one-shot", "Transient server call failure, will retry", {
+          message: toErrorMessage(err),
         })
         if (Date.now() > deadline) throw new Error("One-shot agent timed out")
         continue

@@ -1,7 +1,7 @@
 import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
-import { DialogHeader } from "../ui/DialogControls"
+import { DialogHeader, dialogScrollbarOptions } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { AUTO_SELECT_MS } from "../lib/constants"
 import { t } from "../lib/i18n"
@@ -80,13 +80,7 @@ export function DialogError(props: DialogErrorProps) {
         <scrollbox
           marginTop={1}
           maxHeight={6}
-          verticalScrollbarOptions={{
-            visible: true,
-            trackOptions: {
-              backgroundColor: theme().backgroundPanel,
-              foregroundColor: theme().borderSubtle,
-            },
-          }}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <text>
             <span style={{ fg: theme().text }}>{props.message}</span>

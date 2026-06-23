@@ -8,6 +8,7 @@
 import type { TerminalConfig } from "./config"
 import { commandExists } from "./command-exists"
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 /**
  * A known terminal emulator with its launch configuration
@@ -269,7 +270,7 @@ export async function launchTerminal(
 
     return { success: true }
   } catch (err) {
-    const error = err instanceof Error ? err.message : String(err)
+    const error = toErrorMessage(err)
     log.error("terminal", "Failed to launch terminal", error)
     return {
       success: false,

@@ -8,6 +8,7 @@
  */
 
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 export interface PowerManager {
   /** Start keeping the system awake (no-op if disabled / unsupported / already on). */
@@ -54,7 +55,7 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
     } catch (err) {
       // caffeinate missing or spawn failed — degrade gracefully.
       log.health("power", "caffeinate_failed", {
-        message: err instanceof Error ? err.message : String(err),
+        message: toErrorMessage(err),
       })
       proc = null
     }

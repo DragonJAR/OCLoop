@@ -2,7 +2,7 @@ import { createSignal, onCleanup, onMount, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
-import { DialogHeader, DialogButton } from "./DialogControls"
+import { DialogHeader, DialogButton, dialogScrollbarOptions } from "./DialogControls"
 import { DialogContextValue } from "../context/DialogContext"
 import { AUTO_SELECT_MS } from "../lib/constants"
 import { t } from "../lib/i18n"
@@ -82,13 +82,7 @@ export function DialogDecomposeApproval(props: DialogDecomposeApprovalProps) {
         marginTop={1}
         marginBottom={1}
         maxHeight={11}
-        verticalScrollbarOptions={{
-          visible: true,
-          trackOptions: {
-            backgroundColor: theme().backgroundPanel,
-            foregroundColor: theme().borderSubtle,
-          },
-        }}
+        verticalScrollbarOptions={dialogScrollbarOptions(theme())}
       >
         <text>
           <span style={{ fg: theme().textMuted }}>{props.message}</span>

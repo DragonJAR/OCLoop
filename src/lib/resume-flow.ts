@@ -20,30 +20,43 @@
 
 import type { t as Tfn } from "./i18n"
 import type { PersistedLoopState } from "./loop-state-store"
-import type { ReconcileResult } from "./api"
+import type { ReconcileResult, OpencodeClient } from "./api"
 import type { LoopAction } from "../types"
+import type { UseActivityLogReturn } from "../hooks/useActivityLog"
 
 /**
  * Minimal collaborator surface for the resume flow. Each member is exactly
  * what `doResume` called on its closed-over hooks/services — narrowed to the
  * methods actually used so a test stub has the smallest possible surface.
+ *
+ * Generic in the client type so the production wrapper passes a real
+ * `OpencodeClient` (via `tryGetClient`) while tests pass a stub — both without
+ * `as` casts. `C` is inferred from `resolveClient`/`reconcile` at the call
+ * site. Earlier revisions used a hand-rolled `{ reconcile: ... }` shape that
+ * diverged from `OpencodeClient` and forced the wrapper to `as`-cast on every
+ * call (TS2322/TS2345); using the real SDK type (re-exported from api.ts, a
+ * `.ts`) removes those casts while keeping this file SDK-import-free of any
+ * runtime value.
  */
-export interface ResumeFlowDeps {
+export interface ResumeFlowDeps<C = OpencodeClient> {
   /** Loop state-machine dispatch. */
   loop: { dispatch: (action: LoopAction) => void }
   /** Restores the rate-limit retry counter from the persisted snapshot. */
   cooldown: { setAttempts: (n: number) => void }
   /** Notified only on the re-attach (working) branch. */
   watchdog: { notifyIterationStart: () => void }
-  /** Activity log; receives the resume/continue event line. */
-  activityLog: { addEvent: (...args: unknown[]) => void }
+  /** Activity log; receives the resume/continue event line. Typed as the real
+   * `UseActivityLogReturn` (exported from a `.ts`, so importable here) instead
+   * of an ad-hoc `{ addEvent: (...args: unknown[]) => void }` that was never
+   * assignable to it (contravariant params: `unknown` ↛ `ActivityEventType`). */
+  activityLog: Pick<UseActivityLogReturn, "addEvent">
   /** i18n function. */
   t: typeof Tfn
   /** Resolves the client for `p.sessionId`; null when the server is gone. */
-  resolveClient: () => { reconcile: (sessionId: string) => Promise<ReconcileResult> } | null
+  resolveClient: () => C | null
   /** Reconcile the persisted session against the server; injected (not
    * imported) so tests stub it without `mock.module`. */
-  reconcile: (client: NonNullable<ReturnType<ResumeFlowDeps["resolveClient"]>>, sessionId: string) => Promise<ReconcileResult>
+  reconcile: (client: C, sessionId: string) => Promise<ReconcileResult>
   /** Clears the persisted snapshot; only the idle branch continues with a
    * fresh iteration, so only it clears state. */
   clearLoopState: () => Promise<void>
@@ -70,8 +83,8 @@ export interface ResumeOutcome {
  *
  * Behavior is byte-identical to the former inline `doResume` closure.
  */
-export async function doResumeFlow(
-  deps: ResumeFlowDeps,
+export async function doResumeFlow<C = OpencodeClient>(
+  deps: ResumeFlowDeps<C>,
   p: PersistedLoopState,
 ): Promise<ResumeOutcome> {
   const { loop, cooldown, watchdog, activityLog, t, resolveClient, reconcile, clearLoopState, reconcileAndAdvance } = deps

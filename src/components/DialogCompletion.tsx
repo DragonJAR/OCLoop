@@ -1,7 +1,7 @@
 import { createSignal } from "solid-js";
 import { useKeyboard } from "@opentui/solid";
 import { Dialog } from "../ui/Dialog";
-import { DialogHeader, DialogButton } from "../ui/DialogControls";
+import { DialogHeader, DialogButton, dialogScrollbarOptions } from "../ui/DialogControls";
 import { useTheme } from "../context/ThemeContext";
 import { formatDuration } from "../lib/format";
 import { t } from "../lib/i18n";
@@ -76,13 +76,7 @@ export function DialogCompletion(props: DialogCompletionProps) {
         <scrollbox
           marginTop={1}
           maxHeight={12}
-          verticalScrollbarOptions={{
-            visible: true,
-            trackOptions: {
-              backgroundColor: theme().backgroundPanel,
-              foregroundColor: theme().borderSubtle,
-            },
-          }}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
           viewportOptions={{
             paddingRight: 1,
           }}

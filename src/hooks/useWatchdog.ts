@@ -24,6 +24,7 @@ import { createSignal, onCleanup } from "solid-js"
 import { type Clock, systemClock } from "../lib/clock"
 import type { ReconcileResult } from "../lib/api"
 import { log as defaultLog } from "../lib/debug-logger"
+import { toErrorMessage } from "../lib/format"
 
 export type WatchdogHealth =
   | "HEALTHY"
@@ -300,7 +301,7 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
         // Never let a recovery action's rejection become an unhandled rejection.
         tick().catch((err) => {
           log("tick_error", {
-            message: err instanceof Error ? err.message : String(err),
+            message: toErrorMessage(err),
           })
         })
       }, options.config().tickMs)

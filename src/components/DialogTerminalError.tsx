@@ -1,5 +1,5 @@
 import { Dialog } from "../ui/Dialog"
-import { DialogHeader } from "../ui/DialogControls"
+import { DialogHeader, dialogScrollbarOptions } from "../ui/DialogControls"
 import { useTheme } from "../context/ThemeContext"
 import { getConfigPath } from "../lib/config"
 import { t } from "../lib/i18n"
@@ -69,13 +69,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
         <scrollbox
           marginTop={1}
           maxHeight={4}
-          verticalScrollbarOptions={{
-            visible: true,
-            trackOptions: {
-              backgroundColor: theme().backgroundPanel,
-              foregroundColor: theme().borderSubtle,
-            },
-          }}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <text>
             <span style={{ fg: theme().text }}>{props.errorMessage}</span>

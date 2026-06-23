@@ -5,6 +5,7 @@ import { withTimeout } from "../lib/with-timeout"
 import { assertResponse, getApiTimeouts } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
+import { toErrorMessage } from "../lib/format"
 
 /**
  * Server status states.
@@ -175,7 +176,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
       return true
     } catch (err) {
       log.health("server", "ping_failed", {
-        message: err instanceof Error ? err.message : String(err),
+        message: toErrorMessage(err),
       })
       // A failed ping means the process is up but unresponsive.
       if (status() === "ready") {

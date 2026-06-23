@@ -16,6 +16,7 @@
 
 import { createSignal, onCleanup, type Accessor } from "solid-js"
 import { t } from "../lib/i18n"
+import { toErrorMessage } from "../lib/format"
 
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -61,7 +62,7 @@ export function createToastController(): ToastContextValue {
   }
 
   const error = (err: unknown) => {
-    const message = err instanceof Error ? err.message : String(err)
+    const message = toErrorMessage(err)
     show({
       title: t("errorTitle"),
       message,
