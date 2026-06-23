@@ -25,17 +25,29 @@ import type { DialogSelectOption } from "../ui/DialogSelect"
 import type { TierRole } from "../ui/DialogTierPicker"
 import { log } from "./debug-logger"
 
-/** Fetches the connected-provider catalog; injected so no SDK import here. */
-export type CatalogFetcher = (client: unknown) => Promise<ModelCatalogEntry[]>
+/**
+ * Fetches the connected-provider catalog; injected so no SDK import here.
+ *
+ * Generic in the client type so a concrete `OpencodeClient` (App.tsx) and a
+ * stub `{}` (tests) are both assignable. This fixes a real type error: an
+ * earlier hard-coded `unknown` parameter made the slot *contravariant*, so a
+ * real `(client: OpencodeClient) => ...` was NOT assignable (TS2322). `C` is
+ * inferred from the call site, so the `.ts` still imports no SDK type.
+ */
+export type CatalogFetcher<C> = (client: C) => Promise<ModelCatalogEntry[]>
 
 /**
  * Awaitable tier picker. Structurally identical to
  * `DialogTierPicker.show(dialog, tiers, options): Promise<Record<string,string>>`.
  * Injected so this file never imports the `.tsx`. Returns `{}` on cancel/Esc
  * at step 0, a partial mapping on Esc mid-flow, or the full mapping on finish.
+ *
+ * Generic in the dialog type for the same reason as `CatalogFetcher`: a real
+ * `DialogContextValue` and a stub `{}` both satisfy the slot without importing
+ * the `.tsx`.
  */
-export type TierPicker = (
-  dialog: unknown,
+export type TierPicker<D> = (
+  dialog: D,
   tiers: TierRole[],
   options: DialogSelectOption[],
 ) => Promise<Record<string, string>>
@@ -45,20 +57,24 @@ export type TierPicker = (
  * `dialog`, `client` and `tiers` are passed through to the injected fetcher /
  * picker; `setTierMapping` is the output sink; `onComplete` is the session-init
  * gate (`startOnce` in App.tsx).
+ *
+ * Generic in the two injected-collaborator types so production (real SDK client
+ * + real DialogContext) and tests (stubs) both type-check against the same
+ * contract, inferred from the call site — preserving the no-`.tsx`-import rule.
  */
-export interface ResolveTierMappingDeps {
+export interface ResolveTierMappingDeps<C, D> {
   /** `props.routing` — feature gate. When false the caller must NOT call this. */
   routing: boolean
   /** SDK client (from tryGetClient(server.url)). */
-  client: unknown
+  client: C
   /** Dialog context (passed to showPicker). */
-  dialog: unknown
+  dialog: D
   /** The fixed role list (ROUTING_TIERS). */
   tiers: TierRole[]
   /** = fetchModelCatalog. */
-  fetchCatalog: CatalogFetcher
+  fetchCatalog: CatalogFetcher<C>
   /** = DialogTierPicker.show. */
-  showPicker: TierPicker
+  showPicker: TierPicker<D>
   /** Signal setter for the tier mapping. */
   setTierMapping: (mapping: TierMapping | null) => void
   /** Called exactly once when resolution finishes (success or failure), so the
@@ -81,7 +97,7 @@ export function catalogToOptions(catalog: ModelCatalogEntry[]): DialogSelectOpti
  * Returns the mapping it published (or null) so tests can assert the outcome
  * directly; the production caller ignores the return value.
  */
-export async function resolveTierMapping(deps: ResolveTierMappingDeps): Promise<TierMapping | null> {
+export async function resolveTierMapping<C, D>(deps: ResolveTierMappingDeps<C, D>): Promise<TierMapping | null> {
   // `onComplete` in finally: guarantees the loop advances to session init on
   // EVERY path. The original called it in three explicit spots; this collapses
   // them to one guaranteed call.

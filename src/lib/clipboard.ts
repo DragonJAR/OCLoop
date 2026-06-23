@@ -5,6 +5,7 @@
  */
 
 import { commandExists } from "./command-exists"
+import { toErrorMessage } from "./format"
 
 type ClipboardTool = {
   command: string;
@@ -129,7 +130,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     }
     return {
       success: false,
-      error: err instanceof Error ? err.message : String(err),
+      error: toErrorMessage(err),
     };
   }
 }

@@ -7,6 +7,13 @@ import type { LoopAction } from "../types"
 import { t as T } from "./i18n"
 
 /**
+ * Minimal client shape the resume flow exercises: just enough for the injected
+ * `reconcile`. `ResumeFlowDeps<C>` is generic in the client so production wires
+ * a real `OpencodeClient` and tests wire this stub — both without casts.
+ */
+type StubClient = { reconcile: (sessionId: string) => Promise<ReconcileResult> }
+
+/**
  * Crash-resume is the most crash-sensitive path: a wrong branch loses
  * accumulated multi-day progress. These tests pin each of the three reconcile
  * verdicts → dispatch outcomes, deterministically, via injected stubs (no
@@ -34,7 +41,7 @@ interface StubState {
   clientAvailable: boolean
 }
 
-function makeDeps(over: Partial<StubState> = {}): { deps: ResumeFlowDeps; state: StubState } {
+function makeDeps(over: Partial<StubState> = {}): { deps: ResumeFlowDeps<StubClient>; state: StubState } {
   const state: StubState = {
     dispatched: [],
     setAttemptsCalls: [],
@@ -46,7 +53,7 @@ function makeDeps(over: Partial<StubState> = {}): { deps: ResumeFlowDeps; state:
     clientAvailable: true,
     ...over,
   }
-  const deps: ResumeFlowDeps = {
+  const deps: ResumeFlowDeps<StubClient> = {
     loop: {
       dispatch: (a) => {
         state.dispatched.push(a)

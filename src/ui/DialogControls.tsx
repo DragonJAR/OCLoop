@@ -12,7 +12,28 @@
  */
 
 import { useTheme } from "../context/ThemeContext"
-import { selectedForeground } from "../lib/theme-resolver"
+import { selectedForeground, type ThemeColors } from "../lib/theme-resolver"
+
+/**
+ * Shared `verticalScrollbarOptions` for dialog scrollboxes.
+ *
+ * The exact same block (visible bar + panel/borderSubtle track colors) was
+ * copy-pasted across 8 dialogs; styling drift was inevitable. Single-sourcing
+ * it here means a scrollbar theme change touches one place. Pass the current
+ * theme snapshot (each dialog already reads `theme()` from useTheme).
+ */
+export function dialogScrollbarOptions(theme: ThemeColors): {
+  visible: true
+  trackOptions: { backgroundColor: string; foregroundColor: string }
+} {
+  return {
+    visible: true,
+    trackOptions: {
+      backgroundColor: theme.backgroundPanel,
+      foregroundColor: theme.borderSubtle,
+    },
+  }
+}
 
 /**
  * Dialog header: bold title on the left, a muted key hint on the right.

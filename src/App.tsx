@@ -31,7 +31,7 @@ import { compareAndSwapPlan } from "./lib/plan-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { resolveTierMapping } from "./lib/resolve-tier-mapping"
 import { resolveActiveSessionId } from "./lib/active-session-id"
-import { getToolPreview } from "./lib/format"
+import { getToolPreview, toErrorMessage } from "./lib/format"
 import { lookupCost, estimateCost } from "./lib/pricing"
 import { appendManifest } from "./lib/manifest"
 import { shutdownManager } from "./lib/shutdown"
@@ -1004,7 +1004,7 @@ function AppContent(props: AppProps) {
         log.warn("eval", "Judge call failed", {
           attempt,
           of: judgeAttempts,
-          message: err instanceof Error ? err.message : String(err),
+          message: toErrorMessage(err),
         })
         if (attempt === judgeAttempts) {
           // Judge consistently broken: skip the eval entirely.
@@ -1224,12 +1224,11 @@ function AppContent(props: AppProps) {
       activityLog.addEvent("session_start", t("actDebugSession", { id: newSessionId.substring(0, 8) }))
 
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      log.error("session", "Failed to create debug session", errorMessage)
+        log.error("session", "Failed to create debug session", toErrorMessage(err))
       loop.dispatch({
         type: "error",
         source: "api",
-        message: `Failed to create debug session: ${errorMessage}`,
+        message: t("errCreateDebugSession", { message: toErrorMessage(err) }),
         recoverable: true,
       })
     }
@@ -1255,8 +1254,7 @@ function AppContent(props: AppProps) {
         model: activeModel(),
       })
     } catch (err) {
-      const errorMessage = err instanceof Error ? err.message : String(err)
-      toast.show({ variant: "error", message: t("toastSendPromptFailed", { message: errorMessage }) })
+      toast.show({ variant: "error", message: t("toastSendPromptFailed", { message: toErrorMessage(err) }) })
     }
   }
 
@@ -1676,7 +1674,7 @@ function AppContent(props: AppProps) {
       subtasks = parseSubtasksFromReply(reply)
     } catch (err) {
       log.warn("decompose", "subtask generation failed", {
-        message: err instanceof Error ? err.message : String(err),
+        message: toErrorMessage(err),
       })
     }
 
@@ -1724,7 +1722,7 @@ function AppContent(props: AppProps) {
             else toast.show({ message: t("errDecomposeFailed"), variant: "error" })
           } catch (err) {
             log.warn("decompose", "subtask refine failed", {
-              message: err instanceof Error ? err.message : String(err),
+              message: toErrorMessage(err),
             })
             toast.show({ message: t("errDecomposeFailed"), variant: "error" })
           }
@@ -1762,7 +1760,7 @@ function AppContent(props: AppProps) {
         loop.dispatch({ type: "retry" })
       } catch (err) {
         log.error("decompose", "failed to apply subtasks to PLAN.md", {
-          message: err instanceof Error ? err.message : String(err),
+          message: toErrorMessage(err),
         })
         toast.show({ message: t("errDecomposeFailed"), variant: "error" })
         presentError(view)

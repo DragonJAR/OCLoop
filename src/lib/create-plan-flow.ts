@@ -34,6 +34,7 @@ import { hasNewAssistantReply, extractLastAssistantText, countAssistantMessages 
 import { stripCodeFences } from "./plan-parser"
 import { t } from "./i18n"
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 /** Outcome of one create-plan run. Discriminated so tests assert without exit. */
 export type CreatePlanOutcome =
@@ -154,7 +155,7 @@ export async function runCreatePlanFlow(deps: CreatePlanFlowDeps): Promise<Creat
           messages = await deps.fetchMessages(client, sessionID)
         } catch (err) {
           log.warn("create-plan", "Transient fetchMessages failure, will retry", {
-            message: err instanceof Error ? err.message : String(err),
+            message: toErrorMessage(err),
           })
           if (deps.now() > deadline) {
             return { type: "timeout" }
@@ -213,7 +214,7 @@ export async function runCreatePlanFlow(deps: CreatePlanFlowDeps): Promise<Creat
       return { type: "cancelled" }
     }
   } catch (err) {
-    return { type: "error", message: err instanceof Error ? err.message : String(err) }
+    return { type: "error", message: toErrorMessage(err) }
   } finally {
     try {
       deps.onClose()

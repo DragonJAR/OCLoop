@@ -22,6 +22,7 @@ import { parseArgs, preScanLang } from "./lib/cli-args"
 import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
+import { toErrorMessage } from "./lib/format"
 import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
@@ -45,7 +46,7 @@ async function fileExists(path: string): Promise<boolean> {
     console.error(
       t("errCannotReadFile", {
         path,
-        message: err instanceof Error ? err.message : String(err),
+        message: toErrorMessage(err),
       }),
     )
     process.exit(1)
@@ -82,7 +83,7 @@ async function preflightCwdWritable(): Promise<{ ok: true } | { ok: false; messa
   } catch (err) {
     return {
       ok: false,
-      message: err instanceof Error ? err.message : String(err),
+      message: toErrorMessage(err),
     }
   }
 }
@@ -112,7 +113,7 @@ async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
         console.error(
           t("errCannotCreatePrompt", {
             path: args.promptFile,
-            message: err instanceof Error ? err.message : String(err),
+            message: toErrorMessage(err),
           }),
         )
         process.exit(1)
@@ -155,7 +156,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
     console.error(
       t("errCannotReadFile", {
         path: args.planFile,
-        message: err instanceof Error ? err.message : String(err),
+        message: toErrorMessage(err),
       }),
     )
     process.exit(1)
@@ -219,7 +220,6 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   const planPath = resolvePlanFile(args.planFile)
   const modelStr = args.model || DEFAULT_PLAN_MODEL
   const agent = args.agent || DEFAULT_PLAN_AGENT
-  const model = toSdkModel(modelStr)
 
   // Resolve resilience for this headless run (App's onMount never runs here):
   // applies --resilience / config overrides to both the SDK call timeouts and
@@ -228,9 +228,15 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   configureApiTimeouts(resilience)
   const planTimeoutMs = resilience.planTimeoutMs
 
+  // toSdkModel here is only for the "invalid model" notice (no provider/model
+  // slash → undefined → show the caveat). The flow itself takes the raw string
+  // and sendPromptAsync re-runs toSdkModel, so we do NOT pre-convert for it
+  // (that was a redundant double-conversion and a type mismatch: CreatePlanFlowDeps.model
+  // is string|undefined, not the PromptModel object).
+  const modelNote = toSdkModel(modelStr) ? "" : t("cpModelNote")
   console.log(t("cpTitle"))
   console.log(
-    t("cpConfig", { model: modelStr, note: model ? "" : t("cpModelNote"), agent }),
+    t("cpConfig", { model: modelStr, note: modelNote, agent }),
   )
   console.log("")
   console.log(t("cpAskGoal"))
@@ -276,7 +282,7 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
         }
       },
       planPath,
-      model,
+      model: modelStr,
       agent,
       planTimeoutMs,
       // SDK call seams: wire to the real api.ts implementations.
@@ -322,7 +328,7 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
     return false
   } catch (err) {
     console.error(
-      t("cpError", { message: err instanceof Error ? err.message : String(err) }),
+      t("cpError", { message: toErrorMessage(err) }),
     )
     process.exitCode = 1
   } finally {

@@ -2,7 +2,7 @@ import { createSignal, onCleanup, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
-import { DialogHeader, DialogButton } from "./DialogControls"
+import { DialogHeader, DialogButton, dialogScrollbarOptions } from "./DialogControls"
 import { DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
 
@@ -81,14 +81,8 @@ export function DialogConfirm(props: DialogConfirmProps) {
         <scrollbox
           marginTop={1}
           marginBottom={1}
-          maxHeight={(props.height ?? 12) - 5}
-          verticalScrollbarOptions={{
-            visible: true,
-            trackOptions: {
-              backgroundColor: theme().backgroundPanel,
-              foregroundColor: theme().borderSubtle,
-            },
-          }}
+          maxHeight={Math.max(2, (props.height ?? 12) - 5)}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <text>
             <span style={{ fg: theme().textMuted }}>{props.message}</span>

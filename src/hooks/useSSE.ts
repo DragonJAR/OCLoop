@@ -2,6 +2,7 @@ import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { Event, Todo } from "@opencode-ai/sdk/v2"
 import { log } from "../lib/debug-logger"
+import { toErrorMessage } from "../lib/format"
 import { computeBackoff } from "../lib/backoff"
 
 /** Maximum length for individual string values in logged event data */
@@ -501,7 +502,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         } catch (err) {
           log.warn("sse", "Handler threw while processing an event; skipping", {
             type: event.type,
-            message: err instanceof Error ? err.message : String(err),
+            message: toErrorMessage(err),
           })
         }
       }
