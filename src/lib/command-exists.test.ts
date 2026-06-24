@@ -95,6 +95,41 @@ describe("resolveCommandPath — full path resolution", () => {
     expect(lookupBinary()).toBe("where.exe")
   })
 
+  it("on win32 skips the extensionless npm shim in favor of the .cmd", async () => {
+    // `where.exe opencode` typically lists the POSIX-style extensionless shim
+    // FIRST, then `opencode.cmd`. The extensionless file can't be launched by
+    // CreateProcess (uv_spawn ENOENT), so we must resolve to the .cmd — which
+    // opencode-server.ts then runs through a shell.
+    spawnState.impl = () =>
+      resolveWith(
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode\r\n" +
+          "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd\r\n",
+      )
+    expect(await resolveCommandPath("opencode", "win32")).toBe(
+      "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd",
+    )
+  })
+
+  it("on win32 prefers a native .exe over a .cmd shim when both exist", async () => {
+    // A native install (.exe) is spawned directly so close() reaps opencode
+    // itself; it must win over the npm .cmd even if listed after it.
+    spawnState.impl = () =>
+      resolveWith(
+        "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd\r\n" +
+          "C:\\Program Files\\opencode\\opencode.exe\r\n",
+      )
+    expect(await resolveCommandPath("opencode", "win32")).toBe(
+      "C:\\Program Files\\opencode\\opencode.exe",
+    )
+  })
+
+  it("on win32 falls back to the first match when none has a spawnable extension", async () => {
+    // Only the extensionless shim exists: surface it (not null) so the caller
+    // keeps the SDK's familiar ENOENT rather than a misleading "not found".
+    spawnState.impl = () => resolveWith("C:\\bin\\opencode\r\n")
+    expect(await resolveCommandPath("opencode", "win32")).toBe("C:\\bin\\opencode")
+  })
+
   it("uses `which` on POSIX and trims the path", async () => {
     spawnState.impl = () => resolveWith("/usr/local/bin/opencode\n")
     expect(await resolveCommandPath("opencode", "linux")).toBe(
