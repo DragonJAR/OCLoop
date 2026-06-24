@@ -26,7 +26,9 @@ import {
 
 setupBunSpawnMock()
 
-const { commandExists, resolveCommandPath } = await import("./command-exists")
+const { commandExists, resolveCommandPath, resolveSpawnable } = await import(
+  "./command-exists"
+)
 
 // The shared FakeProc is the floor (unref/kill/pid); `commandExists` only reads
 // `proc.exited`, so extend it here per the helper's documented contract.
@@ -148,5 +150,32 @@ describe("resolveCommandPath — full path resolution", () => {
       throw new Error("boom")
     }
     expect(await resolveCommandPath("opencode", "linux")).toBeNull()
+  })
+})
+
+describe("resolveSpawnable — gate + spawn-form in one lookup", () => {
+  it("win32 returns the resolved full path (via where.exe)", async () => {
+    spawnState.impl = () => resolveWith("C:\\Windows\\System32\\clip.exe\r\n")
+    expect(await resolveSpawnable("clip", "win32")).toBe(
+      "C:\\Windows\\System32\\clip.exe",
+    )
+    expect(lookupBinary()).toBe("where.exe")
+  })
+
+  it("win32 returns null when the command is not on PATH", async () => {
+    spawnState.impl = () => resolveWith("", 1)
+    expect(await resolveSpawnable("nope", "win32")).toBeNull()
+  })
+
+  it("POSIX returns the BARE command when present (spawning it directly works)", async () => {
+    spawnState.impl = () => exitWith(0)
+    expect(await resolveSpawnable("pbcopy", "linux")).toBe("pbcopy")
+    // POSIX uses the existence gate (`which`), not path resolution.
+    expect(lookupBinary()).toBe("which")
+  })
+
+  it("POSIX returns null when the command is not on PATH", async () => {
+    spawnState.impl = () => exitWith(1)
+    expect(await resolveSpawnable("nope", "linux")).toBeNull()
   })
 })

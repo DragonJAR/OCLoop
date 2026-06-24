@@ -70,6 +70,23 @@ export async function resolveCommandPath(
 }
 
 /**
+ * Resolve a command to the form to hand `Bun.spawn`, or `null` if it isn't on
+ * PATH. Folds the existence-gate AND path-resolution into ONE lookup:
+ * - win32: the full resolved path ({@link resolveCommandPath}) — a no-shell
+ *   spawn of a bare name isn't PATHEXT-resolved on Windows.
+ * - POSIX: the bare command when present ({@link commandExists}) — spawning a
+ *   bare name works there, so this stays byte-identical to the old gate.
+ * Use at a spawn site instead of calling `commandExists` and then resolving.
+ */
+export async function resolveSpawnable(
+  command: string,
+  platform: string = process.platform,
+): Promise<string | null> {
+  if (platform === "win32") return resolveCommandPath(command, platform)
+  return (await commandExists(command, platform)) ? command : null
+}
+
+/**
  * Pick the best PATH match to hand to `spawn`.
  *
  * Ranking on Windows (POSIX returns the first/only `which` match unchanged):

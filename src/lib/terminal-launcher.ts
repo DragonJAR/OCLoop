@@ -6,7 +6,7 @@
  */
 
 import type { TerminalConfig } from "./config"
-import { commandExists } from "./command-exists"
+import { commandExists, resolveSpawnable } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 
@@ -239,9 +239,11 @@ export async function launchTerminal(
       args = buildArgs(argsPattern, cmdParts)
     }
 
-    // Verify the command exists
-    const exists = await commandExists(command)
-    if (!exists) {
+    // Resolve the terminal binary to a spawnable form (full path on Windows,
+    // where a no-shell Bun.spawn of a bare name may miss PATHEXT; bare name on
+    // POSIX). null = not on PATH — same "not found" outcome as the old gate.
+    const spawnCommand = await resolveSpawnable(command)
+    if (!spawnCommand) {
       log.warn("terminal", "Command not found", { command })
       return {
         success: false,
@@ -255,7 +257,7 @@ export async function launchTerminal(
     // does not SIGHUP the launched terminal. stdio: "ignore" because the terminal
     // owns its own TTY/display and we don't want OCLoop blocked on its output.
     // proc.unref() keeps the parent from waiting on the child.
-    const proc = Bun.spawn([command, ...args], {
+    const proc = Bun.spawn([spawnCommand, ...args], {
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",

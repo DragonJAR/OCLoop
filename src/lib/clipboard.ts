@@ -4,7 +4,7 @@
  * (macOS pbcopy / Windows clip.exe / Linux wl-copy or X11).
  */
 
-import { commandExists } from "./command-exists"
+import { commandExists, resolveSpawnable } from "./command-exists"
 import { toErrorMessage } from "./format"
 
 type ClipboardTool = {
@@ -34,8 +34,12 @@ export async function detectClipboardTool(): Promise<ClipboardTool | null> {
 
   // Windows — clip.exe is always present on stock installs
   if (process.platform === "win32") {
-    if (await commandExists("clip")) {
-      return { command: "clip", args: [] };
+    // Resolve clip.exe's full path: a no-shell Bun.spawn of the bare name may
+    // not get PATHEXT-resolved on Windows. (POSIX branches keep the bare name —
+    // spawning it directly works there.)
+    const clip = await resolveSpawnable("clip");
+    if (clip) {
+      return { command: clip, args: [] };
     }
     return null;
   }
