@@ -68,6 +68,8 @@ const en = {
   cpAskGoal: "What do you want OCLoop to build? Describe your goal — end with a line containing only '.' (or press Ctrl-D):",
   cpNoGoal: "No goal provided. Cancelled.",
   cpStartingServer: "Starting the OpenCode server…",
+  cpPortBusy: (p: Params) =>
+    `Port ${p.port} is already in use — another opencode may be running. Free it, or omit --port to auto-pick a free port.`,
   cpSessionFail:
     "Could not create the planning session. Make sure opencode is installed and the port isn't in use (try --port <number>).",
   cpGenerating: "Generating plan… (this may take a few minutes — please be patient)\n",
@@ -648,6 +650,8 @@ const es: Record<MessageKey, Msg> = {
   cpAskGoal: "¿Qué quieres que OCLoop construya? Describe tu objetivo — termina con una línea que contenga solo '.' (o pulsa Ctrl-D):",
   cpNoGoal: "No se indicó ningún objetivo. Cancelado.",
   cpStartingServer: "Arrancando el servidor OpenCode…",
+  cpPortBusy: (p) =>
+    `El puerto ${p.port} ya está en uso — puede haber otro opencode corriendo. Liberalo, u omití --port para elegir uno libre automáticamente.`,
   cpSessionFail:
     "No se pudo crear la sesión de planificación. Verifica que opencode esté instalado y que el puerto no esté en uso (usa --port <número>).",
   cpGenerating: "Generando plan… (esto puede tardar unos minutos, ten paciencia)\n",

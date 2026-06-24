@@ -2,6 +2,7 @@
 
 import { render } from "@opentui/solid"
 import { startOpencodeServer } from "./lib/opencode-server"
+import { isPortAvailable } from "./lib/port"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
 import {
@@ -255,12 +256,23 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
     process.exit(1)
   }
 
+  // Omitted --port → 0: opencode/the OS picks a free port (same as the TUI's
+  // launch(port ?? 0)). An explicit --port is pre-checked here, because a busy
+  // port makes opencode die with an opaque "ServeError: Unexpected error" that
+  // we can't tell apart from any other failure.
+  const port = args.port ?? 0
+  if (port !== 0 && !(await isPortAvailable(port, "127.0.0.1"))) {
+    console.error(t("cpPortBusy", { port: String(port) }))
+    process.exitCode = 1
+    return false
+  }
+
   console.log("\n" + t("cpStartingServer"))
   let server: { url: string; close: () => void } | null = null
   try {
     server = await startOpencodeServer({
       hostname: "127.0.0.1",
-      port: args.port,
+      port,
       timeout: 15000,
     })
     const client = createOpencodeClient({ baseUrl: server.url })
