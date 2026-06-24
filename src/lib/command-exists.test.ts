@@ -26,7 +26,7 @@ import {
 
 setupBunSpawnMock()
 
-const { commandExists } = await import("./command-exists")
+const { commandExists, resolveCommandPath } = await import("./command-exists")
 
 // The shared FakeProc is the floor (unref/kill/pid); `commandExists` only reads
 // `proc.exited`, so extend it here per the helper's documented contract.
@@ -77,5 +77,41 @@ describe("commandExists — platform lookup binary", () => {
     // pinned), so this stays green on every OS in the CI matrix.
     const expected = process.platform === "win32" ? "where.exe" : "which"
     expect(lookupBinary()).toBe(expected)
+  })
+})
+
+// `resolveCommandPath` captures stdout (unlike `commandExists`), so its fake
+// proc carries a string `stdout` that `new Response(...)` reads back.
+const resolveWith = (stdout: string, code = 0) =>
+  ({ stdout, exited: Promise.resolve(code) }) as unknown as FakeProc
+
+describe("resolveCommandPath — full path resolution", () => {
+  it("returns the first match when the lookup prints several lines", async () => {
+    spawnState.impl = () =>
+      resolveWith("C:\\a\\opencode.exe\r\nC:\\b\\opencode.exe\r\n")
+    expect(await resolveCommandPath("opencode", "win32")).toBe(
+      "C:\\a\\opencode.exe",
+    )
+    expect(lookupBinary()).toBe("where.exe")
+  })
+
+  it("uses `which` on POSIX and trims the path", async () => {
+    spawnState.impl = () => resolveWith("/usr/local/bin/opencode\n")
+    expect(await resolveCommandPath("opencode", "linux")).toBe(
+      "/usr/local/bin/opencode",
+    )
+    expect(lookupBinary()).toBe("which")
+  })
+
+  it("returns null when the lookup exits non-zero (not on PATH)", async () => {
+    spawnState.impl = () => resolveWith("", 1)
+    expect(await resolveCommandPath("nope", "linux")).toBeNull()
+  })
+
+  it("returns null (never throws) when Bun.spawn rejects", async () => {
+    spawnState.impl = () => {
+      throw new Error("boom")
+    }
+    expect(await resolveCommandPath("opencode", "linux")).toBeNull()
   })
 })

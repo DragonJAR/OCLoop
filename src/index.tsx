@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 
 import { render } from "@opentui/solid"
-import { createOpencodeServer } from "@opencode-ai/sdk/server"
+import { startOpencodeServer } from "./lib/opencode-server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { App } from "./App"
 import {
@@ -258,7 +258,7 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   console.log("\n" + t("cpStartingServer"))
   let server: { url: string; close: () => void } | null = null
   try {
-    server = await createOpencodeServer({
+    server = await startOpencodeServer({
       hostname: "127.0.0.1",
       port: args.port,
       timeout: 15000,

@@ -35,3 +35,29 @@ export async function commandExists(
     return false
   }
 }
+
+/**
+ * Resolve a command to its full executable path via the same native lookup as
+ * {@link commandExists} (`where.exe` on Windows, `which` on POSIX), capturing
+ * the first match. Returns `null` when the command is not found or the lookup
+ * fails. Used by the Windows opencode launcher to spawn the resolved path
+ * (the SDK's bare-`opencode` spawn can't resolve a `.cmd`/`.ps1` shim).
+ */
+export async function resolveCommandPath(
+  command: string,
+  platform: string = process.platform,
+): Promise<string | null> {
+  const lookup = platform === "win32" ? "where.exe" : "which"
+  try {
+    const proc = Bun.spawn([lookup, command], {
+      stdout: "pipe",
+      stderr: "ignore",
+    })
+    const out = await new Response(proc.stdout).text()
+    if ((await proc.exited) !== 0) return null
+    // `where` can list several matches (one per line); take the first.
+    return out.split(/\r?\n/).map((s) => s.trim()).find(Boolean) ?? null
+  } catch {
+    return null
+  }
+}

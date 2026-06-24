@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup } from "solid-js"
-import { createOpencodeServer, type ServerOptions } from "@opencode-ai/sdk/server"
+import { type ServerOptions } from "@opencode-ai/sdk/server"
+import { startOpencodeServer } from "../lib/opencode-server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { withTimeout } from "../lib/with-timeout"
 import { assertResponse, getApiTimeouts } from "../lib/api"
@@ -100,7 +101,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
       port: targetPort,
     }
 
-    serverRef = await createOpencodeServer(serverOptions)
+    serverRef = await startOpencodeServer(serverOptions)
 
     const parsedUrl = new URL(serverRef.url)
     const actualPort = parseInt(parsedUrl.port, 10)
