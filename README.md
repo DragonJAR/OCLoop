@@ -59,7 +59,19 @@
 
 ## Requirements
 
-- [Bun](https://bun.sh) runtime (v1.0 or later)
+- [Bun](https://bun.sh) runtime (v1.0 or later) — OCLoop is built and run with Bun, so it must be installed first. Install it with:
+
+  ```bash
+  # macOS / Linux / WSL
+  curl -fsSL https://bun.sh/install | bash
+  ```
+
+  ```powershell
+  # Windows (PowerShell)
+  powershell -c "irm bun.sh/install.ps1|iex"
+  ```
+
+  Cross-platform alternative (any OS with Node): `npm install -g bun`. Then verify with `bun --version`.
 - [OpenCode](https://opencode.ai) installed **and already working** — OCLoop has no model of its own; it only drives OpenCode. So OpenCode must already be configured with a provider/API key **and a usable model** before OCLoop can do anything. Verify it on its own first: run `opencode`, send a message, and confirm the model replies. If OpenCode can't reach a model, neither can OCLoop. See the [OpenCode docs](https://opencode.ai/docs) for provider and model setup.
 
 ## Installation
