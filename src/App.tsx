@@ -16,7 +16,7 @@ import { useSSE, classifySessionError } from "./hooks/useSSE"
 import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
 import { useKeybindings } from "./hooks/useKeybindings"
 import { useCooldown } from "./hooks/useCooldown"
-import { useCommandPalette } from "./hooks/useCommandPalette"
+import { useCommandPalette, type PreviewId } from "./hooks/useCommandPalette"
 import { useTerminalLauncher } from "./hooks/useTerminalLauncher"
 import { useResume } from "./hooks/useResume"
 import { useWatchdog } from "./hooks/useWatchdog"
@@ -93,6 +93,7 @@ import {
   ActivityLog,
   BottomPanel,
   DialogInvalidAgent,
+  DialogTerminalError,
 } from "./components"
 import type { CLIArgs, PlanProgress, LoopState } from "./types"
 
@@ -1860,6 +1861,99 @@ function AppContent(props: AppProps) {
     void restartServer()
   }
 
+  // Debug-only screenshot staging: seed realistic mock data and force the
+  // matching state/dialog so each "mode" can be captured cleanly without a real
+  // run. Reached only via the debug-gated Preview palette commands.
+  function runDebugPreview(id: PreviewId): void {
+    const seedDashboard = () => {
+      activityLog.clear()
+      stats.seedForPreview({
+        history: [128_000, 95_000, 142_000, 110_000],
+        iterationElapsedMs: 95_000,
+        runStartedMsAgo: 23 * 60_000,
+      })
+      sessionStats.addTokens({ input: 182_000, output: 64_000, cacheRead: 240_000, cacheWrite: 12_000 })
+      setPlanProgress({ total: 12, completed: 4, pending: 8, manual: 0, blocked: 0, automatable: 8, percentComplete: 33 })
+      setCurrentTask("Implement the rate-limit backoff with full jitter")
+      activityLog.addEvent("session_start", t("sampleSessionStarted"))
+      activityLog.addEvent("user_message", t("sampleUserMessage"))
+      activityLog.addEvent("assistant_message", t("sampleAssistantMessage"))
+      activityLog.addEvent("reasoning", t("sampleReasoning"), { dimmed: true })
+      activityLog.addEvent("tool_use", "bash", { detail: "bun test src/lib/backoff.test.ts" })
+      activityLog.addEvent("file_read", t("sampleFileRead"))
+      activityLog.addEvent("tool_use", "edit", { detail: "src/lib/backoff.ts" })
+      activityLog.addEvent("file_edit", t("sampleFileEdit"))
+      activityLog.addEvent("task", t("sampleTask"))
+    }
+    switch (id) {
+      case "running":
+        seedDashboard()
+        // Non-empty sessionId so the "running + empty session" effect does NOT
+        // fire the real iteration driver; coming from debug, no transition effect
+        // clobbers the seeded stats/task/tokens.
+        loop.dispatch({ type: "debug_preview", state: { type: "running", iteration: 5, sessionId: "preview" } })
+        break
+      case "paused":
+        seedDashboard()
+        loop.dispatch({ type: "debug_preview", state: { type: "paused", iteration: 5 } })
+        break
+      case "cooldown":
+        seedDashboard()
+        cooldown.previewRemaining(25_000)
+        loop.dispatch({ type: "debug_preview", state: { type: "cooldown", iteration: 5, reason: "429 Too Many Requests", resumeAt: 0, attempt: 3, kind: "rate_limit" } })
+        break
+      case "complete":
+        seedDashboard()
+        setPlanProgress({ total: 12, completed: 12, pending: 0, manual: 0, blocked: 0, automatable: 0, percentComplete: 100 })
+        // The completion effect shows DialogCompletion when state === "complete".
+        loop.dispatch({ type: "debug_preview", state: { type: "complete", iterations: 12, summary: { summary: t("previewCompleteSummary") } } })
+        break
+      case "error":
+        loop.dispatch({ type: "debug_preview", state: { type: "error", source: "api", message: t("previewErrorMessage"), recoverable: true, lastIteration: 5 } })
+        // Build the dialog directly (not via presentError) so no onDecompose
+        // auto-countdown can fire a real network call during a screenshot.
+        dialog.show(() => (
+          <DialogError
+            source="api"
+            message={t("previewErrorMessage")}
+            recoverable={true}
+            onRetry={() => dialog.clear()}
+            onQuit={() => dialog.clear()}
+          />
+        ))
+        break
+      case "decompose":
+        void DialogDecomposeApproval.show(
+          dialog,
+          t("dlgSplitTitle"),
+          `${t("dlgSplitBody")}\n\n"Refactor the auth module"\n\n→\n\n• Extract token validation\n• Add login/register endpoints\n• Hash and verify passwords\n• Add session middleware`,
+        )
+        break
+      case "invalidAgent":
+        dialog.show(() => (
+          <DialogInvalidAgent
+            agentName="my-agent"
+            availableAgents={["build", "plan", "general"]}
+            defaultAgent="build"
+            onUseDefault={() => dialog.clear()}
+            onQuit={() => dialog.clear()}
+          />
+        ))
+        break
+      case "terminalError":
+        dialog.show(() => (
+          <DialogTerminalError
+            terminalName="iTerm"
+            errorMessage="Command not found in PATH"
+            attachCommand="opencode attach http://127.0.0.1:4096 --session preview"
+            onCopy={() => dialog.clear()}
+            onClose={() => dialog.clear()}
+          />
+        ))
+        break
+    }
+  }
+
   // Register commands (extracted to useCommandPalette)
   useCommandPalette({
     loop,
@@ -1881,6 +1975,8 @@ function AppContent(props: AppProps) {
     onSelectTheme,
     permissions,
     onTogglePermission,
+    debug: () => !!props.debug,
+    runDebugPreview,
   })
 
   // Register shutdown handler for SIGINT/SIGTERM signals

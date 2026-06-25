@@ -98,6 +98,10 @@ export type LoopAction =
   // the next iteration_started does NOT increment the counter — the count
   // represents "iterations of unique work", not "iterations started", here.
   | { type: "iteration_resumed"; iteration: number; sessionId: string }
+  // Debug-only: force the machine to an arbitrary state for screenshot staging.
+  // Emitted ONLY by the debug "Preview" palette commands (gated to --debug);
+  // no real code path dispatches it. The reducer sets `action.state` verbatim.
+  | { type: "debug_preview"; state: LoopState }
 
 /**
  * Progress information parsed from PLAN.md

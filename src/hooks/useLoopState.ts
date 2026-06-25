@@ -325,6 +325,13 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
       return state
     }
 
+    case "debug_preview": {
+      // Debug-only escape hatch for screenshot staging: set the state directly,
+      // bypassing the transition guards. Only the debug Preview palette commands
+      // emit this (gated to --debug); no real path does.
+      return action.state
+    }
+
     default:
       return state
   }

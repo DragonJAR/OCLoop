@@ -35,6 +35,16 @@ export interface UseLoopStatsReturn {
   globalElapsedTime: () => number; // Wall-clock ms since the run started (incl. pauses); frozen after markRunEnd
   markRunEnd: () => void; // Freeze the global timer (call on complete/stopped/error)
   unfreezeRun: () => void; // Un-freeze the global timer (call when resuming after a recoverable error)
+  /**
+   * Debug-only: seed realistic timing so a screenshot preview shows non-zero
+   * elapsed/avg/ETA without a real run. Called only by the debug Preview
+   * commands (gated to --debug); never on a real path.
+   */
+  seedForPreview: (opts: {
+    history: number[];
+    iterationElapsedMs: number;
+    runStartedMsAgo: number;
+  }) => void;
 }
 
 /**
@@ -258,6 +268,27 @@ export function useLoopStats(): UseLoopStatsReturn {
     setState({ ...s, runEndTime: null });
   }
 
+  /**
+   * Debug-only seed for screenshot previews (see interface doc). Backdates the
+   * run/iteration start so elapsed + global show realistic values immediately,
+   * and fills history so averageTime/estimatedTotal aren't null.
+   */
+  function seedForPreview(opts: {
+    history: number[];
+    iterationElapsedMs: number;
+    runStartedMsAgo: number;
+  }): void {
+    const now = Date.now();
+    setState({
+      iterationStartTime: now - opts.iterationElapsedMs,
+      pauseStartTime: null,
+      accumulatedPauseTime: 0,
+      history: [...opts.history],
+      runStartTime: now - opts.runStartedMsAgo,
+      runEndTime: null,
+    });
+  }
+
   return {
     startIteration,
     pause,
@@ -270,5 +301,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     globalElapsedTime,
     markRunEnd,
     unfreezeRun,
+    seedForPreview,
   };
 }

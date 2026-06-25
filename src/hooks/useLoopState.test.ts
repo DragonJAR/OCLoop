@@ -27,6 +27,26 @@ describe("loopReducer", () => {
     })
   })
 
+  describe("debug_preview action", () => {
+    it("sets the given state verbatim from any prior state (screenshot staging)", () => {
+      const target: LoopState = {
+        type: "cooldown",
+        iteration: 5,
+        reason: "429",
+        resumeAt: 0,
+        attempt: 3,
+        kind: "rate_limit",
+      }
+      // The escape hatch bypasses transition guards: even from an unrelated
+      // state it sets the target directly (used only by debug Preview commands).
+      const result = loopReducer(
+        { type: "debug", sessionId: "" },
+        { type: "debug_preview", state: target },
+      )
+      expect(result).toEqual(target)
+    })
+  })
+
   describe("start action", () => {
     it("should transition from ready to running", () => {
       const state: LoopState = { type: "ready" }

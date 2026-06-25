@@ -572,6 +572,7 @@ const en = {
   catAppearance: "Appearance",
   catLanguage: "Language",
   catHelp: "Help",
+  catPreview: "Preview",
   toastLanguageChanged: "Language changed",
   toastRestarting: "Restarting OpenCode server…",
   // Surfaced when saveConfig returns false (EACCES/ENOSPC/EROFS/EXDEV). The
@@ -591,6 +592,19 @@ const en = {
   chaosUnfreezeDone: "Chaos: session unfrozen",
   chaosRateLimit: "Chaos: inject rate limit",
   chaosRateLimitDone: "Chaos: rate limit injected",
+  // Debug "Preview" commands (debug only) — stage a state/dialog for a screenshot.
+  previewRunning: "Preview: running dashboard",
+  previewPaused: "Preview: paused",
+  previewCooldown: "Preview: rate-limit cooldown",
+  previewComplete: "Preview: plan complete",
+  previewError: "Preview: error / halt",
+  previewDecompose: "Preview: split stalled task",
+  previewInvalidAgent: "Preview: invalid agent",
+  previewTerminalError: "Preview: terminal launch failed",
+  previewCompleteSummary:
+    "Implemented the rate-limit backoff, sleep/wake reconciliation, and the watchdog recovery path. All 12 plan tasks complete; tests green.",
+  previewErrorMessage:
+    "401 Unauthorized — the provider rejected the API key. Check your OpenCode auth and retry.",
 
   // --- Dialogs ---
   dlgQuitTitle: "Quit OCLoop?",
@@ -1135,6 +1149,7 @@ const es: Record<MessageKey, Msg> = {
   aboutServices: "Expertos en seguridad informática, validación proactiva y seguridad ofensiva",
   aboutRepo: "Código, documentación y planes de ejemplo",
   catView: "Vista",
+  catPreview: "Vista previa",
   catAppearance: "Apariencia",
   catLanguage: "Idioma",
   catHelp: "Ayuda",
@@ -1153,6 +1168,19 @@ const es: Record<MessageKey, Msg> = {
   chaosUnfreezeDone: "Chaos: sesión descongelada",
   chaosRateLimit: "Chaos: inyectar rate limit",
   chaosRateLimitDone: "Chaos: rate limit inyectado",
+  // Comandos "Vista previa" (solo debug) — montan un estado/diálogo para captura.
+  previewRunning: "Vista previa: dashboard en marcha",
+  previewPaused: "Vista previa: en pausa",
+  previewCooldown: "Vista previa: cooldown por rate-limit",
+  previewComplete: "Vista previa: plan completo",
+  previewError: "Vista previa: error / detención",
+  previewDecompose: "Vista previa: dividir tarea atascada",
+  previewInvalidAgent: "Vista previa: agente inválido",
+  previewTerminalError: "Vista previa: fallo al abrir la terminal",
+  previewCompleteSummary:
+    "Se implementó el backoff de rate-limit, la reconciliación de suspensión/despertar y la recuperación del watchdog. Las 12 tareas del plan están completas; tests en verde.",
+  previewErrorMessage:
+    "401 Unauthorized — el proveedor rechazó la API key. Revisá la autenticación de OpenCode y reintentá.",
 
   dlgQuitTitle: "¿Salir de OCLoop?",
   dlgQuitMsg: "¿Seguro que quieres salir?",

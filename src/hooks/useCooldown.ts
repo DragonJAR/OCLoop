@@ -68,6 +68,12 @@ export interface CooldownApi {
   ) => void
   /** Cancel any pending cooldown timers (resume / quit / server-error). */
   clearTimers: () => void
+  /**
+   * Debug-only: set the dashboard countdown directly (no timers, no dispatch) so
+   * a screenshot preview shows a realistic "retrying in Ns". Called only by the
+   * debug Preview commands (gated to --debug); never on a real path.
+   */
+  previewRemaining: (ms: number) => void
 }
 
 export function useCooldown(deps: CooldownDeps): CooldownApi {
@@ -191,5 +197,6 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     },
     enterCooldown,
     clearTimers,
+    previewRemaining: (ms: number) => setCooldownRemainingMs(ms),
   }
 }

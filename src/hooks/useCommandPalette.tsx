@@ -25,6 +25,17 @@ import { getLocale, setLocale } from "../lib/i18n"
 import type { ChaosController } from "../lib/chaos"
 import { DialogTerminalConfig, DialogThemePicker, DialogPermissions, DialogAbout } from "../components"
 
+/** Screenshot-staging scenes for the debug-only "Preview" commands. */
+export type PreviewId =
+  | "running"
+  | "paused"
+  | "cooldown"
+  | "complete"
+  | "error"
+  | "decompose"
+  | "invalidAgent"
+  | "terminalError"
+
 export interface CommandPaletteDeps {
   loop: ReturnType<typeof useLoopState>
   cooldown: ReturnType<typeof useCooldown>
@@ -49,6 +60,10 @@ export interface CommandPaletteDeps {
   // Autonomous-permission flags + toggle (permissions dialog)
   permissions: () => PermissionsConfig
   onTogglePermission: (tool: PermissionTool, value: boolean) => void
+  // Debug-only screenshot staging (gated to --debug). `debug` returns whether
+  // debug mode is on; `runDebugPreview` stages a state/dialog for a screenshot.
+  debug?: () => boolean
+  runDebugPreview: (id: PreviewId) => void
 }
 
 export function useCommandPalette(deps: CommandPaletteDeps): void {
@@ -262,6 +277,30 @@ export function useCommandPalette(deps: CommandPaletteDeps): void {
           chaosCmd(deps.t("chaosFreeze"), "chaos_freeze", () => deps.chaos.freezeSession(), deps.t("chaosFreezeDone")),
           chaosCmd(deps.t("chaosUnfreeze"), "chaos_unfreeze", () => deps.chaos.unfreezeSession(), deps.t("chaosUnfreezeDone")),
           chaosCmd(deps.t("chaosRateLimit"), "chaos_429", () => deps.cooldown.enterCooldown("chaos: injected 429", 5), deps.t("chaosRateLimitDone")),
+        )
+      }
+
+      // Debug-only "Preview" commands: stage a dashboard state or dialog with
+      // mock data so each mode can be screenshotted cleanly (no real run needed).
+      if (deps.debug?.()) {
+        const previewCmd = (title: string, id: PreviewId): CommandOption => ({
+          title,
+          value: `preview_${id}`,
+          category: deps.t("catPreview"),
+          onSelect: () => {
+            deps.dialog.clear()
+            deps.runDebugPreview(id)
+          },
+        })
+        opts.push(
+          previewCmd(deps.t("previewRunning"), "running"),
+          previewCmd(deps.t("previewPaused"), "paused"),
+          previewCmd(deps.t("previewCooldown"), "cooldown"),
+          previewCmd(deps.t("previewComplete"), "complete"),
+          previewCmd(deps.t("previewError"), "error"),
+          previewCmd(deps.t("previewDecompose"), "decompose"),
+          previewCmd(deps.t("previewInvalidAgent"), "invalidAgent"),
+          previewCmd(deps.t("previewTerminalError"), "terminalError"),
         )
       }
 
