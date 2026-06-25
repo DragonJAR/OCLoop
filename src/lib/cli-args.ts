@@ -104,11 +104,11 @@ Options:
   --routing                Show the model-routing panel at startup (assign models to heavy/cheap/judge roles)
   --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
   --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
-  --lang <en|es>           UI language (default: en; also settable in Ctrl+P)
+  --lang <en|es>           UI language (default: en; also settable in Ctrl+P; --language is an alias)
   --resume                 Reconcile a persisted in-flight session on startup
   --no-caffeinate          Do not keep the system awake while running (macOS)
   --chaos                  Enable chaos fault-injection (debug only)
-  --resilience <key=value> Override a resilience threshold (repeatable)
+  --resilience <key=value> Override a resilience threshold, repeatable (e.g. watchdogSuspectMs, planTimeoutMs; full list + defaults in the README "Tuning" section)
   -v, --version            Show version number
   -h, --help               Show help
 
