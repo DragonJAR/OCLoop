@@ -5,7 +5,7 @@
   <i>Round and round we go</i>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.6.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
   <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>

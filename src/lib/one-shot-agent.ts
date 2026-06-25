@@ -24,6 +24,7 @@ import {
 } from "./api"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
+import { monotonicNow } from "./clock"
 
 export interface OneShotOptions {
   agent?: string
@@ -33,6 +34,14 @@ export interface OneShotOptions {
   timeoutMs?: number
   /** Poll interval while waiting for the reply (ms). Default 1500. */
   pollMs?: number
+  /**
+   * Monotonic clock used for the deadline math. Defaults to `monotonicNow`
+   * (see clock.ts): a one-shot of up to 60s is exactly the kind of interval
+   * that must NOT be measured with the wall clock — an NTP correction, a
+   * manual clock change, or system suspension would otherwise fire the
+   * deadline early or let it run long. Injectable for tests. (REPARAR.md B5)
+   */
+  now?: () => number
 }
 
 /**
@@ -46,6 +55,7 @@ export async function runOneShotAgent(
 ): Promise<string> {
   const timeoutMs = opts.timeoutMs ?? 60_000
   const pollMs = opts.pollMs ?? 1500
+  const now = opts.now ?? monotonicNow
   const session = await createSession(client, { timeoutMs })
   const sessionID = session.id
   try {
@@ -58,7 +68,7 @@ export async function runOneShotAgent(
       { timeoutMs },
     )
 
-    const deadline = Date.now() + timeoutMs
+    const deadline = now() + timeoutMs
     let messages: SessionMessage[] = []
     for (;;) {
       await Bun.sleep(pollMs)
@@ -78,7 +88,7 @@ export async function runOneShotAgent(
         log.warn("one-shot", "Transient server call failure, will retry", {
           message: toErrorMessage(err),
         })
-        if (Date.now() > deadline) throw new Error("One-shot agent timed out")
+        if (now() > deadline) throw new Error("One-shot agent timed out")
         continue
       }
       if (
@@ -87,7 +97,7 @@ export async function runOneShotAgent(
       ) {
         return extractLastAssistantText(messages)
       }
-      if (Date.now() > deadline) throw new Error("One-shot agent timed out")
+      if (now() > deadline) throw new Error("One-shot agent timed out")
     }
   } finally {
     // Best-effort cleanup: the throwaway session must not linger on the server.

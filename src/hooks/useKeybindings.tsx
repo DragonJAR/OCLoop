@@ -11,7 +11,6 @@
  */
 
 import { useKeyboard } from "@opentui/solid"
-import type { JSX } from "solid-js"
 
 import type { useLoopState } from "./useLoopState"
 import type { CommandContextValue } from "../context/CommandContext"
@@ -227,5 +226,6 @@ export function useKeybindings(deps: KeybindingDeps): void {
   })
 }
 
-// Keep JSX runtime happy: this file returns JSX.Element for the dialogs.
-export type _JsxMarker = JSX.Element
+// (No _JsxMarker export needed: the JSX runtime is retained by the
+// <Dialog.../> elements rendered via deps.dialog.show in openTerminal/
+// openDebugPrompt above.)

@@ -65,7 +65,7 @@ export interface ResumeFlowDeps<C = OpencodeClient> {
 }
 
 /** What `doResumeFlow` did, for assertion. `action` is the dispatched type. */
-export interface ResumeOutcome {
+interface ResumeOutcome {
   verdict: ReconcileResult
   /** The loop action dispatched: `resume_session` (reattach OR fresh) or
    * `iteration_resumed` (idle — next iteration_started skips the increment). */

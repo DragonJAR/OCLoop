@@ -13,7 +13,6 @@ import { t } from "../lib/i18n"
 export interface DialogSelectOption {
   title: string
   value: string
-  description?: string
   footer?: string
   category?: string
   /** Direct keyboard shortcut for this option, shown as a dim right-aligned
@@ -36,7 +35,7 @@ export interface DialogSelectProps {
   placeholder?: string
   options: DialogSelectOption[]
   onSelect?: (option: DialogSelectOption) => void
-  onMove?: (option: DialogSelectOption | null) => void
+  onMove?: (option: DialogSelectOption | undefined) => void
   onFilter?: (filtered: DialogSelectOption[]) => void
   skipFilter?: boolean
   current?: string

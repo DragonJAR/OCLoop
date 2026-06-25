@@ -10,8 +10,6 @@ export interface LabelValueProps {
   value: string | number
   /** Value color override (defaults to theme().text). */
   valueColor?: string
-  /** Leading gap between inline items (Dashboard rows use 2; first item 0). */
-  marginLeft?: number
   /** Trailing gap (bottom-panel chips use 2). */
   marginRight?: number
 }
@@ -19,7 +17,7 @@ export interface LabelValueProps {
 export function LabelValue(props: LabelValueProps) {
   const { theme } = useTheme()
   return (
-    <text style={{ marginLeft: props.marginLeft ?? 0, marginRight: props.marginRight ?? 0 }}>
+    <text style={{ marginLeft: 0, marginRight: props.marginRight ?? 0 }}>
       <span style={{ fg: theme().textMuted }}>{props.label}</span>
       <span style={{ fg: props.valueColor ?? theme().text }}> {props.value}</span>
     </text>

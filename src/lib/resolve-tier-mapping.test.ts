@@ -23,9 +23,9 @@ import type { TierRole } from "../ui/DialogTierPicker"
  */
 
 const TIERS: TierRole[] = [
-  { id: "heavy", label: "Heavy", description: "main worker" },
-  { id: "judge", label: "Judge", description: "eval judge" },
-  { id: "cheap", label: "Cheap", description: "reserved" },
+  { id: "heavy", label: "Heavy" },
+  { id: "judge", label: "Judge" },
+  { id: "cheap", label: "Cheap" },
 ]
 
 const CATALOG: ModelCatalogEntry[] = [

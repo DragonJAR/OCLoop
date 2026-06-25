@@ -318,6 +318,22 @@ const ALLOWED_CONFIG_KEYS = new Set([
 ])
 
 /**
+ * A finite, non-negative integer — the shape every count field
+ * (`iteration`, `rateLimitAttempts`, `createTimeoutMs`, …) must have.
+ * `typeof === "number"` alone admits `NaN`, `Infinity`, and negatives, which
+ * would otherwise round-trip through reducers and config merges poisoning
+ * downstream math (e.g. `iteration: NaN` makes `iteration + 1` NaN forever).
+ *
+ * Single source of truth (REPARAR.md B7): previously this exact predicate was
+ * copy-pasted in `isValidResilienceValue`, `isValidEvalsValue`, and
+ * `loop-state-store.isNonNegInt` — a drift hazard (a notion of "valid count"
+ * that could evolve in one place but not the others).
+ */
+export function isNonNegativeInteger(v: unknown): boolean {
+  return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+}
+
+/**
  * Per-field type guard for a single ResilienceConfig entry. Returns true iff
  * key is known in DEFAULT_RESILIENCE and v has the expected runtime type and
  * range. Shared by the file and CLI paths so neither can silently accept a
@@ -329,7 +345,7 @@ function isValidResilienceValue(key: string, v: unknown): boolean {
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
   if (typeof def === "number") {
-    return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+    return isNonNegativeInteger(v)
   }
   return false
 }
@@ -346,7 +362,7 @@ function isValidEvalsValue(key: string, v: unknown): boolean {
   const def = (DEFAULT_EVALS as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
   if (typeof def === "number") {
-    return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+    return isNonNegativeInteger(v)
   }
   return false
 }

@@ -34,7 +34,7 @@ import { log } from "./debug-logger"
  * real `(client: OpencodeClient) => ...` was NOT assignable (TS2322). `C` is
  * inferred from the call site, so the `.ts` still imports no SDK type.
  */
-export type CatalogFetcher<C> = (client: C) => Promise<ModelCatalogEntry[]>
+type CatalogFetcher<C> = (client: C) => Promise<ModelCatalogEntry[]>
 
 /**
  * Awaitable tier picker. Structurally identical to
@@ -46,7 +46,7 @@ export type CatalogFetcher<C> = (client: C) => Promise<ModelCatalogEntry[]>
  * `DialogContextValue` and a stub `{}` both satisfy the slot without importing
  * the `.tsx`.
  */
-export type TierPicker<D> = (
+type TierPicker<D> = (
   dialog: D,
   tiers: TierRole[],
   options: DialogSelectOption[],

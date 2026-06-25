@@ -169,45 +169,42 @@ export function applyResilienceOverride(
 ): void {
   const eq = kv.indexOf("=")
   if (eq < 0) {
-    console.error(`Error: --resilience expects key=value, got "${kv}"`)
+    console.error(t("errResilienceNoEquals", { raw: kv }))
     process.exit(1)
   }
   const key = kv.slice(0, eq).trim()
   const raw = kv.slice(eq + 1).trim()
 
   if (!key) {
-    console.error(`Error: --resilience key is empty in "${kv}"`)
+    console.error(t("errResilienceEmptyKey", { raw: kv }))
     process.exit(1)
   }
 
   if (!raw) {
-    console.error(`Error: --resilience ${key} requires a non-empty value`)
+    console.error(t("errResilienceEmptyValue", { key }))
     process.exit(1)
   }
 
   if (!(key in DEFAULT_RESILIENCE)) {
-    console.error(`Error: unknown resilience key "${key}"`)
-    console.error(`Valid keys: ${Object.keys(DEFAULT_RESILIENCE).join(", ")}`)
+    console.error(t("errResilienceUnknownKey", { key, keys: Object.keys(DEFAULT_RESILIENCE).join(", ") }))
     process.exit(1)
   }
 
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") {
     if (raw !== "true" && raw !== "false" && raw !== "1" && raw !== "0") {
-      console.error(`Error: --resilience ${key} expects a boolean (true/false/1/0), got "${raw}"`)
+      console.error(t("errResilienceBool", { key, raw }))
       process.exit(1)
     }
     ;(target as Record<string, unknown>)[key] = raw === "true" || raw === "1"
   } else {
     if (!NUM_RE.test(raw)) {
-      console.error(
-        `Error: --resilience ${key} expects a non-negative integer (decimal only), got "${raw}"`,
-      )
+      console.error(t("errResilienceInt", { key, raw }))
       process.exit(1)
     }
     const num = Number(raw)
     if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
-      console.error(`Error: --resilience ${key} expects a non-negative integer, got "${raw}"`)
+      console.error(t("errResilienceInt", { key, raw }))
       process.exit(1)
     }
     ;(target as Record<string, unknown>)[key] = num
@@ -305,10 +302,11 @@ export function parseArgs(argv: string[]): CLIArgs {
         break
 
       case "-p":
-      case "--port":
+      case "--port": {
         const portStr = argv[++i]
         args.port = parsePort(portStr)
         break
+      }
 
       case "-m":
       case "--model":
@@ -374,14 +372,15 @@ export function parseArgs(argv: string[]): CLIArgs {
         resilience.chaos = true
         break
 
-      case "--resilience":
+      case "--resilience": {
         const kv = argv[++i]
         if (!kv) {
-          console.error("Error: --resilience requires a key=value argument")
+          console.error(t("errResilienceNeedsArg"))
           process.exit(1)
         }
         applyResilienceOverride(resilience, kv)
         break
+      }
 
       default:
         console.error(t("errArgUnknown", { arg }))

@@ -1,7 +1,8 @@
 import { createSignal, createMemo, onCleanup } from "solid-js";
-import { formatDuration } from "../lib/format";
 
-// Re-export for consumers that imported from here.
+// Re-export formatDuration from lib/format. The import is type/usage-free
+// here (JSDoc only); the re-export exists so useLoopStats.test.ts can co-locate
+// its formatDuration coverage next to the hook it exercises it through.
 export { formatDuration } from "../lib/format"
 
 /**

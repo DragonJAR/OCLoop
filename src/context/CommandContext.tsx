@@ -1,8 +1,7 @@
-import { createContext, useContext, createSignal, onCleanup, type JSX, type Accessor } from "solid-js"
+import { createContext, useContext, createSignal, onCleanup, type JSX } from "solid-js"
 import { useDialog } from "./DialogContext"
 import { DialogSelect, type DialogSelectOption } from "../ui/DialogSelect"
 import { t } from "../lib/i18n"
-import { useKeyboard } from "@opentui/solid"
 
 /**
  * A command-palette option. `keybind` (inherited from DialogSelectOption) is
@@ -14,9 +13,6 @@ export interface CommandOption extends DialogSelectOption {}
 export interface CommandContextValue {
   register: (factory: () => CommandOption[]) => void
   show: () => void
-  trigger: (value: string) => void
-  suspended: Accessor<boolean>
-  keybinds: (enabled: boolean) => void
 }
 
 const CommandContext = createContext<CommandContextValue>()
@@ -24,7 +20,6 @@ const CommandContext = createContext<CommandContextValue>()
 export function CommandProvider(props: { children: JSX.Element }) {
   const dialog = useDialog()
   const [factories, setFactories] = createSignal<(() => CommandOption[])[]>([])
-  const [suspended, setSuspended] = createSignal(false)
 
   const register = (factory: () => CommandOption[]) => {
     setFactories(prev => [...prev, factory])
@@ -32,9 +27,11 @@ export function CommandProvider(props: { children: JSX.Element }) {
       onCleanup(() => {
         setFactories(prev => prev.filter(f => f !== factory))
       })
-    } catch (e) {
-      // Not in a reactive scope with cleanup support
-      console.warn("Command.register called outside of reactive scope, manual cleanup required (not implemented)")
+    } catch {
+      // Not in a reactive scope with cleanup support: the factory stays
+      // registered for the lifetime of the process. register() is only ever
+      // called from reactive owners in this codebase, so this branch is
+      // defensive only — no manual unregister handle is exposed.
     }
   }
 
@@ -57,30 +54,15 @@ export function CommandProvider(props: { children: JSX.Element }) {
     ))
   }
 
-  const trigger = (value: string) => {
-    const cmd = getCommands().find(c => c.value === value)
-    if (cmd && !cmd.disabled) {
-      if (cmd.onSelect) cmd.onSelect()
-    }
-  }
-
-  useKeyboard((key) => {
-    if (suspended()) return
-
-    // Only handle if no dialogs are open
-    if (!dialog.hasDialogs()) {
-      if (key.ctrl && key.name === "p") {
-        show()
-      }
-    }
-  })
+  // NOTE: the global Ctrl+P keybind is owned solely by useKeybindings (App).
+  // A second handler here used to open the palette twice per keypress (sibling
+  // useKeyboard listeners are not stopped by preventDefault), so it was
+  // removed. Do not re-add a Ctrl+P handler here without a reentry guard in
+  // show() — see REPARAR.md A2.
 
   const value: CommandContextValue = {
     register,
     show,
-    trigger,
-    suspended,
-    keybinds: (enabled: boolean) => setSuspended(!enabled),
   }
 
   return (

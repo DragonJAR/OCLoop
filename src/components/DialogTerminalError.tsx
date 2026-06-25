@@ -57,7 +57,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
     <Dialog onClose={props.onClose} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
-        <DialogHeader title={t("dlgTerminalFailed")} accent={theme().error} hint="esc" />
+        <DialogHeader title={t("dlgTerminalFailed")} accent={theme().error} hint={t("dlgEscToQuit")} />
 
         {/* Terminal name */}
         <text style={{ marginTop: 1 }}>

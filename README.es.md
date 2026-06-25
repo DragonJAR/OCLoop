@@ -5,7 +5,7 @@
   <i>Round and round we go</i>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.5.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.6.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
   <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>
@@ -72,7 +72,8 @@
   ```
 
   Alternativa multiplataforma (cualquier SO con Node): `npm install -g bun`. Luego verifica con `bun --version`.
-- [OpenCode](https://opencode.ai) instalado **y ya funcionando** — OCLoop no trae modelo propio; solo orquesta OpenCode. Por eso OpenCode debe estar ya configurado con un proveedor/clave de API **y un modelo utilizable** antes de que OCLoop pueda hacer nada. Verifícalo por su cuenta primero: ejecuta `opencode`, envía un mensaje y confirma que el modelo responde. Si OpenCode no puede alcanzar un modelo, OCLoop tampoco. Consulta la [documentación de OpenCode](https://opencode.ai/docs) para configurar proveedor y modelo.
+- [OpenCode](https://opencode.ai) instalado **y ya funcionando** — OCLoop no trae modelo propio; solo orquesta OpenCode. Por eso OpenCode debe estar ya configurado con un proveedor/clave de API **y un modelo utilizable** antes de que OCLoop pueda hacer nada. Verifícalo por tu cuenta primero: ejecuta `opencode`, envía un mensaje y confirma que el modelo responde. Si OpenCode no puede alcanzar un modelo, OCLoop tampoco. Consulta la [documentación de OpenCode](https://opencode.ai/docs) para configurar proveedor y modelo.
+  - **Permisos autónomos**: OCLoop funciona sin supervisión, así que lanza el servidor de OpenCode con las aprobaciones de llamadas a herramientas auto-permitidas (ediciones de archivos, shell, web fetch, etc.) — de lo contrario el bucle se colgaría en un mensaje de confirmación que nadie está mirando para responder. Las cinco herramientas bloqueantes (`edit`, `bash`, `webfetch`, `doom_loop`, `external_directory`) están activadas por defecto. Puedes desactivar cualquiera desde **Ctrl+P → Permisos**: desmarcar una hace que OpenCode pregunte antes de ejecutarla (interactivo) en vez de aprobarla automáticamente. Los cambios persisten y **reinician el servidor** para que se apliquen de inmediato. OpenCode hace un *deep-merge* con tu `opencode.json`, así que una regla `deny` explícita que pongas (p. ej. para prohibir `git push`) sigue teniendo prioridad. (La ruta *headless* `--create-plan` siempre funciona totalmente autónoma.)
 
 ## Instalación
 

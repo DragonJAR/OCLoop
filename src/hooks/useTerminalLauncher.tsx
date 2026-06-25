@@ -10,8 +10,6 @@
  * Behavior unchanged from the inline closures it replaces.
  */
 
-import type { JSX } from "solid-js"
-
 import type { DialogContextValue } from "../context/DialogContext"
 import type { ToastContextValue } from "../context/ToastContext"
 import type { t as Tfn } from "../lib/i18n"
@@ -192,5 +190,5 @@ export function useTerminalLauncher(deps: TerminalLauncherDeps): TerminalLaunche
   }
 }
 
-// Marker so the JSX runtime is retained for the DialogTerminalError render.
-export type _JsxMarker = JSX.Element
+// (No _JsxMarker export needed: the JSX runtime is retained by the
+// <DialogTerminalError .../> render in onConfigCustom above.)

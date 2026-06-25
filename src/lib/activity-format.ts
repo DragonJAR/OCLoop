@@ -23,7 +23,7 @@ export type ColorKey =
   | "text"
   | "warning"
 
-export interface EventMeta {
+interface EventMeta {
   level: Level
   /** i18n key for the short, scannable label — says WHAT kind of thing happened. */
   label: MessageKey

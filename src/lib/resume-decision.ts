@@ -15,9 +15,9 @@
 import type { CLIArgs } from "../types"
 import type { PersistedLoopState } from "./loop-state-store"
 
-export type ResumeAttemptEvent = "resume:requested"
+type ResumeAttemptEvent = "resume:requested"
 
-export type ResumeAttemptLog = {
+type ResumeAttemptLog = {
   event: ResumeAttemptEvent
   payload: {
     hasPersisted: boolean

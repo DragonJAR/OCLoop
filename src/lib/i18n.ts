@@ -133,6 +133,24 @@ const en = {
   errArgModelFormat: (p: Params) =>
     `Error: --model expects provider/model (for example openai/gpt-5), got "${p.model}"`,
 
+  // --- --resilience parsing errors (CLI) ---
+  // Localized like the other argparse errors above so a user passing --lang es
+  // gets these in Spanish too (preScanLang runs before parseArgs). See
+  // REPARAR.md B3. Keys take {raw}/{key}/{keys} params as noted.
+  errResilienceNeedsArg: "Error: --resilience requires a key=value argument",
+  errResilienceNoEquals: (p: Params) =>
+    `Error: --resilience expects key=value, got "${p.raw}"`,
+  errResilienceEmptyKey: (p: Params) =>
+    `Error: --resilience key is empty in "${p.raw}"`,
+  errResilienceEmptyValue: (p: Params) =>
+    `Error: --resilience ${p.key} requires a non-empty value`,
+  errResilienceUnknownKey: (p: Params) =>
+    `Error: unknown resilience key "${p.key}" (valid: ${p.keys})`,
+  errResilienceBool: (p: Params) =>
+    `Error: --resilience ${p.key} expects a boolean (true|false), got "${p.raw}"`,
+  errResilienceInt: (p: Params) =>
+    `Error: --resilience ${p.key} expects a non-negative integer (decimal only), got "${p.raw}"`,
+
   // --- Pre-flight file errors (CLI, after locale is resolved) ---
   // Checkbox markers ('- [ ]') stay literal — they're language-agnostic.
   errPlanNotFound: (p: Params) =>
@@ -183,6 +201,19 @@ const en = {
       "",
       "Alternatively, generate one interactively with:",
       "  ocloop -c          (or: ocloop --create-plan)",
+      "",
+    ].join("\n"),
+  // Surfaces a loop-prompt file that exists but is empty/whitespace-only. The
+  // runtime reads the prompt on every iteration, so a blank file produces an
+  // empty send. Mirrors errPromptNotFound's shape. Used by start-iteration.ts
+  // (runIteration) — see REPARAR.md B2.
+  errPromptEmpty: (p: Params) =>
+    [
+      `Error: Prompt file is empty: ${p.path}`,
+      "",
+      "The prompt file exists but contains no text.",
+      "Add the instructions to send to opencode on each iteration,",
+      `or recreate ${p.path} from the default template.`,
       "",
     ].join("\n"),
   // Surfaces a PLAN.md that HAS tasks but NO automatable work for OCLoop:
@@ -476,6 +507,11 @@ const en = {
   dlgPlanCompleteFallback: "Plan marked as complete.",
   toastSendPromptFailed: (p: Params) => `Failed to send prompt: ${p.message}`,
   toastCopyFailed: (p: Params) => `Copy failed: ${p.error}`,
+  // Clipboard tool detection failures surfaced from clipboard.ts (REPARAR.md B4).
+  errClipboardNotFound: (p: Params) =>
+    `No clipboard tool found. ${p.hint} should be available.`,
+  errClipboardFailed: (p: Params) =>
+    `Clipboard command failed (exit ${p.code}${p.stderr ? ": " + p.stderr : ""})`,
   actWake: (p: Params) => `Woke after ${p.secs}s suspended — reconnecting`,
   actReconciled: (p: Params) => `Reconciled: session ${p.result}, advancing`,
   actGuardRestart: "Guardian: server unresponsive, restarting",
@@ -618,11 +654,8 @@ const en = {
   routingPlaceholder: "Search models...",
   routingSkip: "Skip",
   routingHeavyLabel: "Main model (heavy)",
-  routingHeavyDesc: "Used for every plan task",
   routingJudgeLabel: "Judge model (judge)",
-  routingJudgeDesc: "Used by the eval layer (LM-judge)",
   routingCheapLabel: "Cheap model (cheap)",
-  routingCheapDesc: "Reserved for deterministic work (tests/review)",
   kbSwitch: "switch",
   kbBack: "back",
   dlgCmdPlaceholderHelp: "Use {cmd} as placeholder for the attach command",
@@ -729,6 +762,21 @@ const es: Record<MessageKey, Msg> = {
   errArgModelFormat: (p) =>
     `Error: --model espera proveedor/modelo (por ejemplo openai/gpt-5), se obtuvo "${p.model}"`,
 
+  // --- Errores de parseo de --resilience (CLI) — espejos de `en`. REPARAR.md B3. ---
+  errResilienceNeedsArg: "Error: --resilience requiere un argumento key=value",
+  errResilienceNoEquals: (p) =>
+    `Error: --resilience espera key=value, se obtuvo "${p.raw}"`,
+  errResilienceEmptyKey: (p) =>
+    `Error: la clave de --resilience está vacía en "${p.raw}"`,
+  errResilienceEmptyValue: (p) =>
+    `Error: --resilience ${p.key} requiere un valor no vacío`,
+  errResilienceUnknownKey: (p) =>
+    `Error: clave de resilience desconocida "${p.key}" (válidas: ${p.keys})`,
+  errResilienceBool: (p) =>
+    `Error: --resilience ${p.key} espera un booleano (true|false), se obtuvo "${p.raw}"`,
+  errResilienceInt: (p) =>
+    `Error: --resilience ${p.key} espera un entero no negativo (solo decimal), se obtuvo "${p.raw}"`,
+
   errPlanNotFound: (p) =>
     [
       `Error: archivo de plan no encontrado: ${p.path}`,
@@ -774,6 +822,16 @@ const es: Record<MessageKey, Msg> = {
       "",
       "Alternativamente, genéralo de forma interactiva con:",
       "  ocloop -c          (o: ocloop --create-plan)",
+      "",
+    ].join("\n"),
+  // Espejo de `errPromptEmpty` (en). REPARAR.md B2.
+  errPromptEmpty: (p) =>
+    [
+      `Error: el archivo de prompt está vacío: ${p.path}`,
+      "",
+      "El archivo de prompt existe pero no contiene texto.",
+      "Añade las instrucciones a enviar a opencode en cada iteración,",
+      `o recrea ${p.path} desde la plantilla por defecto.`,
       "",
     ].join("\n"),
   // Espejo de `errPlanComplete` (en). Ver bloque en `en` para la nota de source
@@ -929,7 +987,7 @@ const es: Record<MessageKey, Msg> = {
   hintSampleActivity: "actividad de ejemplo",
   hintStartingMsg: "Iniciando el servidor OpenCode…",
   hintPausingMsg: "Pausando tras la tarea actual —",
-  hintCooldownMsg: "Rate limit — reintentando solo, solo espera",
+  hintCooldownMsg: "Rate limit — reintentando, solo espera",
   hintCompleteMsg: "Pulsa cualquier tecla para salir",
 
   guardSuspect: "Sospechoso",
@@ -1019,6 +1077,11 @@ const es: Record<MessageKey, Msg> = {
   dlgPlanCompleteFallback: "Plan marcado como completado.",
   toastSendPromptFailed: (p) => `Fallo al enviar el prompt: ${p.message}`,
   toastCopyFailed: (p) => `Fallo al copiar: ${p.error}`,
+  // Espejos de clipboard (en). REPARAR.md B4.
+  errClipboardNotFound: (p) =>
+    `No se encontró herramienta de portapapeles. ${p.hint} debería estar disponible.`,
+  errClipboardFailed: (p) =>
+    `El comando de portapapeles falló (salida ${p.code}${p.stderr ? ": " + p.stderr : ""})`,
   actWake: (p) => `Despertar tras ${p.secs}s suspendido — reconectando`,
   actReconciled: (p) => `Reconciliado: sesión ${p.result}, avanzando`,
   actGuardRestart: "Guardián: servidor sin respuesta, reiniciando",
@@ -1152,11 +1215,8 @@ const es: Record<MessageKey, Msg> = {
   routingPlaceholder: "Buscar modelos...",
   routingSkip: "Saltar",
   routingHeavyLabel: "Modelo principal (heavy)",
-  routingHeavyDesc: "Usado para cada tarea del plan",
   routingJudgeLabel: "Modelo juez (judge)",
-  routingJudgeDesc: "Usado por la capa de evaluación (LM-judge)",
   routingCheapLabel: "Modelo económico (cheap)",
-  routingCheapDesc: "Reservado para trabajo determinista (tests/revisión)",
   kbSwitch: "cambiar",
   kbBack: "atrás",
   dlgCmdPlaceholderHelp: "Usa {cmd} como marcador del comando de conexión",

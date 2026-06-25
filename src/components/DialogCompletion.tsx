@@ -4,6 +4,7 @@ import { Dialog } from "../ui/Dialog";
 import { DialogHeader, DialogButton, dialogScrollbarOptions } from "../ui/DialogControls";
 import { useTheme } from "../context/ThemeContext";
 import { formatDuration } from "../lib/format";
+import { glyph } from "../lib/glyphs";
 import { t } from "../lib/i18n";
 
 export interface DialogCompletionProps {
@@ -15,7 +16,7 @@ export interface DialogCompletionProps {
 }
 
 export function DialogCompletion(props: DialogCompletionProps) {
-  const { theme } = useTheme();
+  const { theme, unicode } = useTheme();
   const [activeButton, setActiveButton] = createSignal<"dismiss" | "quit">("dismiss");
 
   // Fixed height: the summary already lives in a <scrollbox maxHeight={12}>, so
@@ -53,13 +54,15 @@ export function DialogCompletion(props: DialogCompletionProps) {
   return (
     <Dialog onClose={props.onDismiss} width={72} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
-        {/* Header — green ✓ glyph before the primary-colored title. */}
+        {/* Header — green ✓ glyph before the primary-colored title. The glyph
+            goes through the glyph system so it degrades to "+" on non-Unicode
+            terminals (OCLOOP_ASCII=1, TERM=dumb) instead of mojibake (REPARAR.md E2). */}
         <DialogHeader
           title={t("dlgPlanComplete")}
-          icon="✓"
+          icon={glyph("check", unicode())}
           accent={theme().primary}
           iconColor={theme().success}
-          hint="esc"
+          hint={t("dlgEscToQuit")}
         />
 
         {/* Summary line */}

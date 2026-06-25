@@ -196,12 +196,14 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   deps.setPendingManifestTask(currentTask)
   const promptFile = Bun.file(deps.promptPath)
   if (!(await promptFile.exists())) {
-    throw new Error(`Prompt file not found: ${deps.promptPath}`)
+    // Localized via the same i18n keys the CLI pre-flight uses (REPARAR.md B2):
+    // previously these threw English literals, breaking --lang es.
+    throw new Error(deps.t("errPromptNotFound", { path: deps.promptPath }))
   }
   const promptContent = await promptFile.text()
   const prompt = promptContent.replaceAll("{{PLAN_FILE}}", deps.planPath)
   if (prompt.trim() === "") {
-    throw new Error(`Prompt file is empty: ${deps.promptPath}`)
+    throw new Error(deps.t("errPromptEmpty", { path: deps.promptPath }))
   }
 
   // --- 9. Send the prompt (heavy tier overrides activeModel when routed) ---

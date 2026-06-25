@@ -274,8 +274,16 @@ function AppContent(props: AppProps) {
         loop.dispatch({ type: "resume_cooldown" })
       }
     } else {
-      // Recover a possibly-missed session.idle.
-      void reconcileAndAdvance()
+      // Recover a possibly-missed session.idle. Isolate the async reconcile:
+      // sleep-detector's onWake is a sync try/catch, which does NOT catch an
+      // async rejection — `void reconcileAndAdvance()` would surface an
+      // unhandled promise rejection on a network/SDK failure (timeout, dropped
+      // socket), crashing the process on the exact wake path that should be
+      // most resilient. Mirrors the watchdog's own .catch()-on-timer pattern
+      // (useWatchdog.ts). See REPARAR.md B1.
+      void reconcileAndAdvance().catch((err) =>
+        log.health("reconcile", "wake reconcile failed", { message: toErrorMessage(err) }),
+      )
     }
   }
 
@@ -1419,9 +1427,14 @@ function AppContent(props: AppProps) {
             // prompt never goes out with a nonexistent agent.
             if (resolved.invalidAgent) {
               const fallback = resolveAgentAndModel(config, agents, undefined, props.model)
+              // Capture invalidAgent in a const: the closure passed to
+              // dialog.show runs deferred, so TS cannot narrow
+              // `resolved.invalidAgent` (string | undefined) across it — the
+              // non-null assertion would otherwise be needed at the call site.
+              const invalidAgent = resolved.invalidAgent
               dialog.show(() => (
                 <DialogInvalidAgent
-                  agentName={resolved.invalidAgent!}
+                  agentName={invalidAgent}
                   availableAgents={resolved.availableAgents}
                   defaultAgent={fallback.agent}
                   onUseDefault={() => {

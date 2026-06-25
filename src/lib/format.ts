@@ -99,7 +99,7 @@ export function getToolPreview(toolName: string, input: Record<string, unknown>)
       default:
         return toolName;
     }
-  } catch (e) {
+  } catch {
     return toolName;
   }
 }

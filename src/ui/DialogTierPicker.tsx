@@ -19,7 +19,7 @@
  * `resolved` guard + `onUnmount` net prevent the awaiter from ever hanging.
  */
 
-import { createSignal, Show, type JSX } from "solid-js"
+import { createSignal, Show } from "solid-js"
 import { DialogSelect, type DialogSelectOption } from "./DialogSelect"
 import type { DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
@@ -30,8 +30,6 @@ export interface TierRole {
   id: string
   /** Human-readable label shown in the step title. */
   label: string
-  /** One-line description of what the role is for. */
-  description: string
   /**
    * Optional default "provider/model" to pre-select (marked with ● in the
    * list). When provided, the user can just press Enter to accept it.
@@ -53,17 +51,14 @@ export const ROUTING_TIERS: TierRole[] = [
   {
     id: "heavy",
     label: t("routingHeavyLabel"),
-    description: t("routingHeavyDesc"),
   },
   {
     id: "judge",
     label: t("routingJudgeLabel"),
-    description: t("routingJudgeDesc"),
   },
   {
     id: "cheap",
     label: t("routingCheapLabel"),
-    description: t("routingCheapDesc"),
   },
 ]
 
@@ -119,7 +114,7 @@ export function DialogTierPicker(props: DialogTierPickerProps) {
         keybinds={[
           { label: t("kbSelect"), key: "Enter" },
           { label: t("kbNavigate"), key: "↑/↓" },
-          { label: t("routingSkip"), key: "S", onSelect: skip },
+          { label: t("routingSkip"), key: "S", onSelect: skip, bind: "S" },
         ]}
         onSelect={(opt) => {
           // DialogSelect stays open after onSelect; we drive the step transition.
@@ -164,5 +159,5 @@ DialogTierPicker.show = (
   })
 }
 
-// Keep JSX runtime happy: this file returns JSX.Element.
-export type _JsxMarker = JSX.Element
+// (No _JsxMarker export needed: the JSX runtime is retained by the
+// <DialogTierPicker .../> component returned above.)

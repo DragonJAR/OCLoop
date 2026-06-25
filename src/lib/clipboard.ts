@@ -6,6 +6,7 @@
 
 import { commandExists, resolveSpawnable } from "./command-exists"
 import { toErrorMessage } from "./format"
+import { t } from "./i18n"
 
 type ClipboardTool = {
   command: string;
@@ -79,6 +80,9 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
 
   if (!tool) {
     // Per-platform hint so the error names the tool the user actually needs.
+    // The hint text is the binary name(s) — kept literal (not localized) since
+    // they're commands, not prose. Only the surrounding sentence goes through
+    // i18n (REPARAR.md B4).
     const hint =
       process.platform === "darwin"
         ? "pbcopy (built-in)"
@@ -87,7 +91,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
           : "wl-copy (Wayland) or xclip/xsel (X11)";
     return {
       success: false,
-      error: `No clipboard tool found. ${hint} should be available.`,
+      error: t("errClipboardNotFound", { hint }),
     };
   }
 
@@ -118,7 +122,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
       const stderr = await new Response(proc.stderr as ReadableStream<Uint8Array>).text();
       return {
         success: false,
-        error: stderr.trim() || `Clipboard command exited with code ${exitCode}`,
+        error: stderr.trim() || t("errClipboardFailed", { code: String(exitCode), stderr: "" }),
       };
     }
 

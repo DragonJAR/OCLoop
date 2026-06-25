@@ -50,7 +50,7 @@ export function DialogPrompt(props: DialogPromptProps) {
       height={8}
     >
       {/* Header */}
-      <DialogHeader title={props.title ?? t("dlgSendPrompt")} hint="esc" />
+      <DialogHeader title={props.title ?? t("dlgSendPrompt")} hint={t("dlgEscToQuit")} />
 
       {/* Input */}
       <box style={{ flexGrow: 1, marginBottom: 1 }}>

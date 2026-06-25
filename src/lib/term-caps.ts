@@ -28,7 +28,7 @@ export interface TerminalCapabilities {
   isCI: boolean
 }
 
-export interface DetectInput {
+interface DetectInput {
   /** Defaults to process.env. */
   env?: Record<string, string | undefined>
   /** Defaults to process.stdout?.isTTY. */

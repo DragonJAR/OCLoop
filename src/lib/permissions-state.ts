@@ -25,4 +25,4 @@ export function createPermissionsState(
   return { activeIndex, setActiveIndex, working, toggle }
 }
 
-export type PermissionsState = ReturnType<typeof createPermissionsState>
+type PermissionsState = ReturnType<typeof createPermissionsState>

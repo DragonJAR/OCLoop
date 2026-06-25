@@ -67,7 +67,7 @@ export function DialogError(props: DialogErrorProps) {
     <Dialog onClose={props.onQuit} width={60} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
-        <DialogHeader title={t("errorTitle")} accent={theme().error} hint="esc" />
+        <DialogHeader title={t("errorTitle")} accent={theme().error} hint={t("dlgEscToQuit")} />
 
         {/* Source badge */}
         <text style={{ marginTop: 1 }}>

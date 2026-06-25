@@ -22,7 +22,6 @@ import { describe, expect, it, mock } from "bun:test"
 import { PERMISSION_TOOLS } from "./config"
 import {
   buildPermissionConfig,
-  AUTONOMOUS_PERMISSION_CONFIG,
   startOpencodeServer,
 } from "./opencode-server"
 
@@ -30,16 +29,11 @@ import {
 const BLOCKING_TOOLS = [...PERMISSION_TOOLS]
 
 describe("opencode-server — buildPermissionConfig", () => {
-  describe("AUTONOMOUS_PERMISSION_CONFIG (default, for --create-plan)", () => {
-    it("allows every tool that can block an iteration", () => {
-      const permission = AUTONOMOUS_PERMISSION_CONFIG.permission!
-      for (const tool of BLOCKING_TOOLS) {
-        expect(permission[tool]).toBe("allow")
-      }
-    })
-  })
-
-  it("allows all five tools when called with no args", () => {
+  // `buildPermissionConfig()` with no args is the fully-autonomous policy used
+  // by --create-plan (all five blocking tools allowed). Covers what the former
+  // AUTONOMOUS_PERMISSION_CONFIG constant exposed — the constant was removed
+  // (dead in production) and the coverage now goes through the canonical builder.
+  it("allows all five tools when called with no args (autonomous default)", () => {
     const permission = buildPermissionConfig()
     for (const tool of BLOCKING_TOOLS) {
       expect(permission[tool]).toBe("allow")

@@ -10,8 +10,6 @@
  * Behavior unchanged from the inline closures it replaces.
  */
 
-import type { JSX } from "solid-js"
-
 import type { useLoopState } from "./useLoopState"
 import type { useCooldown } from "./useCooldown"
 import type { useWatchdog } from "./useWatchdog"
@@ -218,5 +216,5 @@ export function useResume(deps: ResumeDeps): ResumeApi {
   return { initializeSession }
 }
 
-// Marker so the JSX runtime is retained for the DialogConfirm render.
-export type _JsxMarker = JSX.Element
+// (No _JsxMarker export needed: the JSX runtime is retained by the
+// <DialogConfirm .../> render in resumeWithDialog above.)

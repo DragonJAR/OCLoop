@@ -33,7 +33,7 @@ export class TimeoutError extends Error {
   }
 }
 
-export type TimeoutTask<T> = Promise<T> | ((signal: AbortSignal) => Promise<T>)
+type TimeoutTask<T> = Promise<T> | ((signal: AbortSignal) => Promise<T>)
 
 /**
  * Combine the timeout's signal with an optional caller-supplied signal so the

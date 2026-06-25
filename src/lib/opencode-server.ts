@@ -25,7 +25,7 @@ import { spawn } from "node:child_process"
 import { createOpencodeServer, type ServerOptions } from "@opencode-ai/sdk/server"
 import type { Config } from "@opencode-ai/sdk"
 import { resolveCommandPath } from "./command-exists"
-import { PERMISSION_TOOLS } from "./config"
+import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 
 /** Handle returned by the launcher (matches the SDK's return shape). */
 export interface OpencodeServer {
@@ -40,7 +40,7 @@ export interface OpencodeServer {
  * used by `--create-plan`, which is headless and must never block.
  */
 export interface StartOpencodeServerOptions extends ServerOptions {
-  permissions?: Partial<Record<(typeof PERMISSION_TOOLS)[number], boolean>>
+  permissions?: Partial<PermissionsConfig>
 }
 
 /**
@@ -59,7 +59,7 @@ export interface StartOpencodeServerOptions extends ServerOptions {
  * dead-end of an unanswered prompt.
  */
 export function buildPermissionConfig(
-  enabled?: Partial<Record<(typeof PERMISSION_TOOLS)[number], boolean>>,
+  enabled?: Partial<PermissionsConfig>,
 ): NonNullable<Config["permission"]> {
   const permission: NonNullable<Config["permission"]> = {}
   for (const tool of PERMISSION_TOOLS) {
@@ -73,22 +73,14 @@ export function buildPermissionConfig(
 }
 
 /**
- * The fully-autonomous policy (all five tools allowed). The default for callers
- * that don't carry per-tool user overrides — notably `--create-plan`, which is
- * headless and would hang on any confirmation.
- */
-export const AUTONOMOUS_PERMISSION_CONFIG: Pick<Config, "permission"> = {
-  permission: buildPermissionConfig(),
-}
-
-/**
  * Merge the autonomous permission policy into `options`. `enabled`, when given,
  * lets a caller drop specific tools back to OpenCode's interactive default;
- * omitted means fully autonomous (all five allowed).
+ * omitted means fully autonomous (all five allowed) — equivalent to
+ * `buildPermissionConfig()` with no args.
  */
 function withAutonomousPermissions(
   options: ServerOptions,
-  enabled?: Partial<Record<(typeof PERMISSION_TOOLS)[number], boolean>>,
+  enabled?: Partial<PermissionsConfig>,
 ): ServerOptions {
   return {
     ...options,
