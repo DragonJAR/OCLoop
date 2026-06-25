@@ -808,33 +808,32 @@ function AppContent(props: AppProps) {
       if (!(await file.exists())) return false
       const content = await file.text()
 
-      // Already marked complete (tag present, any reasonable format)?
+      // Structural completion is the SOURCE OF TRUTH: complete only when no
+      // automatable task remains (every actionable task is [x]/[BLOCKED]). The
+      // structural gate comes FIRST, BEFORE honoring any <plan-complete> tag —
+      // so a STALE tag left after new tasks were added (a reopened/copied
+      // PLAN.md) can't end the run while work is pending. isStructurallyComplete
+      // is owned by the tooling and doesn't depend on the model/tag.
+      const progress = parsePlan(content)
+      if (!isStructurallyComplete(progress)) return false
+
+      // Structurally complete + already tagged → done (no rewrite needed).
       if (parsePlanComplete(content) !== null) return true
 
-      // Structural completion: NO automatable task remains (every actionable task is
-      // already [x]/[BLOCKED]). The tooling owns this — it does not depend on the
-      // model writing the tag. Completion needs ALL tasks done, so a single
-      // prematurely-marked task can't end the run. When complete, write the
-      // <plan-complete> summary ourselves (deterministic) so the completion dialog
-      // and restart-resilience work, then report complete.
-      const progress = parsePlan(content)
-      if (isStructurallyComplete(progress)) {
-        // Compare-and-swap against a concurrent PLAN.md edit by the agent: the
-        // read above and this write span two awaits, during which the model can
-        // legitimately edit PLAN.md (e.g. unchecking the last task, or adding a
-        // new one). Re-read and only proceed when the file is byte-identical to
-        // what we based the completion decision on — otherwise we'd clobber the
-        // agent's edit with stale content + a <plan-complete> tag and false-
-        // complete the run. If it changed, don't complete this cycle; the next
-        // check (after the edit settles) re-evaluates against fresh content.
-        const cas = await compareAndSwapPlan(
-          planPath,
-          (c) => withPlanCompleteTag(c, buildCompletionSummary(progress)),
-          "state",
-        )
-        return cas.wrote
-      }
-      return false
+      // Structurally complete but not yet tagged — write the deterministic
+      // <plan-complete> summary ourselves so the completion dialog and restart-
+      // resilience work. Compare-and-swap against a concurrent PLAN.md edit by
+      // the agent: the read above and this write span two awaits, during which
+      // the model can legitimately edit PLAN.md (e.g. unchecking the last task,
+      // or adding a new one). Only proceed when the file is byte-identical to
+      // what we based the decision on; if it changed, don't complete this cycle —
+      // the next check re-evaluates against fresh content.
+      const cas = await compareAndSwapPlan(
+        planPath,
+        (c) => withPlanCompleteTag(c, buildCompletionSummary(progress)),
+        "state",
+      )
+      return cas.wrote
     } catch {
       return false
     }

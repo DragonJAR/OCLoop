@@ -534,6 +534,33 @@ describe("isStructurallyComplete (tooling-owned completion, no model tag)", () =
   })
 })
 
+describe("plan completion ordering — structural check gates a stale <plan-complete> tag", () => {
+  // Regression for the reported bug (Visa: COMPLETO at 44%): checkPlanComplete
+  // (App.tsx) must run isStructurallyComplete BEFORE honoring a <plan-complete>
+  // tag, so a stale tag left after new tasks were added can't end the run while
+  // automatable work remains. These guard the building blocks that ordering relies on.
+  it("a plan with a pending task is NOT structurally complete, even WITH a stale tag", () => {
+    const content = [
+      "- [x] done",
+      "- [ ] still pending",
+      "<plan-complete>all done</plan-complete>",
+    ].join("\n")
+    expect(parsePlanComplete(content)).not.toBeNull() // the tag is present…
+    expect(isStructurallyComplete(parsePlan(content))).toBe(false) // …but the gate says keep working
+  })
+
+  it("becomes structurally complete once the last pending task is done", () => {
+    const content = ["- [x] done", "- [x] finished", "<plan-complete>all done</plan-complete>"].join("\n")
+    expect(isStructurallyComplete(parsePlan(content))).toBe(true)
+    expect(parsePlanComplete(content)).not.toBeNull()
+  })
+
+  it("manual/blocked-only plan is structurally complete (automatable === 0)", () => {
+    const content = ["- [x] a", "- [MANUAL] by hand", "- [BLOCKED: x] blocked"].join("\n")
+    expect(isStructurallyComplete(parsePlan(content))).toBe(true)
+  })
+})
+
 describe("buildCompletionSummary", () => {
   it("summarizes a plain all-done plan", () => {
     const p = parsePlan("- [x] a\n- [x] b\n- [x] c")
