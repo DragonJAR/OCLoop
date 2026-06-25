@@ -37,23 +37,37 @@ export function DialogAbout(props: DialogAboutProps) {
   })
 
   // label + URL pair, rendered with the URL highlighted so terminals that
-  // linkify (or the user's eye) can find it.
-  const Credit = (p: { label: string; url: string }) => (
-    <box style={{ flexDirection: "column", marginBottom: 1 }}>
+  // linkify (or the user's eye) can find it. Emitted as direct <text> siblings
+  // (Fragment, no wrapping <box>): an auto-sized box defaults to flexShrink:1
+  // in OpenTUI, so under the fixed-height Dialog it gets squeezed and the two
+  // lines collapse onto one row (the URL then overwrites the label). Direct
+  // <text> children keep their measured height (flexShrink:0) — same pattern
+  // as the tagline/runtime above.
+  const Credit = (p: { label: string; url: string; last?: boolean }) => (
+    <>
       <text>
         <span style={{ fg: theme().text }}>{p.label}</span>
       </text>
-      <text>
+      {/* 1-row gap after each credit, except the last — a trailing blank there
+          just unbalances the vertical centering against the top padding. */}
+      <text style={{ marginBottom: p.last ? 0 : 1 }}>
         <span style={{ fg: theme().primary }}>{`  ${p.url}`}</span>
       </text>
-    </box>
+    </>
   )
 
+  // ponytail: height sized snug to the (taller) es copy — 19 content rows + 1
+  // padding row top & bottom = 21 — so the box hugs the text instead of leaving
+  // a void below it. A longer translation or a terminal shorter than the dialog
+  // clips the last credit; wrap the credits in a <scrollbox> like DialogHelp if
+  // that ever matters.
   return (
-    <Dialog onClose={props.onClose} width={72} height={20}>
+    <Dialog onClose={props.onClose} width={72} height={21}>
       <box style={{ flexDirection: "column" }}>
-        {/* Header: title + version, dismiss hint */}
-        <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1, flexDirection: "row" }}>
+        {/* Header: title + version, dismiss hint. flexShrink:0 so that if the
+            content ever overflows, Yoga clips the bottom credit rather than
+            squeezing this row away and hiding the title. */}
+        <box style={{ width: "100%", justifyContent: "space-between", marginBottom: 1, flexDirection: "row", flexShrink: 0 }}>
           <text>
             <span style={{ fg: theme().accent, bold: true }}>{t("aboutTitle")}</span>
             <span style={{ fg: theme().textMuted }}>{`  v${VERSION}`}</span>
@@ -74,7 +88,7 @@ export function DialogAbout(props: DialogAboutProps) {
         <Credit label={t("aboutRepo")} url={LINK_REPO} />
         <Credit label={t("aboutCreatedBy")} url={LINK_AUTHOR} />
         <Credit label={t("aboutMaintainedBy")} url={LINK_DRAGONJAR} />
-        <Credit label={t("aboutServices")} url={LINK_SERVICES} />
+        <Credit label={t("aboutServices")} url={LINK_SERVICES} last />
       </box>
     </Dialog>
   )
