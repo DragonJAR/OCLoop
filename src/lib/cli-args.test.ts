@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { parseArgs, preScanLang } from "./cli-args"
 import { DEFAULTS } from "./constants"
+import { DEFAULT_RESILIENCE } from "./config"
 
 /**
  * parseArgs calls process.exit() on --help/--version and on invalid input.
@@ -110,6 +111,15 @@ describe("parseArgs — help/version exit", () => {
       const r = runParse([f])
       expect(r.exitCode).toBe(0)
       expect(r.logs.join("\n")).toContain("Usage: ocloop")
+    }
+  })
+  it("--help enumerates every resilience key with its default (drift guard)", () => {
+    // showHelp() groups the keys by hand (RESILIENCE_GROUPS) but reads defaults
+    // from DEFAULT_RESILIENCE. If a key is added to DEFAULT_RESILIENCE but not
+    // grouped, the render omits it and this fails — keeping -h in sync with config.
+    const help = runParse(["--help"]).logs.join("\n")
+    for (const key of Object.keys(DEFAULT_RESILIENCE)) {
+      expect(help).toContain(`${key}=`)
     }
   })
   it("-v/--version print version and exit 0", () => {

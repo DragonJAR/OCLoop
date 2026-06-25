@@ -74,9 +74,38 @@ export function showVersion(): void {
 }
 
 /**
+ * Ordered grouping of the `--resilience` keys for {@link showHelp}, mirroring the
+ * phase grouping of `ResilienceConfig` in config.ts. Only the labels/order live
+ * here; each key's DEFAULT is read from `DEFAULT_RESILIENCE` at render time (DRY).
+ * Typed as `keyof ResilienceConfig`, so a renamed/removed key fails to compile;
+ * a test (cli-args.test.ts) guards against an ADDED key being forgotten here.
+ */
+const RESILIENCE_GROUPS: ReadonlyArray<
+  readonly [string, readonly (keyof ResilienceConfig)[]]
+> = [
+  ["Timeouts (ms)", ["createTimeoutMs", "promptTimeoutMs", "abortTimeoutMs", "statusTimeoutMs", "pingTimeoutMs", "planTimeoutMs"]],
+  ["Rate limits", ["backoffBaseMs", "backoffMaxMs", "backoffJitter", "maxRateLimitRetries", "minIterationGapMs"]],
+  ["Sleep/suspend", ["sleepTickMs", "sleepThresholdMs", "caffeinate"]],
+  ["Watchdog", ["watchdogTickMs", "watchdogSuspectMs", "watchdogConfirmMs", "maxRecoveryAttempts"]],
+  ["Lifecycle", ["resume", "chaos"]],
+  ["Stuck-task halt", ["noProgressThreshold"]],
+  ["Stalled-task split", ["decomposeTimeoutMs"]],
+]
+
+/**
  * Display help message and exit
  */
 export function showHelp(): void {
+  // Enumerate the --resilience keys (grouped) with their live defaults from
+  // DEFAULT_RESILIENCE so they're discoverable from the CLI, not just the README.
+  const labelPad = Math.max(...RESILIENCE_GROUPS.map(([label]) => label.length))
+  const resilienceKeys = RESILIENCE_GROUPS.map(
+    ([label, keys]) =>
+      `  ${label.padEnd(labelPad)}  ${keys
+        .map((k) => `${k}=${DEFAULT_RESILIENCE[k]}`)
+        .join(", ")}`,
+  ).join("\n")
+
   console.log(`
 ocloop ${VERSION}
 
@@ -108,9 +137,14 @@ Options:
   --resume                 Reconcile a persisted in-flight session on startup
   --no-caffeinate          Do not keep the system awake while running (macOS)
   --chaos                  Enable chaos fault-injection (debug only)
-  --resilience <key=value> Override a resilience threshold, repeatable (e.g. watchdogSuspectMs, planTimeoutMs; full list + defaults in the README "Tuning" section)
+  --resilience <key=value> Override a resilience threshold (repeatable; keys + defaults below)
   -v, --version            Show version number
   -h, --help               Show help
+
+Resilience keys (--resilience <key>=<value>, repeatable; defaults shown):
+${resilienceKeys}
+
+Config file (~/.config/ocloop/ocloop.json): also sets evals, theme, terminal, scrollbar_visible — see README.
 
 Examples:
   ocloop                           # Start, wait for [S] to begin
