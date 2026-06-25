@@ -21,6 +21,7 @@
 
 ## Table of contents
 
+- [Preview](#preview)
 - [Features](#features)
 - [Requirements](#requirements)
 - [Installation](#installation)
@@ -40,6 +41,31 @@
 - [Development](#development)
 - [License](#license)
 - [Author](#-author)
+
+## Preview
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/complete.png" alt="Plan complete" width="100%" />
+      <br /><sub><b>Plan complete</b> — run summary, iteration count, and total time</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/theme.png" alt="Theme picker" width="100%" />
+      <br /><sub><b>Theme picker</b> — live preview across 33 themes</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/permissions.png" alt="Autonomous permissions" width="100%" />
+      <br /><sub><b>Permissions</b> — choose which tools auto-run unattended</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/lang.png" alt="Bilingual UI" width="100%" />
+      <br /><sub><b>Bilingual UI</b> — switch English / Español live</sub>
+    </td>
+  </tr>
+</table>
 
 ## Features
 

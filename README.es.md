@@ -21,6 +21,7 @@
 
 ## Tabla de contenidos
 
+- [Vista previa](#vista-previa)
 - [Características](#características)
 - [Requisitos](#requisitos)
 - [Instalación](#instalación)
@@ -40,6 +41,31 @@
 - [Desarrollo](#desarrollo)
 - [Licencia](#licencia)
 - [Autor](#-autor)
+
+## Vista previa
+
+<table>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/complete.png" alt="Plan completo" width="100%" />
+      <br /><sub><b>Plan completo</b> — resumen de la corrida, iteraciones y tiempo total</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/theme.png" alt="Selector de tema" width="100%" />
+      <br /><sub><b>Selector de tema</b> — vista previa en vivo de 33 temas</sub>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/permissions.png" alt="Permisos autónomos" width="100%" />
+      <br /><sub><b>Permisos</b> — elegí qué herramientas se auto-ejecutan sin supervisión</sub>
+    </td>
+    <td align="center" width="50%">
+      <img src="https://cdn.jsdelivr.net/gh/DragonJAR/OCLoop@main/assets/lang.png" alt="Interfaz bilingüe" width="100%" />
+      <br /><sub><b>Interfaz bilingüe</b> — cambiá entre English / Español en vivo</sub>
+    </td>
+  </tr>
+</table>
 
 ## Características
 
