@@ -14,4 +14,5 @@ export { DialogInvalidAgent, type DialogInvalidAgentProps } from "./DialogInvali
 export { DialogTerminalConfig, createTerminalConfigState, type DialogTerminalConfigProps, type TerminalConfigState } from "./DialogTerminalConfig"
 export { DialogTerminalError, type DialogTerminalErrorProps } from "./DialogTerminalError"
 export { DialogThemePicker, type DialogThemePickerProps } from "./DialogThemePicker"
+export { DialogPermissions, type DialogPermissionsProps } from "./DialogPermissions"
 export { DialogAbout, type DialogAboutProps } from "./DialogAbout"

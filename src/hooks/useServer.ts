@@ -1,12 +1,12 @@
 import { createSignal, onMount, onCleanup } from "solid-js"
-import { type ServerOptions } from "@opencode-ai/sdk/server"
-import { startOpencodeServer } from "../lib/opencode-server"
+import { startOpencodeServer, type StartOpencodeServerOptions } from "../lib/opencode-server"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { withTimeout } from "../lib/with-timeout"
 import { assertResponse, getApiTimeouts } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
+import type { PermissionTool } from "../lib/config"
 
 /**
  * Server status states.
@@ -50,6 +50,13 @@ export interface UseServerOptions {
   timeout?: number
   /** Whether to auto-start the server on mount (default: true) */
   autoStart?: boolean
+  /**
+   * Per-tool autonomous-approval map, read FRESH on every `launch()` so a
+   * `restart()` picks up a just-saved change automatically. Absent/`true` →
+   * auto-allow the tool; `false` → fall back to OpenCode's interactive default.
+   * Default (omitted) = fully autonomous (all five allowed).
+   */
+  permissions?: () => Partial<Record<PermissionTool, boolean>>
 }
 
 /**
@@ -94,11 +101,15 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   async function launch(targetPort: number): Promise<void> {
     abortController = new AbortController()
 
-    const serverOptions: ServerOptions = {
+    // Read permissions FRESH each launch (not destructured to a const) so a
+    // restart() after a config change re-launches with the new policy. Omitted
+    // accessor → startOpencodeServer applies the fully-autonomous default.
+    const serverOptions: StartOpencodeServerOptions = {
       hostname,
       timeout,
       signal: abortController.signal,
       port: targetPort,
+      permissions: options.permissions?.(),
     }
 
     serverRef = await startOpencodeServer(serverOptions)

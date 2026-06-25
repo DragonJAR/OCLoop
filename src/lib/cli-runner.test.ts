@@ -5,12 +5,13 @@
  */
 import { describe, expect, it } from "bun:test"
 import { runCli } from "./cli-runner"
+import { VERSION } from "./cli-args"
 
 describe("runCli", () => {
   it("--version prints the version string on stdout and exits 0", async () => {
     const result = await runCli(["--version"])
     expect(result.exitCode).toBe(0)
-    expect(result.stdout.trim()).toBe("ocloop 0.5.0")
+    expect(result.stdout.trim()).toBe(`ocloop ${VERSION}`)
     expect(result.stderr).toBe("")
   })
 

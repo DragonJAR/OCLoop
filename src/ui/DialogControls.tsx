@@ -110,3 +110,50 @@ export function DialogButton(props: {
     </box>
   )
 }
+
+/**
+ * A checkbox-style toggle row for settings dialogs. Shows a `[x]`/`[ ]` glyph
+ * (driven by `checked`) plus a label and optional description. When `active`
+ * (keyboard focus), the row fills with the primary color like `DialogButton`.
+ * `onToggle` fires on click; the caller owns the checked state.
+ */
+export function DialogToggleRow(props: {
+  label: string
+  description?: string
+  checked: boolean
+  active: boolean
+  onToggle: () => void
+}) {
+  const { theme } = useTheme()
+  const fg = () => (props.active ? selectedForeground(theme()) : theme().text)
+  const descFg = () => (props.active ? selectedForeground(theme()) : theme().textMuted)
+  // Indent label and description past the 3-char `[x] ` glyph so they align on
+  // a clean left edge; without it the description sat flush under the glyph and
+  // the row read as one cramped block.
+  const indent = "    "
+  return (
+    <box
+      style={{
+        paddingLeft: 1,
+        paddingRight: 1,
+        backgroundColor: props.active ? theme().primary : undefined,
+      }}
+      onMouseUp={() => props.onToggle()}
+    >
+      <text>
+        <span style={{ fg: fg(), bold: true }}>
+          {props.checked ? "[x]" : "[ ]"}
+        </span>
+        <span style={{ fg: fg() }}> {props.label}</span>
+      </text>
+      {props.description ? (
+        <text>
+          <span style={{ fg: descFg() }}>
+            {indent}
+            {props.description}
+          </span>
+        </text>
+      ) : null}
+    </box>
+  )
+}

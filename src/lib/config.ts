@@ -202,6 +202,37 @@ export const DEFAULT_EVALS: EvalConfig = {
 }
 
 /**
+ * The OpenCode tool-call permissions that can BLOCK an unattended iteration by
+ * asking for confirmation. Read-only tools (read/grep/glob/list) never ask, so
+ * this is the complete set. Single source of truth — iterated by the permission
+ * builder, the settings dialog, the i18n labels, and the tests.
+ */
+export const PERMISSION_TOOLS = [
+  "edit",
+  "bash",
+  "webfetch",
+  "doom_loop",
+  "external_directory",
+] as const
+
+export type PermissionTool = (typeof PERMISSION_TOOLS)[number]
+
+/**
+ * Per-tool autonomous-approval flags. `true` (default) means OCLoop auto-allows
+ * the tool so the unattended loop never hangs on a confirmation; `false` means
+ * fall back to OpenCode's own policy (i.e. "ask" / interactive) for that tool.
+ */
+export type PermissionsConfig = Record<PermissionTool, boolean>
+
+export const DEFAULT_PERMISSIONS: PermissionsConfig = {
+  edit: true,
+  bash: true,
+  webfetch: true,
+  doom_loop: true,
+  external_directory: true,
+}
+
+/**
  * OCLoop configuration file structure
  */
 export interface OcloopConfig {
@@ -218,6 +249,8 @@ export interface OcloopConfig {
   resilience?: Partial<ResilienceConfig>
   /** Optional eval-layer (LM-judge) overrides (partial; merged over defaults). */
   evals?: Partial<EvalConfig>
+  /** Optional per-tool autonomous-approval overrides (partial; merged over defaults). */
+  permissions?: Partial<PermissionsConfig>
 }
 
 /**
@@ -281,6 +314,7 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "language",
   "resilience",
   "evals",
+  "permissions",
 ])
 
 /**
@@ -315,6 +349,15 @@ function isValidEvalsValue(key: string, v: unknown): boolean {
     return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
   }
   return false
+}
+
+/**
+ * Per-field type guard for a single PermissionsConfig entry. Mirrors the
+ * truth-in-defaults pattern: `key` must be one of the five {@link
+ * PERMISSION_TOOLS} and `v` must be a boolean.
+ */
+function isValidPermissionsValue(key: string, v: unknown): boolean {
+  return key in DEFAULT_PERMISSIONS && typeof v === "boolean"
 }
 
 /**
@@ -400,6 +443,26 @@ function validateConfigShape(raw: unknown): OcloopConfig {
         )
       } else {
         out.evals = r.evals as Partial<EvalConfig>
+      }
+    }
+  }
+  if ("permissions" in r) {
+    if (typeof r.permissions !== "object" || r.permissions === null || Array.isArray(r.permissions)) {
+      log.warn("config", "Ignoring malformed 'permissions' field", r.permissions)
+    } else {
+      // All-or-nothing, mirroring resilience/evals: one bad field drops the
+      // whole block so a hand-edited `{"bash": "yep"}` can't flow through as a
+      // non-boolean and silently flip the autonomous-approval behavior.
+      const entries = Object.entries(r.permissions as Record<string, unknown>)
+      const invalid = entries.filter(([k, v]) => !isValidPermissionsValue(k, v))
+      if (invalid.length > 0) {
+        log.warn(
+          "config",
+          `Ignoring 'permissions' block — contains ${invalid.length} invalid field(s)`,
+          invalid.map(([k, v]) => ({ key: k, value: v })),
+        )
+      } else {
+        out.permissions = r.permissions as Partial<PermissionsConfig>
       }
     }
   }

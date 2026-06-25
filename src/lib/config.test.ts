@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { DEFAULT_RESILIENCE, DEFAULT_EVALS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -391,6 +391,62 @@ describe("loadConfig — evals block validation (mirrors resilience all-or-nothi
 
   it("DEFAULT_EVALS is disabled by default (no behavior change out of the box)", () => {
     expect(DEFAULT_EVALS.enabled).toBe(false)
+  })
+})
+
+describe("loadConfig — permissions block validation (mirrors evals all-or-nothing)", () => {
+  it("drops a malformed permissions field (string)", () => {
+    writeConfig("ocloop.json", JSON.stringify({ permissions: "allow" }))
+    expect(loadConfig().permissions).toBeUndefined()
+  })
+
+  it("drops a malformed permissions field (array)", () => {
+    writeConfig("ocloop.json", JSON.stringify({ permissions: [] }))
+    expect(loadConfig().permissions).toBeUndefined()
+  })
+
+  it("drops the whole block when a value is non-boolean", () => {
+    writeConfig("ocloop.json", JSON.stringify({ permissions: { bash: "nope" } }))
+    expect(loadConfig().permissions).toBeUndefined()
+  })
+
+  it("drops the whole block when an unknown tool is present", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ permissions: { bash: false, madeUpTool: true } }),
+    )
+    expect(loadConfig().permissions).toBeUndefined()
+  })
+
+  it("drops the whole block when valid and invalid fields are mixed", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ permissions: { bash: true, edit: 1 } }),
+    )
+    expect(loadConfig().permissions).toBeUndefined()
+  })
+
+  it("keeps the whole block when every field is valid", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ permissions: { edit: true, bash: false, webfetch: true } }),
+    )
+    expect(loadConfig().permissions).toEqual({
+      edit: true,
+      bash: false,
+      webfetch: true,
+    })
+  })
+
+  it("keeps a partial block with only some fields (rest default at resolve time)", () => {
+    writeConfig("ocloop.json", JSON.stringify({ permissions: { bash: false } }))
+    expect(loadConfig().permissions).toEqual({ bash: false })
+  })
+
+  it("DEFAULT_PERMISSIONS allows all five tools by default (autonomous loop)", () => {
+    for (const tool of PERMISSION_TOOLS) {
+      expect(DEFAULT_PERMISSIONS[tool]).toBe(true)
+    }
   })
 })
 

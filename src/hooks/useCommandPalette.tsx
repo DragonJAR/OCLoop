@@ -16,14 +16,14 @@ import type { useCooldown } from "./useCooldown"
 import type { CommandContextValue, CommandOption } from "../context/CommandContext"
 import type { DialogContextValue } from "../context/DialogContext"
 import type { ToastContextValue } from "../context/ToastContext"
-import type { OcloopConfig } from "../lib/config"
+import type { OcloopConfig, PermissionsConfig, PermissionTool } from "../lib/config"
 import type { t as Tfn, Locale } from "../lib/i18n"
 import type { TerminalConfigState } from "../components"
 import { resolveActiveSessionId } from "../lib/active-session-id"
 import { saveConfig } from "../lib/config"
 import { getLocale, setLocale } from "../lib/i18n"
 import type { ChaosController } from "../lib/chaos"
-import { DialogTerminalConfig, DialogThemePicker, DialogAbout } from "../components"
+import { DialogTerminalConfig, DialogThemePicker, DialogPermissions, DialogAbout } from "../components"
 
 export interface CommandPaletteDeps {
   loop: ReturnType<typeof useLoopState>
@@ -46,6 +46,9 @@ export interface CommandPaletteDeps {
   copyAttachCommand: () => Promise<void>
   showQuitConfirmation: () => void
   onSelectTheme: (name: string) => void
+  // Autonomous-permission flags + toggle (permissions dialog)
+  permissions: () => PermissionsConfig
+  onTogglePermission: (tool: PermissionTool, value: boolean) => void
 }
 
 export function useCommandPalette(deps: CommandPaletteDeps): void {
@@ -112,6 +115,21 @@ export function useCommandPalette(deps: CommandPaletteDeps): void {
             deps.dialog.clear()
             deps.toast.show({ variant: "info", message: deps.t("toastRestarting") })
             void deps.restartServer()
+          },
+        },
+        {
+          title: deps.t("cmdPermissions"),
+          value: "permissions",
+          category: deps.t("catLoop"),
+          onSelect: () => {
+            deps.dialog.clear()
+            deps.dialog.show(() => (
+              <DialogPermissions
+                permissions={deps.permissions}
+                onToggle={deps.onTogglePermission}
+                onClose={() => deps.dialog.clear()}
+              />
+            ))
           },
         },
         // --- Terminal ---

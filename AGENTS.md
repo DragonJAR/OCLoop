@@ -10,12 +10,15 @@ OCLoop es un harness de bucle en **Bun + TypeScript** (TUI con **SolidJS** vía
 ## Project Operations
 
 - Instalar dependencias: `bun install`
-- Tests (gate antes de commitear): `bun test`
+- Typecheck (gate): `bunx tsc --noEmit`
+- Tests (gate): `bun test`
 - Build de producción: `bun run build`
 - Ejecutar desde el código: `bun run dev`
 
-Ejecuta `bun test` y `bun run build` y confirma que pasan **antes** de marcar una
-tarea como hecha; nunca commitees si fallan.
+El build (`build.ts` → `Bun.build`) **no** chequea tipos, así que `bunx tsc
+--noEmit` es un gate aparte. Ejecuta los tres (`tsc --noEmit`, `bun test`,
+`bun run build`) y confirma que pasan **antes** de marcar una tarea como hecha;
+nunca commitees si fallan.
 
 ## Commit rules
 
@@ -27,7 +30,9 @@ tarea como hecha; nunca commitees si fallan.
 
 - TypeScript estricto (`tsconfig.json`). Evita `any`.
 - **i18n**: todo string visible al usuario va en `src/lib/i18n.ts` y debe existir
-  en AMBAS locales (`en` y `es`); se usa vía `t("clave", params?)`.
+  en AMBAS locales (`en` y `es`); se usa vía `t("clave", params?)`. La paridad
+  está type-enforced (`es: Record<MessageKey, Msg>`, `MessageKey = keyof typeof
+  en`), así que `tsc` en verde garantiza que `es` no perdió ninguna clave.
 - **Tests**: `bun:test` (`describe`/`it`/`expect`), archivos `*.test.ts`
   colocados junto al código. Sin frameworks externos.
 - **I/O de archivos**: prefiere `Bun.file(path).text()/.exists()` para leer. Las
@@ -40,6 +45,12 @@ tarea como hecha; nunca commitees si fallan.
 - **Parser de `PLAN.md`**: una línea `- [ ]`/`- [x]` cuenta como tarea AUNQUE
   esté indentada. Las notas de memoria entre tareas deben ser prosa o
   sub-bullets simples, nunca checkboxes, o el contador de progreso se rompe.
+- **Spawning en Windows**: un nombre pelado no resuelve PATHEXT (`Bun.spawn`
+  lanza ENOENT aunque el binario exista). Resuélvelo a su ruta completa con
+  `resolveSpawnable` (`command-exists.ts`) antes de spawnear — ya aplicado en
+  `clipboard.ts`, `terminal-launcher.ts` y `opencode-server.ts` (lanzador
+  `opencode` en win32). Todo fix de Windows va platform-gated
+  (`process.platform === "win32"`) para que POSIX quede byte-identical.
 
 ## Research
 
@@ -49,3 +60,5 @@ de librerías/repos). Mantén el detalle en docs/ y aquí solo referencias @ de 
 línea. Ejemplo:
 - @docs/opencode-sdk.md — peculiaridades del SDK de sesiones
 -->
+
+- @docs/opencode-permissions.md — OCLoop fuerza `permission: "allow"` al levantar el servidor; deep-merge de OPENCODE_CONFIG_CONTENT respeta los `deny` del usuario.

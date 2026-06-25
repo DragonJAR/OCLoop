@@ -5,7 +5,21 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-06-25
+
 ### Added
+- **Configurable autonomous permissions (Ctrl+P → Permissions).** OCLoop runs
+  unattended, so it launches the OpenCode server with tool-call approvals
+  auto-allowed (file edits, shell, web fetch, etc.) — otherwise the loop would
+  hang on a confirmation nobody is watching. You can now toggle which of the
+  five blocking tools (edit, bash, webfetch, doom_loop, external_directory)
+  stay auto-approved: open the **Permissions** command and untick any to let
+  OpenCode ask instead. Changes persist to the config file and **restart the
+  server** so they take effect immediately. The five tools are all on by
+  default, so the loop stays autonomous unless you opt a tool out. OpenCode
+  deep-merges this with your `opencode.json`, so an explicit `deny` you set
+  (e.g. to forbid `git push`) still wins. The headless `--create-plan` path
+  remains fully autonomous regardless.
 - **Multi-line goal in `--create-plan`.** The goal prompt now accepts multiple
   lines — type or paste a long, multi-line goal and finish with a line containing
   only `.` (or press Ctrl-D), instead of being limited to a single terminal line.

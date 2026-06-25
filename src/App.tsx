@@ -45,9 +45,12 @@ import {
   saveConfig,
   resolveResilience,
   DEFAULT_EVALS,
+  DEFAULT_PERMISSIONS,
   type OcloopConfig,
   type ResilienceConfig,
   type EvalConfig,
+  type PermissionsConfig,
+  type PermissionTool,
 } from "./lib/config"
 import {
   createSession,
@@ -143,6 +146,7 @@ function AppContent(props: AppProps) {
   const server = useServer({
     port: props.port,
     autoStart: true,
+    permissions: () => permissions(),
   })
 
   // Loop state machine
@@ -181,6 +185,15 @@ function AppContent(props: AppProps) {
   const [evalsConfig, setEvalsConfig] = createSignal<EvalConfig>({
     ...DEFAULT_EVALS,
     ...loadConfig().evals,
+  })
+
+  // Resolved autonomous-permission flags (DEFAULT_PERMISSIONS < config file).
+  // Seeded synchronously from disk so the very first server launch (autoStart)
+  // already honors the user's choices — no race with onMount. Read live by
+  // useServer's launch() so a restart picks up changes without extra wiring.
+  const [permissions, setPermissions] = createSignal<PermissionsConfig>({
+    ...DEFAULT_PERMISSIONS,
+    ...loadConfig().permissions,
   })
 
   // --- Rate-limit cooldown orchestration (extracted to useCooldown) ---
@@ -557,6 +570,11 @@ function AppContent(props: AppProps) {
       })
     }
     setEvalsConfig(resolvedEvals)
+
+    // Resolve autonomous-permission config: defaults < config file. The signal
+    // was seeded synchronously, but onMount re-reads disk in case it changed
+    // between seed and mount (mirrors the evals pattern).
+    setPermissions({ ...DEFAULT_PERMISSIONS, ...config.permissions })
 
     // Sleep/suspension detector — always on while the app runs.
     sleepDetector = createSleepDetector({
@@ -1812,6 +1830,23 @@ function AppContent(props: AppProps) {
     dialog.clear()
   }
 
+  // Toggle a per-tool autonomous-approval flag from the permissions dialog.
+  // Saves to disk, then restarts the OpenCode server (permissions are applied
+  // at boot, so a restart is the only way the change takes effect now). On I/O
+  // failure the in-memory state is rolled back so the UI matches what survived.
+  const onTogglePermission = (tool: PermissionTool, value: boolean) => {
+    const next: PermissionsConfig = { ...permissions(), [tool]: value }
+    const newConfig: OcloopConfig = { ...ocloopConfig(), permissions: next }
+    if (!saveConfig(newConfig)) {
+      toast.show({ variant: "error", message: t("toastConfigSaveFailed") })
+      return
+    }
+    setOcloopConfig(newConfig)
+    setPermissions(next)
+    toast.show({ variant: "info", message: t("dlgPermissionsRestart") })
+    void restartServer()
+  }
+
   // Register commands (extracted to useCommandPalette)
   useCommandPalette({
     loop,
@@ -1831,6 +1866,8 @@ function AppContent(props: AppProps) {
     copyAttachCommand,
     showQuitConfirmation,
     onSelectTheme,
+    permissions,
+    onTogglePermission,
   })
 
   // Register shutdown handler for SIGINT/SIGTERM signals

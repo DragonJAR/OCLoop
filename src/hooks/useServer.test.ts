@@ -55,7 +55,7 @@ import { createRoot } from "solid-js"
 // Mutable impls swapped by individual tests. The factory closure makes the
 // reference stable across the cache lifetime of the mocked module.
 type FakeServer = { url: string; close: () => void }
-let serverImpl: (opts: { port?: number; hostname?: string }) => Promise<FakeServer> =
+let serverImpl: (opts: { port?: number; hostname?: string; config?: unknown }) => Promise<FakeServer> =
   async (opts) => ({
     url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
     close: () => {},
@@ -67,7 +67,7 @@ let clientAgentsImpl: () => Promise<unknown> = async () => ({
 // The factory runs once per import of the mocked module. The closure over the
 // mutable impls keeps the swap-during-test pattern working.
 mock.module("@opencode-ai/sdk/server", () => ({
-  createOpencodeServer: (opts: { port?: number; hostname?: string }) =>
+  createOpencodeServer: (opts: { port?: number; hostname?: string; config?: unknown }) =>
     serverImpl(opts),
 }))
 
@@ -123,7 +123,7 @@ async function withServer<T>(
 
 describe("useServer (Finding 18.2.A)", () => {
   beforeEach(() => {
-    serverImpl = async (opts) => ({
+    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => ({
       url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
       close: () => {},
     })
@@ -133,7 +133,7 @@ describe("useServer (Finding 18.2.A)", () => {
   })
 
   afterEach(() => {
-    serverImpl = async (opts) => ({
+    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => ({
       url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
       close: () => {},
     })
@@ -322,5 +322,52 @@ describe("useServer (Finding 18.2.A)", () => {
       expect(server.status()).toBe("ready")
       dispose()
     })
+  })
+
+  it("launches the server with autonomous allow-all permissions by default", async () => {
+    let captured: unknown = undefined
+    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => {
+      captured = opts.config
+      return { url: `http://127.0.0.1:${opts.port ?? 4096}`, close: () => {} }
+    }
+
+    await withServer({ port: 4096 }, async (server, dispose) => {
+      expect(server.status()).toBe("ready")
+      const config = captured as { permission: Record<string, string> }
+      // OCLoop is unattended; the five blocking tools must be auto-allowed so
+      // no iteration hangs on an unanswered confirmation.
+      expect(config.permission.edit).toBe("allow")
+      expect(config.permission.bash).toBe("allow")
+      expect(config.permission.webfetch).toBe("allow")
+      expect(config.permission.doom_loop).toBe("allow")
+      expect(config.permission.external_directory).toBe("allow")
+      dispose()
+    })
+  })
+
+  it("forwards a per-tool permission opt-out to the server config", async () => {
+    let captured: unknown = undefined
+    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => {
+      captured = opts.config
+      return { url: `http://127.0.0.1:${opts.port ?? 4096}`, close: () => {} }
+    }
+
+    await withServer(
+      {
+        port: 4096,
+        // User opted bash out of autonomous approval.
+        permissions: () => ({ bash: false }),
+      },
+      async (server, dispose) => {
+        expect(server.status()).toBe("ready")
+        const config = captured as { permission: Record<string, string | undefined> }
+        // bash omitted → OpenCode applies its interactive default for it.
+        expect(config.permission.bash).toBeUndefined()
+        // the others stay autonomous.
+        expect(config.permission.edit).toBe("allow")
+        expect(config.permission.webfetch).toBe("allow")
+        dispose()
+      },
+    )
   })
 })
