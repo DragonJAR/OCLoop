@@ -53,10 +53,12 @@ export interface StartOpencodeServerOptions extends ServerOptions {
  * → `"allow"` (auto-approve); `false` → the field is OMITTED so OpenCode falls
  * back to its own policy (`ask`/interactive) for that tool.
  *
- * This is applied via OPENCODE_CONFIG_CONTENT, which OpenCode DEEP-MERGES with
- * the user's own opencode.json — so an explicit `deny` the user set (e.g. to
- * forbid `git push`) still wins. The merge keeps a safety net while removing the
- * dead-end of an unanswered prompt.
+ * This is applied via OPENCODE_CONFIG_CONTENT, which OpenCode loads at the
+ * HIGHEST precedence (after opencode.json) — so an emitted `"allow"` OVERRIDES
+ * the matching permission in the user's opencode.json. A tool dropped to `false`
+ * here is OMITTED (no conflicting key), so the user's opencode.json setting for
+ * it is preserved — that (not a `deny` in opencode.json while the tool stays
+ * enabled here) is how a user keeps a tool interactive/denied under OCLoop.
  */
 export function buildPermissionConfig(
   enabled?: Partial<PermissionsConfig>,
