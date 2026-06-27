@@ -131,6 +131,33 @@ function classifyKind(name: string | undefined, message: string): SessionErrorKi
  * object: explicit numeric fields, a `retry-after` header, or a duration parsed
  * from the message ("retry after 30s", "try again in 2 minutes").
  */
+/**
+ * Parse a `Retry-After` value into seconds. RFC 7231 allows TWO forms: a delta
+ * in seconds ("120") OR an HTTP-date ("Wed, 21 Oct 2025 07:28:00 GMT"). The
+ * seconds form is tried first (the common LLM-provider case); only when that
+ * fails do we try the date form, so a gateway/CDN returning an absolute date is
+ * honored instead of falling through to the message-heuristic backoff.
+ * Returns `undefined` when neither form parses.
+ */
+function parseRetryAfterValue(raw: unknown): number | undefined {
+  // Seconds form: a numeric string or number. `Number("120")` works; a date
+  // string yields NaN and falls through.
+  const asNum = typeof raw === "string" ? Number(raw) : raw
+  if (typeof asNum === "number" && Number.isFinite(asNum) && asNum >= 0) {
+    return asNum
+  }
+  // HTTP-date form: `Date.parse` accepts RFC 1123 (the HTTP-date grammar) and
+  // returns epoch ms (NaN if unparseable). Convert to a non-negative delta.
+  if (typeof raw === "string") {
+    const target = Date.parse(raw)
+    if (Number.isFinite(target)) {
+      const secs = Math.ceil((target - Date.now()) / 1000)
+      return Math.max(0, secs)
+    }
+  }
+  return undefined
+}
+
 function extractRetryAfter(e: Record<string, any>): number | undefined {
   const candidates = [
     e?.retryAfter,
@@ -139,8 +166,8 @@ function extractRetryAfter(e: Record<string, any>): number | undefined {
     e?.data?.retry_after,
   ]
   for (const c of candidates) {
-    const n = typeof c === "string" ? Number(c) : c
-    if (typeof n === "number" && Number.isFinite(n) && n >= 0) return n
+    const n = parseRetryAfterValue(c)
+    if (n !== undefined) return n
   }
 
   const headers = e?.headers ?? e?.response?.headers
@@ -150,8 +177,8 @@ function extractRetryAfter(e: Record<string, any>): number | undefined {
         ? headers.get("retry-after")
         : headers["retry-after"] ?? headers["Retry-After"]
     if (raw != null) {
-      const n = Number(raw)
-      if (Number.isFinite(n) && n >= 0) return n
+      const n = parseRetryAfterValue(raw)
+      if (n !== undefined) return n
     }
   }
 

@@ -22,6 +22,27 @@ export function stripCodeFences(text: string): string {
 }
 
 /**
+ * Remove fenced code blocks from PLAN.md content so task-counting and
+ * task-selection NEVER mistake a documented example for a real task.
+ *
+ * A PLAN.md that documents its own format with a ```markdown block containing
+ * `- [ ] example` would otherwise inflate `parsePlan` counts and could make
+ * `getCurrentTaskFromContent` pick a documentation line as the "current task".
+ * The same problem already forced `parsePlanComplete` to strip fences before
+ * scanning for `<plan-complete>` — this is the single source of truth for that
+ * heuristic, so every task reader applies it consistently (DRY).
+ *
+ * Handles paired fences (``` … ```) and an unterminated trailing fence
+ * (anchored to line start so an inline ``` literal in prose is NOT mistaken
+ * for a fence — that deleted real content and left the loop spinning at 100%).
+ */
+export function stripInlineCodeFences(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, "") // paired fences
+    .replace(/^[^\S\r\n]{0,3}```[\s\S]*$/gm, "") // unterminated trailing fence (line-anchored)
+}
+
+/**
  * Parses a single line from PLAN.md to determine its task type and content.
  * 
  * Handles various formats:
@@ -114,9 +135,11 @@ export function parseTaskLine(line: string): ParsedTask {
  * @returns PlanProgress object with task counts and percentages
  */
 export function parsePlan(content: string): PlanProgress {
-  // splitLines tolerates CRLF/lone-CR so a Windows-saved PLAN.md parses the
-  // same as a Unix one (parseTaskLine trims per-line, but be consistent).
-  const lines = splitLines(content)
+  // Strip fenced code blocks so a documented example (a ```markdown block with
+  // `- [ ] example` lines) is NOT counted as a real task — otherwise total/
+  // completed/percentComplete are inflated and the pre-flight completion check
+  // (isStructurallyComplete) can misfire. See stripInlineCodeFences.
+  const lines = splitLines(stripInlineCodeFences(content))
   let total = 0
   let completed = 0
   let manual = 0
@@ -204,22 +227,7 @@ export function parsePlanComplete(content: string): string | null {
   // Strip fenced code blocks first: a ```fence``` documenting the mechanism can
   // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
   // premature completion. Real completion tags live at the document's top level.
-  const withoutFences = content
-    .replace(/```[\s\S]*?```/g, "") // paired fences
-    // An UNTERMINATED trailing fence (malformed markdown) wouldn't match the
-    // paired regex, leaving a documented `<plan-complete>` example inside it to
-    // trigger a premature completion. Strip from the dangling fence to EOF too:
-    // a missed real tag (loop keeps running) is far safer than a false stop.
-    //
-    // Anchor the fence marker to a LINE START (^ with the m flag, 0-3 spaces of
-    // indentation as CommonMark allows). The previous non-anchored `/```[\s\S]*$/`
-    // matched a triple-backtick INLINE in prose (e.g. "use ``` for code") and
-    // deleted everything from it to EOF — including a genuine <plan-complete>
-    // tag written later, which kept the loop spinning at 100% for PLAN.md files
-    // that document markdown syntax. A real fence always begins at line start;
-    // an inline literal has text before it on the same line and must NOT be
-    // treated as an unterminated fence.
-    .replace(/^[^\S\r\n]{0,3}```[\s\S]*$/gm, "")
+  const withoutFences = stripInlineCodeFences(content)
   const matches = [
     ...withoutFences.matchAll(
       // Opening anchored to line start (0-3 spaces) so mid-line / 4+-indented / fenced
@@ -304,7 +312,9 @@ export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
  * @returns The task description or null if no unchecked tasks found
  */
 export function getCurrentTaskFromContent(content: string): string | null {
-  const lines = splitLines(content)
+  // Strip fences so a documented `- [ ] example` inside a ```block can't be
+  // selected as the current task. See stripInlineCodeFences.
+  const lines = splitLines(stripInlineCodeFences(content))
 
   for (const line of lines) {
     const task = parseTaskLine(line)

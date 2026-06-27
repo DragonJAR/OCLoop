@@ -42,7 +42,7 @@
 
 import { DEFAULTS } from "./constants"
 import type { CLIArgs } from "../types"
-import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./config"
+import { DEFAULT_RESILIENCE, RESILIENCE_MINS, type ResilienceConfig } from "./config"
 import { isLocale, t } from "./i18n"
 
 // Read version from package.json (repo root, two levels up from src/lib).
@@ -205,6 +205,14 @@ export function applyResilienceOverride(
     const num = Number(raw)
     if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
       console.error(t("errResilienceInt", { key, raw }))
+      process.exit(1)
+    }
+    // Enforce documented per-key minimums (e.g. noProgressThreshold ≥ 1). Uses
+    // the same RESILIENCE_MINS map as the config-file validator so both entry
+    // points agree (DRY).
+    const min = RESILIENCE_MINS[key as keyof ResilienceConfig]
+    if (min !== undefined && num < min) {
+      console.error(t("errResilienceMin", { key, min, raw }))
       process.exit(1)
     }
     ;(target as Record<string, unknown>)[key] = num

@@ -340,12 +340,31 @@ export function isNonNegativeInteger(v: unknown): boolean {
  * hand-edited "createTimeoutMs": "fast" (which would reach setTimeout and
  * coerce to NaN, burning retries in milliseconds).
  */
+/**
+ * Documented minimums for numeric resilience keys that have an invariant beyond
+ * "non-negative integer". A key NOT listed here has no extra floor. Today only
+ * `noProgressThreshold` is documented as "Must be >= 1" (a 0 makes
+ * NoProgressDetector trip on every iteration and breaks the
+ * `maxEvalRetries ≤ noProgressThreshold - 1` safety invariant). Kept as a map
+ * so the single validation site below is the only place to extend (DRY).
+ *
+ * Exported so the CLI override path (`applyResilienceOverride`) enforces the
+ * same floors as the config-file path (`isValidResilienceValue`) — one source
+ * of truth across both entry points.
+ */
+export const RESILIENCE_MINS: Partial<Record<keyof ResilienceConfig, number>> = {
+  noProgressThreshold: 1,
+}
+
 function isValidResilienceValue(key: string, v: unknown): boolean {
   if (!(key in DEFAULT_RESILIENCE)) return false
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
   if (typeof def === "number") {
-    return isNonNegativeInteger(v)
+    if (!isNonNegativeInteger(v)) return false
+    const min = RESILIENCE_MINS[key as keyof ResilienceConfig]
+    // min === undefined means "no floor beyond non-negative"; otherwise enforce.
+    return min === undefined || (v as number) >= min
   }
   return false
 }

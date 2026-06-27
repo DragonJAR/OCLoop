@@ -150,6 +150,8 @@ const en = {
     `Error: --resilience ${p.key} expects a boolean (true|false), got "${p.raw}"`,
   errResilienceInt: (p: Params) =>
     `Error: --resilience ${p.key} expects a non-negative integer (decimal only), got "${p.raw}"`,
+  errResilienceMin: (p: Params) =>
+    `Error: --resilience ${p.key} must be >= ${p.min}, got "${p.raw}"`,
 
   // --- Pre-flight file errors (CLI, after locale is resolved) ---
   // Checkbox markers ('- [ ]') stay literal — they're language-agnostic.
@@ -790,6 +792,8 @@ const es: Record<MessageKey, Msg> = {
     `Error: --resilience ${p.key} espera un booleano (true|false), se obtuvo "${p.raw}"`,
   errResilienceInt: (p) =>
     `Error: --resilience ${p.key} espera un entero no negativo (solo decimal), se obtuvo "${p.raw}"`,
+  errResilienceMin: (p) =>
+    `Error: --resilience ${p.key} debe ser >= ${p.min}, se obtuvo "${p.raw}"`,
 
   errPlanNotFound: (p) =>
     [

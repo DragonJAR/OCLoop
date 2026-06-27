@@ -24,6 +24,7 @@ import { bar, titleBar, terminalCols } from "./lib/layout"
 import { setLocale, isLocale, t } from "./lib/i18n"
 import { log } from "./lib/debug-logger"
 import { toErrorMessage } from "./lib/format"
+import { monotonicNow } from "./lib/clock"
 import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
@@ -309,7 +310,11 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
         await Bun.write(path, content)
       },
       sleep: (ms) => Bun.sleep(ms),
-      now: () => Date.now(),
+      // Monotonic clock for the plan-generation deadline: a generation can run
+      // for several minutes, so a wall-clock `Date.now()` would fire the timeout
+      // early (or late) on an NTP correction or system suspend. Mirrors
+      // one-shot-agent.ts (REPARAR.md B5). Tests inject a fake `now` anyway.
+      now: () => monotonicNow(),
       emit: (line) => {
         // Wrap the proposed plan with the title bar chrome; pass other lines
         // through verbatim.
