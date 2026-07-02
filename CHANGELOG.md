@@ -5,6 +5,34 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.7.0] — 2026-07-02
+
+### Added
+- **`launch-gate` mutex** — pure-module mutual exclusion for server launch/restart;
+  prevents concurrent `launch()` races (watchdog + rapid user commands).
+- **Regression tests** for `RESILIENCE_MINS` (`noProgressThreshold ≥ 1`), fenced
+  `PLAN.md` progress, and launch deduplication.
+
+### Changed
+- **Atomic config/plan writes** — shared `atomic-fs` helper (`plan-cas`,
+  `loop-state-store`, `config`); deterministic per-process tmp suffix in
+  `saveConfig` (no orphan `.tmp` leaks).
+- **CLI duplicate flags** — repeating `--port` (and other value flags) now errors
+  instead of silently overwriting.
+- **`toggle_pause` from cooldown** — transitions to `paused` with timer cleanup
+  (was a silent no-op during rate-limit cooldown).
+
+### Fixed
+- **Windows console garbage** — enable virtual-terminal processing before the TUI
+  and reset OpenTUI probe modes on exit (`?[?1016…`, `[4;…t` at the prompt).
+- **Cooldown resume (C2)** — `sessionId` preserved for abort-on-entry; driver
+  fires after `resume_cooldown`.
+- **`totalTokens`** — includes `cacheRead` / `cacheWrite`.
+- **`noProgressThreshold=0`** — rejected in config file and `--resilience` CLI.
+- **Test isolation** — `Bun.spawn` / `command-exists` mocks no longer leak across
+  the full suite.
+- **Plan progress** — tasks inside fenced code blocks no longer inflate counts.
+
 ## [0.6.0] — 2026-06-25
 
 ### Added

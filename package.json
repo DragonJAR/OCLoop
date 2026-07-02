@@ -1,6 +1,6 @@
 {
   "name": "ocloop",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "type": "module",
   "description": "An unattended loop harness for OpenCode — runs your PLAN.md one task at a time and survives rate limits, sleep, and crashes.",
   "author": "Fayçal Mitidji (d3vr); DragonJAR SAS (fork)",
