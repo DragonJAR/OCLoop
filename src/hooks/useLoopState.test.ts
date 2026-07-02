@@ -1,5 +1,10 @@
 import { describe, expect, it } from "bun:test"
-import { getActiveSessionId, loopReducer } from "./useLoopState"
+import {
+  getActiveSessionId,
+  loopReducer,
+  shouldDriveIteration,
+  staleSessionIdOnCooldownEntry,
+} from "./useLoopState"
 import type { LoopState, LoopAction } from "../types"
 
 describe("loopReducer", () => {
@@ -639,10 +644,13 @@ describe("loopReducer", () => {
       }
       state = loopReducer(state, { type: "resume_cooldown" })
       expect(state.type).toBe("running")
-      if (state.type === "running") expect(state.sessionId).toBe("ses-y")
+      if (state.type === "running") {
+        expect(state.sessionId).toBe("")
+        expect(shouldDriveIteration(state)).toBe(true)
+      }
     })
 
-    it("resume_cooldown restores the preserved sessionId, same iteration (C2)", () => {
+    it("resume_cooldown clears sessionId so the iteration driver restarts (C2)", () => {
       const state: LoopState = {
         type: "cooldown",
         iteration: 7,
@@ -656,7 +664,8 @@ describe("loopReducer", () => {
       expect(result.type).toBe("running")
       if (result.type === "running") {
         expect(result.iteration).toBe(7)
-        expect(result.sessionId).toBe("ses-7")
+        expect(result.sessionId).toBe("")
+        expect(shouldDriveIteration(result)).toBe(true)
       }
     })
 
@@ -1403,6 +1412,42 @@ describe("loopReducer", () => {
   // The watchdog `isActive` probe in App.tsx:242-247 inlines this same
   // predicate. Pin the truth table here so any future refactor that touches
   // either side will fail this test, not the watchdog.
+  describe("shouldDriveIteration", () => {
+    it("is true only for running with an empty sessionId", () => {
+      expect(shouldDriveIteration({ type: "running", iteration: 1, sessionId: "" })).toBe(true)
+      expect(shouldDriveIteration({ type: "running", iteration: 1, sessionId: "s" })).toBe(false)
+      expect(shouldDriveIteration({ type: "cooldown", iteration: 1, reason: "r", resumeAt: 0, attempt: 1, kind: "rate_limit", sessionId: "s" })).toBe(false)
+    })
+  })
+
+  describe("staleSessionIdOnCooldownEntry (C2)", () => {
+    it("returns the preserved session when entering cooldown from running", () => {
+      const prev: LoopState = { type: "running", iteration: 2, sessionId: "ses-stale" }
+      const next = loopReducer(prev, {
+        type: "rate_limited",
+        reason: "429",
+        resumeAt: 1,
+        attempt: 1,
+        kind: "rate_limit",
+      })
+      expect(staleSessionIdOnCooldownEntry(next, prev)).toBe("ses-stale")
+    })
+
+    it("returns null when cooldown is not entered from an in-flight state", () => {
+      const prev: LoopState = { type: "ready" }
+      const next: LoopState = {
+        type: "cooldown",
+        iteration: 1,
+        reason: "r",
+        resumeAt: 1,
+        attempt: 1,
+        kind: "rate_limit",
+        sessionId: "",
+      }
+      expect(staleSessionIdOnCooldownEntry(next, prev)).toBeNull()
+    })
+  })
+
   describe("getActiveSessionId", () => {
     it("returns '' for non-guarded states (starting, ready, paused, cooldown, stopping, stopped, complete, error)", () => {
       const states: LoopState[] = [

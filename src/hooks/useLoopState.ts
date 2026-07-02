@@ -37,6 +37,26 @@ export function getActiveSessionId(state: LoopState): string {
     : ""
 }
 
+/** True when the App iteration driver should call `startIteration()`. */
+export function shouldDriveIteration(state: LoopState): boolean {
+  return state.type === "running" && state.sessionId === ""
+}
+
+/**
+ * Session to abort when entering cooldown from an in-flight iteration.
+ * Preserved on the cooldown variant (C2) for this one-shot cleanup only —
+ * `resume_cooldown` clears `sessionId` so the iteration driver can restart.
+ */
+export function staleSessionIdOnCooldownEntry(
+  state: LoopState,
+  prev: LoopState | null,
+): string | null {
+  if (prev === null || state.type !== "cooldown") return null
+  if (prev.type !== "running" && prev.type !== "pausing") return null
+  const sid = state.sessionId
+  return sid ? sid : null
+}
+
 /**
  * Reducer function that handles state transitions.
  * Implements the state machine defined in PLAN.md.
@@ -211,7 +231,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         return {
           type: "running",
           iteration: state.iteration,
-          sessionId: state.sessionId,
+          sessionId: "",
         }
       }
       return state

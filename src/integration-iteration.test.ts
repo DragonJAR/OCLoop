@@ -1,7 +1,11 @@
 import { afterEach, describe, expect, it } from "bun:test"
 
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
-import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
+import {
+  useLoopState,
+  getActiveSessionId,
+  shouldDriveIteration,
+} from "./hooks/useLoopState"
 import { NoProgressDetector } from "./lib/no-progress-detector"
 import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./lib/config"
 import { createRoot } from "solid-js"
@@ -273,6 +277,56 @@ describe("runIteration", () => {
     expect(result).toBe("orphan_aborted")
     expect(h.calls.abortSession).toHaveLength(1)
     expect(h.calls.sendPromptAsync).toHaveLength(0)
+  })
+
+  it("rate-limit cooldown resume drives startIteration via running(\"\") (C2)", async () => {
+    const h = makeHarness({ clientOpts: { sessionId: "sess-retry" } })
+    h.loop.dispatch({ type: "iteration_started", sessionId: "sess-pre-429" })
+    h.loop.dispatch({
+      type: "rate_limited",
+      reason: "429",
+      resumeAt: 999,
+      attempt: 1,
+      kind: "rate_limit",
+    })
+    const cd = h.loop.state()
+    expect(cd.type).toBe("cooldown")
+    if (cd.type === "cooldown") expect(cd.sessionId).toBe("sess-pre-429")
+
+    h.loop.dispatch({ type: "resume_cooldown" })
+    const running = h.loop.state()
+    expect(running.type).toBe("running")
+    expect(shouldDriveIteration(running)).toBe(true)
+
+    const result = await runIteration(h.deps)
+    expect(result).toBe("completed")
+    expect(h.calls.sendPromptAsync).toHaveLength(1)
+  })
+
+  it("post-session pause before prompt send aborts orphan (start-iteration race)", async () => {
+    const h = makeHarness({ clientOpts: { sessionId: "sess-late-pause" } })
+    const origText = Bun.file
+    const fileSpy = (path: string) => {
+      const f = origText(path)
+      return {
+        ...f,
+        exists: async () => {
+          h.loop.dispatch({ type: "toggle_pause" })
+          return true
+        },
+        text: f.text.bind(f),
+      }
+    }
+    ;(Bun as { file: typeof Bun.file }).file = fileSpy as typeof Bun.file
+
+    try {
+      const result = await runIteration(h.deps)
+      expect(result).toBe("orphan_aborted")
+      expect(h.calls.abortSession).toHaveLength(1)
+      expect(h.calls.sendPromptAsync).toHaveLength(0)
+    } finally {
+      ;(Bun as { file: typeof Bun.file }).file = origText
+    }
   })
 
   it("running(\"\") pause during createSession is a no-op — iteration completes (C1)", async () => {

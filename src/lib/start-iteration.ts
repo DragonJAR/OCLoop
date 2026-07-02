@@ -181,12 +181,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   // it and it'd keep running on the server burning tokens. Abort it now and
   // bail before sending the prompt.
   if (getActiveSessionId(deps.loop.state()) !== newSessionId) {
-    try {
-      await abortSession(deps.client, newSessionId)
-    } catch {
-      // Best effort — the session may already be gone.
-    }
-    return "orphan_aborted"
+    return abortOrphanSession(deps.client, newSessionId)
   }
 
   // --- 7. Watchdog baseline for this fresh iteration ---
@@ -194,19 +189,28 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
 
   // --- 8. Record the task for the manifest, then read the prompt ---
   deps.setPendingManifestTask(currentTask)
-  const promptFile = Bun.file(deps.promptPath)
-  if (!(await promptFile.exists())) {
-    // Localized via the same i18n keys the CLI pre-flight uses (REPARAR.md B2):
-    // previously these threw English literals, breaking --lang es.
-    throw new Error(deps.t("errPromptNotFound", { path: deps.promptPath }))
+  let promptContent: string
+  try {
+    const promptFile = Bun.file(deps.promptPath)
+    if (!(await promptFile.exists())) {
+      throw new Error(deps.t("errPromptNotFound", { path: deps.promptPath }))
+    }
+    promptContent = await promptFile.text()
+  } catch (err) {
+    if (err instanceof Error && err.message.startsWith("Error:")) throw err
+    throw new Error(deps.t("errCannotReadFile", { path: deps.promptPath }))
   }
-  const promptContent = await promptFile.text()
   const prompt = promptContent.replaceAll("{{PLAN_FILE}}", deps.planPath)
   if (prompt.trim() === "") {
     throw new Error(deps.t("errPromptEmpty", { path: deps.promptPath }))
   }
 
   // --- 9. Send the prompt (heavy tier overrides activeModel when routed) ---
+  // Re-check after prompt I/O: the user may have paused while we read the file.
+  const st = deps.loop.state()
+  if (st.type !== "running" || st.sessionId !== newSessionId) {
+    return abortOrphanSession(deps.client, newSessionId)
+  }
   await sendPromptAsync(deps.client, {
     sessionID: newSessionId,
     parts: [{ type: "text", text: prompt }],
@@ -217,4 +221,16 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   // --- 10. Refresh plan progress ---
   await deps.refreshPlan()
   return "completed"
+}
+
+async function abortOrphanSession(
+  client: OpencodeClient,
+  sessionId: string,
+): Promise<IterationResult> {
+  try {
+    await abortSession(client, sessionId)
+  } catch {
+    // Best effort — the session may already be gone.
+  }
+  return "orphan_aborted"
 }

@@ -13,7 +13,12 @@ import {
 
 import { useServer } from "./hooks/useServer"
 import { useSSE, classifySessionError } from "./hooks/useSSE"
-import { useLoopState, getActiveSessionId } from "./hooks/useLoopState"
+import {
+  useLoopState,
+  getActiveSessionId,
+  shouldDriveIteration,
+  staleSessionIdOnCooldownEntry,
+} from "./hooks/useLoopState"
 import { useKeybindings } from "./hooks/useKeybindings"
 import { useCooldown } from "./hooks/useCooldown"
 import { useCommandPalette, type PreviewId } from "./hooks/useCommandPalette"
@@ -444,9 +449,20 @@ function AppContent(props: AppProps) {
     // Only the running→cooldown path needs this: for pausing→cooldown the timer
     // was already paused at running→pausing, and resume_cooldown lands in paused
     // (not running), so setting pendingCooldownResume here would mis-attribute time.
-    if (state.type === "cooldown" && prev.type === "running") {
-      stats.pause()
-      pendingCooldownResume = true
+    if (state.type === "cooldown" && (prev.type === "running" || prev.type === "pausing")) {
+      const staleSid = staleSessionIdOnCooldownEntry(state, prev)
+      if (staleSid) {
+        const client = tryGetClient(server.url)
+        if (client) {
+          void abortSession(client, staleSid).catch(() => {
+            // Best effort — the session may already be gone after a 429.
+          })
+        }
+      }
+      if (prev.type === "running") {
+        stats.pause()
+        pendingCooldownResume = true
+      }
     }
 
     // Detect resume: transitioning from paused to running
@@ -1543,7 +1559,7 @@ function AppContent(props: AppProps) {
   // creation can never leave the loop wedged.
   createEffect(() => {
     const state = loop.state()
-    if (state.type === "running" && state.sessionId === "") {
+    if (shouldDriveIteration(state)) {
       startIteration()
     }
   })

@@ -112,7 +112,7 @@ describe("resilience integration (chaos-driven)", () => {
     })
     expect(state.type).toBe("cooldown")
     state = loopReducer(state, { type: "resume_cooldown" })
-    expect(state).toEqual({ type: "running", iteration: 3, sessionId: "s" })
+    expect(state).toEqual({ type: "running", iteration: 3, sessionId: "" })
   })
 
   it("2. SSE cut but session finished → watchdog reconciles, no abort", async () => {

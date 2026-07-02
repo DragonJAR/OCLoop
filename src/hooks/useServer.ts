@@ -93,6 +93,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
 
   let serverRef: { url: string; close: () => void } | null = null
   let abortController: AbortController | null = null
+  let launchInFlight = false
 
   /**
    * Low-level launch of the OpenCode server on a specific port. Shared by the
@@ -129,10 +130,12 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Start the OpenCode server (initial start).
    */
   async function startServer(): Promise<void> {
+    if (launchInFlight) return
     if (status() !== "starting" && status() !== "stopped") {
       return
     }
 
+    launchInFlight = true
     setStatus("starting")
     setError(undefined)
 
@@ -144,6 +147,8 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
       setError(serverError)
       setStatus("error")
       serverRef = null
+    } finally {
+      launchInFlight = false
     }
   }
 
@@ -212,7 +217,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     // check is the sole flag for an in-flight restart; setStatus below runs
     // synchronously (no awaits between), so mutual exclusion between overlapping
     // callers holds.
-    if (status() === "starting") {
+    if (launchInFlight) {
       log.health("server", "restart_in_flight_noop", { url: url() })
       return
     }
@@ -220,36 +225,41 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     const preferredPort = serverPort() ?? port ?? 0
     log.health("server", "restart_begin", { preferredPort })
 
+    launchInFlight = true
     setStatus("starting")
     setError(undefined)
     closeCurrent()
     setUrl(null)
 
     try {
-      await launch(preferredPort)
-      log.health("server", "restart_done", { url: url(), port: serverPort() })
-    } catch (errPreferred) {
-      log.health("server", "restart_retry_ephemeral", {
-        message:
-          errPreferred instanceof Error
-            ? errPreferred.message
-            : String(errPreferred),
-      })
       try {
-        // Old port may still be held; let the OS pick a fresh one.
-        await launch(0)
-        log.health("server", "restart_done", {
-          url: url(),
-          port: serverPort(),
-          ephemeral: true,
+        await launch(preferredPort)
+        log.health("server", "restart_done", { url: url(), port: serverPort() })
+      } catch (errPreferred) {
+        log.health("server", "restart_retry_ephemeral", {
+          message:
+            errPreferred instanceof Error
+              ? errPreferred.message
+              : String(errPreferred),
         })
-      } catch (err) {
-        const serverError = err instanceof Error ? err : new Error(String(err))
-        setError(serverError)
-        setStatus("error")
-        serverRef = null
-        log.health("server", "restart_failed", { message: serverError.message })
+        try {
+          // Old port may still be held; let the OS pick a fresh one.
+          await launch(0)
+          log.health("server", "restart_done", {
+            url: url(),
+            port: serverPort(),
+            ephemeral: true,
+          })
+        } catch (err) {
+          const serverError = err instanceof Error ? err : new Error(String(err))
+          setError(serverError)
+          setStatus("error")
+          serverRef = null
+          log.health("server", "restart_failed", { message: serverError.message })
+        }
       }
+    } finally {
+      launchInFlight = false
     }
   }
 
