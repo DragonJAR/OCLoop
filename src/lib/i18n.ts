@@ -153,6 +153,8 @@ const en = {
     `Error: --resilience ${p.key} expects a non-negative integer (decimal only), got "${p.raw}"`,
   errResilienceMin: (p: Params) =>
     `Error: --resilience ${p.key} must be >= ${p.min}, got "${p.raw}"`,
+  errResiliencePlanDrift: (p: Params) =>
+    `Error: --resilience planDrift expects warn|halt, got "${p.raw}"`,
 
   // --- Pre-flight file errors (CLI, after locale is resolved) ---
   // Checkbox markers ('- [ ]') stay literal — they're language-agnostic.
@@ -358,6 +360,7 @@ const en = {
       "- Skip [MANUAL] and [BLOCKED] items.",
       "- NEVER batch across phases - each phase is a commit boundary.",
       "- Within a SINGLE phase, batch tasks ONLY if they are in the same file AND logically coupled.",
+      "- This iteration OCLoop assigned: {{CURRENT_TASK}} — execute ONLY that task (or one coupled batch in its phase). If you insert new `- [ ]` tasks (recon), OCLoop runs them in document order on later iterations before tasks below them.",
       "",
       "Execute:",
       "1. Make the code changes for that one task or coupled batch.",
@@ -552,6 +555,18 @@ const en = {
   // three sub-cases the helper returns (completed, reordered, removed).
   actResumeMisalign: (p: Params) =>
     `Resume: PLAN.md changed since crash (${p.kind}) — was on "${p.saved}", now starts on "${p.current ?? "—"}"`,
+  actPlanExpanded: (p: Params) =>
+    `Plan expanded: ${p.n} new task(s) — next "${p.current}" (still pending: "${p.saved}")`,
+  actPlanDrift: (p: Params) =>
+    `Plan drift (${p.kind}): was on "${p.saved}", now starts on "${p.current ?? "—"}" — previous task still pending`,
+  errPlanDrift: (p: Params) =>
+    [
+      `Loop halted: PLAN.md changed without completing the previous task.`,
+      `Was working on: "${p.saved}"`,
+      `Now first pending: "${p.current}"`,
+      `The previous task is still [ ] and no new tasks were added — fix the plan or reorder intentionally, then press R.`,
+      "",
+    ].join("\n"),
 
   // --- Command palette ---
   cmdCopyAttach: "Copy attach command",
@@ -807,6 +822,8 @@ const es: Record<MessageKey, Msg> = {
     `Error: --resilience ${p.key} espera un entero no negativo (solo decimal), se obtuvo "${p.raw}"`,
   errResilienceMin: (p) =>
     `Error: --resilience ${p.key} debe ser >= ${p.min}, se obtuvo "${p.raw}"`,
+  errResiliencePlanDrift: (p) =>
+    `Error: --resilience planDrift espera warn|halt, se obtuvo "${p.raw}"`,
 
   errPlanNotFound: (p) =>
     [
@@ -964,6 +981,7 @@ const es: Record<MessageKey, Msg> = {
       "- Omite los elementos [MANUAL] y [BLOCKED].",
       "- NUNCA agrupes tareas entre fases - cada fase es un límite de commit.",
       "- Dentro de una MISMA fase, agrupa tareas SOLO si están en el mismo archivo Y lógicamente acopladas.",
+      "- En esta iteración OCLoop asignó: {{CURRENT_TASK}} — ejecuta SOLO esa tarea (o un lote acoplado en su fase). Si insertas tareas `- [ ]` nuevas (recon), OCLoop las ejecutará en orden de documento en iteraciones posteriores, antes que las de abajo.",
       "",
       "Ejecuta:",
       "1. Haz los cambios de código para esa única tarea o lote acoplado.",
@@ -1147,6 +1165,18 @@ const es: Record<MessageKey, Msg> = {
   // "kind" distingue los tres sub-casos (completed, reordered, removed).
   actResumeMisalign: (p) =>
     `Reanudación: PLAN.md cambió desde el crash (${p.kind}) — estaba en "${p.saved}", ahora empieza en "${p.current ?? "—"}"`,
+  actPlanExpanded: (p) =>
+    `Plan ampliado: ${p.n} tarea(s) nueva(s) — siguiente "${p.current}" (sigue pendiente: "${p.saved}")`,
+  actPlanDrift: (p) =>
+    `Deriva del plan (${p.kind}): estaba en "${p.saved}", ahora empieza en "${p.current ?? "—"}" — la tarea anterior sigue pendiente`,
+  errPlanDrift: (p) =>
+    [
+      `Loop detenido: PLAN.md cambió sin completar la tarea anterior.`,
+      `Trabajaba en: "${p.saved}"`,
+      `Ahora primera pendiente: "${p.current}"`,
+      `La tarea anterior sigue en [ ] y no se añadieron tareas nuevas — corrige el plan o reordena a propósito, luego pulsa R.`,
+      "",
+    ].join("\n"),
 
   cmdCopyAttach: "Copiar comando de conexión",
   cmdChooseTerminal: "Elegir terminal por defecto",

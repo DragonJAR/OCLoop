@@ -87,7 +87,7 @@ const RESILIENCE_GROUPS: ReadonlyArray<
   ["Rate limits", ["backoffBaseMs", "backoffMaxMs", "backoffJitter", "maxRateLimitRetries", "minIterationGapMs"]],
   ["Sleep/suspend", ["sleepTickMs", "sleepThresholdMs", "caffeinate"]],
   ["Watchdog", ["watchdogTickMs", "watchdogSuspectMs", "watchdogConfirmMs", "maxRecoveryAttempts"]],
-  ["Lifecycle", ["resume", "chaos"]],
+  ["Lifecycle", ["resume", "chaos", "planDrift"]],
   ["Stuck-task halt", ["noProgressThreshold"]],
   ["Stalled-task split", ["decomposeTimeoutMs"]],
 ]
@@ -191,6 +191,14 @@ export function applyResilienceOverride(
   }
 
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
+  if (key === "planDrift") {
+    if (raw !== "warn" && raw !== "halt") {
+      console.error(t("errResiliencePlanDrift", { raw }))
+      process.exit(1)
+    }
+    ;(target as Record<string, unknown>)[key] = raw
+    return
+  }
   if (typeof def === "boolean") {
     if (raw !== "true" && raw !== "false" && raw !== "1" && raw !== "0") {
       console.error(t("errResilienceBool", { key, raw }))

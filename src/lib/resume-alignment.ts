@@ -1,43 +1,33 @@
 /**
- * Detect a misalignment between the task the loop was working on at save time
- * and the first-pending task in PLAN.md at resume time. When the two differ,
- * the user has edited/reordered PLAN.md between crash and resume, and a naive
- * resume would silently skip the original task. The fix does NOT change the
- * resume flow — the agent still picks the first pending task, as its prompt
- * instructs — it just surfaces the misalignment as a warning in .loop.log and
- * as an activity event so the user can confirm the change was intentional.
+ * Detect plan transitions between iterations and resume-time misalignment.
  *
- * The helper is pure: it takes the saved task and the current PLAN.md text and
- * returns a structured ResumeAlignment (or null when nothing to report). Keeping
- * it pure lets the same rules be unit-tested without touching the loop or FS.
- *
- * Semantics:
- *   - `savedTask` is `null`/`undefined`/empty → `null`. Backward-compat: a
- *     state file written before this field was added has no task to check.
- *   - The saved task is still the first pending task in PLAN.md → `null`.
- *   - The saved task appears in PLAN.md but as `[x]`/`[X]` (completed) →
- *     `completed`. The work was done; the next iteration will start fresh.
- *   - The saved task is still pending in PLAN.md but is NOT the first pending
- *     task → `reordered`. PLAN.md was edited to insert a task above it; the
- *     next iteration will pick the new top task, skipping the saved one for
- *     now (it will be reached again once the inserted task is done).
- *   - The saved task no longer appears in PLAN.md at all → `removed`. The
- *     next iteration will start from whatever is now first (or halt with
- *     plan_complete if nothing is left). A task re-tagged `[MANUAL]` or
- *     `[BLOCKED]` (no longer pending nor completed) also reports `removed`,
- *     surfacing the edit so the user can confirm it was intentional.
+ * `describePlanTransition` compares the task the loop just worked on against
+ * the current PLAN.md (with an optional pending snapshot from iteration start)
+ * to distinguish legitimate expansion (new `- [ ]` lines) from suspicious
+ * reordering. `describeResumeAlignment` is the resume-only entry point (no
+ * before-snapshot) and delegates to the same primitives.
  */
 
-import { getCurrentTaskFromContent, parseTaskLine, planLinesOutsideCodeFences } from "./plan-parser"
+import {
+  getCurrentTaskFromContent,
+  listPendingTaskDescriptions,
+  findTaskStatusByDescription,
+} from "./plan-parser"
 
 /**
- * Structured description of a misalignment between the saved task and the
- * current PLAN.md content. `null` means "no misalignment, no warning".
+ * Structured description of a plan transition between iterations.
+ * `null` means no reportable change.
  */
-export type ResumeAlignment =
+export type PlanTransition =
   | {
       kind: "completed"
       saved: string
+    }
+  | {
+      kind: "expanded"
+      saved: string
+      current: string
+      added: string[]
     }
   | {
       kind: "reordered"
@@ -50,77 +40,75 @@ export type ResumeAlignment =
       current: string | null
     }
 
+/** @deprecated alias — resume warnings use the same shape minus `expanded`. */
+export type ResumeAlignment =
+  | { kind: "completed"; saved: string }
+  | { kind: "reordered"; saved: string; current: string }
+  | { kind: "removed"; saved: string; current: string | null }
+
+function pendingAdded(
+  pendingBefore: string[] | null,
+  planAfter: string,
+): string[] {
+  if (!pendingBefore) return []
+  const beforeSet = new Set(pendingBefore)
+  return listPendingTaskDescriptions(planAfter).filter((d) => !beforeSet.has(d))
+}
+
 /**
- * Pure helper. Returns a `ResumeAlignment` describing the misalignment
- * between the loop's saved task and the current PLAN.md content, or `null`
- * when there is nothing to warn about.
- *
- * `savedTask` is the value persisted in `PersistedLoopState.currentTask` —
- * the description of the first pending task at save time, or `null` if
- * PLAN.md had no pending task at save time.
- *
- * `planContent` is the raw text of PLAN.md at resume time.
+ * Compare the task worked on in the previous iteration against the current
+ * PLAN.md content. When `pendingBefore` is provided (snapshot at the previous
+ * iteration's start), distinguishes `expanded` (new pending lines) from
+ * `reordered` (same set, different first). When `pendingBefore` is null
+ * (resume / first iteration), a still-pending saved task that is no longer
+ * first reports `reordered`.
+ */
+export function describePlanTransition(
+  lastWorkedTask: string | null | undefined,
+  planAfter: string,
+  pendingBefore: string[] | null,
+): PlanTransition | null {
+  if (lastWorkedTask === null || lastWorkedTask === undefined || lastWorkedTask === "") {
+    return null
+  }
+
+  const current = getCurrentTaskFromContent(planAfter)
+  if (current === lastWorkedTask) {
+    return null
+  }
+
+  const status = findTaskStatusByDescription(planAfter, lastWorkedTask)
+  if (status === "completed") {
+    return { kind: "completed", saved: lastWorkedTask }
+  }
+  if (status === "pending") {
+    const added = pendingAdded(pendingBefore, planAfter)
+    if (added.length > 0) {
+      return {
+        kind: "expanded",
+        saved: lastWorkedTask,
+        current: current ?? "",
+        added,
+      }
+    }
+    return { kind: "reordered", saved: lastWorkedTask, current: current ?? "" }
+  }
+  // missing, manual, blocked, or not-a-task
+  return { kind: "removed", saved: lastWorkedTask, current: current }
+}
+
+/**
+ * Resume-time misalignment (no before-snapshot). See module doc for semantics.
  */
 export function describeResumeAlignment(
   savedTask: string | null | undefined,
   planContent: string,
 ): ResumeAlignment | null {
-  // Backward-compat: no saved task → no check. Older state files (pre-#4)
-  // simply don't have the field, and the resume flow has no point of
-  // reference to validate against.
-  if (savedTask === null || savedTask === undefined || savedTask === "") {
-    return null
+  const t = describePlanTransition(savedTask, planContent, null)
+  if (!t) return null
+  if (t.kind === "expanded") {
+    // Without a before-snapshot, treat expansion like reorder for resume warn.
+    return { kind: "reordered", saved: t.saved, current: t.current }
   }
-  const current = getCurrentTaskFromContent(planContent)
-  // Fast path: the first-pending task still matches what was being worked
-  // on. PLAN.md is unchanged (or only completed-tasks were touched), so the
-  // resume can proceed silently.
-  if (current === savedTask) {
-    return null
-  }
-  // Slow path: the first-pending task is now something else. Decide what
-  // kind of edit the user made by scanning every line of PLAN.md for the
-  // saved task. We reuse `parseTaskLine` (the canonical PLAN.md line
-  // parser) instead of a hand-rolled regex: the two grammars had diverged
-  // (the old scan regex only matched lowercase `[x]`, not `[X]`, and did
-  // not handle indented sub-tasks or `[MANUAL]`/`[BLOCKED]` tagging the way
-  // `parseTaskLine` does — `getCurrentTaskFromContent` already uses it, so
-  // the saved `currentTask` and the scan here now share one grammar).
-  // planLinesOutsideCodeFences tolerates CRLF/lone-CR and keeps this slow path
-  // aligned with the other plan readers: fenced examples are documentation, not
-  // real task state.
-  let savedStillPending = false
-  let savedNowCompleted = false
-  for (const { line } of planLinesOutsideCodeFences(planContent)) {
-    const task = parseTaskLine(line)
-    if (task.type === "not-a-task") continue
-    if (task.description !== savedTask) continue
-    // First line whose description matches the saved task decides its
-    // current status. (A pending + completed duplicate of the same
-    // description is pathological markdown; matching the first keeps the
-    // verdict deterministic.)
-    if (task.type === "pending") {
-      savedStillPending = true
-    } else if (task.type === "completed") {
-      savedNowCompleted = true
-    }
-    // manual/blocked matches are intentionally neither: the task is
-    // present but no longer actionable, so it is neither "still pending"
-    // (reordered) nor "completed" — it falls through to "removed" below,
-    // which surfaces the edit to the user.
-    break
-  }
-  if (savedStillPending) {
-    // The saved task is still pending, just not first anymore. PLAN.md was
-    // reordered to put a different task above it.
-    return { kind: "reordered", saved: savedTask, current: current ?? "" }
-  }
-  if (savedNowCompleted) {
-    // The saved task is now `[x]`/`[X]` → "completed" (work was done in
-    // some other process, perhaps a manual edit).
-    return { kind: "completed", saved: savedTask }
-  }
-  // The saved task no longer appears as pending or completed → "removed"
-  // (the user deleted/renamed the line, or re-tagged it MANUAL/BLOCKED).
-  return { kind: "removed", saved: savedTask, current: current }
+  return t
 }

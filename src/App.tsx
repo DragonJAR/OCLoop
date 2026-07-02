@@ -29,7 +29,8 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findPendingLineIndex } from "./lib/plan-parser"
+import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
@@ -402,6 +403,81 @@ function AppContent(props: AppProps) {
   // currentTask() may have advanced to the next pending task by then. Same
   // out-of-reducer pattern as the eval counters above.
   let pendingManifestTask: string | null = null
+  // Task the previous iteration executed (for eval + plan-transition checks).
+  let lastWorkedTask: string | null = null
+  // Pending descriptions snapshot at the start of the current/last iteration.
+  let pendingSnapshotBefore: string[] | null = null
+
+  function logPlanTransition(transition: PlanTransition): void {
+    if (transition.kind === "expanded") {
+      activityLog.addEvent(
+        "task",
+        t("actPlanExpanded", {
+          n: transition.added.length,
+          current: transition.current,
+          saved: transition.saved,
+        }),
+      )
+      log.info("plan", "Plan expanded between iterations", {
+        saved: transition.saved,
+        current: transition.current,
+        added: transition.added,
+      })
+      return
+    }
+    if (transition.kind === "completed") return
+    const level = transition.kind === "reordered" ? "warn" : "warn"
+    activityLog.addEvent(
+      "error",
+      transition.kind === "removed"
+        ? t("actResumeMisalign", {
+            kind: transition.kind,
+            saved: transition.saved,
+            current: transition.current ?? "—",
+          })
+        : t("actPlanDrift", {
+            kind: transition.kind,
+            saved: transition.saved,
+            current: transition.current ?? "—",
+          }),
+      { level },
+    )
+    log.warn("plan", "Plan transition between iterations", transition)
+  }
+
+  async function preparePlanForIteration(planPath: string) {
+    try {
+      const content = await Bun.file(planPath).text()
+      const pendingSnapshot = listPendingTaskDescriptions(content)
+      const task = getCurrentTaskFromContent(content)
+      const transition = describePlanTransition(
+        lastWorkedTask,
+        content,
+        pendingSnapshotBefore,
+      )
+      if (transition) {
+        if (transition.kind === "reordered" && resilience().planDrift === "halt") {
+          loop.dispatch({
+            type: "error",
+            source: "plan",
+            message: t("errPlanDrift", {
+              saved: transition.saved,
+              current: transition.current,
+            }),
+            recoverable: true,
+          })
+          return { proceed: false, content, currentTask: task }
+        }
+        logPlanTransition(transition)
+      }
+      pendingSnapshotBefore = pendingSnapshot
+      setCurrentTask(task ?? undefined)
+      return { proceed: true, content, currentTask: task }
+    } catch (err) {
+      log.error("plan", "Failed to read PLAN.md at iteration start", err)
+      return { proceed: true, content: null, currentTask: null }
+    }
+  }
 
   // Wire stats hook to loop state transitions
   createEffect(() => {
@@ -721,7 +797,9 @@ function AppContent(props: AppProps) {
       },
       onTodoUpdated: (_eventSessionId, todos) => {
         heartbeat()
-        // Update current task display from todos
+        // Don't override the dashboard task mid-session — OpenCode todos may
+        // not match PLAN.md's first pending (plan-transition fix).
+        if (getActiveSessionId(loop.state()) !== "") return
         const inProgress = todos.find((todo) => todo.status === "in_progress")
         if (inProgress) {
           setCurrentTask(inProgress.content)
@@ -746,8 +824,12 @@ function AppContent(props: AppProps) {
           refreshPlanTimer = setTimeout(() => {
             refreshPlanTimer = null
             refreshPlan()
-            // Also refresh current task as fallback for SSE todo updates
-            refreshCurrentTask()
+            // Refresh task display only between iterations — mid-session
+            // updates made the dashboard show a different task than the one
+            // this iteration was started with.
+            if (getActiveSessionId(loop.state()) === "") {
+              refreshCurrentTask()
+            }
           }, 150)
         }
       },
@@ -809,9 +891,7 @@ function AppContent(props: AppProps) {
     }
     try {
       const task = await getCurrentTask(resolvePlanFile(props.planFile))
-      if (task) {
-        setCurrentTask(task)
-      }
+      setCurrentTask(task ?? undefined)
     } catch {
       // Silently ignore errors - current task display is non-critical
     }
@@ -994,10 +1074,10 @@ function AppContent(props: AppProps) {
     const cfg = evalsConfig()
     if (!cfg.enabled) return true
 
-    const task = currentTask() ?? null
+    const task = lastWorkedTask
     if (!task) return true
 
-    // Reset the per-task eval counter when the task genuinely changes.
+    // Reset the per-task eval counter when the finished task changes.
     if (task !== evalTaskKey) {
       evalTaskKey = task
       evalAttemptsForTask = 0
@@ -1118,9 +1198,7 @@ function AppContent(props: AppProps) {
         planPath,
         (c) => {
           const lines = c.split("\n")
-          const idx = lines.findIndex(
-            (l) => parseTaskLine(l).type === "pending" && parseTaskLine(l).description === task,
-          )
+          const idx = findPendingLineIndex(c, task)
           if (idx === -1) return null // task gone (plan edited) — nothing to annotate
           lines.splice(idx + 1, 0, note)
           return lines.join("\n")
@@ -1143,7 +1221,7 @@ function AppContent(props: AppProps) {
       const planPath = resolvePlanFile(props.planFile)
       const cas = await compareAndSwapPlan(
         planPath,
-        (c) => replaceFirstPendingTaskWithBlocked(c, reason), // null = no pending task to block
+        (c) => replacePendingTaskWithBlocked(c, task, reason),
         "eval",
       )
       if (!cas.wrote) return // no pending task, or PLAN.md changed underfoot
@@ -1199,7 +1277,9 @@ function AppContent(props: AppProps) {
         fallbackSummary: () => t("dlgPlanCompleteFallback"),
         setPendingManifestTask: (task) => {
           pendingManifestTask = task
+          lastWorkedTask = task
         },
+        preparePlanForIteration: props.debug ? undefined : preparePlanForIteration,
         onSessionCreated: (id) => {
           newSessionId = id
         },

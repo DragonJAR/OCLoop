@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1091,6 +1091,37 @@ describe("getEvalRubricForTask", () => {
       "  - eval: real rubric",
     ].join("\n")
     expect(getEvalRubricForTask(content, "task")).toBe("real rubric")
+  })
+})
+
+describe("listPendingTaskDescriptions", () => {
+  it("returns pending descriptions in document order", () => {
+    const content = "- [x] done\n- [ ] first\n- [MANUAL] skip\n- [ ] second"
+    expect(listPendingTaskDescriptions(content)).toEqual(["first", "second"])
+  })
+})
+
+describe("findTaskStatusByDescription", () => {
+  it("returns pending for a still-open task", () => {
+    expect(findTaskStatusByDescription("- [ ] task A", "task A")).toBe("pending")
+  })
+  it("returns completed when the task was marked [x]", () => {
+    expect(findTaskStatusByDescription("- [x] task A", "task A")).toBe("completed")
+  })
+  it("returns missing when the description is absent", () => {
+    expect(findTaskStatusByDescription("- [ ] other", "task A")).toBe("missing")
+  })
+})
+
+describe("replacePendingTaskWithBlocked", () => {
+  it("blocks a specific pending task by description", () => {
+    const content = "- [ ] one\n- [ ] two"
+    expect(replacePendingTaskWithBlocked(content, "two", "eval failed")).toBe(
+      "- [ ] one\n- [BLOCKED: eval failed] two",
+    )
+  })
+  it("returns null when the target is not pending", () => {
+    expect(replacePendingTaskWithBlocked("- [x] one", "one", "x")).toBeNull()
   })
 })
 

@@ -1,7 +1,8 @@
 import type { PlanProgress } from "../types"
 import { splitLines, normalizeLineEndings } from "./text"
 
-type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
+export type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
+export type TaskLookupStatus = TaskType | "missing"
 
 interface ParsedTask {
   type: TaskType
@@ -350,20 +351,64 @@ export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
  * @param content - The content of the PLAN.md file
  * @returns The task description or null if no unchecked tasks found
  */
-export function getCurrentTaskFromContent(content: string): string | null {
-  // Strip fences so a documented `- [ ] example` inside a ```block can't be
-  // selected as the current task. See stripInlineCodeFences.
-  const lines = splitLines(stripInlineCodeFences(content))
-
-  for (const line of lines) {
+/** Walk every task line outside code fences (shared by list/find/getCurrent). */
+function forEachTaskLine(
+  content: string,
+  visit: (task: ParsedTask, line: string) => void,
+): void {
+  for (const { line } of planLinesOutsideCodeFences(content)) {
     const task = parseTaskLine(line)
-    
-    if (task.type === "pending" && task.description) {
-      return task.description
+    if (task.type === "not-a-task") continue
+    visit(task, line)
+  }
+}
+
+/**
+ * All pending task descriptions in document order (outside code fences).
+ * Single source of truth for plan-transition snapshot diffs.
+ */
+export function listPendingTaskDescriptions(content: string): string[] {
+  const out: string[] = []
+  forEachTaskLine(content, (task) => {
+    if (task.type === "pending" && task.description) out.push(task.description)
+  })
+  return out
+}
+
+/**
+ * Status of the first task line whose description matches `description`.
+ * Returns `missing` when no matching task line exists.
+ */
+export function findTaskStatusByDescription(
+  content: string,
+  description: string,
+): TaskLookupStatus {
+  for (const { line } of planLinesOutsideCodeFences(content)) {
+    const task = parseTaskLine(line)
+    if (task.type === "not-a-task" || task.description !== description) continue
+    return task.type
+  }
+  return "missing"
+}
+
+/**
+ * Line index of the first pending task matching `description`, or -1.
+ * Scans outside code fences only (same grammar as task selection).
+ */
+export function findPendingLineIndex(content: string, description: string): number {
+  const normalized = normalizeLineEndings(content)
+  for (const entry of planLinesOutsideCodeFences(normalized)) {
+    const task = parseTaskLine(entry.line)
+    if (task.type === "pending" && task.description === description) {
+      return entry.index
     }
   }
+  return -1
+}
 
-  return null
+export function getCurrentTaskFromContent(content: string): string | null {
+  const pending = listPendingTaskDescriptions(content)
+  return pending[0] ?? null
 }
 
 /**
@@ -524,16 +569,28 @@ export function replaceFirstPendingTaskWithBlocked(
   content: string,
   reason: string,
 ): string | null {
+  const pending = listPendingTaskDescriptions(content)
+  const first = pending[0]
+  return first ? replacePendingTaskWithBlocked(content, first, reason) : null
+}
+
+/**
+ * Mark a specific pending task as `- [BLOCKED: <reason>]` by description.
+ * Returns `null` when the task is not found or not pending.
+ */
+export function replacePendingTaskWithBlocked(
+  content: string,
+  taskDescription: string,
+  reason: string,
+): string | null {
   const cleanReason = reason.replace(/[\r\n]+/g, " ").trim()
   const normalized = normalizeLineEndings(content)
   const lines = splitLines(normalized)
-  for (const entry of planLinesOutsideCodeFences(normalized)) {
-    const task = parseTaskLine(entry.line)
-    if (task.type === "pending") {
-      const indent = entry.line.match(/^(\s*)/)?.[1] ?? ""
-      lines[entry.index] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
-      return lines.join("\n")
-    }
-  }
-  return null
+  const idx = findPendingLineIndex(normalized, taskDescription)
+  if (idx === -1) return null
+  const indent = lines[idx].match(/^(\s*)/)?.[1] ?? ""
+  const task = parseTaskLine(lines[idx])
+  if (task.type !== "pending") return null
+  lines[idx] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
+  return lines.join("\n")
 }

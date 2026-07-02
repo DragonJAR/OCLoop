@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { describeResumeAlignment } from "./resume-alignment"
+import { describePlanTransition, describeResumeAlignment } from "./resume-alignment"
 
 // PLAN.md bug-hunt #4: the loop's persisted state did not record the task
 // the previous iteration was working on. If PLAN.md was edited between
@@ -236,6 +236,51 @@ describe("describeResumeAlignment — parser-divergence regressions (reuse parse
     expect(
       describeResumeAlignment("nested", "- [ ] top\n  - [x] nested"),
     ).toEqual({ kind: "completed", saved: "nested" })
+  })
+})
+
+describe("describePlanTransition — expansion vs reorder", () => {
+  it("returns null when the first pending task is unchanged", () => {
+    const plan = "- [ ] task A\n- [ ] task B"
+    expect(describePlanTransition("task A", plan, ["task A", "task B"])).toBeNull()
+  })
+
+  it("detects expanded when new pending tasks were added above the saved task", () => {
+    const before = "- [ ] task A\n- [ ] task B"
+    const after = "- [ ] task X (new)\n- [ ] task A\n- [ ] task B"
+    expect(
+      describePlanTransition("task A", after, ["task A", "task B"]),
+    ).toEqual({
+      kind: "expanded",
+      saved: "task A",
+      current: "task X (new)",
+      added: ["task X (new)"],
+    })
+  })
+
+  it("detects expanded when recon inserts tasks below a completed parent", () => {
+    const before = ["task A"]
+    const after = "- [x] task A\n- [ ] task A.1a\n- [ ] task B"
+    expect(describePlanTransition("task A", after, before)).toEqual({
+      kind: "completed",
+      saved: "task A",
+    })
+  })
+
+  it("detects reordered when the pending set is unchanged but order changed", () => {
+    const before = ["task A", "task B"]
+    const after = "- [ ] task B\n- [ ] task A"
+    expect(describePlanTransition("task A", after, before)).toEqual({
+      kind: "reordered",
+      saved: "task A",
+      current: "task B",
+    })
+  })
+
+  it("reports completed when the saved task is now [x]", () => {
+    expect(
+      describePlanTransition("task A", "- [x] task A\n- [ ] task B", ["task A", "task B"]),
+    ).toEqual({ kind: "completed", saved: "task A" })
   })
 })
 

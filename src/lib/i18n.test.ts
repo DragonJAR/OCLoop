@@ -19,6 +19,10 @@ for (const locale of ["en", "es"] as const) {
   // The agent must treat the folder where ocloop was launched (process.cwd())
   // as the working directory / project root and resolve mentioned files there.
   // Pinned in both locales since the prompt is duplicated (i18n + examples).
+  test(`defaultLoopPrompt (${locale}) includes the CURRENT_TASK placeholder`, () => {
+    expect(t("defaultLoopPrompt")).toContain("{{CURRENT_TASK}}")
+  })
+
   test(`defaultLoopPrompt (${locale}) declares the cwd as the working directory`, () => {
     setLocale(locale)
     expect(t("defaultLoopPrompt").toLowerCase()).toMatch(/working directory|directorio de trabajo/)

@@ -124,6 +124,15 @@ export interface ResilienceConfig {
    * longer. Override via `--resilience decomposeTimeoutMs=<ms>`.
    */
   decomposeTimeoutMs: number
+
+  // --- Plan drift between iterations ---
+  /**
+   * When the first pending task changes while the previous iteration's task is
+   * still `[ ]` and no new pending lines were added: `"warn"` logs only;
+   * `"halt"` stops with a recoverable error. Expansion (new `- [ ]` lines,
+   * including recon) never halts.
+   */
+  planDrift: "warn" | "halt"
 }
 
 /**
@@ -163,6 +172,8 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
   noProgressThreshold: 3,
 
   decomposeTimeoutMs: 900_000, // 15 min: split a stalled task into subtasks
+
+  planDrift: "warn",
 }
 
 /**
@@ -358,8 +369,10 @@ export const RESILIENCE_MINS: Partial<Record<keyof ResilienceConfig, number>> = 
 
 function isValidResilienceValue(key: string, v: unknown): boolean {
   if (!(key in DEFAULT_RESILIENCE)) return false
+  if (key === "planDrift") return v === "warn" || v === "halt"
   const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
+  if (typeof def === "string") return typeof v === "string" && v === def
   if (typeof def === "number") {
     if (!isNonNegativeInteger(v)) return false
     const min = RESILIENCE_MINS[key as keyof ResilienceConfig]

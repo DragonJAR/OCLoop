@@ -35,6 +35,16 @@ import type { t as Tfn } from "./i18n"
 import { getActiveSessionId } from "../hooks/useLoopState"
 import { createSession, sendPromptAsync, abortSession } from "./api"
 
+/** Result of a single PLAN.md read at iteration start (transition + task selection). */
+export interface PlanIterationPrep {
+  /** When false the iteration must not proceed (e.g. plan drift halt). */
+  proceed: boolean
+  /** Raw plan text, or null when the read was skipped / failed. */
+  content: string | null
+  /** First pending automatable task for this iteration. */
+  currentTask: string | null
+}
+
 /** Tier role → "provider/model" mapping (from the --routing panel). */
 export type TierMapping = Record<string, string>
 
@@ -92,6 +102,11 @@ export interface IterationDeps {
   checkPlanComplete: () => Promise<boolean>
   /** Reads the current first-pending task from PLAN.md; may throw (best-effort). */
   getCurrentTask: (planPath: string) => Promise<string | null>
+  /**
+   * Single PLAN.md read per iteration: drift check, snapshot update, and
+   * first-pending resolution. When omitted, falls back to `getCurrentTask`.
+   */
+  preparePlanForIteration?: (planPath: string) => Promise<PlanIterationPrep>
   /** Refreshes the progress bar after a prompt is sent. */
   refreshPlan: () => Promise<void>
   /** Plan-complete summary reader (best-effort; may throw). */
@@ -105,6 +120,7 @@ export type IterationResult =
   | "no_progress_halt" // dispatched a recoverable errNoProgress
   | "eval_retry" // eval gate asked to retry (no session created)
   | "orphan_aborted" // user paused/quit during createSession; session aborted
+  | "plan_drift_halt" // recoverable halt: suspicious plan reorder without expansion
 
 /**
  * Run one iteration. Throws on unexpected errors (the App.tsx wrapper's catch
@@ -116,7 +132,21 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     return "eval_retry"
   }
 
-  // --- 2. Plan completion ---
+  // --- 2. Single PLAN.md read (drift check + task for this iteration) ---
+  let currentTask: string | null = null
+  if (deps.preparePlanForIteration) {
+    const prep = await deps.preparePlanForIteration(deps.planPath)
+    if (!prep.proceed) return "plan_drift_halt"
+    currentTask = prep.currentTask
+  } else {
+    try {
+      currentTask = await deps.getCurrentTask(deps.planPath)
+    } catch {
+      currentTask = null
+    }
+  }
+
+  // --- 3. Plan completion ---
   if (await deps.checkPlanComplete()) {
     // Best-effort summary read; a FS error must not misclassify completion
     // (the plan IS complete, only the human-readable summary is best-effort).
@@ -133,15 +163,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     return "plan_complete"
   }
 
-  // --- 3. No-progress halt ---
-  let currentTask: string | null = null
-  try {
-    currentTask = await deps.getCurrentTask(deps.planPath)
-  } catch {
-    // The task read is best-effort for the detector; treat a throw as "no
-    // task" so the detector resets rather than misclassifying as progress.
-    currentTask = null
-  }
+  // --- 4. No-progress halt ---
   const streak = deps.noProgressDetector.recordIterationStart(currentTask)
   if (deps.noProgressDetector.isStuck()) {
     const stuckTask = deps.noProgressDetector.currentTask ?? ""
@@ -155,7 +177,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     return "no_progress_halt"
   }
 
-  // --- 4. minIterationGapMs spacing ---
+  // --- 5. minIterationGapMs spacing ---
   const gap = deps.resilience().minIterationGapMs
   if (gap > 0) {
     const since = deps.monotonicNow() - deps.getLastIterationStartAt()
@@ -165,7 +187,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   }
   deps.setLastIterationStartAt(deps.monotonicNow())
 
-  // --- 5. Create session + dispatch iteration_started ---
+  // --- 6. Create session + dispatch iteration_started ---
   const session = await createSession(deps.client)
   const newSessionId = session.id
   // Report to the wrapper now (before dispatch) so its catch can abort this
@@ -174,7 +196,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   deps.onSessionCreated(newSessionId)
   deps.loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
 
-  // --- 6. RACE GUARD: orphan if the user paused/quit during createSession ---
+  // --- 7. RACE GUARD: orphan if the user paused/quit during createSession ---
   // createSession is async. If the user paused (Space) or quit (Q) DURING the
   // await above, the reducer no-op'd `iteration_started` (state is no longer
   // running/paused), so this session is untracked — nothing would ever abort
@@ -184,10 +206,10 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     return abortOrphanSession(deps.client, newSessionId)
   }
 
-  // --- 7. Watchdog baseline for this fresh iteration ---
+  // --- 8. Watchdog baseline for this fresh iteration ---
   deps.watchdog.notifyIterationStart()
 
-  // --- 8. Record the task for the manifest, then read the prompt ---
+  // --- 9. Record the task for the manifest, then read the prompt ---
   deps.setPendingManifestTask(currentTask)
   let promptContent: string
   try {
@@ -200,12 +222,15 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     if (err instanceof Error && err.message.startsWith("Error:")) throw err
     throw new Error(deps.t("errCannotReadFile", { path: deps.promptPath }))
   }
-  const prompt = promptContent.replaceAll("{{PLAN_FILE}}", deps.planPath)
+  const taskLabel = currentTask ?? ""
+  const prompt = promptContent
+    .replaceAll("{{PLAN_FILE}}", deps.planPath)
+    .replaceAll("{{CURRENT_TASK}}", taskLabel)
   if (prompt.trim() === "") {
     throw new Error(deps.t("errPromptEmpty", { path: deps.promptPath }))
   }
 
-  // --- 9. Send the prompt (heavy tier overrides activeModel when routed) ---
+  // --- 10. Send the prompt (heavy tier overrides activeModel when routed) ---
   // Re-check after prompt I/O: the user may have paused while we read the file.
   const st = deps.loop.state()
   if (st.type !== "running" || st.sessionId !== newSessionId) {
@@ -218,7 +243,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     model: deps.tierMapping()?.heavy ?? deps.activeModel(),
   })
 
-  // --- 10. Refresh plan progress ---
+  // --- 11. Refresh plan progress ---
   await deps.refreshPlan()
   return "completed"
 }
