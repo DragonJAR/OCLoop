@@ -9,7 +9,12 @@ import { useTheme } from "../context/ThemeContext"
 import { selectedForeground } from "../lib/theme-resolver"
 import { truncate } from "../lib/format"
 import { t } from "../lib/i18n"
-import { scrollTopToRevealItem } from "../lib/scroll-into-view"
+import { scrollTopToRevealIndex } from "../lib/scroll-into-view"
+
+/** Max list rows before scrolling; 14 fits the full command palette. */
+const MAX_LIST_ROWS = 14
+/** Header + search + footer lines outside the scrollbox. */
+const DIALOG_CHROME_ROWS = 7
 
 export interface DialogSelectOption {
   title: string
@@ -49,6 +54,10 @@ export function DialogSelect(props: DialogSelectProps) {
   const [search, setSearch] = createSignal("")
   const [filteredOptions, setFilteredOptions] = createSignal<DialogSelectOption[]>([])
   const [selectedIndex, setSelectedIndex] = createSignal(0)
+  const listRows = createMemo(() => {
+    const count = filteredOptions().length
+    return count === 0 ? 1 : Math.min(count, MAX_LIST_ROWS)
+  })
   let scroll: ScrollBoxRenderable | undefined
 
   let input: InputRenderable | undefined
@@ -83,15 +92,10 @@ export function DialogSelect(props: DialogSelectProps) {
     setSelectedIndex(index)
     if (props.onMove) props.onMove(filteredOptions()[index])
 
-    const selectedOption = filteredOptions()[index]
-    if (!selectedOption || !scroll) return
+    if (!scroll) return
 
-    const child = scroll.getChildren().find((c) => c.id === selectedOption.value)
-    if (!child) return
-
-    const target = scrollTopToRevealItem({
-      childY: child.y,
-      childHeight: child.height || 1,
+    const target = scrollTopToRevealIndex({
+      index,
       scrollTop: scroll.scrollTop,
       viewportHeight: scroll.viewport.height,
     })
@@ -193,7 +197,7 @@ export function DialogSelect(props: DialogSelectProps) {
     <Dialog 
       onClose={props.onClose} 
       width={60} 
-      height={14}
+      height={DIALOG_CHROME_ROWS + listRows()}
     >
       {/* Header */}
       <DialogHeader title={props.title} />
@@ -227,7 +231,7 @@ export function DialogSelect(props: DialogSelectProps) {
       }>
         <scrollbox
           ref={(r) => scroll = r}
-          maxHeight={6}
+          maxHeight={listRows()}
           verticalScrollbarOptions={dialogScrollbarOptions(theme())}
           style={{ flexDirection: "column", flexGrow: 1 }}
         >
