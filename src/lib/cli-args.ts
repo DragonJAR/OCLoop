@@ -287,6 +287,14 @@ export function preScanLang(argv: string[]): import("./i18n").Locale | undefined
 /**
  * Parse command line arguments
  */
+function rejectDuplicateFlag(seen: Set<string>, flag: string): void {
+  if (seen.has(flag)) {
+    console.error(t("errArgDuplicate", { flag }))
+    process.exit(1)
+  }
+  seen.add(flag)
+}
+
 export function parseArgs(argv: string[]): CLIArgs {
   const args: CLIArgs = {
     promptFile: DEFAULTS.PROMPT_FILE,
@@ -294,6 +302,7 @@ export function parseArgs(argv: string[]): CLIArgs {
   }
 
   const resilience: Partial<ResilienceConfig> = {}
+  const seenValueFlags = new Set<string>()
 
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i]
@@ -311,6 +320,7 @@ export function parseArgs(argv: string[]): CLIArgs {
 
       case "-p":
       case "--port": {
+        rejectDuplicateFlag(seenValueFlags, "--port")
         const portStr = argv[++i]
         args.port = parsePort(portStr)
         break
@@ -318,19 +328,23 @@ export function parseArgs(argv: string[]): CLIArgs {
 
       case "-m":
       case "--model":
+        rejectDuplicateFlag(seenValueFlags, "--model")
         args.model = parseModel(argv[++i])
         break
 
       case "-a":
       case "--agent":
+        rejectDuplicateFlag(seenValueFlags, "--agent")
         args.agent = requireValue(argv[++i], "--agent")
         break
 
       case "--prompt":
+        rejectDuplicateFlag(seenValueFlags, "--prompt")
         args.promptFile = requireValue(argv[++i], "--prompt")
         break
 
       case "--plan":
+        rejectDuplicateFlag(seenValueFlags, "--plan")
         args.planFile = requireValue(argv[++i], "--plan")
         break
 
@@ -359,6 +373,7 @@ export function parseArgs(argv: string[]): CLIArgs {
 
       case "--lang":
       case "--language": {
+        rejectDuplicateFlag(seenValueFlags, "--lang")
         const lang = requireValue(argv[++i], "--lang")
         if (!isLocale(lang)) {
           console.error(t("errArgLang"))

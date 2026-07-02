@@ -986,6 +986,24 @@ describe("replaceFirstPendingTaskWithSubtasks", () => {
   it("returns null when subtasks is empty", () => {
     expect(replaceFirstPendingTaskWithSubtasks("- [ ] keep me", [])).toBeNull()
   })
+
+  it("ignores fenced checkbox examples and replaces the first real pending task", () => {
+    const content = [
+      "```markdown",
+      "- [ ] documented example, not real work",
+      "```",
+      "- [ ] real task",
+    ].join("\n")
+    expect(replaceFirstPendingTaskWithSubtasks(content, ["split A", "split B"])).toBe(
+      [
+        "```markdown",
+        "- [ ] documented example, not real work",
+        "```",
+        "- [ ] split A",
+        "- [ ] split B",
+      ].join("\n"),
+    )
+  })
 })
 
 describe("getEvalRubricForTask", () => {
@@ -1045,6 +1063,18 @@ describe("getEvalRubricForTask", () => {
     expect(parsePlan(content).total).toBe(2)
     expect(parsePlan(content).automatable).toBe(2)
   })
+
+  it("ignores a matching task and rubric inside a fenced code block", () => {
+    const content = [
+      "```markdown",
+      "- [ ] task",
+      "  - eval: fenced rubric",
+      "```",
+      "- [ ] task",
+      "  - eval: real rubric",
+    ].join("\n")
+    expect(getEvalRubricForTask(content, "task")).toBe("real rubric")
+  })
 })
 
 describe("replaceFirstPendingTaskWithBlocked", () => {
@@ -1080,5 +1110,22 @@ describe("replaceFirstPendingTaskWithBlocked", () => {
 
   it("returns null when there is no pending task", () => {
     expect(replaceFirstPendingTaskWithBlocked("- [x] done", "x")).toBeNull()
+  })
+
+  it("ignores fenced checkbox examples and blocks the first real pending task", () => {
+    const content = [
+      "```markdown",
+      "- [ ] documented example, not real work",
+      "```",
+      "- [ ] real task",
+    ].join("\n")
+    expect(replaceFirstPendingTaskWithBlocked(content, "eval failed")).toBe(
+      [
+        "```markdown",
+        "- [ ] documented example, not real work",
+        "```",
+        "- [BLOCKED: eval failed] real task",
+      ].join("\n"),
+    )
   })
 })

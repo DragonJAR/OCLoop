@@ -22,9 +22,9 @@
  * makes any save enqueued BEFORE the clear a no-op once the clear has run.
  */
 
-import { rename, writeFile, readFile, unlink } from "node:fs/promises"
-import { randomBytes } from "node:crypto"
+import { readFile, unlink } from "node:fs/promises"
 import { join } from "node:path"
+import { atomicWriteText } from "./atomic-fs"
 import { log } from "./debug-logger"
 import { isNonNegativeInteger } from "./config"
 
@@ -58,17 +58,6 @@ export interface PersistedLoopState {
 
 function statePath(): string {
   return join(process.cwd(), STATE_FILE)
-}
-
-/**
- * Per-save random tmp path. A fixed tmp name let two ocloop processes sharing
- * the same cwd race on the same file and interleave each other's mid-write
- * bytes. The rename to .loop-state.json is still last-writer-wins (atomic on
- * POSIX); the random suffix only prevents intermediate-state clobbering of the
- * tmp. Mirrors saveConfig in config.ts for consistency.
- */
-function tmpPath(): string {
-  return `${statePath()}.${randomBytes(6).toString("hex")}.tmp`
 }
 
 // --- Serialized write queue + generation guard ---
@@ -105,27 +94,9 @@ async function writeStateIfNotCleared(
   // A clear dispatched after this save (but before its turn) raised the
   // generation: writing now would resurrect a completed run's state file.
   if (myGeneration < clearedGeneration) return
-  // Capture the random tmp name once and reuse it across write/rename/unlink.
-  // Each tmpPath() call returns a fresh random suffix; calling it twice would
-  // produce two different names, so rename would target a file that writeFile
-  // never wrote (and the cleanup unlink would miss it). Mirrors saveConfig.
-  const tmp = tmpPath()
   try {
     const json = JSON.stringify(state, null, 2)
-    await writeFile(tmp, json, "utf-8")
-    try {
-      await rename(tmp, statePath())
-    } catch (renameErr) {
-      // Best-effort cleanup of the orphan tmp: the rename failed (read-only dir,
-      // ENOSPC, EPERM) but the tmp is still in our control — unlink it so the
-      // next save starts clean. The unlink is itself best-effort.
-      try {
-        await unlink(tmp)
-      } catch {
-        // Nothing more we can do; the next saveLoopState overwrites the tmp.
-      }
-      throw renameErr
-    }
+    await atomicWriteText(statePath(), json)
   } catch (err) {
     log.warn("persist", "Failed to save loop state", err)
   }

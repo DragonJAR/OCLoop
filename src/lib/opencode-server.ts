@@ -33,6 +33,10 @@ export interface OpencodeServer {
   close: () => void
 }
 
+const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
+
+type ServerProcess = ReturnType<typeof spawn>
+
 /**
  * Options for {@link startOpencodeServer}. Extends the SDK's `ServerOptions`
  * with `permissions`, a per-tool autonomous-approval map (true/absent → allow,
@@ -96,6 +100,37 @@ function withAutonomousPermissions(
   }
 }
 
+function isWindowsShellShim(command: string): boolean {
+  return WIN_SHELL_SHIM_RE.test(command)
+}
+
+function killServerProcess(proc: ServerProcess, killTree: boolean): void {
+  if (killTree && process.platform === "win32" && proc.pid) {
+    try {
+      const killer = spawn("taskkill", ["/pid", String(proc.pid), "/t", "/f"], {
+        stdio: "ignore",
+        windowsHide: true,
+      })
+      killer.on("error", () => {
+        try {
+          proc.kill()
+        } catch {
+          // Best-effort cleanup only.
+        }
+      })
+      return
+    } catch {
+      // Fall through to killing the direct process handle.
+    }
+  }
+
+  try {
+    proc.kill()
+  } catch {
+    // Best-effort cleanup only.
+  }
+}
+
 export async function startOpencodeServer(
   options: StartOpencodeServerOptions = {},
 ): Promise<OpencodeServer> {
@@ -127,7 +162,7 @@ export async function startOpencodeServer(
   // resolution fails — same behavior (and same error) the SDK had.
   const resolved = await resolveCommandPath("opencode")
   const bin = resolved ?? "opencode"
-  const useShell = /\.(cmd|bat|ps1)$/i.test(bin)
+  const useShell = isWindowsShellShim(bin)
   const command = useShell ? `"${bin}"` : bin
 
   const proc = spawn(command, args, {
@@ -140,21 +175,61 @@ export async function startOpencodeServer(
   })
 
   const url = await new Promise<string>((resolve, reject) => {
-    const id = setTimeout(() => {
-      reject(new Error(`Timeout waiting for server to start after ${timeout}ms`))
-    }, timeout)
+    let timer: ReturnType<typeof setTimeout> | null = null
     let output = ""
+    let settled = false
+    let abortHandler = () => {}
+
+    const clearStartupTimer = () => {
+      if (timer) {
+        clearTimeout(timer)
+        timer = null
+      }
+    }
+
+    const settle = (): boolean => {
+      if (settled) return false
+      settled = true
+      clearStartupTimer()
+      merged.signal?.removeEventListener("abort", abortHandler)
+      return true
+    }
+
+    const rejectStartup = (error: Error, kill: boolean) => {
+      if (!settle()) return
+      if (kill) killServerProcess(proc, useShell)
+      reject(error)
+    }
+
+    const resolveStartup = (serverUrl: string) => {
+      if (!settle()) return
+      resolve(serverUrl)
+    }
+
+    abortHandler = () => {
+      rejectStartup(new Error("Aborted"), true)
+    }
+
+    timer = setTimeout(() => {
+      rejectStartup(
+        new Error(`Timeout waiting for server to start after ${timeout}ms`),
+        true,
+      )
+    }, timeout)
+
     proc.stdout?.on("data", (chunk) => {
       output += chunk.toString()
       for (const line of output.split("\n")) {
         if (line.startsWith("opencode server listening")) {
           const match = line.match(/on\s+(https?:\/\/[^\s]+)/)
-          clearTimeout(id)
           if (!match?.[1]) {
-            reject(new Error(`Failed to parse server url from output: ${line}`))
+            rejectStartup(
+              new Error(`Failed to parse server url from output: ${line}`),
+              true,
+            )
             return
           }
-          resolve(match[1])
+          resolveStartup(match[1])
           return
         }
       }
@@ -163,20 +238,15 @@ export async function startOpencodeServer(
       output += chunk.toString()
     })
     proc.on("exit", (code) => {
-      clearTimeout(id)
       let msg = `Server exited with code ${code}`
       if (output.trim()) msg += `\nServer output: ${output}`
-      reject(new Error(msg))
+      rejectStartup(new Error(msg), false)
     })
     proc.on("error", (error) => {
-      clearTimeout(id)
-      reject(error)
+      rejectStartup(error, true)
     })
-    merged.signal?.addEventListener("abort", () => {
-      clearTimeout(id)
-      reject(new Error("Aborted"))
-    })
+    merged.signal?.addEventListener("abort", abortHandler)
   })
 
-  return { url, close: () => proc.kill() }
+  return { url, close: () => killServerProcess(proc, useShell) }
 }

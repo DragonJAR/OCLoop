@@ -9,6 +9,47 @@ interface ParsedTask {
   blockedReason?: string
 }
 
+interface PlanLine {
+  line: string
+  index: number
+}
+
+interface PlanLineState extends PlanLine {
+  isFenced: boolean
+  isFenceDelimiter: boolean
+}
+
+function isMarkdownFenceDelimiter(line: string): boolean {
+  // Markdown code fences can be indented by up to three spaces. The info
+  // string for a backtick fence cannot itself contain backticks, so inline
+  // prose like "use ``` here" is not treated as a whole-file fence boundary.
+  return /^[^\S\r\n]{0,3}`{3,}[^`]*$/.test(line)
+}
+
+function splitPlanLinesWithFenceState(content: string): PlanLineState[] {
+  const lines = splitLines(content)
+  const out: PlanLineState[] = []
+  let inFence = false
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+    const isFenceDelimiter = isMarkdownFenceDelimiter(line)
+    out.push({
+      line,
+      index,
+      isFenced: inFence || isFenceDelimiter,
+      isFenceDelimiter,
+    })
+    if (isFenceDelimiter) inFence = !inFence
+  }
+  return out
+}
+
+export function planLinesOutsideCodeFences(content: string): PlanLine[] {
+  return splitPlanLinesWithFenceState(content)
+    .filter((entry) => !entry.isFenced)
+    .map(({ line, index }) => ({ line, index }))
+}
+
 /**
  * Strip a surrounding ```fence``` if the model wrapped its output in one.
  * Used by --create-plan to clean the generated plan before saving. Lives here
@@ -37,9 +78,7 @@ export function stripCodeFences(text: string): string {
  * for a fence — that deleted real content and left the loop spinning at 100%).
  */
 export function stripInlineCodeFences(content: string): string {
-  return content
-    .replace(/```[\s\S]*?```/g, "") // paired fences
-    .replace(/^[^\S\r\n]{0,3}```[\s\S]*$/gm, "") // unterminated trailing fence (line-anchored)
+  return planLinesOutsideCodeFences(content).map(({ line }) => line).join("\n")
 }
 
 /**
@@ -401,12 +440,13 @@ export function replaceFirstPendingTaskWithSubtasks(
   // Normalize endings up front: we rebuild the file with `join("\n")` below,
   // so leaving a `\r` on original lines (CRLF file) would mix `\r\n` and `\n`.
   // Normalizing first guarantees the written file is consistently `\n`.
-  const lines = splitLines(normalizeLineEndings(content))
-  for (let i = 0; i < lines.length; i++) {
-    if (parseTaskLine(lines[i]).type === "pending") {
-      const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""
+  const normalized = normalizeLineEndings(content)
+  const lines = splitLines(normalized)
+  for (const entry of planLinesOutsideCodeFences(normalized)) {
+    if (parseTaskLine(entry.line).type === "pending") {
+      const indent = entry.line.match(/^(\s*)/)?.[1] ?? ""
       const replacement = subtasks.map((s) => `${indent}- [ ] ${s}`)
-      lines.splice(i, 1, ...replacement)
+      lines.splice(entry.index, 1, ...replacement)
       return lines.join("\n")
     }
   }
@@ -433,13 +473,14 @@ export function getEvalRubricForTask(
   content: string,
   taskDescription: string,
 ): string | null {
-  const lines = splitLines(content)
+  const lineStates = splitPlanLinesWithFenceState(content)
   // Find the first pending task matching the description.
   let taskLineIdx = -1
-  for (let i = 0; i < lines.length; i++) {
-    const task = parseTaskLine(lines[i])
+  for (const entry of lineStates) {
+    if (entry.isFenced) continue
+    const task = parseTaskLine(entry.line)
     if (task.type === "pending" && task.description === taskDescription) {
-      taskLineIdx = i
+      taskLineIdx = entry.index
       break
     }
   }
@@ -448,8 +489,11 @@ export function getEvalRubricForTask(
   // Scan the indented sub-bullets immediately following the task line. Stop at
   // the next top-level task (a `- [` line) or a non-indented, non-empty line.
   const evalRe = /^\s*-\s*eval:\s*(.+?)\s*$/i
-  for (let i = taskLineIdx + 1; i < lines.length; i++) {
-    const line = lines[i]
+  for (let i = taskLineIdx + 1; i < lineStates.length; i++) {
+    const state = lineStates[i]
+    if (state.isFenceDelimiter) break
+    if (state.isFenced) continue
+    const line = state.line
     if (line.trim() === "") continue // blank lines between a task and its notes are tolerated
     // A new task line ends the rubric window.
     if (/^\s*-\s*\[/.test(line)) break
@@ -481,12 +525,13 @@ export function replaceFirstPendingTaskWithBlocked(
   reason: string,
 ): string | null {
   const cleanReason = reason.replace(/[\r\n]+/g, " ").trim()
-  const lines = splitLines(normalizeLineEndings(content))
-  for (let i = 0; i < lines.length; i++) {
-    const task = parseTaskLine(lines[i])
+  const normalized = normalizeLineEndings(content)
+  const lines = splitLines(normalized)
+  for (const entry of planLinesOutsideCodeFences(normalized)) {
+    const task = parseTaskLine(entry.line)
     if (task.type === "pending") {
-      const indent = lines[i].match(/^(\s*)/)?.[1] ?? ""
-      lines[i] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
+      const indent = entry.line.match(/^(\s*)/)?.[1] ?? ""
+      lines[entry.index] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
       return lines.join("\n")
     }
   }

@@ -6,11 +6,12 @@ import { join } from "node:path"
 import { compareAndSwapPlan } from "./plan-cas"
 
 /**
- * Compare-and-swap is load-bearing anti-clobber protection shared by four
- * App.tsx call sites. These tests pin its contract directly against a real
- * temp file (no mocks): the four outcomes are nothing-changed, written,
- * deferred-on-concurrent-edit, and swallowed-error. Each App.tsx site is now a
- * 3-line wrapper over this, so the guard logic only needs proving once.
+ * compareAndSwapPlan is load-bearing best-effort anti-clobber protection shared
+ * by four App.tsx call sites. These tests pin its honest contract directly
+ * against a real temp file (no mocks): it re-reads before replacing the file,
+ * uses a crash-safer temp+rename final write, and swallows I/O/transform errors.
+ * It is not an OS-level atomic CAS against non-cooperative writers that modify
+ * PLAN.md after the final re-read.
  */
 describe("compareAndSwapPlan", () => {
   let dir: string
@@ -76,12 +77,12 @@ describe("compareAndSwapPlan", () => {
     expect(existsSync(missing)).toBe(false)
   })
 
-  it("is a no-op (wrote:false) when content is unchanged by the transform", async () => {
+  it("reports wrote:true when the transform returns byte-identical content", async () => {
     const original = "- [ ] one\n"
     writeFileSync(planPath, original, "utf-8")
-    // Transform returns content byte-identical to what it read: still a write
-    // (we don't special-case no-op content), but it proves the CAS window
-    // closes cleanly when there was nothing concurrent.
+    // Transform returns content byte-identical to what it read: still a
+    // successful replacement (we don't special-case no-op content), but it
+    // proves the CAS window closes cleanly when there was nothing concurrent.
     const res = await compareAndSwapPlan(planPath, (c) => c)
     expect(res.wrote).toBe(true)
     expect(res.result).toBe(original)
@@ -112,8 +113,8 @@ describe("compareAndSwapPlan", () => {
   })
 
   it("does not leave temp files behind on any path", async () => {
-    // compareAndSwapPlan writes in place (no tmp+rename); confirm the dir
-    // contains exactly the plan file after a successful write.
+    // compareAndSwapPlan writes through a unique sibling temp file and renames
+    // it into place; confirm the temp sibling is cleaned up after success.
     writeFileSync(planPath, "x\n", "utf-8")
     await compareAndSwapPlan(planPath, (c) => c.toUpperCase())
     const entries = readdirSync(dir)

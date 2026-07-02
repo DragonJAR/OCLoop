@@ -19,6 +19,11 @@ export interface KnownTerminal {
   args: string[] // Args to pass when executing a command, {cmd} is replaced
 }
 
+type ArgsPatternToken = {
+  value: string
+  quoted: boolean
+}
+
 /**
  * Result of a terminal launch attempt
  */
@@ -26,6 +31,8 @@ export interface LaunchResult {
   success: boolean
   error?: string
 }
+
+const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
 
 /**
  * List of known terminal emulators with their configurations.
@@ -98,6 +105,82 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
   return installed
 }
 
+function toArgsPatternTokens(args: string[]): ArgsPatternToken[] {
+  return args.map((value) => ({ value, quoted: false }))
+}
+
+function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
+  const args: ArgsPatternToken[] = []
+  let value = ""
+  let quote: "'" | '"' | null = null
+  let quoted = false
+  let escaping = false
+
+  const push = () => {
+    if (value.length > 0 || quoted) {
+      args.push({ value, quoted })
+    }
+    value = ""
+    quoted = false
+  }
+
+  for (let i = 0; i < pattern.length; i += 1) {
+    const char = pattern[i]
+
+    if (escaping) {
+      value += char
+      escaping = false
+      continue
+    }
+
+    if (quote) {
+      if (char === quote) {
+        quote = null
+        continue
+      }
+      if (quote === '"' && char === "\\") {
+        escaping = true
+        continue
+      }
+      value += char
+      continue
+    }
+
+    if (/\s/.test(char)) {
+      push()
+      continue
+    }
+
+    if (char === "'" || char === '"') {
+      quote = char
+      quoted = true
+      continue
+    }
+
+    if (char === "\\") {
+      escaping = true
+      continue
+    }
+
+    value += char
+  }
+
+  if (escaping) {
+    value += "\\"
+  }
+
+  if (quote) {
+    throw new Error("Unterminated quote in custom terminal args")
+  }
+
+  push()
+  return args
+}
+
+function isWindowsShellShim(command: string): boolean {
+  return process.platform === "win32" && WIN_SHELL_SHIM_RE.test(command)
+}
+
 /**
  * Generate the opencode attach command for a session.
  *
@@ -140,7 +223,7 @@ function getAttachCommandArgs(url: string, sessionId: string): string[] {
  * there is no `split(" ")` step that could mis-tokenize a value containing a
  * space.
  */
-function buildArgs(argsPattern: string[], cmdParts: string[]): string[] {
+function buildArgs(argsPattern: ArgsPatternToken[], cmdParts: string[]): string[] {
   // Defensive guard: an empty `cmdParts` would expand `{cmd}` to no tokens and
   // `flatMap` would return the literal pattern — for alacritty, `["-e"]` — and
   // `Bun.spawn` would launch the terminal with no command (an empty shell).
@@ -157,23 +240,26 @@ function buildArgs(argsPattern: string[], cmdParts: string[]): string[] {
   // the parts and escape for embedding in an AppleScript double-quoted string
   // (`\` then `"`). The attach tokens are PATH-safe today (no spaces/quotes), so
   // the join round-trips cleanly; the escape is a defensive guard.
-  const joinedCmd = cmdParts
-    .join(" ")
+  const joinedCmd = cmdParts.join(" ")
+  const appleScriptJoinedCmd = joinedCmd
     .replace(/\\/g, "\\\\")
     .replace(/"/g, '\\"')
 
   return argsPattern.flatMap((arg) => {
     // Standalone token → expand to the attach argv tokens (alacritty `-e {cmd}`).
-    if (arg === "{cmd}") {
+    if (arg.value === "{cmd}" && !arg.quoted) {
       return cmdParts
     }
     // Embedded placeholder → inline-substitute the joined command string
     // (osascript `… do script "{cmd}"`).
-    if (arg.includes("{cmd}")) {
-      return [arg.replaceAll("{cmd}", joinedCmd)]
+    if (arg.value.includes("{cmd}")) {
+      const replacement = arg.value.includes('tell application "Terminal"')
+        ? appleScriptJoinedCmd
+        : joinedCmd
+      return [arg.value.replaceAll("{cmd}", replacement)]
     }
     // Keep other args as-is
-    return [arg]
+    return [arg.value]
   })
 }
 
@@ -204,13 +290,13 @@ export async function launchTerminal(
         }
       }
       command = terminal.command
-      args = buildArgs(terminal.args, cmdParts)
+      args = buildArgs(toArgsPatternTokens(terminal.args), cmdParts)
     } else {
       // Custom terminal
       command = config.command
 
       // Parse the args pattern, replacing {cmd}
-      const argsPattern = config.args.split(/\s+/).filter((a) => a.length > 0)
+      const argsPattern = parseCustomArgsPattern(config.args)
 
       // Defensive guard: empty config.args would pass [] to Bun.spawn and open
       // an empty shell with no attach command. The custom dialog rejects empty
@@ -230,7 +316,7 @@ export async function launchTerminal(
       // placeholder-less args on save; this is the last-line backstop for
       // hand-edited configs. The known-terminal path is safe: every KNOWN_TERMINALS
       // entry carries a {cmd} token.
-      if (!argsPattern.includes("{cmd}")) {
+      if (!argsPattern.some((arg) => arg.value.includes("{cmd}"))) {
         return {
           success: false,
           error: "Custom terminal args must include the {cmd} placeholder",
@@ -263,6 +349,7 @@ export async function launchTerminal(
       stdin: "ignore",
       detached: true,
       windowsHide: true,
+      ...(isWindowsShellShim(spawnCommand) ? { shell: true } : {}),
     })
 
     // Unref the process so it doesn't keep the parent alive

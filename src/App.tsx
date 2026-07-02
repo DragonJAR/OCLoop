@@ -454,6 +454,12 @@ function AppContent(props: AppProps) {
       stats.resume()
     }
 
+    // User paused out of a rate-limit cooldown — stop the countdown timers.
+    if (state.type === "paused" && prev.type === "cooldown") {
+      cooldown.clearTimers()
+      pendingCooldownResume = false
+    }
+
     // Reset the cooldown-resume flag when we leave cooldown WITHOUT a matching
     // iteration_started. The reducer allows cooldown → complete / error / stopped
     // (plan_complete, fatal error, quit mid-cooldown); none of those re-enter
@@ -1899,7 +1905,7 @@ function AppContent(props: AppProps) {
       case "cooldown":
         seedDashboard()
         cooldown.previewRemaining(25_000)
-        loop.dispatch({ type: "debug_preview", state: { type: "cooldown", iteration: 5, reason: "429 Too Many Requests", resumeAt: 0, attempt: 3, kind: "rate_limit" } })
+        loop.dispatch({ type: "debug_preview", state: { type: "cooldown", iteration: 5, reason: "429 Too Many Requests", resumeAt: 0, attempt: 3, kind: "rate_limit", sessionId: "" } })
         break
       case "complete":
         seedDashboard()

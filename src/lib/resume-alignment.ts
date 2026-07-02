@@ -28,8 +28,7 @@
  *     surfacing the edit so the user can confirm it was intentional.
  */
 
-import { getCurrentTaskFromContent, parseTaskLine } from "./plan-parser"
-import { splitLines } from "./text"
+import { getCurrentTaskFromContent, parseTaskLine, planLinesOutsideCodeFences } from "./plan-parser"
 
 /**
  * Structured description of a misalignment between the saved task and the
@@ -87,13 +86,12 @@ export function describeResumeAlignment(
   // not handle indented sub-tasks or `[MANUAL]`/`[BLOCKED]` tagging the way
   // `parseTaskLine` does — `getCurrentTaskFromContent` already uses it, so
   // the saved `currentTask` and the scan here now share one grammar).
-  // splitLines tolerates CRLF/lone-CR so a Windows-edited PLAN.md scans the
-  // same as a Unix one (parseTaskLine trims per-line, but be consistent with
-  // the rest of the plan readers).
-  const lines = splitLines(planContent)
+  // planLinesOutsideCodeFences tolerates CRLF/lone-CR and keeps this slow path
+  // aligned with the other plan readers: fenced examples are documentation, not
+  // real task state.
   let savedStillPending = false
   let savedNowCompleted = false
-  for (const line of lines) {
+  for (const { line } of planLinesOutsideCodeFences(planContent)) {
     const task = parseTaskLine(line)
     if (task.type === "not-a-task") continue
     if (task.description !== savedTask) continue

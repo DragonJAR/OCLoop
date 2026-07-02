@@ -36,6 +36,7 @@ describe("loopReducer", () => {
         resumeAt: 0,
         attempt: 3,
         kind: "rate_limit",
+        sessionId: "",
       }
       // The escape hatch bypasses transition guards: even from an unrelated
       // state it sets the target directly (used only by debug Preview commands).
@@ -127,22 +128,20 @@ describe("loopReducer", () => {
       }
     })
 
+    it("toggle_pause from running(\"\") is a no-op — nothing to pause yet (C1)", () => {
+      const running = { type: "running", iteration: 1, sessionId: "" } as const
+      const after = loopReducer(running, { type: "toggle_pause" })
+      expect(after).toBe(running)
+    })
+
     it("is a no-op from pausing — the orphan-session race (Bug #2)", () => {
-      // running("") → user hits Space → pausing("") → a late iteration_started
-      // (createSession resolved AFTER the pause) arrives. The reducer must NOT
-      // adopt the session; the App layer detects the dropped id and aborts the
-      // orphan so it doesn't keep running on the server burning tokens.
-      const pausing = loopReducer(
-        { type: "running", iteration: 1, sessionId: "" },
-        { type: "toggle_pause" },
-      )
-      expect(pausing.type).toBe("pausing")
-      const after = loopReducer(pausing, {
+      const pausingState = { type: "pausing", iteration: 1, sessionId: "" } as const
+      const after = loopReducer(pausingState, {
         type: "iteration_started",
         sessionId: "ses_orphan",
       })
-      expect(after).toBe(pausing) // referential no-op
-      expect(getActiveSessionId(after)).toBe("") // never "ses_orphan"
+      expect(after).toBe(pausingState)
+      expect(getActiveSessionId(after)).toBe("")
     })
 
     it("is a no-op from a stopping/stopped state (Bug #2)", () => {
@@ -634,13 +633,16 @@ describe("loopReducer", () => {
       state = loopReducer(state, {
         type: "rate_limited", reason: "429", resumeAt: 999, attempt: 1, kind: "rate_limit",
       })
-      if (state.type === "cooldown") expect(state.wasPausing).toBeUndefined()
+      if (state.type === "cooldown") {
+        expect(state.wasPausing).toBeUndefined()
+        expect(state.sessionId).toBe("ses-y")
+      }
       state = loopReducer(state, { type: "resume_cooldown" })
       expect(state.type).toBe("running")
-      if (state.type === "running") expect(state.sessionId).toBe("")
+      if (state.type === "running") expect(state.sessionId).toBe("ses-y")
     })
 
-    it("resume_cooldown returns to running with an empty session, same iteration", () => {
+    it("resume_cooldown restores the preserved sessionId, same iteration (C2)", () => {
       const state: LoopState = {
         type: "cooldown",
         iteration: 7,
@@ -648,13 +650,28 @@ describe("loopReducer", () => {
         resumeAt: 555,
         attempt: 3,
         kind: "rate_limit",
+        sessionId: "ses-7",
       }
       const result = loopReducer(state, { type: "resume_cooldown" })
       expect(result.type).toBe("running")
       if (result.type === "running") {
         expect(result.iteration).toBe(7)
-        expect(result.sessionId).toBe("")
+        expect(result.sessionId).toBe("ses-7")
       }
+    })
+
+    it("toggle_pause from cooldown transitions to paused (B2)", () => {
+      const state: LoopState = {
+        type: "cooldown",
+        iteration: 4,
+        reason: "429",
+        resumeAt: 999,
+        attempt: 2,
+        kind: "rate_limit",
+        sessionId: "ses-cd",
+      }
+      const result = loopReducer(state, { type: "toggle_pause" })
+      expect(result).toEqual({ type: "paused", iteration: 4 })
     })
 
     it("can quit from cooldown", () => {
@@ -665,6 +682,7 @@ describe("loopReducer", () => {
         resumeAt: 1,
         attempt: 1,
         kind: "rate_limit",
+        sessionId: "",
       }
       expect(loopReducer(state, { type: "quit" }).type).toBe("stopping")
     })
@@ -677,6 +695,7 @@ describe("loopReducer", () => {
         resumeAt: 1,
         attempt: 8,
         kind: "rate_limit",
+        sessionId: "",
       }
       const result = loopReducer(state, {
         type: "error",
@@ -861,6 +880,7 @@ describe("loopReducer", () => {
         resumeAt: 12345,
         attempt: 2,
         kind: "rate_limit",
+        sessionId: "",
       }
       const result = loopReducer(state, {
         type: "plan_complete",
@@ -947,6 +967,7 @@ describe("loopReducer", () => {
         resumeAt: 5000,
         attempt: 2,
         kind: "rate_limit",
+        sessionId: "",
       }
       const result = loopReducer(state, {
         type: "error",
@@ -1007,6 +1028,7 @@ describe("loopReducer", () => {
         resumeAt: 9999,
         attempt: 1,
         kind: "rate_limit",
+        sessionId: "",
       }
       const result = loopReducer(state, { type: "quit" })
       expect(result.type).toBe("stopping")
@@ -1102,7 +1124,7 @@ describe("loopReducer", () => {
       running: { type: "running", iteration: 3, sessionId: "ses-3" },
       pausing: { type: "pausing", iteration: 3, sessionId: "ses-3" },
       paused: { type: "paused", iteration: 3 },
-      cooldown: { type: "cooldown", iteration: 3, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
+      cooldown: { type: "cooldown", iteration: 3, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit", sessionId: "" },
       stopping: { type: "stopping" },
       stopped: { type: "stopped" },
       complete: { type: "complete", iterations: 3, summary: { summary: "x" } },
@@ -1189,10 +1211,10 @@ describe("loopReducer", () => {
     })
 
     // --- toggle_pause: only "running", "pausing", "paused" transition ---
-    it("toggle_pause: from starting, ready, cooldown, stopping, stopped, complete, error, debug → no-op", () => {
+    it("toggle_pause: from starting, ready, stopping, stopped, complete, error, debug → no-op", () => {
       expectNoOp(
         { type: "toggle_pause" },
-        ["starting", "ready", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
+        ["starting", "ready", "stopping", "stopped", "complete", "error", "debug"],
       )
     })
 
@@ -1216,13 +1238,14 @@ describe("loopReducer", () => {
         ["starting", "ready", "paused", "cooldown", "stopping", "stopped", "complete", "error", "debug"],
       )
     })
-    it("rate_limited: from pausing → cooldown (preserves iteration, drops sessionId)", () => {
+    it("rate_limited: from pausing → cooldown (preserves iteration and sessionId)", () => {
       const result = loopReducer(
         { type: "pausing", iteration: 5, sessionId: "ses-5" },
         { type: "rate_limited", reason: "429", resumeAt: 999, attempt: 2 },
       )
       if (result.type !== "cooldown") throw new Error("expected cooldown")
       expect(result.iteration).toBe(5)
+      expect(result.sessionId).toBe("ses-5")
       expect(result.reason).toBe("429")
       expect(result.resumeAt).toBe(999)
       expect(result.attempt).toBe(2)
@@ -1283,7 +1306,7 @@ describe("loopReducer", () => {
     })
     it("plan_complete: from cooldown(4) preserves iteration (does NOT reset to 0)", () => {
       const result = loopReducer(
-        { type: "cooldown", iteration: 4, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
+        { type: "cooldown", iteration: 4, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit", sessionId: "" },
         { type: "plan_complete", summary: { summary: "x" } },
       )
       if (result.type !== "complete") throw new Error("expected complete")
@@ -1342,7 +1365,7 @@ describe("loopReducer", () => {
     })
     it("error: from cooldown(N) carries N into lastIteration (Finding 3.1.A)", () => {
       const result = loopReducer(
-        { type: "cooldown", iteration: 5, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit" },
+        { type: "cooldown", iteration: 5, reason: "r", resumeAt: 1, attempt: 1, kind: "rate_limit", sessionId: "" },
         { type: "error", source: "api", message: "x", recoverable: true },
       )
       expect(result.type).toBe("error")
@@ -1393,6 +1416,7 @@ describe("loopReducer", () => {
           resumeAt: 0,
           attempt: 1,
           kind: "rate_limit",
+          sessionId: "",
         },
         { type: "stopping" },
         { type: "stopped" },

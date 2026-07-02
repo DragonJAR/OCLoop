@@ -238,3 +238,33 @@ describe("describeResumeAlignment — parser-divergence regressions (reuse parse
     ).toEqual({ kind: "completed", saved: "nested" })
   })
 })
+
+describe("describeResumeAlignment — fenced PLAN examples", () => {
+  it("does not classify a fenced completed example as the saved task being completed", () => {
+    expect(
+      describeResumeAlignment(
+        "task B",
+        [
+          "- [ ] task X",
+          "```markdown",
+          "- [x] task B",
+          "```",
+        ].join("\n"),
+      ),
+    ).toEqual({ kind: "removed", saved: "task B", current: "task X" })
+  })
+
+  it("does not classify a fenced pending example as the saved task being reordered", () => {
+    expect(
+      describeResumeAlignment(
+        "task B",
+        [
+          "- [ ] task X",
+          "```markdown",
+          "- [ ] task B",
+          "```",
+        ].join("\n"),
+      ),
+    ).toEqual({ kind: "removed", saved: "task B", current: "task X" })
+  })
+})

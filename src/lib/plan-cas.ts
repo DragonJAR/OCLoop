@@ -1,5 +1,5 @@
 /**
- * Compare-and-swap write for PLAN.md.
+ * Best-effort compare-and-swap write for PLAN.md.
  *
  * Unifies the read → transform → re-read → byte-compare → write pattern that
  * was previously copy-pasted across four App.tsx call sites
@@ -21,14 +21,20 @@
  *   touching the file.
  * - Re-reads `planPath`. If it changed since the first read, another writer
  *   (typically the agent) beat us → defer: `{ wrote: false }`, file untouched.
- * - Otherwise writes the transformed content atomically and returns
- *   `{ wrote: true, result: updated }`.
+ * - Otherwise writes the transformed content through a unique sibling temp file
+ *   and `rename`s it into place, then returns `{ wrote: true, result: updated }`.
+ *
+ * This is intentionally honest best-effort semantics: it protects cooperative
+ * call sites from stale writes and makes the final replacement crash-safer, but
+ * it is not an OS-level atomic CAS against a non-cooperative writer that edits
+ * PLAN.md after our final re-read and before the rename.
  *
  * `result` is the new file content on success so callers can branch on it
  * (e.g. handleDecompose distinguishes "nothing to change" from "deferred"
  * from "written", via `wrote`).
  */
 
+import { atomicWriteText } from "./atomic-fs"
 import { log } from "./debug-logger"
 
 /** A pure-ish transform of the current content. Return `null` for "no change". */
@@ -42,7 +48,7 @@ export interface CasResult {
 }
 
 /**
- * Atomically apply `transform` to PLAN.md via compare-and-swap. Never throws.
+ * Apply `transform` to PLAN.md via best-effort compare-and-swap. Never throws.
  *
  * The `caller` label is used only for log diagnostics so each call site's
  * deferrals are greppable in `.loop.log` (mirrors the per-site log keys the
@@ -69,7 +75,7 @@ export async function compareAndSwapPlan(
       log.debug(caller, "PLAN.md changed during write; deferring", {})
       return { wrote: false, result: null }
     }
-    await Bun.write(planPath, updated)
+    await atomicWriteText(planPath, updated)
     return { wrote: true, result: updated }
   } catch (err) {
     // Read or write failed (file missing, EACCES, …). Best-effort: surface in

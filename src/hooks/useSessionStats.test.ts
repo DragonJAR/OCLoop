@@ -25,6 +25,15 @@ describe("useSessionStats", () => {
     });
   });
 
+  it("totalTokens includes cacheRead and cacheWrite (C3)", () => {
+    createRoot((dispose) => {
+      const stats = useSessionStats();
+      stats.addTokens({ input: 100, output: 50, cacheRead: 20, cacheWrite: 10 });
+      expect(stats.totalTokens()).toBe(180);
+      dispose();
+    });
+  });
+
   it("resetTaskTokens zeroes ONLY the per-task counter, never the global run total (Parte D)", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();

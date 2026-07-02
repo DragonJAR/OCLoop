@@ -31,7 +31,7 @@ export function useSessionStats(): UseSessionStatsReturn {
 
   const totalTokens = () => {
     const t = tokens();
-    return t.input + t.output;
+    return t.input + t.output + t.cacheRead + t.cacheWrite;
   };
 
   function addTokens(newTokens: Partial<SessionTokens>) {

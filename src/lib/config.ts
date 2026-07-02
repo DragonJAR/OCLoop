@@ -5,10 +5,10 @@
  * ~/.config/ocloop/ocloop.json (or XDG_CONFIG_HOME equivalent).
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, unlinkSync } from "node:fs"
-import { randomBytes } from "node:crypto"
+import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { join } from "node:path"
+import { atomicWriteTextSync, cleanupDeterministicTmp } from "./atomic-fs"
 import { log } from "./debug-logger"
 import { isLocale } from "./i18n"
 
@@ -570,24 +570,10 @@ export function loadConfig(): OcloopConfig {
  * failure is logged as warn; the boolean lets call sites surface a toast.
  */
 export function saveConfig(config: OcloopConfig): boolean {
-  const configDir = getConfigDir()
   const configPath = getConfigPath()
-  // Random hex suffix on the tmp: two ocloop processes sharing the same
-  // $XDG_CONFIG_HOME (e.g. TUI + --create-plan) would otherwise race on a fixed
-  // .tmp name and interleave each other's mid-write bytes. The rename is still
-  // last-writer-wins (atomic on POSIX); this only prevents intermediate-state
-  // clobbering of the tmp.
-  const tmpPath = `${configPath}.${randomBytes(6).toString("hex")}.tmp`
 
   try {
-    // mkdirSync with recursive is idempotent — no existsSync guard needed, and
-    // a guard would add a wasted syscall plus a TOCTOU window.
-    mkdirSync(configDir, { recursive: true })
-
-    // Write atomically: tmp file then rename (rename is atomic on the same
-    // filesystem, so a reader never sees a half-written config).
-    writeFileSync(tmpPath, JSON.stringify(config, null, 2) + "\n", "utf-8")
-    renameSync(tmpPath, configPath)
+    atomicWriteTextSync(configPath, JSON.stringify(config, null, 2) + "\n")
     // Invalidate the load cache so a subsequent loadConfig() sees the new
     // value (write-through). Round-trip (save → load) contract holds.
     cachedConfig = config
@@ -595,16 +581,7 @@ export function saveConfig(config: OcloopConfig): boolean {
     return true
   } catch (err) {
     log.warn("config", "Failed to save config", err)
-    // Best-effort cleanup of the orphan tmp file. The unlink can fail (the
-    // tmp may not exist if `writeFileSync` failed before creating it); the
-    // `existsSync` guard short-circuits the common pre-write case, and the
-    // outer swallow catches the race where the file vanishes between the
-    // check and the unlink.
-    try {
-      if (existsSync(tmpPath)) unlinkSync(tmpPath)
-    } catch {
-      // Nothing more we can do; the next saveConfig overwrites the tmp.
-    }
+    cleanupDeterministicTmp(configPath)
     return false
   }
 }

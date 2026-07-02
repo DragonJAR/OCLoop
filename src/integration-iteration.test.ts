@@ -257,30 +257,40 @@ describe("runIteration", () => {
     expect(err && err.type === "error" && err.decomposableTask).toBe("stuck task")
   })
 
-  it("race guard: user pauses during createSession → orphan session aborted, orphan_aborted", async () => {
-    // createSession resolves after a short delay; the test pauses mid-flight via
-    // a createSession wrapper that dispatches toggle_pause before returning.
+  it("race guard: user quits during createSession → orphan session aborted, orphan_aborted", async () => {
     const h = makeHarness({
       clientOpts: { sessionId: "sess-race", createDelayMs: 10 },
     })
-    // Wrap the client's create to inject the pause DURING the await, modeling a
-    // user hitting Space while createSession is in flight.
     const origCreate = (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create
       ; (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create = async () => {
         const r = await origCreate()
-        // Simulate the user pausing while createSession was resolving: the
-        // reducer transitions running → pausing, so getActiveSessionId becomes
-        // "" and iteration_started (dispatched next) no-ops.
-        h.loop.dispatch({ type: "toggle_pause" })
+        h.loop.dispatch({ type: "quit" })
         return r
       }
 
     const result = await runIteration(h.deps)
 
     expect(result).toBe("orphan_aborted")
-    // The orphaned session WAS aborted (the whole point of the guard).
     expect(h.calls.abortSession).toHaveLength(1)
     expect(h.calls.sendPromptAsync).toHaveLength(0)
+  })
+
+  it("running(\"\") pause during createSession is a no-op — iteration completes (C1)", async () => {
+    const h = makeHarness({
+      clientOpts: { sessionId: "sess-race", createDelayMs: 10 },
+    })
+    const origCreate = (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create
+      ; (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create = async () => {
+        const r = await origCreate()
+        h.loop.dispatch({ type: "toggle_pause" })
+        return r
+      }
+
+    const result = await runIteration(h.deps)
+
+    expect(result).toBe("completed")
+    expect(h.calls.abortSession).toHaveLength(0)
+    expect(h.calls.sendPromptAsync).toHaveLength(1)
   })
 
   it("empty prompt throws (guarded), propagated to the wrapper catch", async () => {

@@ -227,10 +227,12 @@ describe("parseArgs — pairwise combinations of interacting params", () => {
 // implicitly covered. Pin the contract explicitly so a switch fall-through
 // regression (e.g. an accidental `break` outside the case) is caught for
 // value flags (last-wins) and boolean flags (idempotent).
-describe("parseArgs — duplicate flag behavior (Finding 1.1.B)", () => {
-  it("duplicate --port flags: last wins", () => {
-    const { args } = runParse(["--port", "8080", "--port", "9090"])
-    expect(args?.port).toBe(9090)
+describe("parseArgs — duplicate flag behavior (Finding 1.1.B / A2)", () => {
+  it("duplicate --port flags: error and exit ≠ 0", () => {
+    const r = runParse(["--port", "8080", "--port", "9090"])
+    expect(r.exitCode).toBe(1)
+    expect(r.errors.join("\n")).toContain("duplicate flag --port")
+    expect(r.args).toBeNull()
   })
 
   it("duplicate --debug flags: idempotent", () => {

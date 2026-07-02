@@ -126,6 +126,7 @@ const en = {
   // gets argparse errors in Spanish too. ---
   errArgValueRequired: (p: Params) => `Error: ${p.flag} requires a value`,
   errArgUnknown: (p: Params) => `Error: unknown argument "${p.arg}"`,
+  errArgDuplicate: (p: Params) => `Error: duplicate flag ${p.flag}`,
   errArgLang: "Error: --lang requires 'en' or 'es'",
   errArgPortInteger: "Error: --port requires a full integer argument",
   errArgPortRange: "Error: --port must be in TCP range 0..65535",
@@ -771,6 +772,7 @@ const es: Record<MessageKey, Msg> = {
   // pre-scanea de --lang antes de que parseArgs corra. ---
   errArgValueRequired: (p) => `Error: ${p.flag} requiere un valor`,
   errArgUnknown: (p) => `Error: argumento desconocido "${p.arg}"`,
+  errArgDuplicate: (p) => `Error: flag duplicado ${p.flag}`,
   errArgLang: "Error: --lang requiere 'en' o 'es'",
   errArgPortInteger: "Error: --port requiere un argumento entero",
   errArgPortRange: "Error: --port debe estar en el rango TCP 0..65535",

@@ -138,6 +138,29 @@ describe("doResumeFlow", () => {
       expect(state.addEventCalls).toHaveLength(1)
       expect(state.addEventCalls[0][0]).toBe("session_start")
     })
+
+    it("catches fire-and-forget reconcileAndAdvance rejections", async () => {
+      const { deps, state } = makeDeps({ verdictToReturn: "working" })
+      const unhandled: unknown[] = []
+      const onUnhandled = (reason: unknown) => {
+        unhandled.push(reason)
+      }
+      deps.reconcileAndAdvance = async () => {
+        state.reconcileAndAdvanceCalls++
+        throw new Error("advance failed")
+      }
+
+      process.on("unhandledRejection", onUnhandled)
+      try {
+        await doResumeFlow(deps, snapshot())
+        await new Promise((resolve) => setTimeout(resolve, 0))
+      } finally {
+        process.off("unhandledRejection", onUnhandled)
+      }
+
+      expect(state.reconcileAndAdvanceCalls).toBe(1)
+      expect(unhandled).toEqual([])
+    })
   })
 
   describe("idle verdict (session already finished before crash)", () => {

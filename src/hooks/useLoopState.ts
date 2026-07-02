@@ -111,6 +111,8 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     case "toggle_pause": {
       // Toggle pause/resume
       if (state.type === "running") {
+        // No live session yet — nothing to pause (avoids wedging in pausing("")).
+        if (state.sessionId === "") return state
         // Transition to pausing - will complete when session becomes idle
         return {
           type: "pausing",
@@ -136,6 +138,10 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           iteration: state.iteration,
           sessionId: "",
         }
+      }
+      if (state.type === "cooldown") {
+        // User cancelled the wait — App clears cooldown timers on this transition.
+        return { type: "paused", iteration: state.iteration }
       }
       return state
     }
@@ -184,6 +190,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
           resumeAt: action.resumeAt,
           attempt: action.attempt,
           kind: action.kind ?? "rate_limit",
+          sessionId: state.sessionId,
           // Remember a pending pause so resume_cooldown restores it instead of
           // silently auto-resuming the loop.
           ...(state.type === "pausing" ? { wasPausing: true } : {}),
@@ -204,7 +211,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         return {
           type: "running",
           iteration: state.iteration,
-          sessionId: "",
+          sessionId: state.sessionId,
         }
       }
       return state
@@ -400,12 +407,14 @@ export function useLoopState(): UseLoopStateReturn {
 
   const canPause = createMemo(() => {
     const s = state()
-    // Can pause when running
-    if (s.type === "running") return true
+    // Can pause when running (with a live session — empty sessionId is a no-op)
+    if (s.type === "running") return s.sessionId !== ""
     // Can cancel a pending pause while pausing
     if (s.type === "pausing") return true
     // Can resume when paused
     if (s.type === "paused") return true
+    // Can cancel a rate-limit cooldown wait
+    if (s.type === "cooldown") return true
     return false
   })
 

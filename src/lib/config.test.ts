@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { deterministicTmpPath } from "./atomic-fs"
 import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
@@ -637,18 +638,12 @@ describe("saveConfig — round-trip (Finding 12.2.A)", () => {
     expect(loadConfig()).toEqual({ language: "es", theme: "opencode" })
   })
 
-  it("uses a randomized tmp suffix per save (Finding 12.2.B)", () => {
-    // The tmp path inside saveConfig carries a 12-char hex suffix; we can't
-    // intercept `writeFileSync` cleanly, so we exercise the user-observable
-    // consequence: two consecutive saves must produce no two tmp files
-    // colliding, and the dir is clean afterwards. (The randomized suffix
-    // already prevents cross-process clobbering even mid-write; this test
-    // pins the post-condition that a successful save leaves no tmp behind.)
+  it("uses a deterministic per-process tmp suffix (B5)", () => {
+    const configPath = getConfigPath()
+    expect(deterministicTmpPath(configPath)).toBe(`${configPath}.${process.pid}.tmp`)
     saveConfig({ language: "en" })
     saveConfig({ theme: "opencode" })
-    const configDir = join(dir, "ocloop")
-    const tmps = readdirSync(configDir).filter((e) => e.endsWith(".tmp"))
-    expect(tmps).toEqual([])
+    expect(readdirSync(join(dir, "ocloop")).filter((e) => e.endsWith(".tmp"))).toEqual([])
   })
 
   it("returns true and does not throw on the happy path", () => {
@@ -702,7 +697,7 @@ describe("saveConfig — error swallowing (Finding 12.2.A)", () => {
   )("cleans up the orphan .tmp file on a failed save (Finding 12.2.C)", () => {
     // Side effect: the `catch` block in `saveConfig` best-effort `unlinkSync`s
     // the tmp so a failed `writeFileSync`/`renameSync` doesn't leak
-    // `ocloop.json.<randomhex>.tmp` into the user's `~/.config/ocloop/`.
+    // `ocloop.json.<pid>.tmp` into the user's `~/.config/ocloop/`.
     // The previous `existsSync(path + ".tmp")` probe became a tautology after
     // Finding 12.2.B randomized the suffix; scan the dir for any `*.tmp`
     // leftover instead, matching the convention from the 12.2.B round-trip

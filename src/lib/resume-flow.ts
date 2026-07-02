@@ -23,6 +23,7 @@ import type { PersistedLoopState } from "./loop-state-store"
 import type { ReconcileResult, OpencodeClient } from "./api"
 import type { LoopAction } from "../types"
 import type { UseActivityLogReturn } from "../hooks/useActivityLog"
+import { log } from "./debug-logger"
 
 /**
  * Minimal collaborator surface for the resume flow. Each member is exactly
@@ -107,7 +108,9 @@ export async function doResumeFlow<C = OpencodeClient>(
       sessionId: p.sessionId,
     })
     watchdog.notifyIterationStart()
-    void reconcileAndAdvance()
+    void reconcileAndAdvance().catch((err) => {
+      log.warn("resume", "reconcileAndAdvance failed after resume", err)
+    })
     return { verdict, action: "resume_session", iteration: p.iteration, sessionId: p.sessionId }
   }
 
