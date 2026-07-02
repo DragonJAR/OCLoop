@@ -2,6 +2,9 @@ import { describe, expect, it } from "bun:test"
 import { withTimeout, TimeoutError } from "./with-timeout"
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
+type AbortSignalWithAny = Omit<typeof AbortSignal, "any"> & {
+  any: ((signals: AbortSignal[]) => AbortSignal) | undefined
+}
 
 describe("withTimeout", () => {
   it("resolves when the task finishes before the deadline", async () => {
@@ -39,9 +42,10 @@ describe("withTimeout", () => {
         })
       })
 
-    // The task rejects with its own "aborted" error once the timeout fires the
-    // signal (it wins the race against the timeout's own rejection).
-    await expect(withTimeout(task, 15, "abortable")).rejects.toThrow("aborted")
+    // The timeout itself must win the race, even when the task reacts to abort.
+    await expect(withTimeout(task, 15, "abortable")).rejects.toBeInstanceOf(
+      TimeoutError,
+    )
     // Give the microtask/event a tick to land
     await delay(5)
     expect(abortedReason).toBeInstanceOf(TimeoutError)
@@ -101,6 +105,31 @@ describe("withTimeout", () => {
     // rejection is what surfaces (deterministic, no race with the timeout).
     await expect(p).rejects.toThrow("external-abort")
     expect(observedAbort).toBe(true)
+  })
+
+  it("still forwards external aborts when AbortSignal.any is unavailable", async () => {
+    const abortSignalAny = AbortSignal as AbortSignalWithAny
+    const originalAny = abortSignalAny.any
+    abortSignalAny.any = undefined
+
+    try {
+      const external = new AbortController()
+      let observedAbort = false
+      const task = (signal: AbortSignal) =>
+        new Promise<string>((_resolve, reject) => {
+          signal.addEventListener("abort", () => {
+            observedAbort = true
+            reject(new Error("external-abort-fallback"))
+          })
+        })
+
+      const p = withTimeout(task, 1000, "external-fallback", external.signal)
+      external.abort()
+      await expect(p).rejects.toThrow("external-abort-fallback")
+      expect(observedAbort).toBe(true)
+    } finally {
+      abortSignalAny.any = originalAny
+    }
   })
 
   it("clears its timer when a function-form task throws synchronously", async () => {

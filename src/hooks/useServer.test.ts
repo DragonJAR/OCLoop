@@ -331,6 +331,38 @@ describe("useServer (Finding 18.2.A)", () => {
     })
   })
 
+  it("stop during a restart ignores the late launch completion", async () => {
+    let launches = 0
+    let releaseLaunch!: () => void
+    const blockedLaunch = new Promise<void>((resolve) => {
+      releaseLaunch = resolve
+    })
+    serverImpl = async (opts) => {
+      launches++
+      if (launches === 2) {
+        await blockedLaunch
+      }
+      return {
+        url: `http://127.0.0.1:${opts?.port ?? 4096}`,
+        close: () => {},
+      }
+    }
+
+    await withServer({ port: 4096 }, async (server, dispose) => {
+      expect(server.status()).toBe("ready")
+      const restart = server.restart()
+      await tick(5)
+      await server.stop()
+      releaseLaunch()
+      await restart
+      expect(launches).toBe(2)
+      expect(server.status()).toBe("stopped")
+      expect(server.url()).toBeNull()
+      expect(server.port()).toBeNull()
+      dispose()
+    })
+  })
+
   it("closeCurrent swallows serverRef.close() throwing on restart", async () => {
     let closeCalls = 0
     serverImpl = async (_opts) => ({

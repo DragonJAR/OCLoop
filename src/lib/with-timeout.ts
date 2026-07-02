@@ -51,7 +51,35 @@ function combineSignals(
   if (typeof anyFn === "function") {
     return anyFn([timeoutSignal, external])
   }
-  return timeoutSignal
+  const controller = new AbortController()
+  const relay = (source: AbortSignal) => {
+    if (controller.signal.aborted) return
+    controller.abort((source as AbortSignal & { reason?: unknown }).reason)
+  }
+  const onTimeout = () => relay(timeoutSignal)
+  const onExternal = () => relay(external)
+
+  if (timeoutSignal.aborted) {
+    relay(timeoutSignal)
+    return controller.signal
+  }
+  if (external.aborted) {
+    relay(external)
+    return controller.signal
+  }
+
+  timeoutSignal.addEventListener("abort", onTimeout, { once: true })
+  external.addEventListener("abort", onExternal, { once: true })
+  controller.signal.addEventListener(
+    "abort",
+    () => {
+      timeoutSignal.removeEventListener("abort", onTimeout)
+      external.removeEventListener("abort", onExternal)
+    },
+    { once: true },
+  )
+
+  return controller.signal
 }
 
 export async function withTimeout<T>(
@@ -70,10 +98,11 @@ export async function withTimeout<T>(
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
 
+  const timeoutError = new TimeoutError(label, ms)
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
-      controller.abort(new TimeoutError(label, ms))
-      reject(new TimeoutError(label, ms))
+      reject(timeoutError)
+      queueMicrotask(() => controller.abort(timeoutError))
     }, ms)
   })
 

@@ -210,5 +210,18 @@ describe("classifySessionError", () => {
       })
       expect(e.retryAfter).toBe(45)
     })
+
+    it("uses SDK-shaped data.statusCode and responseHeaders for rate limits", () => {
+      const e = classifySessionError({
+        name: "APIError",
+        data: {
+          message: "request failed",
+          statusCode: 429,
+          responseHeaders: { "retry-after": "2" },
+        },
+      })
+      expect(e.kind).toBe("rate_limit")
+      expect(e.retryAfter).toBe(2)
+    })
   })
 })

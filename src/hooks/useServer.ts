@@ -94,14 +94,16 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
 
   let serverRef: { url: string; close: () => void } | null = null
   let abortController: AbortController | null = null
+  let launchGeneration = 0
   const launchGate = createLaunchGate()
 
   /**
    * Low-level launch of the OpenCode server on a specific port. Shared by the
    * initial start and restart. Throws on failure so callers can fall back.
    */
-  async function launch(targetPort: number): Promise<void> {
-    abortController = new AbortController()
+  async function launch(targetPort: number, generation: number): Promise<boolean> {
+    const controller = new AbortController()
+    abortController = controller
 
     // Read permissions FRESH each launch (not destructured to a const) so a
     // restart() after a config change re-launches with the new policy. Omitted
@@ -109,12 +111,22 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     const serverOptions: StartOpencodeServerOptions = {
       hostname,
       timeout,
-      signal: abortController.signal,
+      signal: controller.signal,
       port: targetPort,
       permissions: options.permissions?.(),
     }
 
-    serverRef = await startOpencodeServer(serverOptions)
+    const started = await startOpencodeServer(serverOptions)
+    if (generation !== launchGeneration || controller.signal.aborted) {
+      try {
+        started.close()
+      } catch {
+        // stale launch, best-effort cleanup
+      }
+      return false
+    }
+
+    serverRef = started
 
     const parsedUrl = new URL(serverRef.url)
     const actualPort = parseInt(parsedUrl.port, 10)
@@ -125,6 +137,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     setServerPort(Number.isFinite(actualPort) ? actualPort : null)
     setStatus("ready")
     setLastHealthyAt(monotonicNow())
+    return true
   }
 
   /**
@@ -140,13 +153,17 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         return
       }
 
+      const generation = ++launchGeneration
       setStatus("starting")
       setError(undefined)
 
       try {
         // Default to 0: tries port 4096 first, then a random available port.
-        await launch(port ?? 0)
+        await launch(port ?? 0, generation)
       } catch (err) {
+        if (generation !== launchGeneration) {
+          return
+        }
         const serverError = err instanceof Error ? err : new Error(String(err))
         setError(serverError)
         setStatus("error")
@@ -213,6 +230,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    */
   async function restart(): Promise<void> {
     const started = await launchGate.tryRunExclusive(async () => {
+      const generation = ++launchGeneration
       const preferredPort = serverPort() ?? port ?? 0
       log.health("server", "restart_begin", { preferredPort })
 
@@ -222,9 +240,15 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
       setUrl(null)
 
       try {
-        await launch(preferredPort)
+        const launchedPreferred = await launch(preferredPort, generation)
+        if (!launchedPreferred) {
+          return
+        }
         log.health("server", "restart_done", { url: url(), port: serverPort() })
       } catch (errPreferred) {
+        if (generation !== launchGeneration) {
+          return
+        }
         log.health("server", "restart_retry_ephemeral", {
           message:
             errPreferred instanceof Error
@@ -233,13 +257,19 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         })
         try {
           // Old port may still be held; let the OS pick a fresh one.
-          await launch(0)
+          const launchedEphemeral = await launch(0, generation)
+          if (!launchedEphemeral) {
+            return
+          }
           log.health("server", "restart_done", {
             url: url(),
             port: serverPort(),
             ephemeral: true,
           })
         } catch (err) {
+          if (generation !== launchGeneration) {
+            return
+          }
           const serverError = err instanceof Error ? err : new Error(String(err))
           setError(serverError)
           setStatus("error")
@@ -258,6 +288,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Stop the server gracefully
    */
   async function stop(): Promise<void> {
+    launchGeneration += 1
     closeCurrent()
     setUrl(null)
     setServerPort(null)

@@ -105,6 +105,10 @@ const AUTH_RE =
 const TRANSIENT_RE =
   /(\b50\d\b|\b529\b|timeout|timed out|econnreset|etimedout|enotfound|econnrefused|socket hang up|fetch failed|network error|connection\b[^.]{0,24}\b(?:closed|reset|refused|error)|closed unexpectedly)/i
 
+function getMessageRoleKey(sessionId: string | undefined, messageId: string): string {
+  return sessionId ? `${sessionId}:${messageId}` : messageId
+}
+
 /**
  * Map an error name + message to a {@link SessionErrorKind}.
  * Checked in priority order: aborted → rate_limit → auth → transient → fatal.
@@ -124,6 +128,15 @@ function classifyKind(name: string | undefined, message: string): SessionErrorKi
     return "transient"
   }
   return "fatal"
+}
+
+function classifyKindWithStatus(
+  name: string | undefined,
+  message: string,
+  statusCode?: number,
+): SessionErrorKind {
+  const statusText = typeof statusCode === "number" ? ` ${statusCode}` : ""
+  return classifyKind(name, `${message}${statusText}`)
 }
 
 /**
@@ -171,11 +184,20 @@ function extractRetryAfter(e: Record<string, any>): number | undefined {
   }
 
   const headers = e?.headers ?? e?.response?.headers
-  if (headers) {
-    const raw =
-      typeof headers.get === "function"
-        ? headers.get("retry-after")
-        : headers["retry-after"] ?? headers["Retry-After"]
+  const dataHeaders = e?.data?.responseHeaders ?? e?.data?.headers
+  const readRetryAfter = (headersLike: unknown): unknown => {
+    if (!headersLike) return undefined
+    const h = headersLike as {
+      get?: (name: string) => unknown
+      "retry-after"?: unknown
+      "Retry-After"?: unknown
+    }
+    return typeof h.get === "function"
+      ? h.get("retry-after")
+      : h["retry-after"] ?? h["Retry-After"]
+  }
+  if (headers || dataHeaders) {
+    const raw = readRetryAfter(headers) ?? readRetryAfter(dataHeaders)
     if (raw != null) {
       const n = parseRetryAfterValue(raw)
       if (n !== undefined) return n
@@ -215,6 +237,9 @@ export function classifySessionError(rawError: unknown): SessionError {
     const e = rawError as Record<string, any>
     name = typeof e.name === "string" ? e.name : undefined
     message = e.message || e.data?.message || "Unknown error"
+    if (!name && typeof e.data?.name === "string") {
+      name = e.data.name
+    }
     retryAfter = extractRetryAfter(e)
   } else if (typeof rawError === "string") {
     message = rawError
@@ -222,7 +247,9 @@ export function classifySessionError(rawError: unknown): SessionError {
     message = "Unknown error"
   }
 
-  const kind = classifyKind(name, message)
+  const kind = typeof rawError === "object" && rawError !== null
+    ? classifyKindWithStatus(name, message, (rawError as Record<string, any>).data?.statusCode)
+    : classifyKind(name, message)
   return {
     message,
     name,
@@ -417,8 +444,14 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       case "message.updated": {
         const props = event.properties as any
         const message = props.info || props.message
+        const messageSessionId =
+          props.sessionID ?? props.sessionId ?? message?.sessionID ?? message?.sessionId
+        if (filterSessionId && messageSessionId !== filterSessionId) {
+          return
+        }
         if (message?.id && message?.role) {
-          messageRoles.set(message.id, message.role)
+          const role = message.role === "user" ? "user" : "assistant"
+          messageRoles.set(getMessageRoleKey(messageSessionId, message.id), role)
         }
         break
       }
@@ -445,7 +478,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         } else if (part.type === "text") {
           if (!seenPartIds.has(part.id)) {
             seenPartIds.add(part.id)
-            const role = messageRoles.get(messageId) || "assistant"
+            const role =
+              messageRoles.get(getMessageRoleKey(eventSessionId, messageId)) ||
+              messageRoles.get(messageId) ||
+              "assistant"
             handlers.onMessageText?.(part as TextPart, role)
           }
         } else if (part.type === "reasoning") {

@@ -247,6 +247,16 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.wd.health()).toBe("HEALTHY")
   })
 
+  it("a session becoming inactive mid-reconcile cancels the tick", async () => {
+    const s = setup({ reconcile: "working" })
+    s.clk.advance(T2 + 1_000)
+    s.hooks.onReconcile = () => s.setActive(false)
+    await s.wd.tick()
+    expect(s.calls.abortAndRetry).toBe(0)
+    expect(s.calls.restartServer).toBe(0)
+    expect(s.wd.health()).toBe("HEALTHY")
+  })
+
   it("a heartbeat landing mid-ping cancels the tick (no restart on a revived session)", async () => {
     const s = setup({ ping: false, reconcile: "working" })
     s.clk.advance(T2 + 1_000)

@@ -172,6 +172,11 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     dt: number,
     lastVerdict?: WatchdogVerdict,
   ): Promise<void> {
+    if (!options.probes.isActive()) {
+      setHealth("HEALTHY")
+      return
+    }
+
     const cfg = options.config()
     recoveryAttempts++
     setHealth("RECOVERING")
@@ -202,6 +207,10 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     // Escalation ladder. Always reconnect SSE first (cheap). A hung server (or a
     // wedge that a prior abort+retry didn't clear) escalates to a server restart.
     options.actions.reconnectSSE()
+    if (!options.probes.isActive()) {
+      setHealth("HEALTHY")
+      return
+    }
     if (reason === "server_hung" || recoveryAttempts >= 2) {
       await options.actions.restartServer()
     } else {
@@ -241,6 +250,10 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
         clock.monotonicNow() - lastHeartbeatAt < cfg.suspectMs
 
       const alive = await options.probes.pingServer()
+      if (!options.probes.isActive()) {
+        setHealth("HEALTHY")
+        return
+      }
       if (rescuedByHeartbeat()) {
         setHealth("HEALTHY")
         return
@@ -252,6 +265,10 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
       }
 
       const verdict = await options.probes.reconcile()
+      if (!options.probes.isActive()) {
+        setHealth("HEALTHY")
+        return
+      }
       if (rescuedByHeartbeat()) {
         setHealth("HEALTHY")
         return

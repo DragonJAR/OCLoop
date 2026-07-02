@@ -172,10 +172,14 @@ function evSessionError(sessionId: string | undefined, error: unknown): Event {
   } as unknown as Event
 }
 
-function evMessageUpdated(messageId: string, role: "user" | "assistant"): Event {
+function evMessageUpdated(
+  messageId: string,
+  role: "user" | "assistant",
+  sessionId?: string,
+): Event {
   return {
     type: "message.updated",
-    properties: { info: { id: messageId, role } },
+    properties: { info: { id: messageId, role, sessionID: sessionId } },
   } as unknown as Event
 }
 
@@ -650,6 +654,38 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           sub.push(evMessagePartText("part-t1", "msg-1", "sess-7", "hi"))
           await tick(5)
           expect(capturedRole).toBe("user")
+          wrapped.d()
+          dispose()
+        },
+      ))
+
+    it("message.updated from another session does not leak into the filtered session", () =>
+      withSSE(
+        { url: () => "http://x", handlers: {} },
+        async (_sse, dispose) => {
+          const sub = driveableSubscribe()
+          let capturedRole: string | undefined
+          const { useSSE } = await import("./useSSE")
+          const wrapped = createRoot((d) => {
+            const h = useSSE({
+              url: () => "http://x",
+              sessionId: () => "sess-target",
+              handlers: {
+                onMessageText: (_part, role) => {
+                  capturedRole = role
+                },
+              },
+            })
+            return { h, d }
+          })
+
+          await wrapped.h.reconnect()
+          await waitForStatus(wrapped.h, "connected")
+          sub.push(evMessageUpdated("msg-1", "user", "sess-other"))
+          await tick(2)
+          sub.push(evMessagePartText("part-t1", "msg-1", "sess-target", "hi"))
+          await tick(5)
+          expect(capturedRole).toBe("assistant")
           wrapped.d()
           dispose()
         },
