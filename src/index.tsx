@@ -28,6 +28,8 @@ import { monotonicNow } from "./lib/clock"
 import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
+import { TERMINAL_RESTORE_SEQUENCE } from "./lib/terminal-restore"
+import { ensureWindowsConsoleReady } from "./lib/windows-console"
 
 // DEFAULT_PLAN_MODEL / DEFAULT_PLAN_AGENT now live in ./lib/constants (shared
 // with the stalled-task split in App.tsx). Plan-generation budget is
@@ -383,10 +385,7 @@ let tuiStarted = false
  */
 function restoreTerminal(): void {
   if (!tuiStarted || !process.stdout.isTTY) return
-  // disable mouse (1000/1002/1003 + SGR 1006/1015) · reset SGR · show cursor · leave alt-screen
-  process.stdout.write(
-    "\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1015l\x1b[0m\x1b[?25h\x1b[?1049l",
-  )
+  process.stdout.write(TERMINAL_RESTORE_SEQUENCE)
 }
 
 process.on("exit", restoreTerminal)
@@ -488,6 +487,11 @@ async function main(): Promise<void> {
   // skips its terminal-mode restore. The --create-plan path never reaches here.
   if (!process.stdout.isTTY || !process.stdin.isTTY) {
     console.error(t("errNoTty"))
+    process.exit(1)
+  }
+
+  if (!ensureWindowsConsoleReady()) {
+    console.error(t("errWinConsole"))
     process.exit(1)
   }
 

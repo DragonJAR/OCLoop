@@ -300,6 +300,17 @@ const en = {
     "and run the command there.",
     "",
   ].join("\n"),
+  errWinConsole: [
+    "Error: OCLoop could not enable Windows virtual-terminal processing.",
+    "",
+    "The legacy Windows console (cmd.exe or older PowerShell) echoes raw ANSI",
+    "capability probes to the screen (`?[?1016…`, `[4;…t`) instead of handling",
+    "them — leaving garbage at the prompt after OCLoop exits.",
+    "",
+    "Run OCLoop from Windows Terminal (recommended) or PowerShell 7+ in a VT-capable",
+    "host. If you must use cmd.exe, upgrade to Windows 10 build 16257+ and retry.",
+    "",
+  ].join("\n"),
   // Boot pre-flight: a single probe-write to process.cwd() failed, so
   // .loop-state.json (resume), .loop.log (trace), and the default
   // .loop-prompt.md (auto-create) cannot be created. Without this check the
@@ -899,6 +910,17 @@ const es: Record<MessageKey, Msg> = {
     "",
     "Abre una terminal real (Terminal.app, iTerm, gnome-terminal, Windows Terminal, etc.)",
     "y ejecuta el comando allí.",
+    "",
+  ].join("\n"),
+  errWinConsole: [
+    "Error: OCLoop no pudo habilitar el procesamiento de terminal virtual en Windows.",
+    "",
+    "La consola heredada de Windows (cmd.exe o PowerShell antiguo) imprime en pantalla",
+    "las sondas ANSI de capacidades (`?[?1016…`, `[4;…t`) en lugar de interpretarlas",
+    "— dejando basura en el prompt al salir de OCLoop.",
+    "",
+    "Ejecuta OCLoop desde Windows Terminal (recomendado) o PowerShell 7+ en un host",
+    "con VT. Si debes usar cmd.exe, actualiza a Windows 10 build 16257+ y reintenta.",
     "",
   ].join("\n"),
   // Espejo de `errCwdNotWritable` (en). Ver bloque en `en` para la nota de source.
