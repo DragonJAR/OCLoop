@@ -7,6 +7,7 @@ import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
 import type { PermissionTool } from "../lib/config"
+import { createLaunchGate } from "../lib/launch-gate"
 
 /**
  * Server status states.
@@ -93,7 +94,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
 
   let serverRef: { url: string; close: () => void } | null = null
   let abortController: AbortController | null = null
-  let launchInFlight = false
+  const launchGate = createLaunchGate()
 
   /**
    * Low-level launch of the OpenCode server on a specific port. Shared by the
@@ -130,26 +131,28 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Start the OpenCode server (initial start).
    */
   async function startServer(): Promise<void> {
-    if (launchInFlight) return
     if (status() !== "starting" && status() !== "stopped") {
       return
     }
 
-    launchInFlight = true
-    setStatus("starting")
-    setError(undefined)
+    await launchGate.tryRunExclusive(async () => {
+      if (status() !== "starting" && status() !== "stopped") {
+        return
+      }
 
-    try {
-      // Default to 0: tries port 4096 first, then a random available port.
-      await launch(port ?? 0)
-    } catch (err) {
-      const serverError = err instanceof Error ? err : new Error(String(err))
-      setError(serverError)
-      setStatus("error")
-      serverRef = null
-    } finally {
-      launchInFlight = false
-    }
+      setStatus("starting")
+      setError(undefined)
+
+      try {
+        // Default to 0: tries port 4096 first, then a random available port.
+        await launch(port ?? 0)
+      } catch (err) {
+        const serverError = err instanceof Error ? err : new Error(String(err))
+        setError(serverError)
+        setStatus("error")
+        serverRef = null
+      }
+    })
   }
 
   /**
@@ -209,29 +212,15 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Falls back to an ephemeral port if the old one is not yet released.
    */
   async function restart(): Promise<void> {
-    // Don't double-restart. status flips to "starting" on entry and back to
-    // "ready"/"error" on exit; bail if a restart is mid-flight. Reuses the same
-    // guard as startServer() so a concurrent caller (watchdog + SSE-exhaustion,
-    // or two rapid user commands) can't race two launch()s and leak the first
-    // server's process handle by overwriting serverRef. The status === "starting"
-    // check is the sole flag for an in-flight restart; setStatus below runs
-    // synchronously (no awaits between), so mutual exclusion between overlapping
-    // callers holds.
-    if (launchInFlight) {
-      log.health("server", "restart_in_flight_noop", { url: url() })
-      return
-    }
+    const started = await launchGate.tryRunExclusive(async () => {
+      const preferredPort = serverPort() ?? port ?? 0
+      log.health("server", "restart_begin", { preferredPort })
 
-    const preferredPort = serverPort() ?? port ?? 0
-    log.health("server", "restart_begin", { preferredPort })
+      setStatus("starting")
+      setError(undefined)
+      closeCurrent()
+      setUrl(null)
 
-    launchInFlight = true
-    setStatus("starting")
-    setError(undefined)
-    closeCurrent()
-    setUrl(null)
-
-    try {
       try {
         await launch(preferredPort)
         log.health("server", "restart_done", { url: url(), port: serverPort() })
@@ -258,8 +247,10 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
           log.health("server", "restart_failed", { message: serverError.message })
         }
       }
-    } finally {
-      launchInFlight = false
+    })
+
+    if (!started) {
+      log.health("server", "restart_in_flight_noop", { url: url() })
     }
   }
 

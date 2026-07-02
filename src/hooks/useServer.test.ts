@@ -213,7 +213,7 @@ describe("useServer (Finding 18.2.A)", () => {
     })
   })
 
-  it("concurrent restart() calls are deduplicated via launchInFlight", async () => {
+  it("concurrent restart() calls are deduplicated via launchGate", async () => {
     await withServer({ port: 4096 }, async (server, dispose) => {
       let launches = 0
       let resolveBlock!: () => void

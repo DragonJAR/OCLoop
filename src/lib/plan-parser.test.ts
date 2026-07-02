@@ -215,6 +215,23 @@ describe("parsePlan", () => {
     expect(result.percentComplete).toBe(100) // edge case: no tasks = 100% complete
   })
 
+  it("does not count tasks inside fenced code blocks toward progress (A1)", () => {
+    const content = [
+      "## Example format",
+      "```markdown",
+      "- [x] Example completed",
+      "- [ ] Example pending",
+      "```",
+      "- [ ] Real pending task",
+      "- [x] Real completed task",
+    ].join("\n")
+    const result = parsePlan(content)
+
+    expect(result.total).toBe(2)
+    expect(result.completed).toBe(1)
+    expect(result.pending).toBe(1)
+  })
+
   it("should parse a mixed plan correctly", () => {
     const content = `
 ## Backlog
