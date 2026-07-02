@@ -1,4 +1,5 @@
-import { afterEach, describe, expect, it, mock } from "bun:test"
+import { afterEach, describe, expect, it } from "bun:test"
+import { mockCommandExists } from "./command-exists-mock"
 
 // `mock.module` MUST be called before importing the module under test, so the
 // import is hoisted to the top of the file by Bun's bundler. The factory
@@ -17,16 +18,22 @@ import { afterEach, describe, expect, it, mock } from "bun:test"
 // Source: MEJORAS.md Finding 11.4.D.
 
 let commandExistsImpl: (cmd: string) => Promise<boolean> = async () => false
+const defaultResolveSpawnableImpl = async (cmd: string) =>
+  (await commandExistsImpl(cmd)) ? cmd : null
+let resolveSpawnableImpl: (cmd: string) => Promise<string | null> =
+  defaultResolveSpawnableImpl
 
-mock.module("./command-exists", () => ({
+mockCommandExists({
   commandExists: (cmd: string) => commandExistsImpl(cmd),
-}))
+  resolveSpawnable: (cmd: string) => resolveSpawnableImpl(cmd),
+})
 
 const { detectClipboardTool, copyToClipboard } = await import("./clipboard")
 
 describe("detectClipboardTool (Finding 11.4.D)", () => {
   afterEach(() => {
     commandExistsImpl = async () => false
+    resolveSpawnableImpl = defaultResolveSpawnableImpl
   })
 
   it.skipIf(process.platform !== "darwin")(
@@ -61,6 +68,7 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
 describe("copyToClipboard (Finding 11.4.D)", () => {
   afterEach(() => {
     commandExistsImpl = async () => false
+    resolveSpawnableImpl = defaultResolveSpawnableImpl
   })
 
   it("returns { success: false } with a platform-specific hint when no tool is available", async () => {

@@ -17,7 +17,8 @@
  *   centralizes that save/override/reset (also used by `power.test.ts` and
  *   `terminal-launcher.test.ts`).
  */
-import { describe, expect, it } from "bun:test"
+import { beforeEach, describe, expect, it } from "bun:test"
+import { mockCommandExists, realCommandExists } from "./command-exists-mock"
 import {
   setupBunSpawnMock,
   spawnState,
@@ -26,9 +27,13 @@ import {
 
 setupBunSpawnMock()
 
-const { commandExists, resolveCommandPath, resolveSpawnable } = await import(
-  "./command-exists"
-)
+// resolveSpawnable delegates to resolveCommandPath via a live module binding;
+// reset any partial mock other files registered so internal calls stay real.
+beforeEach(() => {
+  mockCommandExists({})
+})
+
+const { commandExists, resolveCommandPath, resolveSpawnable } = realCommandExists
 
 // The shared FakeProc is the floor (unref/kill/pid); `commandExists` only reads
 // `proc.exited`, so extend it here per the helper's documented contract.

@@ -23,6 +23,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test"
 
+import { mockCommandExists } from "./command-exists-mock"
 import {
   setupBunSpawnMock,
   spawnState,
@@ -33,10 +34,15 @@ import {
 // is imported, so the factory is hoisted to the top of the file by
 // Bun's bundler.
 let commandExistsImpl: (cmd: string) => Promise<boolean> = async () => true
+const defaultResolveSpawnableImpl = async (cmd: string) =>
+  (await commandExistsImpl(cmd)) ? cmd : null
+let resolveSpawnableImpl: (cmd: string) => Promise<string | null> =
+  defaultResolveSpawnableImpl
 
-mock.module("./command-exists", () => ({
+mockCommandExists({
   commandExists: (cmd: string) => commandExistsImpl(cmd),
-}))
+  resolveSpawnable: (cmd: string) => resolveSpawnableImpl(cmd),
+})
 
 setupBunSpawnMock()
 
@@ -50,7 +56,23 @@ const {
 
 afterEach(() => {
   commandExistsImpl = async () => true
+  resolveSpawnableImpl = defaultResolveSpawnableImpl
 })
+
+async function withPlatform<T>(
+  platform: NodeJS.Platform,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+  Object.defineProperty(process, "platform", { value: platform })
+  try {
+    return await fn()
+  } finally {
+    if (descriptor) {
+      Object.defineProperty(process, "platform", descriptor)
+    }
+  }
+}
 
 describe("getKnownTerminalByName (Finding 18.2.D)", () => {
   it("returns the entry for a known terminal name", () => {
@@ -247,6 +269,23 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     ])
   })
 
+  it("parses quoted custom args and passes quoted {cmd} as one shell command string", async () => {
+    commandExistsImpl = async (cmd) => cmd === "gnome-terminal"
+    const result = await launchTerminal(
+      { type: "custom", command: "gnome-terminal", args: "-- bash -lc '{cmd}'" },
+      "http://127.0.0.1:4096",
+      "ses_abc",
+    )
+    expect(result).toEqual({ success: true })
+    expect(spawnState.calls[0].cmd).toEqual([
+      "gnome-terminal",
+      "--",
+      "bash",
+      "-lc",
+      "opencode attach http://127.0.0.1:4096 --session ses_abc",
+    ])
+  })
+
   it("returns { success: false, error } for custom terminal with empty args (Finding 11.2.B)", async () => {
     const result = await launchTerminal(
       { type: "custom", command: "my-term", args: "" },
@@ -316,5 +355,22 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     }
     expect(opts.detached).toBe(true)
     expect(opts.windowsHide).toBe(true)
+  })
+
+  it("uses a shell when a Windows custom terminal resolves to a shell shim", async () => {
+    const shim = String.raw`C:\Users\dev\AppData\Roaming\npm\my-term.cmd`
+    resolveSpawnableImpl = async (cmd) => (cmd === "my-term" ? shim : null)
+
+    const result = await withPlatform("win32", async () =>
+      launchTerminal(
+        { type: "custom", command: "my-term", args: "-e {cmd}" },
+        "http://127.0.0.1:4096",
+        "ses_abc",
+      ),
+    )
+
+    expect(result).toEqual({ success: true })
+    expect(spawnState.calls[0].cmd[0]).toBe(shim)
+    expect((spawnState.calls[0].opts as { shell?: boolean }).shell).toBe(true)
   })
 })

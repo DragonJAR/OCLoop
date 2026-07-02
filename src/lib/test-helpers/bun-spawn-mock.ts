@@ -60,7 +60,13 @@ export const spawnState: {
   impl: defaultImpl,
 }
 
-let realBunSpawn: typeof Bun.spawn
+/** Captured once at helper load — never a prior test's mock wrapper. */
+const realBunSpawn = Bun.spawn
+
+const bunSpawnMock = ((cmd: string[], opts: unknown) => {
+  spawnState.calls.push({ cmd, opts })
+  return spawnState.impl(cmd, opts)
+}) as typeof Bun.spawn
 
 /**
  * Wires up the mock. Call once at the top of the test file (module scope),
@@ -68,14 +74,9 @@ let realBunSpawn: typeof Bun.spawn
  */
 export function setupBunSpawnMock(): void {
   beforeEach(() => {
-    realBunSpawn = Bun.spawn
-    // The cast is needed because the mock's return type is a structural
-    // subset of `Bun.Subprocess`. Only `unref` is used by the production
-    // paths (terminal-launcher.ts:254, power.ts:43-53).
-    Bun.spawn = ((cmd: string[], opts: unknown) => {
-      spawnState.calls.push({ cmd, opts })
-      return spawnState.impl(cmd, opts)
-    }) as typeof Bun.spawn
+    Bun.spawn = bunSpawnMock
+    spawnState.calls.length = 0
+    spawnState.impl = defaultImpl
   })
 
   afterEach(() => {
