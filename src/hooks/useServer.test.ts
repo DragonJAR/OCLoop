@@ -213,6 +213,39 @@ describe("useServer (Finding 18.2.A)", () => {
     })
   })
 
+  it("concurrent restart() calls are deduplicated via launchInFlight", async () => {
+    await withServer({ port: 4096 }, async (server, dispose) => {
+      let launches = 0
+      let resolveBlock!: () => void
+      const blockLaunch = new Promise<void>((r) => {
+        resolveBlock = r
+      })
+
+      serverImpl = async (opts) => {
+        launches++
+        await blockLaunch
+        return {
+          url: `http://127.0.0.1:${opts?.port ?? 4096}`,
+          close: () => {},
+        }
+      }
+
+      const r1 = server.restart()
+      const r2 = server.restart()
+      await tick(5)
+
+      expect(launches).toBe(1)
+      expect(server.status()).toBe("starting")
+
+      resolveBlock()
+      await Promise.all([r1, r2])
+
+      expect(launches).toBe(1)
+      expect(server.status()).toBe("ready")
+      dispose()
+    })
+  })
+
   it("restart reuses the preferred port on a second call", async () => {
     let launches = 0
     serverImpl = async (opts) => {

@@ -824,6 +824,15 @@ describe("parseArgs — --resilience numeric coercion strictness (Finding 1.5.A)
     expect(r.exitCode).toBe(1)
     expect(r.errors.join("\n")).toContain("decimal only")
   })
+
+  it("rejects noProgressThreshold=0 (minimum is 1)", () => {
+    const r = runParse(["--resilience", "noProgressThreshold=0"])
+    expect(r.exitCode).toBe(1)
+    const err = r.errors.join("\n")
+    expect(err).toContain("noProgressThreshold")
+    expect(err).toContain(">= 1")
+    expect(err).toContain("0")
+  })
 })
 
 describe("parseArgs — --create-plan + other flag combinations (Phase 1 Task 1.7)", () => {

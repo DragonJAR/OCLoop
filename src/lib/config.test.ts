@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { deterministicTmpPath } from "./atomic-fs"
-import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -304,6 +304,21 @@ describe("loadConfig — resilience per-field type validation (Finding 12.3.B)",
       caffeinate: false,
       backoffJitter: true,
     })
+  })
+
+  it("drops the whole block when noProgressThreshold is 0 (minimum is 1)", () => {
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { noProgressThreshold: 0 } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+})
+
+describe("RESILIENCE_MINS", () => {
+  it("documents noProgressThreshold floor of 1", () => {
+    expect(RESILIENCE_MINS.noProgressThreshold).toBe(1)
   })
 })
 
