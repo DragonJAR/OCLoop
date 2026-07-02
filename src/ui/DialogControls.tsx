@@ -22,17 +22,23 @@ import { selectedForeground, type ThemeColors } from "../lib/theme-resolver"
  * it here means a scrollbar theme change touches one place. Pass the current
  * theme snapshot (each dialog already reads `theme()` from useTheme).
  */
-export function dialogScrollbarOptions(theme: ThemeColors): {
-  visible: true
+export function dialogScrollbarOptions(
+  theme: ThemeColors,
+  options?: { autoHide?: boolean },
+): {
+  visible?: true
   trackOptions: { backgroundColor: string; foregroundColor: string }
 } {
-  return {
-    visible: true,
-    trackOptions: {
-      backgroundColor: theme.backgroundPanel,
-      foregroundColor: theme.borderSubtle,
-    },
+  const trackOptions = {
+    backgroundColor: theme.backgroundPanel,
+    foregroundColor: theme.borderSubtle,
   }
+  // Omit `visible` so OpenTUI auto-hides the bar unless content overflows
+  // (same pattern as ActivityLog — avoids reserving an empty column).
+  if (options?.autoHide) {
+    return { trackOptions }
+  }
+  return { visible: true, trackOptions }
 }
 
 /**

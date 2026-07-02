@@ -58,6 +58,7 @@ export function DialogSelect(props: DialogSelectProps) {
     const count = filteredOptions().length
     return count === 0 ? 1 : Math.min(count, MAX_LIST_ROWS)
   })
+  const needsScroll = createMemo(() => filteredOptions().length > MAX_LIST_ROWS)
   let scroll: ScrollBoxRenderable | undefined
 
   let input: InputRenderable | undefined
@@ -232,8 +233,12 @@ export function DialogSelect(props: DialogSelectProps) {
         <scrollbox
           ref={(r) => scroll = r}
           maxHeight={listRows()}
-          verticalScrollbarOptions={dialogScrollbarOptions(theme())}
-          style={{ flexDirection: "column", flexGrow: 1 }}
+          verticalScrollbarOptions={dialogScrollbarOptions(theme(), {
+            autoHide: !needsScroll(),
+          })}
+          flexGrow={1}
+          // Root stays `row` ([ content | scrollbar ]). flexDirection: "column"
+          // stacks the bar below the list at full width (ActivityLog split-screen bug).
         >
           <For each={filteredOptions()}>
             {(option, i) => {
