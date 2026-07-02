@@ -9,6 +9,7 @@ import { useTheme } from "../context/ThemeContext"
 import { selectedForeground } from "../lib/theme-resolver"
 import { truncate } from "../lib/format"
 import { t } from "../lib/i18n"
+import { scrollTopToRevealItem } from "../lib/scroll-into-view"
 
 export interface DialogSelectOption {
   title: string
@@ -85,17 +86,17 @@ export function DialogSelect(props: DialogSelectProps) {
     const selectedOption = filteredOptions()[index]
     if (!selectedOption || !scroll) return
 
-    const child = scroll.getChildren().find((c: any) => c.id === selectedOption.value)
-    
-    if (child) {
-      const relativeY = child.y - scroll.y
-      const height = scroll.height
-      
-      if (relativeY < 0) {
-        scroll.scrollBy({ x: 0, y: relativeY })
-      } else if (relativeY >= height) {
-        scroll.scrollBy({ x: 0, y: relativeY - height + 1 })
-      }
+    const child = scroll.getChildren().find((c) => c.id === selectedOption.value)
+    if (!child) return
+
+    const target = scrollTopToRevealItem({
+      childY: child.y,
+      childHeight: child.height || 1,
+      scrollTop: scroll.scrollTop,
+      viewportHeight: scroll.viewport.height,
+    })
+    if (target !== null) {
+      scroll.scrollTo({ x: 0, y: target })
     }
   }
 
