@@ -75,6 +75,27 @@ export interface UseLoopStatsReturn {
  * console.log("Average:", stats.averageTime() ? formatDuration(stats.averageTime()!) : "N/A")
  * ```
  */
+/**
+ * Compute active iteration duration (excluding pause time).
+ * Shared DRY calculation between endIteration and the elapsedTime memo (W3-13).
+ */
+export function computeActiveDuration(
+  s: {
+    iterationStartTime: number | null;
+    accumulatedPauseTime: number;
+    pauseStartTime: number | null;
+  },
+  now = Date.now(),
+): number {
+  if (s.iterationStartTime === null) return 0;
+  const totalElapsed = now - s.iterationStartTime;
+  let pauseTime = s.accumulatedPauseTime;
+  if (s.pauseStartTime !== null) {
+    pauseTime += now - s.pauseStartTime;
+  }
+  return Math.max(0, totalElapsed - pauseTime);
+}
+
 export function useLoopStats(): UseLoopStatsReturn {
   const [state, setState] = createSignal<LoopStatsState>({
     iterationStartTime: null,
@@ -146,16 +167,7 @@ export function useLoopStats(): UseLoopStatsReturn {
       return 0;
     }
 
-    const now = Date.now();
-    let totalElapsed = now - s.iterationStartTime;
-
-    // If currently paused, include the current pause time
-    let pauseTime = s.accumulatedPauseTime;
-    if (s.pauseStartTime !== null) {
-      pauseTime += now - s.pauseStartTime;
-    }
-
-    const activeTime = Math.max(0, totalElapsed - pauseTime);
+    const activeTime = computeActiveDuration(s);
 
     setState({
       ...s,
@@ -178,22 +190,7 @@ export function useLoopStats(): UseLoopStatsReturn {
     tick();
 
     const s = state();
-    if (s.iterationStartTime === null) {
-      return 0;
-    }
-
-    const now = Date.now();
-    let totalElapsed = now - s.iterationStartTime;
-
-    // Subtract accumulated pause time
-    let pauseTime = s.accumulatedPauseTime;
-
-    // If currently paused, include current pause duration
-    if (s.pauseStartTime !== null) {
-      pauseTime += now - s.pauseStartTime;
-    }
-
-    return Math.max(0, totalElapsed - pauseTime);
+    return computeActiveDuration(s);
   });
 
   /**

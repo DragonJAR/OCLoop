@@ -99,6 +99,8 @@ export interface Watchdog {
   notifyIdle: () => void
   /** The system just woke from sleep: grant a fresh grace window. */
   notifyWake: () => void
+  /** Explicitly clear any suspicion / recovering state and reset heartbeat baseline. */
+  clearSuspect: () => void
   /** Run one evaluation (exposed for deterministic tests). */
   tick: () => Promise<void>
   start: () => void
@@ -167,6 +169,12 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     log("wake_reset", {})
   }
 
+  function clearSuspect(): void {
+    lastHeartbeatAt = clock.monotonicNow()
+    setHealth("HEALTHY")
+    log("suspect_cleared", {})
+  }
+
   async function recover(
     reason: WatchdogDiagnostics["reason"],
     dt: number,
@@ -201,6 +209,7 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
         lastVerdict,
       })
       recoveryAttempts = 0
+      setHealth("HEALTHY")
       return
     }
 
@@ -311,6 +320,7 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     notifyIterationStart,
     notifyIdle,
     notifyWake,
+    clearSuspect,
     tick,
     start() {
       if (timer) return

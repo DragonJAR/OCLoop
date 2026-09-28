@@ -51,6 +51,18 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
       // can't hang — but unref ensures the process doesn't block shutdown if
       // kill fails to terminate it immediately.
       proc.unref()
+      const currentProc = proc
+      proc.exited
+        ?.then(() => {
+          if (proc === currentProc) {
+            proc = null
+          }
+        })
+        .catch(() => {
+          if (proc === currentProc) {
+            proc = null
+          }
+        })
       log.health("power", "caffeinate_start", { pid: proc.pid })
     } catch (err) {
       // caffeinate missing or spawn failed — degrade gracefully.

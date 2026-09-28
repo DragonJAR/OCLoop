@@ -205,4 +205,34 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     expect(pm.isActive()).toBe(true)
     expect(spawnState.calls).toHaveLength(2)
   })
+
+  it("W3-05: resets proc and isActive when caffeinate exits unexpectedly (proc.exited)", async () => {
+    let resolveExit: (code: number) => void = () => {}
+    const exitedPromise = new Promise<number>((r) => {
+      resolveExit = r
+    })
+    spawnState.impl = () => ({
+      unref: () => {},
+      kill: () => {},
+      pid: 9999,
+      exited: exitedPromise,
+    })
+
+    const pm = createPowerManager({ enabled: () => true, platform: "darwin" })
+    pm.start()
+    expect(pm.isActive()).toBe(true)
+
+    // Simulate unexpected process exit
+    resolveExit(1)
+    await exitedPromise
+    // Allow microtasks to run
+    await new Promise((r) => setTimeout(r, 0))
+
+    expect(pm.isActive()).toBe(false)
+
+    // Next start() should re-spawn
+    pm.start()
+    expect(pm.isActive()).toBe(true)
+    expect(spawnState.calls).toHaveLength(2)
+  })
 })

@@ -927,4 +927,32 @@ describe("watchdog — anti-false-positive details", () => {
     expect(s.calls.abortAndRetry).toBe(1) // unchanged
     expect(s.calls.restartServer).toBe(1) // escalated
   })
+
+  it("clearSuspect resets baseline and health to HEALTHY", async () => {
+    const s = setup({ reconcile: "working" })
+    s.clk.advance(T1 + 1_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("SUSPECT")
+
+    s.wd.clearSuspect()
+    expect(s.wd.health()).toBe("HEALTHY")
+
+    // Advance by less than T1: tick stays HEALTHY
+    s.clk.advance(T1 - 10_000)
+    await s.wd.tick()
+    expect(s.wd.health()).toBe("HEALTHY")
+  })
+
+  it("circuit breaker trip resets health to HEALTHY instead of staying RECOVERING", async () => {
+    const s = setup({ reconcile: "working", maxRecoveryAttempts: 1 })
+    // Attempt 1
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+
+    // Attempt 2 (exceeds maxRecoveryAttempts: 1) -> trips circuit breaker
+    s.clk.advance(T2 + 1_000)
+    await s.wd.tick()
+    expect(s.calls.fail.length).toBe(1)
+    expect(s.wd.health()).toBe("HEALTHY")
+  })
 })

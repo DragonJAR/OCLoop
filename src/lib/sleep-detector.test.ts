@@ -23,7 +23,9 @@ describe("createSleepDetector", () => {
     const d = createSleepDetector({
       tickMs: 5000,
       thresholdMs: 30000,
-      onWake: (g) => wakes.push(g),
+      onWake: (g) => {
+        wakes.push(g)
+      },
       clock,
     })
 
@@ -41,7 +43,9 @@ describe("createSleepDetector", () => {
     const d = createSleepDetector({
       tickMs: 5000,
       thresholdMs: 30000,
-      onWake: (g) => wakes.push(g),
+      onWake: (g) => {
+        wakes.push(g)
+      },
       clock,
     })
 
@@ -59,7 +63,9 @@ describe("createSleepDetector", () => {
     const d = createSleepDetector({
       tickMs: 5000,
       thresholdMs: 30000,
-      onWake: (g) => wakes.push(g),
+      onWake: (g) => {
+        wakes.push(g)
+      },
       clock,
     })
 
@@ -78,7 +84,9 @@ describe("createSleepDetector", () => {
     const wakes: number[] = []
     const d = createSleepDetector({
       thresholdMs: 30000,
-      onWake: (g) => wakes.push(g),
+      onWake: (g) => {
+        wakes.push(g)
+      },
       clock,
     })
 
@@ -95,5 +103,21 @@ describe("createSleepDetector", () => {
     expect(d.isRunning()).toBe(true)
     d.stop()
     expect(d.isRunning()).toBe(false)
+  })
+
+  it("handles async onWake rejection without crashing", async () => {
+    const clock = fakeClock()
+    let rejected = false
+    const d = createSleepDetector({
+      thresholdMs: 30000,
+      onWake: async () => {
+        rejected = true
+        throw new Error("async wake failed")
+      },
+      clock,
+    })
+    clock.wall += 50000
+    expect(() => d.poll()).not.toThrow()
+    expect(rejected).toBe(true)
   })
 })

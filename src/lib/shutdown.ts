@@ -50,6 +50,10 @@ class ShutdownManager {
 
   private async handleSignal(signal: string): Promise<void> {
     if (this.isShuttingDown) {
+      if (signal !== "programmatic") {
+        console.error(`\nForced exit on repeated ${signal}.`)
+        process.exit(1)
+      }
       return
     }
     this.isShuttingDown = true
@@ -72,6 +76,7 @@ class ShutdownManager {
         // Log error but still exit
         console.error(`Error during shutdown (${signal}):`, error)
         process.exit(1)
+        return
       } finally {
         // Normal-completion path: clear the failsafe now that the handler
         // returned. The catch-block path is past the point of needing cleanup

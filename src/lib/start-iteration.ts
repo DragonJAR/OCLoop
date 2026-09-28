@@ -111,6 +111,8 @@ export interface IterationDeps {
   refreshPlan: () => Promise<void>
   /** Plan-complete summary reader (best-effort; may throw). */
   getPlanCompleteSummary: (planPath: string) => Promise<string | null>
+  /** Optional callback or scheduler when an eval requires a retry. */
+  scheduleRetry?: () => void
 }
 
 /** Why `runIteration` returned, for assertion. */
@@ -129,6 +131,16 @@ export type IterationResult =
 export async function runIteration(deps: IterationDeps): Promise<IterationResult> {
   // --- 1. Eval gate ---
   if (!(await deps.runEvalIfPending())) {
+    if (deps.scheduleRetry) {
+      deps.scheduleRetry()
+    } else {
+      setTimeout(() => {
+        const state = deps.loop.state()
+        if (state.type === "running" && state.sessionId === "") {
+          void runIteration(deps)
+        }
+      }, 0)
+    }
     return "eval_retry"
   }
 
@@ -203,7 +215,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   // it and it'd keep running on the server burning tokens. Abort it now and
   // bail before sending the prompt.
   if (getActiveSessionId(deps.loop.state()) !== newSessionId) {
-    return abortOrphanSession(deps.client, newSessionId)
+    return abortOrphanSession(deps.client, newSessionId, deps.loop)
   }
 
   // --- 8. Watchdog baseline for this fresh iteration ---
@@ -211,15 +223,14 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
 
   // --- 9. Record the task for the manifest, then read the prompt ---
   deps.setPendingManifestTask(currentTask)
+  const promptFile = Bun.file(deps.promptPath)
+  if (!(await promptFile.exists())) {
+    throw new Error(deps.t("errPromptNotFound", { path: deps.promptPath }))
+  }
   let promptContent: string
   try {
-    const promptFile = Bun.file(deps.promptPath)
-    if (!(await promptFile.exists())) {
-      throw new Error(deps.t("errPromptNotFound", { path: deps.promptPath }))
-    }
     promptContent = await promptFile.text()
-  } catch (err) {
-    if (err instanceof Error && err.message.startsWith("Error:")) throw err
+  } catch {
     throw new Error(deps.t("errCannotReadFile", { path: deps.promptPath }))
   }
   const taskLabel = currentTask ?? ""
@@ -234,7 +245,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   // Re-check after prompt I/O: the user may have paused while we read the file.
   const st = deps.loop.state()
   if (st.type !== "running" || st.sessionId !== newSessionId) {
-    return abortOrphanSession(deps.client, newSessionId)
+    return abortOrphanSession(deps.client, newSessionId, deps.loop)
   }
   await sendPromptAsync(deps.client, {
     sessionID: newSessionId,
@@ -251,11 +262,15 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
 async function abortOrphanSession(
   client: OpencodeClient,
   sessionId: string,
+  loop?: { state: () => LoopState; dispatch: (action: LoopAction) => void },
 ): Promise<IterationResult> {
   try {
     await abortSession(client, sessionId)
   } catch {
     // Best effort — the session may already be gone.
+  }
+  if (loop && loop.state().type === "pausing") {
+    loop.dispatch({ type: "session_idle" })
   }
   return "orphan_aborted"
 }

@@ -36,6 +36,7 @@ export type FakeProc = {
   unref: () => void
   kill: () => void
   pid: number
+  exited?: Promise<number>
 }
 
 export type SpawnCall = { cmd: string[]; opts: unknown }
@@ -44,6 +45,7 @@ const defaultImpl = (): FakeProc => ({
   unref: () => {},
   kill: () => {},
   pid: 1234,
+  exited: new Promise(() => {}),
 })
 
 /**

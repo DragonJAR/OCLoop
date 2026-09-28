@@ -24,15 +24,17 @@ const INITIAL_TOKENS: SessionTokens = {
   cacheWrite: 0,
 };
 
+/** Sum of all four token categories (input, output, cacheRead, cacheWrite). */
+export function totalDisplayTokens(tokens: SessionTokens): number {
+  return tokens.input + tokens.output + tokens.cacheRead + tokens.cacheWrite;
+}
+
 export function useSessionStats(): UseSessionStatsReturn {
   const [tokens, setTokens] = createSignal<SessionTokens>({ ...INITIAL_TOKENS });
   // Per-task tokens: same stream as `tokens`, zeroed at each iteration start.
   const [taskTokens, setTaskTokens] = createSignal<SessionTokens>({ ...INITIAL_TOKENS });
 
-  const totalTokens = () => {
-    const t = tokens();
-    return t.input + t.output + t.cacheRead + t.cacheWrite;
-  };
+  const totalTokens = () => totalDisplayTokens(tokens());
 
   function addTokens(newTokens: Partial<SessionTokens>) {
     const add = (prev: SessionTokens): SessionTokens => ({

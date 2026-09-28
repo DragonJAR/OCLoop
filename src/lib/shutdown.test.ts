@@ -102,6 +102,29 @@ describe("shutdownManager (Finding 18.2.B)", () => {
     expect(exitCalls).toEqual([0])
   })
 
+  it("W3-09: forces exit(1) when a second OS signal (e.g. SIGINT) arrives during shutdown", async () => {
+    let resolveHandler: () => void = () => {}
+    const handlerPromise = new Promise<void>((r) => {
+      resolveHandler = r
+    })
+    shutdownManager.register(() => handlerPromise)
+
+    // First SIGINT starts shutdown
+    process.emit("SIGINT")
+    expect(exitCalls).toEqual([])
+
+    // Second SIGINT forces exit(1)
+    const origConsoleError = console.error
+    console.error = () => {}
+    try {
+      process.emit("SIGINT")
+      expect(exitCalls).toEqual([1])
+    } finally {
+      console.error = origConsoleError
+      resolveHandler()
+    }
+  })
+
   it("calls process.exit(1) when handler throws", async () => {
     const handler: ShutdownHandler = async () => {
       throw new Error("cleanup blew up")

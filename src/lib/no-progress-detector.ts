@@ -39,12 +39,28 @@ export class NoProgressDetector {
    */
   private evalRetryPending: boolean = false
 
-  constructor(private readonly threshold: number) {
+  constructor(private threshold: number | (() => number)) {
+    const initial = typeof threshold === "function" ? threshold() : threshold
+    if (!Number.isInteger(initial) || initial < 1) {
+      throw new Error(
+        `NoProgressDetector threshold must be a positive integer, got ${initial}`,
+      )
+    }
+  }
+
+  /** Update the threshold dynamically (e.g. on config reload). */
+  setThreshold(threshold: number): void {
     if (!Number.isInteger(threshold) || threshold < 1) {
       throw new Error(
         `NoProgressDetector threshold must be a positive integer, got ${threshold}`,
       )
     }
+    this.threshold = threshold
+  }
+
+  /** Current numeric threshold value. */
+  get currentThreshold(): number {
+    return typeof this.threshold === "function" ? this.threshold() : this.threshold
   }
 
   /**
@@ -86,7 +102,7 @@ export class NoProgressDetector {
    * should halt the loop when this is true.
    */
   isStuck(): boolean {
-    return this.streak >= this.threshold
+    return this.streak >= this.currentThreshold
   }
 
   /**

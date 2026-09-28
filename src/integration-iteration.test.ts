@@ -383,6 +383,46 @@ describe("runIteration", () => {
     // The spacing branch slept ~50ms; allow scheduling slack.
     expect(elapsed).toBeGreaterThanOrEqual(40)
   })
+
+  it("W3-01: eval retry invokes scheduleRetry callback when provided", async () => {
+    let retryScheduled = false
+    const h = makeHarness({ runEvalIfPending: async () => false })
+    h.deps.scheduleRetry = () => {
+      retryScheduled = true
+    }
+    const result = await runIteration(h.deps)
+    expect(result).toBe("eval_retry")
+    expect(retryScheduled).toBe(true)
+  })
+
+  it("W3-02: aborting orphan session while pausing dispatches session_idle to complete pause transition", async () => {
+    const h = makeHarness()
+    // Simulate user pausing after session was created
+    const origCreate = h.deps.client.session.create
+    h.deps.client.session.create = (async (...args: any[]) => {
+      const res = await (origCreate as any)(...args)
+      return res
+    }) as any
+    const origPromptText = Bun.file(h.deps.promptPath).text
+    // Mutate state to pausing during prompt read
+    const origExists = Bun.file(h.deps.promptPath).exists
+    let textRead = false
+    // When prompt file is checked, simulate toggle_pause on the loop
+    const origBunFile = Bun.file
+    // Drive toggle_pause after createSession
+    const origNotify = h.deps.watchdog.notifyIterationStart
+    h.deps.watchdog.notifyIterationStart = () => {
+      origNotify()
+      // Dispatches toggle_pause while in running with non-empty session ID
+      h.deps.loop.dispatch({ type: "toggle_pause" })
+      expect(h.deps.loop.state().type).toBe("pausing")
+    }
+
+    const result = await runIteration(h.deps)
+    expect(result).toBe("orphan_aborted")
+    // W3-02: loop should have received session_idle, transitioning from pausing to paused
+    expect(h.deps.loop.state().type).toBe("paused")
+  })
 })
 
 // getActiveSessionId is imported for parity with the race-guard scenario docs;

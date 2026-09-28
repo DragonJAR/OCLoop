@@ -68,6 +68,8 @@ export interface CooldownApi {
   ) => void
   /** Cancel any pending cooldown timers (resume / quit / server-error). */
   clearTimers: () => void
+  /** Reconcile cooldown deadline after sleep/wake using wall-clock; returns true if resumed. */
+  reconcileWake: (gapMs?: number) => boolean
   /**
    * Debug-only: set the dashboard countdown directly (no timers, no dispatch) so
    * a screenshot preview shows a realistic "retrying in Ns". Called only by the
@@ -78,6 +80,7 @@ export interface CooldownApi {
 
 export function useCooldown(deps: CooldownDeps): CooldownApi {
   let rateLimitAttempts = 0
+  let wallClockResumeAt = 0
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
@@ -91,6 +94,8 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
       clearInterval(cooldownTicker)
       cooldownTicker = null
     }
+    setCooldownRemainingMs(0)
+    wallClockResumeAt = 0
   }
 
   onCleanup(clearTimers)
@@ -155,6 +160,7 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     // Clear stale timers before dispatching so no Solid effect can observe a
     // window where stale timers are still alive after the reducer moved to cooldown.
     clearTimers()
+    wallClockResumeAt = Date.now() + delayMs
 
     deps.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
@@ -168,7 +174,9 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
       setCooldownRemainingMs(remaining)
       if (remaining <= 0) {
         clearInterval(tickerId)
-        cooldownTicker = null
+        if (cooldownTicker === tickerId) {
+          cooldownTicker = null
+        }
       }
     }, 250)
     cooldownTicker = tickerId
@@ -186,6 +194,20 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     }, delayMs)
   }
 
+  function reconcileWake(gapMs = 0): boolean {
+    if (deps.stateType() !== "cooldown") return false
+    const now = Date.now()
+    if (wallClockResumeAt > 0 && now >= wallClockResumeAt) {
+      clearTimers()
+      deps.dispatch({ type: "resume_cooldown" })
+      return true
+    }
+    if (wallClockResumeAt > 0) {
+      setCooldownRemainingMs(Math.max(0, wallClockResumeAt - now))
+    }
+    return false
+  }
+
   return {
     remainingMs: cooldownRemainingMs,
     getAttempts: () => rateLimitAttempts,
@@ -197,6 +219,7 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     },
     enterCooldown,
     clearTimers,
+    reconcileWake,
     previewRemaining: (ms: number) => setCooldownRemainingMs(ms),
   }
 }

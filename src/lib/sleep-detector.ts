@@ -23,7 +23,7 @@ export interface SleepDetectorOptions {
   /** Gap beyond which we conclude the system was suspended (default 30000). */
   thresholdMs?: number
   /** Called when a wake (large wall-clock gap) is detected. */
-  onWake: (gapMs: number) => void
+  onWake: (gapMs: number) => Promise<void> | void
   /** Injectable clock for tests. Defaults to the real system clock. */
   clock?: Clock
 }
@@ -66,7 +66,15 @@ export function createSleepDetector(options: SleepDetectorOptions): SleepDetecto
       // (useWatchdog.ts); mirror that here. The baseline has already been
       // updated above, so a failed wake-handling attempt doesn't re-fire.
       try {
-        options.onWake(gap)
+        const res = options.onWake(gap)
+        if (res && typeof (res as Promise<void>).catch === "function") {
+          (res as Promise<void>).catch((err) => {
+            log.warn("sleep", "onWake async handler threw; wake handling skipped", {
+              gapMs: gap,
+              message: toErrorMessage(err),
+            })
+          })
+        }
       } catch (err) {
         log.warn("sleep", "onWake handler threw; wake handling skipped", {
           gapMs: gap,

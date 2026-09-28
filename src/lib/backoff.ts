@@ -41,9 +41,9 @@ export function computeBackoff(attempt: number, opts: BackoffOptions): number {
     return Math.max(0, Math.round(retryAfterSeconds * 1000))
   }
 
-  const safeAttempt = Math.max(0, Math.floor(attempt))
-  const safeBase = Math.max(0, base)
-  const safeMax = Math.max(0, max)
+  const safeAttempt = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0
+  const safeBase = Number.isFinite(base) ? Math.max(0, base) : 1000
+  const safeMax = Number.isFinite(max) ? Math.max(0, max) : Math.max(safeBase, 30000)
 
   // min(max, base * 2^attempt) — guard against Infinity from large attempts.
   // When uncapped is Infinity (e.g. attempt=100), Number.isFinite catches it

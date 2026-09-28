@@ -269,4 +269,32 @@ describe("NoProgressDetector", () => {
       expect(d.recordIterationStart("task A")).toBe(1)
     })
   })
+
+  describe("dynamic threshold (W3-11)", () => {
+    it("supports dynamic threshold getter function", () => {
+      let t = 2
+      const d = new NoProgressDetector(() => t)
+      d.recordIterationStart("task A")
+      expect(d.isStuck()).toBe(false)
+      d.recordIterationStart("task A")
+      expect(d.isStuck()).toBe(true)
+
+      // Bump threshold dynamically
+      t = 4
+      expect(d.isStuck()).toBe(false)
+      expect(d.currentThreshold).toBe(4)
+    })
+
+    it("supports setThreshold method", () => {
+      const d = new NoProgressDetector(2)
+      d.recordIterationStart("task A")
+      d.recordIterationStart("task A")
+      expect(d.isStuck()).toBe(true)
+
+      d.setThreshold(5)
+      expect(d.isStuck()).toBe(false)
+      expect(d.currentThreshold).toBe(5)
+      expect(() => d.setThreshold(0)).toThrow(/positive integer/)
+    })
+  })
 })

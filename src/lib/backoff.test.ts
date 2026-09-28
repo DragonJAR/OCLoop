@@ -96,4 +96,13 @@ describe("computeBackoff", () => {
       expect(v).toBe(0)
     })
   })
+
+  describe("NaN robustness (W3-12)", () => {
+    it("safely handles NaN in attempt, base, or max", () => {
+      expect(Number.isFinite(computeBackoff(Number.NaN, { base: 1000, max: 30000 }))).toBe(true)
+      expect(Number.isFinite(computeBackoff(0, { base: Number.NaN, max: 30000 }))).toBe(true)
+      expect(Number.isFinite(computeBackoff(0, { base: 1000, max: Number.NaN }))).toBe(true)
+      expect(Number.isFinite(computeBackoff(Number.NaN, { base: Number.NaN, max: Number.NaN }))).toBe(true)
+    })
+  })
 })
