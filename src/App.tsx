@@ -378,6 +378,7 @@ function AppContent(props: AppProps) {
 
   // Active agent
   const [activeAgent, setActiveAgent] = createSignal<string | undefined>(props.agent)
+  const [activePlanAgent, setActivePlanAgent] = createSignal<string>(DEFAULT_PLAN_AGENT)
 
   // Track if we've initialized (to prevent double initialization)
   let sessionInitialized = false
@@ -1498,6 +1499,7 @@ function AppContent(props: AppProps) {
       const applyResolved = (r: ResolvedAgentModel) => {
         if (r.agent) setActiveAgent(r.agent)
         if (r.model) setActiveModel(r.model)
+        if (r.planAgent) setActivePlanAgent(r.planAgent)
       }
 
       // Resolve the agent + model once the server is up, gating session start on
@@ -1805,7 +1807,7 @@ function AppContent(props: AppProps) {
       reply = await runOneShotAgent(
         client,
         t("splitPromptTemplate", { task: stuckTask }),
-        { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
+        { agent: activePlanAgent(), model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
       )
       subtasks = parseSubtasksFromReply(reply)
     } catch (err) {
@@ -1851,7 +1853,7 @@ function AppContent(props: AppProps) {
                 subtasks: subtasks.join("\n"),
                 feedback: feedback.trim(),
               }),
-              { agent: DEFAULT_PLAN_AGENT, model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
+              { agent: activePlanAgent(), model: activeModel(), timeoutMs: resilience().decomposeTimeoutMs },
             )
             const next = parseSubtasksFromReply(refined)
             if (next.length > 0) subtasks = next
