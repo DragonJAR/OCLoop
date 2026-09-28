@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -212,7 +212,7 @@ describe("parsePlan", () => {
     expect(result.manual).toBe(0)
     expect(result.blocked).toBe(0)
     expect(result.automatable).toBe(0)
-    expect(result.percentComplete).toBe(100) // edge case: no tasks = 100% complete
+    expect(result.percentComplete).toBe(0) // W2-04: empty plan = 0% complete
   })
 
   it("does not count tasks inside fenced code blocks toward progress (A1)", () => {
@@ -266,7 +266,7 @@ describe("parsePlan", () => {
   // ──────────────────────────────────────────────────────────────────────────
 
   describe("PLAN.md 2.1 — whole-file edge cases", () => {
-    it("empty file → 0 total / 0 in every bucket / 100% (denominator=0, nothing to do)", () => {
+    it("empty file → 0 total / 0 in every bucket / 0% (W2-04, no tasks)", () => {
       const result = parsePlan("")
 
       expect(result).toEqual({
@@ -276,7 +276,7 @@ describe("parsePlan", () => {
         manual: 0,
         blocked: 0,
         automatable: 0,
-        percentComplete: 100,
+        percentComplete: 0,
       })
     })
 
@@ -289,20 +289,20 @@ describe("parsePlan", () => {
 `
       const result = parsePlan(content)
 
-      expect(result.total).toBe(2)
-      expect(result.completed).toBe(0)
-      expect(result.pending).toBe(0)
-      expect(result.manual).toBe(0)
-      expect(result.blocked).toBe(2)
-      expect(result.automatable).toBe(0)
-      expect(result.percentComplete).toBe(100)
+      expect(result).toEqual({
+        total: 2,
+        completed: 0,
+        pending: 0,
+        manual: 0,
+        blocked: 2,
+        automatable: 0,
+        percentComplete: 100,
+      })
     })
 
-    it("file with only bare - [ ] checkboxes (no descriptions) → 0 total / 100%", () => {
+    it("file with only bare - [ ] checkboxes (no descriptions) → 0 total / 0%", () => {
       // Bare - [ ] is classified as not-a-task (no description), so the
-      // total stays 0 and percentComplete stays at 100%. This is the
-      // intended asymmetry: only bare [MANUAL] / [x] / [BLOCKED] count
-      // toward total, not bare - [ ].
+      // total stays 0 and percentComplete stays at 0% (W2-04).
       const content = `
 - [ ]
 - [ ]
@@ -315,7 +315,7 @@ describe("parsePlan", () => {
       expect(result.pending).toBe(0)
       expect(result.manual).toBe(0)
       expect(result.blocked).toBe(0)
-      expect(result.percentComplete).toBe(100)
+      expect(result.percentComplete).toBe(0)
     })
   })
 
@@ -452,7 +452,7 @@ describe("parsePlan", () => {
         manual: 0,
         blocked: 0,
         automatable: 0,
-        percentComplete: 100,
+        percentComplete: 0,
       })
     })
 
@@ -1177,3 +1177,155 @@ describe("replaceFirstPendingTaskWithBlocked", () => {
     )
   })
 })
+
+describe("stripCodeFences (extended)", () => {
+  it("strips CRLF fences correctly", () => {
+    const raw = "```markdown\r\n# Title\r\n- [ ] Task\r\n```"
+    expect(stripCodeFences(raw)).toBe("# Title\r\n- [ ] Task")
+  })
+
+  it("handles language tags with non-alphabetic characters (tsx, c++, json-schema)", () => {
+    expect(stripCodeFences("```c++\nint main() {}\n```")).toBe("int main() {}")
+    expect(stripCodeFences("```tsx\nconst App = () => <div />;\n```")).toBe("const App = () => <div />;")
+    expect(stripCodeFences("```json-schema\n{}\n```")).toBe("{}")
+  })
+
+  it("strips tilde fences ~~~", () => {
+    expect(stripCodeFences("~~~markdown\n# Plan\n~~~")).toBe("# Plan")
+  })
+
+  it("handles outer fences with nested backtick fences", () => {
+    const raw = "````markdown\n```js\nconsole.log(1)\n```\n````"
+    expect(stripCodeFences(raw)).toBe("```js\nconsole.log(1)\n```")
+  })
+
+  it("returns content unchanged when not enclosed in code fences", () => {
+    expect(stripCodeFences("# Plan\n- [ ] Task")).toBe("# Plan\n- [ ] Task")
+  })
+})
+
+describe("splitPlanLinesWithFenceState", () => {
+  it("tracks fence state for nested 4-backtick and 3-backtick blocks", () => {
+    const content = [
+      "````markdown",
+      "```js",
+      "- [ ] fenced js task",
+      "```",
+      "````",
+      "- [ ] outside task",
+    ].join("\n")
+    const lines = splitPlanLinesWithFenceState(content)
+    expect(lines[0].isFenced).toBe(true)
+    expect(lines[0].isFenceDelimiter).toBe(true)
+    expect(lines[1].isFenced).toBe(true)
+    expect(lines[1].isFenceDelimiter).toBe(false)
+    expect(lines[2].isFenced).toBe(true)
+    expect(lines[3].isFenced).toBe(true)
+    expect(lines[3].isFenceDelimiter).toBe(false)
+    expect(lines[4].isFenced).toBe(true)
+    expect(lines[4].isFenceDelimiter).toBe(true)
+    expect(lines[5].isFenced).toBe(false)
+    expect(lines[5].isFenceDelimiter).toBe(false)
+  })
+
+  it("handles tilde code fences", () => {
+    const content = "~~~bash\n- [ ] echo hi\n~~~\n- [ ] real task"
+    const lines = splitPlanLinesWithFenceState(content)
+    expect(lines[0].isFenced).toBe(true)
+    expect(lines[1].isFenced).toBe(true)
+    expect(lines[2].isFenced).toBe(true)
+    expect(lines[3].isFenced).toBe(false)
+  })
+})
+
+describe("parseSubtasksFromReply (extended)", () => {
+  it("skips completed/manual/blocked tasks even with alternative list markers", () => {
+    const reply = [
+      "* [x] already completed",
+      "+ [x] plus completed",
+      "1. [x] numbered completed",
+      "* [MANUAL] manual task",
+      "+ [BLOCKED] blocked task",
+      "* [ ] valid subtask 1",
+      "+ [ ] valid subtask 2",
+      "1. [ ] valid subtask 3",
+    ].join("\n")
+    expect(parseSubtasksFromReply(reply)).toEqual([
+      "valid subtask 1",
+      "valid subtask 2",
+      "valid subtask 3",
+    ])
+  })
+
+  it("handles leading and trailing whitespace per line gracefully", () => {
+    const reply = "  - [ ]   subtask with spaces   \n  * [ ] second subtask  "
+    expect(parseSubtasksFromReply(reply)).toEqual([
+      "subtask with spaces",
+      "second subtask",
+    ])
+  })
+})
+
+describe("replacePendingTaskWithBlocked (bracket sanitization)", () => {
+  it("sanitizes brackets in reason to avoid breaking markdown syntax", () => {
+    const content = "- [ ] task to block"
+    const result = replacePendingTaskWithBlocked(content, "task to block", "timeout [retry: 3]")
+    expect(result).toBe("- [BLOCKED: timeout (retry: 3)] task to block")
+  })
+})
+
+describe("replaceFirstPendingTaskWithSubtasks (target matching and sanitization)", () => {
+  it("matches targetTaskDescription specifically instead of first pending if different", () => {
+    const content = "- [ ] task A\n- [ ] task B\n- [ ] task C"
+    const res = replaceFirstPendingTaskWithSubtasks(content, ["sub B1", "sub B2"], "task B")
+    expect(res).toBe("- [ ] task A\n- [ ] sub B1\n- [ ] sub B2\n- [ ] task C")
+  })
+
+  it("preserves indentation of targeted task when replacing with subtasks", () => {
+    const content = "- [ ] task A\n  - [ ] task B\n- [ ] task C"
+    const res = replaceFirstPendingTaskWithSubtasks(content, ["sub B1", "sub B2"], "task B")
+    expect(res).toBe("- [ ] task A\n  - [ ] sub B1\n  - [ ] sub B2\n- [ ] task C")
+  })
+
+  it("returns null when targetTaskDescription is not found", () => {
+    const content = "- [ ] task A\n- [ ] task B"
+    expect(replaceFirstPendingTaskWithSubtasks(content, ["sub"], "task Z")).toBeNull()
+  })
+
+  it("falls back to first pending when targetTaskDescription is omitted", () => {
+    const content = "- [ ] task A\n- [ ] task B"
+    expect(replaceFirstPendingTaskWithSubtasks(content, ["sub A1"])).toBe("- [ ] sub A1\n- [ ] task B")
+  })
+
+  it("sanitizes subtasks with internal newlines (W2-20)", () => {
+    const content = "- [ ] task A"
+    const res = replaceFirstPendingTaskWithSubtasks(content, ["sub\nmultiline\r\ntask"])
+    expect(res).toBe("- [ ] sub multiline task")
+  })
+})
+
+describe("getEvalRubricForTask (completed tasks)", () => {
+  it("finds eval rubric for completed task (- [x])", () => {
+    const content = [
+      "- [x] completed task",
+      "  - eval: rubric for completed task",
+      "- [ ] pending task",
+      "  - eval: rubric for pending task",
+    ].join("\n")
+    expect(getEvalRubricForTask(content, "completed task")).toBe("rubric for completed task")
+  })
+})
+
+describe("withPlanCompleteTag (structural completeness & CRLF)", () => {
+  it("does not append tag when plan has pending tasks", () => {
+    const content = "- [ ] incomplete task\n"
+    expect(withPlanCompleteTag(content, "summary")).toBe(content)
+  })
+
+  it("preserves CRLF line endings when appending tag", () => {
+    const content = "- [x] completed task\r\n"
+    const tagged = withPlanCompleteTag(content, "all done")
+    expect(tagged).toBe("- [x] completed task\r\n\r\n<plan-complete>all done</plan-complete>\r\n")
+  })
+})
+

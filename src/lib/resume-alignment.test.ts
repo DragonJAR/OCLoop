@@ -74,7 +74,7 @@ describe("describeResumeAlignment — no warning (backward compat + unchanged)",
     // `.loop.log` audit trail records the resume-after-completion.
     expect(
       describeResumeAlignment("task B", "- [x] task A\n- [x] task B"),
-    ).toEqual({ kind: "completed", saved: "task B" })
+    ).toEqual({ kind: "completed", saved: "task B", current: null })
   })
 })
 
@@ -85,7 +85,7 @@ describe("describeResumeAlignment — completed (saved task is now [x])", () => 
     // warning is informational so the user knows the work is done.
     expect(
       describeResumeAlignment("task B", "- [x] task B\n- [ ] task C"),
-    ).toEqual({ kind: "completed", saved: "task B" })
+    ).toEqual({ kind: "completed", saved: "task B", current: "task C" })
   })
   it("detects completion even when a new task was inserted above", () => {
     // Both edits happened: the saved task was marked done AND a new task
@@ -96,7 +96,7 @@ describe("describeResumeAlignment — completed (saved task is now [x])", () => 
         "task B",
         "- [ ] task X\n- [x] task B\n- [ ] task C",
       ),
-    ).toEqual({ kind: "completed", saved: "task B" })
+    ).toEqual({ kind: "completed", saved: "task B", current: "task X" })
   })
 })
 
@@ -205,7 +205,7 @@ describe("describeResumeAlignment — parser-divergence regressions (reuse parse
     // lowercase [x], so a [X] line was missed and reported as 'removed'.
     expect(
       describeResumeAlignment("task B", "- [X] task B\n- [ ] task C"),
-    ).toEqual({ kind: "completed", saved: "task B" })
+    ).toEqual({ kind: "completed", saved: "task B", current: "task C" })
   })
 
   it("classifies as 'completed' when the saved task is [X] and a task was inserted above", () => {
@@ -214,7 +214,7 @@ describe("describeResumeAlignment — parser-divergence regressions (reuse parse
         "task B",
         "- [ ] task X\n- [X] task B\n- [ ] task C",
       ),
-    ).toEqual({ kind: "completed", saved: "task B" })
+    ).toEqual({ kind: "completed", saved: "task B", current: "task X" })
   })
 
   it("reports 'removed' when the saved task was re-tagged [BLOCKED]", () => {
@@ -235,7 +235,7 @@ describe("describeResumeAlignment — parser-divergence regressions (reuse parse
     // completed sub-task was reported as 'removed'.
     expect(
       describeResumeAlignment("nested", "- [ ] top\n  - [x] nested"),
-    ).toEqual({ kind: "completed", saved: "nested" })
+    ).toEqual({ kind: "completed", saved: "nested", current: "top" })
   })
 })
 
@@ -264,6 +264,18 @@ describe("describePlanTransition — expansion vs reorder", () => {
     expect(describePlanTransition("task A", after, before)).toEqual({
       kind: "completed",
       saved: "task A",
+      current: "task A.1a",
+    })
+  })
+
+  it("detects expanded when a task was decomposed/replaced by subtasks (W2-12)", () => {
+    const before = ["task A", "task B"]
+    const after = "- [ ] task A.1\n- [ ] task A.2\n- [ ] task B"
+    expect(describePlanTransition("task A", after, before)).toEqual({
+      kind: "expanded",
+      saved: "task A",
+      current: "task A.1",
+      added: ["task A.1", "task A.2"],
     })
   })
 
@@ -280,7 +292,7 @@ describe("describePlanTransition — expansion vs reorder", () => {
   it("reports completed when the saved task is now [x]", () => {
     expect(
       describePlanTransition("task A", "- [x] task A\n- [ ] task B", ["task A", "task B"]),
-    ).toEqual({ kind: "completed", saved: "task A" })
+    ).toEqual({ kind: "completed", saved: "task A", current: "task B" })
   })
 })
 

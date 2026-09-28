@@ -83,7 +83,9 @@ export function saveLoopState(state: PersistedLoopState): Promise<void> {
   // Capture the generation NOW (at dispatch time). If clearLoopState runs before
   // this save's turn comes, the generation check inside will drop it.
   const myGeneration = clearedGeneration
-  persistChain = persistChain.then(() => writeStateIfNotCleared(state, myGeneration))
+  persistChain = persistChain
+    .catch(() => {})
+    .then(() => writeStateIfNotCleared(state, myGeneration))
   return persistChain
 }
 
@@ -133,8 +135,10 @@ function isPersistedLoopState(p: unknown): p is PersistedLoopState {
 
 /**
  * Load the persisted loop state, or null if absent/invalid/unsupported version.
+ * Synchronized with persistChain so pending saves or clears are completed first.
  */
 export async function loadLoopState(): Promise<PersistedLoopState | null> {
+  await persistChain.catch(() => {})
   try {
     const content = await readFile(statePath(), "utf-8")
     const parsed: unknown = JSON.parse(content)
@@ -154,7 +158,9 @@ export async function loadLoopState(): Promise<PersistedLoopState | null> {
  */
 export function clearLoopState(): Promise<void> {
   clearedGeneration++
-  persistChain = persistChain.then(() => doClear())
+  persistChain = persistChain
+    .catch(() => {})
+    .then(() => doClear())
   return persistChain
 }
 

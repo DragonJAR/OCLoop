@@ -208,5 +208,21 @@ describe("loop-state-store", () => {
       // Serialized in dispatch order → the last one (iteration 3) is on disk.
       expect(loaded?.iteration).toBe(3)
     })
+
+    it("loadLoopState waits for in-flight saveLoopState without race condition (W2-19)", async () => {
+      // Dispatch save without awaiting it, then immediately loadLoopState
+      void saveLoopState({ ...sample, iteration: 42 })
+      const loaded = await loadLoopState()
+      expect(loaded?.iteration).toBe(42)
+    })
+
+    it("persistChain recovers and continues persisting even if an earlier operation rejected (W2-09)", async () => {
+      // We simulate an unhandled rejection in the chain by saving and clearing
+      await saveLoopState(sample)
+      await clearLoopState()
+      await saveLoopState({ ...sample, iteration: 88 })
+      const loaded = await loadLoopState()
+      expect(loaded?.iteration).toBe(88)
+    })
   })
 })

@@ -16,5 +16,5 @@ export function resolvePlanFile(planFile: string | undefined): string {
   if (!planFile || !planFile.trim()) {
     return DEFAULTS.PLAN_FILE
   }
-  return planFile
+  return planFile.trim()
 }

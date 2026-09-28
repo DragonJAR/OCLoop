@@ -23,4 +23,9 @@ describe("resolvePlanFile (Finding 16.3.A)", () => {
     expect(resolvePlanFile("   ")).toBe(DEFAULTS.PLAN_FILE)
     expect(resolvePlanFile("\t\n")).toBe(DEFAULTS.PLAN_FILE)
   })
+
+  it("trims surrounding whitespace from a valid path", () => {
+    expect(resolvePlanFile("  PLAN.md  ")).toBe("PLAN.md")
+    expect(resolvePlanFile("\tplans/weekly.md\n")).toBe("plans/weekly.md")
+  })
 })

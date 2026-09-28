@@ -19,6 +19,7 @@ import type { t as Tfn } from "../lib/i18n"
 import type { ResilienceConfig } from "../lib/config"
 import type { PersistedLoopState } from "../lib/loop-state-store"
 import type { ReconcileResult } from "../lib/api"
+import { createComponent } from "solid-js"
 import { DialogConfirm } from "../ui/DialogConfirm"
 import {
   loadLoopState,
@@ -118,7 +119,13 @@ export function useResume(deps: ResumeDeps): ResumeApi {
       if (resumeAttempt) {
         log.health(resumeAttempt.event, "requested", resumeAttempt.payload)
       }
-      if (persisted && persisted.iteration > 0) {
+      const isResumable = Boolean(
+        persisted &&
+          (persisted.iteration > 0 ||
+            persisted.sessionId !== null ||
+            persisted.stateType === "running"),
+      )
+      if (isResumable && persisted) {
         log.health("resume", "found", {
           iteration: persisted.iteration,
           sessionId: persisted.sessionId,
@@ -178,25 +185,32 @@ export function useResume(deps: ResumeDeps): ResumeApi {
         if (deps.resilience().resume) {
           await doResume(persisted)
         } else {
-          dialog.show(() => (
-            <DialogConfirm
-              title={t("dlgResumeTitle")}
-              message={t("dlgResumeMsg", { iteration: persisted.iteration })}
-              confirmLabel={t("dlgResumeConfirm")}
-              cancelLabel={t("dlgResumeCancel")}
-              onConfirm={() => {
+          dialog.show(() =>
+            createComponent(DialogConfirm, {
+              title: t("dlgResumeTitle"),
+              message: t("dlgResumeMsg", { iteration: persisted.iteration }),
+              confirmLabel: t("dlgResumeConfirm"),
+              cancelLabel: t("dlgResumeCancel"),
+              onConfirm: () => {
                 dialog.clear()
-                void doResume(persisted)
-              }}
-              onCancel={() => {
+                void doResume(persisted).catch((err) => {
+                  log.error("resume", "Failed to resume session", err)
+                })
+              },
+              onCancel: () => {
                 dialog.clear()
-                void clearLoopState()
+                void clearLoopState().catch((err) => {
+                  log.warn("resume", "Failed to clear loop state on cancel", err)
+                })
                 if (deps.run) loop.dispatch({ type: "start" })
-              }}
-            />
-          ))
+              },
+            }),
+          )
         }
         return
+      } else if (persisted) {
+        // Clean up stale non-resumable snapshot so it does not linger as a zombie file
+        void clearLoopState().catch(() => {})
       }
 
       if (deps.run) {

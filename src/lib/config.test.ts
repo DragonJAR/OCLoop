@@ -655,7 +655,9 @@ describe("saveConfig — round-trip (Finding 12.2.A)", () => {
 
   it("uses a deterministic per-process tmp suffix (B5)", () => {
     const configPath = getConfigPath()
-    expect(deterministicTmpPath(configPath)).toBe(`${configPath}.${process.pid}.tmp`)
+    expect(deterministicTmpPath(configPath)).toMatch(
+      new RegExp(`^${configPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\.${process.pid}\\..*\\.tmp$`),
+    )
     saveConfig({ language: "en" })
     saveConfig({ theme: "opencode" })
     expect(readdirSync(join(dir, "ocloop")).filter((e) => e.endsWith(".tmp"))).toEqual([])

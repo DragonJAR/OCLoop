@@ -20,27 +20,67 @@ interface PlanLineState extends PlanLine {
   isFenceDelimiter: boolean
 }
 
-function isMarkdownFenceDelimiter(line: string): boolean {
-  // Markdown code fences can be indented by up to three spaces. The info
-  // string for a backtick fence cannot itself contain backticks, so inline
-  // prose like "use ``` here" is not treated as a whole-file fence boundary.
-  return /^[^\S\r\n]{0,3}`{3,}[^`]*$/.test(line)
+interface ActiveFence {
+  char: "`" | "~"
+  length: number
 }
 
-function splitPlanLinesWithFenceState(content: string): PlanLineState[] {
+function parseOpeningFence(line: string): ActiveFence | null {
+  const m = line.match(/^[^\S\r\n]{0,3}(`{3,}|~{3,})([^`~]*)$/)
+  if (!m) return null
+  const fence = m[1]
+  return { char: fence[0] as "`" | "~", length: fence.length }
+}
+
+function isClosingFence(line: string, active: ActiveFence): boolean {
+  const escapedChar = active.char === "`" ? "`" : "~"
+  const re = new RegExp(`^[^\\S\\r\\n]{0,3}${escapedChar}{${active.length},}\\s*$`)
+  return re.test(line)
+}
+
+export function splitPlanLinesWithFenceState(content: string): PlanLineState[] {
   const lines = splitLines(content)
   const out: PlanLineState[] = []
-  let inFence = false
+  let activeFence: ActiveFence | null = null
+
   for (let index = 0; index < lines.length; index++) {
     const line = lines[index]
-    const isFenceDelimiter = isMarkdownFenceDelimiter(line)
-    out.push({
-      line,
-      index,
-      isFenced: inFence || isFenceDelimiter,
-      isFenceDelimiter,
-    })
-    if (isFenceDelimiter) inFence = !inFence
+    if (activeFence === null) {
+      const opening = parseOpeningFence(line)
+      if (opening !== null) {
+        activeFence = opening
+        out.push({
+          line,
+          index,
+          isFenced: true,
+          isFenceDelimiter: true,
+        })
+      } else {
+        out.push({
+          line,
+          index,
+          isFenced: false,
+          isFenceDelimiter: false,
+        })
+      }
+    } else {
+      if (isClosingFence(line, activeFence)) {
+        activeFence = null
+        out.push({
+          line,
+          index,
+          isFenced: true,
+          isFenceDelimiter: true,
+        })
+      } else {
+        out.push({
+          line,
+          index,
+          isFenced: true,
+          isFenceDelimiter: false,
+        })
+      }
+    }
   }
   return out
 }
@@ -52,15 +92,14 @@ export function planLinesOutsideCodeFences(content: string): PlanLine[] {
 }
 
 /**
- * Strip a surrounding ```fence``` if the model wrapped its output in one.
- * Used by --create-plan to clean the generated plan before saving. Lives here
- * alongside the other plan content transforms (withPlanCompleteTag,
- * replaceFirstPendingTaskWithSubtasks, …).
+ * Strip a surrounding ```fence``` or ~~~fence~~~ if the model wrapped its output in one.
+ * Used by --create-plan to clean the generated plan before saving. Supports CRLF,
+ * tildes, and language tags with non-alphabetic characters (W2-06, W2-07).
  */
 export function stripCodeFences(text: string): string {
   const trimmed = text.trim()
-  const m = trimmed.match(/^```[a-zA-Z]*\n([\s\S]*?)\n```$/)
-  return m ? m[1].trim() : trimmed
+  const m = trimmed.match(/^(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)\r?\n\1$/)
+  return m ? m[2].trim() : trimmed
 }
 
 /**
@@ -214,10 +253,16 @@ export function parsePlan(content: string): PlanProgress {
   // they must leave the denominator — otherwise a fully-resolved plan with
   // blocked items never reaches 100%.
   const denominator = total - manual - blocked
-  // When denominator is 0 (all tasks are MANUAL or BLOCKED), there are no
+  // When denominator is 0 and total > 0 (all tasks are MANUAL or BLOCKED), there are no
   // automatable tasks for the loop to run — it has nothing to do, so 100% is
   // the correct semantic: the plan is complete from the loop's perspective.
-  const percentComplete = denominator > 0 ? Math.round((completed / denominator) * 100) : 100
+  // When total is 0 (empty plan / no tasks), percentComplete is 0 (W2-04).
+  const percentComplete =
+    total === 0
+      ? 0
+      : denominator > 0
+        ? Math.round((completed / denominator) * 100)
+        : 100
 
   return {
     total,
@@ -288,13 +333,16 @@ export function parsePlanComplete(content: string): string | null {
 
 /**
  * Append a `<plan-complete>` tag with `summary` to the end of `content`, but only if
- * one isn't already present (idempotent — reuses parsePlanComplete to detect). Lets
- * the TOOLING write the completion marker deterministically instead of the model.
+ * one isn't already present and the plan is structurally complete (idempotent, C2-12, W2-15).
+ * Lets the TOOLING write the completion marker deterministically instead of the model.
  */
 export function withPlanCompleteTag(content: string, summary: string): string {
   if (parsePlanComplete(content) !== null) return content
-  const base = content.endsWith("\n") ? content : content + "\n"
-  return `${base}\n<plan-complete>${summary}</plan-complete>\n`
+  if (!isStructurallyComplete(parsePlan(content))) return content
+  const isCrlf = content.includes("\r\n")
+  const nl = isCrlf ? "\r\n" : "\n"
+  const base = content.endsWith("\n") ? content : content + nl
+  return `${base}${nl}<plan-complete>${summary}</plan-complete>${nl}`
 }
 
 /**
@@ -443,32 +491,34 @@ export function parseSubtasksFromReply(text: string): string[] {
     // Skip blank lines, markdown headings, and fence delimiters themselves —
     // but DO parse content "inside" a fence: agents often wrap the whole list
     // in a ```markdown block, so the subtasks live between the delimiters.
-    if (!line || line.startsWith("#") || line.startsWith("```")) continue
-    // Canonical form first: `- [ ] desc` (reuse the task parser so the exact
-    // checkbox semantics stay in one place).
-    const task = parseTaskLine(raw)
+    if (!line || line.startsWith("#") || line.startsWith("```") || line.startsWith("~~~")) continue
+
+    // Normalize alternate bullet styles (*, +, 1., 1)) into standard "- [" so parseTaskLine can inspect them (W2-02)
+    const normalizedMarker = raw.replace(/^(\s*)(?:[-*+]|\d+[.)])\s*\[/, "$1- [")
+    const task = parseTaskLine(normalizedMarker)
     if (task.type === "pending" && task.description) {
-      out.push(task.description)
+      const cleanDesc = task.description.replace(/[\r\n]+/g, " ").trim()
+      if (cleanDesc) out.push(cleanDesc)
       continue
     }
     // A completed/manual/blocked checkbox is not a fresh subtask — skip it.
     if (task.type !== "not-a-task") continue
+
     // Lenient: a bullet (-, *, +) or numbered (`1.` / `1)`) list item.
     const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*)$/)
     if (!m) continue
-    // Strip a leftover checkbox if the bullet still carried one (e.g. `* [ ] x`).
-    const desc = m[1].replace(/^\[[ xX]?\]\s*/, "").trim()
+    // If the bullet carried an explicit manual/blocked/done tag that wasn't standard, skip it
+    if (/^\[(?:[xX]|MANUAL|BLOCKED)/i.test(m[1])) continue
+    // Strip a leftover empty checkbox if the bullet still carried one (e.g. `* [ ] x`).
+    const desc = m[1].replace(/^\[\s*\]\s*/, "").replace(/[\r\n]+/g, " ").trim()
     if (desc) out.push(desc)
   }
   return out
 }
 
 /**
- * Replaces the FIRST pending task (`- [ ]`) with `subtasks` rendered as pending
- * lines, preserving the original line's leading indentation. The first pending
- * task is, by construction, the one the loop selects and therefore the one that
- * stalled — so targeting "first pending" is both correct and robust against the
- * task description drifting (no fragile string-equality match).
+ * Replaces the FIRST pending task (`- [ ]`) or a target task matching `targetTaskDescription`
+ * with `subtasks` rendered as pending lines, preserving the original line's leading indentation.
  *
  * Returns the new content, or `null` when there is no pending task to replace
  * or `subtasks` is empty — so the caller can surface a real failure instead of
@@ -480,17 +530,27 @@ export function parseSubtasksFromReply(text: string): string[] {
 export function replaceFirstPendingTaskWithSubtasks(
   content: string,
   subtasks: string[],
+  targetTaskDescription?: string,
 ): string | null {
-  if (subtasks.length === 0) return null
+  const cleanSubtasks = subtasks
+    .map((s) => s.replace(/[\r\n]+/g, " ").trim())
+    .filter(Boolean)
+  if (cleanSubtasks.length === 0) return null
+
   // Normalize endings up front: we rebuild the file with `join("\n")` below,
   // so leaving a `\r` on original lines (CRLF file) would mix `\r\n` and `\n`.
   // Normalizing first guarantees the written file is consistently `\n`.
   const normalized = normalizeLineEndings(content)
   const lines = splitLines(normalized)
   for (const entry of planLinesOutsideCodeFences(normalized)) {
-    if (parseTaskLine(entry.line).type === "pending") {
+    const task = parseTaskLine(entry.line)
+    if (task.type === "pending") {
+      // If a target task description is specified, ensure we match it (C2-11)
+      if (targetTaskDescription && task.description !== targetTaskDescription) {
+        continue
+      }
       const indent = entry.line.match(/^(\s*)/)?.[1] ?? ""
-      const replacement = subtasks.map((s) => `${indent}- [ ] ${s}`)
+      const replacement = cleanSubtasks.map((s) => `${indent}- [ ] ${s}`)
       lines.splice(entry.index, 1, ...replacement)
       return lines.join("\n")
     }
@@ -499,32 +559,28 @@ export function replaceFirstPendingTaskWithSubtasks(
 }
 
 /**
- * Extract the eval rubric declared under a pending task, if any.
+ * Extract the eval rubric declared under a pending or completed task, if any.
  *
  * The rubric is a single sub-bullet of the form `  - eval: <rubric prose>`
- * placed immediately after the `- [ ] <task>` line (and before the next task).
+ * placed immediately after the `- [ ] <task>` or `- [x] <task>` line (and before the next task).
  * That syntax is NOT counted as a task by `parseTaskLine` (it lacks the `- [`
  * checkbox prefix), so it is safe to use as metadata — the plan's task counts
  * are unaffected.
  *
  * Returns the trimmed rubric text, or `null` when the task has no `eval:`
- * sub-bullet (the caller skips the eval in that case). Only the rubric on the
- * FIRST pending task whose description matches `taskDescription` is returned,
- * so a re-read mid-iteration stays stable against later tasks.
- *
- * Pure string scan (mirrors the other readers); the caller owns the file read.
+ * sub-bullet (the caller skips the eval in that case).
  */
 export function getEvalRubricForTask(
   content: string,
   taskDescription: string,
 ): string | null {
   const lineStates = splitPlanLinesWithFenceState(content)
-  // Find the first pending task matching the description.
+  // Find the task matching the description (pending or completed: C2-10).
   let taskLineIdx = -1
   for (const entry of lineStates) {
     if (entry.isFenced) continue
     const task = parseTaskLine(entry.line)
-    if (task.type === "pending" && task.description === taskDescription) {
+    if (task.type !== "not-a-task" && task.description === taskDescription) {
       taskLineIdx = entry.index
       break
     }
@@ -583,7 +639,11 @@ export function replacePendingTaskWithBlocked(
   taskDescription: string,
   reason: string,
 ): string | null {
-  const cleanReason = reason.replace(/[\r\n]+/g, " ").trim()
+  const cleanReason = reason
+    .replace(/[\r\n]+/g, " ")
+    .replace(/\[/g, "(")
+    .replace(/\]/g, ")")
+    .trim()
   const normalized = normalizeLineEndings(content)
   const lines = splitLines(normalized)
   const idx = findPendingLineIndex(normalized, taskDescription)

@@ -146,7 +146,7 @@ export const DEFAULT_RESILIENCE: ResilienceConfig = {
   // is correspondingly slower. Override any one via `--resilience <key>=<ms>`.
   createTimeoutMs: 600_000,
   promptTimeoutMs: 600_000,
-  abortTimeoutMs: 600_000,
+  abortTimeoutMs: 10_000,
   statusTimeoutMs: 600_000,
   pingTimeoutMs: 600_000,
   planTimeoutMs: 1_200_000, // 20 min: a full PLAN.md generation does the most work

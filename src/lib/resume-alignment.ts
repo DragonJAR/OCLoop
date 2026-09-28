@@ -22,6 +22,7 @@ export type PlanTransition =
   | {
       kind: "completed"
       saved: string
+      current: string | null
     }
   | {
       kind: "expanded"
@@ -42,7 +43,7 @@ export type PlanTransition =
 
 /** @deprecated alias — resume warnings use the same shape minus `expanded`. */
 export type ResumeAlignment =
-  | { kind: "completed"; saved: string }
+  | { kind: "completed"; saved: string; current: string | null }
   | { kind: "reordered"; saved: string; current: string }
   | { kind: "removed"; saved: string; current: string | null }
 
@@ -79,7 +80,7 @@ export function describePlanTransition(
 
   const status = findTaskStatusByDescription(planAfter, lastWorkedTask)
   if (status === "completed") {
-    return { kind: "completed", saved: lastWorkedTask }
+    return { kind: "completed", saved: lastWorkedTask, current }
   }
   if (status === "pending") {
     const added = pendingAdded(pendingBefore, planAfter)
@@ -93,8 +94,21 @@ export function describePlanTransition(
     }
     return { kind: "reordered", saved: lastWorkedTask, current: current ?? "" }
   }
-  // missing, manual, blocked, or not-a-task
-  return { kind: "removed", saved: lastWorkedTask, current: current }
+  if (status === "missing") {
+    // When a task is decomposed or replaced by subtasks, lastWorkedTask is no longer
+    // in PLAN.md, but new pending tasks were added (W2-12).
+    const added = pendingAdded(pendingBefore, planAfter)
+    if (added.length > 0) {
+      return {
+        kind: "expanded",
+        saved: lastWorkedTask,
+        current: current ?? "",
+        added,
+      }
+    }
+  }
+  // missing (without newly added tasks), manual, blocked, or not-a-task
+  return { kind: "removed", saved: lastWorkedTask, current }
 }
 
 /**
@@ -106,9 +120,7 @@ export function describeResumeAlignment(
 ): ResumeAlignment | null {
   const t = describePlanTransition(savedTask, planContent, null)
   if (!t) return null
-  if (t.kind === "expanded") {
-    // Without a before-snapshot, treat expansion like reorder for resume warn.
-    return { kind: "reordered", saved: t.saved, current: t.current }
-  }
-  return t
+  // When pendingBefore is null, describePlanTransition never yields 'expanded'
+  // (dead code removed: W2-13).
+  return t as ResumeAlignment
 }
