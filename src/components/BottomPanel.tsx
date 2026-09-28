@@ -2,7 +2,7 @@ import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/ThemeContext"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
-import type { SessionTokens } from "../hooks/useSessionStats"
+import { totalDisplayTokens, type SessionTokens } from "../hooks/useSessionStats"
 import {
   formatDuration,
   formatTokenCount,
@@ -16,20 +16,8 @@ import { formatCost } from "../lib/pricing"
 import { t } from "../lib/i18n"
 import { LabelValue } from "./LabelValue"
 
-/**
- * BottomPanel — the second status box, below the activity log.
- *
- * Shows what the Dashboard can't: the FULL current task (wrapped to as many
- * lines as it needs, never cut) plus run-level ("global") metrics — wall-clock
- * since start, total tokens and throughput.
- *
- * No duplication between bars: the task, total time and tokens live ONLY here;
- * the per-task time, Avg, ETA, progress %, model/agent/iter live ONLY in the top.
- *
- * Responsive: only `layout().short` (few ROWS) forces the single-line fallback —
- * a narrow-but-tall terminal still wraps the whole task (more lines). Metric
- * chips flex-wrap and gate the verbose token breakdown by width.
- */
+export { totalDisplayTokens }
+
 export interface BottomPanelProps {
   /** Full current task text (untruncated). */
   currentTask: string | null
@@ -53,9 +41,9 @@ export function BottomPanel(props: BottomPanelProps) {
   )
 
   const totalTokens = () =>
-    props.tokens.input + props.tokens.output
+    totalDisplayTokens(props.tokens)
   const taskTotal = () =>
-    props.taskTokens.input + props.taskTokens.output
+    totalDisplayTokens(props.taskTokens)
   const rate = () => tokensPerMin(totalTokens(), props.stats.globalElapsedTime())
 
   const tokenBreakdown = () =>
@@ -85,7 +73,7 @@ export function BottomPanel(props: BottomPanelProps) {
         `${t("logTokens").replace(/:\s*$/, "")} ${formatTokenCount(totalTokens())}`,
         `${t("lblCost")}${formatCost(props.cost)}`,
       ],
-      layout().inner,
+      textWidth(),
     )
 
   return (

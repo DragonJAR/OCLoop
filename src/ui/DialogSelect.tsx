@@ -1,4 +1,4 @@
-import { createSignal, createEffect, createMemo, onMount, For, Show } from "solid-js"
+import { createSignal, createEffect, createMemo, onMount, onCleanup, For, Show } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { InputRenderable } from "@opentui/core"
 import fuzzysort from "fuzzysort"
@@ -60,39 +60,40 @@ export function DialogSelect(props: DialogSelectProps) {
   })
   const needsScroll = createMemo(() => filteredOptions().length > MAX_LIST_ROWS)
   let scroll: ScrollBoxRenderable | undefined
+  let pendingReveal = true
 
   let input: InputRenderable | undefined
 
   onMount(() => {
-    setTimeout(() => input?.focus(), 10)
+    const timer = setTimeout(() => {
+      input?.focus()
+      reveal(selectedIndex())
+    }, 10)
+    onCleanup(() => clearTimeout(timer))
   })
 
   // Filter options when search changes
   createEffect(() => {
     const query = search()
     
-    if (props.skipFilter || !query) {
-      setFilteredOptions(props.options)
-      if (props.onFilter) props.onFilter(props.options)
-    } else {
-      const results = fuzzysort.go(query, props.options, {
+    const filtered = props.skipFilter || !query
+      ? props.options
+      : fuzzysort.go(query, props.options, {
         keys: ["title", "category"],
         threshold: -10000,
-      })
-      
-      const filtered = results.map(r => r.obj)
-      setFilteredOptions(filtered)
-      if (props.onFilter) props.onFilter(filtered)
-    }
-    
-    setSelectedIndex(0)
+      }).map(r => r.obj)
+    setFilteredOptions(filtered)
+    props.onFilter?.(filtered)
+
+    const currentIndex = query ? -1 : filtered.findIndex(o => o.value === props.current)
+    const index = Math.max(0, currentIndex)
+    setSelectedIndex(index)
+    pendingReveal = true
     scroll?.scrollTo({ x: 0, y: 0 })
+    reveal(index)
   })
 
-  const moveTo = (index: number) => {
-    setSelectedIndex(index)
-    if (props.onMove) props.onMove(filteredOptions()[index])
-
+  const reveal = (index: number) => {
     if (!scroll) return
 
     const target = scrollTopToRevealIndex({
@@ -105,6 +106,12 @@ export function DialogSelect(props: DialogSelectProps) {
     }
   }
 
+  const moveTo = (index: number) => {
+    setSelectedIndex(index)
+    props.onMove?.(filteredOptions()[index])
+    reveal(index)
+  }
+
   const move = (direction: number) => {
     if (filteredOptions().length === 0) return
     let next = selectedIndex() + direction
@@ -114,6 +121,7 @@ export function DialogSelect(props: DialogSelectProps) {
   }
 
   useKeyboard((key) => {
+    if (key.defaultPrevented) return
     if (key.name === "escape") {
       key.preventDefault()
       props.onClose()
@@ -233,6 +241,14 @@ export function DialogSelect(props: DialogSelectProps) {
         <scrollbox
           ref={(r) => scroll = r}
           maxHeight={listRows()}
+          renderAfter={() => {
+            // Initial layout must finish before scrollbar bounds can accept a
+            // nonzero offset. Timers alone race the renderer's first frame.
+            if (pendingReveal && scroll && scroll.scrollHeight >= filteredOptions().length) {
+              reveal(selectedIndex())
+              pendingReveal = false
+            }
+          }}
           verticalScrollbarOptions={dialogScrollbarOptions(theme(), {
             autoHide: !needsScroll(),
           })}

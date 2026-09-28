@@ -133,6 +133,71 @@ const en = {
   errArgModelArg: "Error: --model requires an argument",
   errArgModelFormat: (p: Params) =>
     `Error: --model expects provider/model (for example openai/gpt-5), got "${p.model}"`,
+  cliHelp: (p: Params) => `
+ocloop ${p.version}
+
+Usage: ocloop [options]
+
+OCLoop is a loop harness that orchestrates opencode to execute tasks from a
+PLAN.md file iteratively. Each iteration runs in an isolated session, with
+the opencode TUI embedded and visible throughout.
+
+Getting started:
+  First time here? Generate a plan interactively, then start the loop:
+    ocloop --create-plan
+    ocloop                 # then press [S] to begin (or: ocloop -r to auto-start)
+
+  Tip: press Ctrl+P in the TUI for the command palette; --lang es switches the UI to Spanish.
+
+Options:
+  -p, --port <number>      OpenCode server port (if omitted, opencode picks 4096 or a random free port)
+  -m, --model <provider/model> Model to use (for example openai/gpt-5)
+  -a, --agent <string>     Agent to use (passed to opencode)
+  -r, --run                Start iterations immediately (default: wait for [S])
+  -c, --create-plan        Interactively generate PLAN.md (model zai-coding-plan/glm-5.2, agent plan)
+  -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
+  --verbose                Enable verbose logging (keyboard events, etc.)
+  --routing                Show the model-routing panel at startup (assign models to heavy/cheap/judge roles)
+  --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
+  --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
+  --lang <en|es>           UI language (default: en; also settable in Ctrl+P; --language is an alias)
+  --resume                 Reconcile a persisted in-flight session on startup
+  --no-caffeinate          Do not keep the system awake while running (macOS)
+  --chaos                  Enable chaos fault-injection (debug only)
+  --resilience <key=value> Override a resilience threshold (repeatable; keys + defaults below)
+  -v, --version            Show version number
+  -h, --help               Show help
+
+Resilience keys (--resilience <key>=<value>, repeatable; defaults shown):
+${p.resilienceKeys}
+
+Config file (~/.config/ocloop/ocloop.json): also sets evals, theme, terminal, scrollbar_visible — see README.
+
+Examples:
+  ocloop                           # Start, wait for [S] to begin
+  ocloop --create-plan             # Generate a PLAN.md interactively, then exit
+  ocloop -r                        # Start iterations immediately
+  ocloop -m opencode/claude-sonnet-4 # Use specific provider/model
+  ocloop -a plan                   # Use specific agent
+  ocloop --plan my-plan.md         # Use custom plan file
+  ocloop --lang es                 # Run the UI in Spanish
+  ocloop -c && ocloop -r           # Generate a plan, then auto-start
+`,
+  cliResilienceTimeouts: "Timeouts (ms)",
+  cliResilienceRates: "Rate limits",
+  cliResilienceSleep: "Sleep/suspend",
+  cliResilienceWatchdog: "Watchdog",
+  cliResilienceLifecycle: "Lifecycle",
+  cliResilienceStuck: "Stuck-task halt",
+  cliResilienceSplit: "Stalled-task split",
+  errTerminalArgsQuote: "Unterminated quote in custom terminal args",
+  errTerminalUrlRequired: "getAttachCommand: url is required",
+  errTerminalSessionRequired: "getAttachCommand: sessionId is required",
+  errTerminalAttachEmpty: "attach command is empty; cannot construct terminal command",
+  errTerminalUnknown: (p: Params) => `Unknown terminal: ${p.name}`,
+  errTerminalPlaceholder: "Custom terminal args must include the {cmd} placeholder",
+  errTerminalCommandNotFound: (p: Params) => `Terminal command not found: ${p.command}`,
+  errTerminalExited: (p: Params) => `Terminal launcher exited with code ${p.code}`,
 
   // --- --resilience parsing errors (CLI) ---
   // Localized like the other argparse errors above so a user passing --lang es
@@ -805,6 +870,69 @@ const es: Record<MessageKey, Msg> = {
   errArgModelArg: "Error: --model requiere un argumento",
   errArgModelFormat: (p) =>
     `Error: --model espera proveedor/modelo (por ejemplo openai/gpt-5), se obtuvo "${p.model}"`,
+  cliHelp: (p) => `
+ocloop ${p.version}
+
+Uso: ocloop [opciones]
+
+OCLoop organiza opencode para ejecutar las tareas de PLAN.md una por una.
+
+Primeros pasos:
+  ocloop --create-plan      Generar un plan de forma interactiva
+  ocloop                    Abrir el panel; pulsar [S] para comenzar
+  ocloop -r                 Iniciar las iteraciones de inmediato
+
+  Pulsa Ctrl+P en la TUI para abrir la paleta de comandos.
+
+Opciones:
+  -p, --port <número>       Puerto del servidor OpenCode (por defecto: automático)
+  -m, --model <proveedor/modelo> Modelo que se utilizará
+  -a, --agent <texto>       Agente enviado a opencode
+  -r, --run                 Iniciar las iteraciones de inmediato
+  -c, --create-plan         Generar PLAN.md de forma interactiva
+  -d, --debug               Modo de depuración sin validar el plan
+  --verbose                 Activar registros detallados
+  --routing                 Mostrar el panel de asignación de modelos
+  --prompt <ruta>           Archivo de instrucciones (por defecto: ${DEFAULTS.PROMPT_FILE})
+  --plan <ruta>             Archivo del plan (por defecto: ${DEFAULTS.PLAN_FILE})
+  --lang <en|es>            Idioma de la interfaz (--language es un alias)
+  --resume                  Reconciliar una sesión guardada
+  --no-caffeinate           No impedir la suspensión del sistema (macOS)
+  --chaos                   Activar inyección de fallos (solo depuración)
+  --resilience <clave=valor> Cambiar un umbral de resiliencia (repetible)
+  -v, --version             Mostrar versión
+  -h, --help                Mostrar ayuda
+
+Claves de resiliencia (--resilience <clave>=<valor>, repetible; valores por defecto):
+${p.resilienceKeys}
+
+Configuración (~/.config/ocloop/ocloop.json): evals, theme, terminal, scrollbar_visible.
+
+Ejemplos:
+  ocloop                           # Abrir y esperar a [S]
+  ocloop --create-plan             # Generar PLAN.md y salir
+  ocloop -r                        # Comenzar de inmediato
+  ocloop -m opencode/claude-sonnet-4 # Usar un modelo concreto
+  ocloop -a plan                   # Usar un agente concreto
+  ocloop --plan mi-plan.md         # Usar otro archivo de plan
+  ocloop --lang es                 # Abrir la interfaz en español
+  ocloop -c && ocloop -r           # Generar el plan y comenzar
+`,
+  cliResilienceTimeouts: "Tiempos límite (ms)",
+  cliResilienceRates: "Límites de frecuencia",
+  cliResilienceSleep: "Reposo/suspensión",
+  cliResilienceWatchdog: "Supervisor",
+  cliResilienceLifecycle: "Ciclo de vida",
+  cliResilienceStuck: "Detención por bloqueo",
+  cliResilienceSplit: "División de tarea detenida",
+  errTerminalArgsQuote: "Comillas sin cerrar en los argumentos del terminal personalizado",
+  errTerminalUrlRequired: "getAttachCommand: se requiere la URL",
+  errTerminalSessionRequired: "getAttachCommand: se requiere el ID de sesión",
+  errTerminalAttachEmpty: "El comando de conexión está vacío; no se puede construir el comando del terminal",
+  errTerminalUnknown: (p) => `Terminal desconocido: ${p.name}`,
+  errTerminalPlaceholder: "Los argumentos del terminal personalizado deben incluir {cmd}",
+  errTerminalCommandNotFound: (p) => `No se encontró el comando del terminal: ${p.command}`,
+  errTerminalExited: (p) => `El lanzador del terminal terminó con código ${p.code}`,
 
   // --- Errores de parseo de --resilience (CLI) — espejos de `en`. REPARAR.md B3. ---
   errResilienceNeedsArg: "Error: --resilience requiere un argumento key=value",

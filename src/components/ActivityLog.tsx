@@ -1,7 +1,8 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, createMemo } from "solid-js";
 import { useTerminalDimensions } from "@opentui/solid";
 import type { ScrollBoxRenderable } from "@opentui/core";
 import { useTheme } from "../context/ThemeContext";
+import { useDialog } from "../context/DialogContext";
 import type { ActivityEvent } from "../hooks/useActivityLog";
 import { formatActivityLine, formatTime, type ColorKey } from "../lib/activity-format";
 import { getLayout } from "../lib/layout";
@@ -40,6 +41,7 @@ export interface ActivityLogProps {
  */
 export function ActivityLog(props: ActivityLogProps) {
   const { theme, unicode } = useTheme();
+  const dialog = useDialog();
   const dimensions = useTerminalDimensions();
   // Message width, derived from the real terminal size (re-runs on resize).
   // This is the SINGLE, width-aware truncation point for log lines — upstream
@@ -66,6 +68,10 @@ export function ActivityLog(props: ActivityLogProps) {
   // still hard-hides it: resetVisibilityControl() re-enables auto, visible=false
   // forces it off. (verticalScrollBar is public; see @opentui/core ScrollBox.)
   let sb: ScrollBoxRenderable | undefined;
+  createEffect(() => {
+    if (dialog.hasDialogs()) sb?.blur();
+    else sb?.focus();
+  });
   createEffect(() => {
     const bar = sb?.verticalScrollBar;
     if (!bar) return;
@@ -113,7 +119,7 @@ export function ActivityLog(props: ActivityLogProps) {
       >
         <For each={props.events}>
           {(event, index) => {
-            const f = formatActivityLine(
+            const f = createMemo(() => formatActivityLine(
               {
                 type: event.type,
                 message: event.message,
@@ -124,7 +130,7 @@ export function ActivityLog(props: ActivityLogProps) {
               },
               contentWidth(),
               unicode(),
-            );
+            ));
 
             return (
               <>
@@ -144,14 +150,14 @@ export function ActivityLog(props: ActivityLogProps) {
                       {formatTime(event.timestamp)}
                     </span>
                     {"  "}
-                    <span style={{ fg: colorOf(f.glyphColor) }}>{f.glyph} </span>
-                    <span style={{ fg: colorOf(f.labelColor) }}>{f.label}</span>
+                    <span style={{ fg: colorOf(f().glyphColor) }}>{f().glyph} </span>
+                    <span style={{ fg: colorOf(f().labelColor) }}>{f().label}</span>
                     <span
                       style={{
                         fg: event.dimmed ? theme().textMuted : theme().text,
                       }}
                     >
-                      {f.text}
+                      {f().text}
                     </span>
                   </text>
                 </box>

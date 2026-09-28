@@ -15,6 +15,9 @@
 
 import {
   createContext,
+  createComputed,
+  createRoot,
+  onCleanup,
   useContext,
   Show,
   type JSX,
@@ -62,12 +65,49 @@ export interface DialogProviderProps {
  */
 export function DialogProvider(props: DialogProviderProps) {
   const value = createDialogController()
+  // Also releases awaiters whose dialog never mounted or is covered by another.
+  onCleanup(value.clear)
 
   return (
     <DialogContext.Provider value={value}>
       {props.children}
     </DialogContext.Provider>
   )
+}
+
+/**
+ * Await a dialog result until its entry is actually removed, not merely hidden
+ * by a newer modal. The detached tracking root survives top-only remounts and
+ * disposes as soon as the result settles. Provider teardown clears the stack.
+ */
+export function showDialogResult<T>(
+  dialog: DialogContextValue,
+  render: (finish: (result: T) => void) => JSX.Element,
+  cancelled: T,
+  mode: "show" | "replace" = "show",
+): Promise<T> {
+  return new Promise((resolve) => {
+    createRoot((dispose) => {
+      let resolved = false
+      const settle = (result: T): boolean => {
+        if (resolved) return false
+        resolved = true
+        dispose()
+        resolve(result)
+        return true
+      }
+      const component: DialogComponent = () => render((result) => {
+        // Settle before pop; removal must not override an accepted result.
+        if (settle(result) && dialog.top() === component) dialog.pop()
+      })
+      dialog[mode](component)
+      if (!resolved) {
+        createComputed(() => {
+          if (!dialog.stack().includes(component)) settle(cancelled)
+        })
+      }
+    })
+  })
 }
 
 /**

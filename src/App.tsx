@@ -275,10 +275,12 @@ function AppContent(props: AppProps) {
 
     const st = loop.state()
     if (st.type === "cooldown") {
-      // Cooldown deadline may have passed while we slept.
-      if (monotonicNow() >= st.resumeAt) {
-        cooldown.clearTimers()
-        loop.dispatch({ type: "resume_cooldown" })
+      // Cooldown deadline may have passed while we slept (W3-04).
+      if (!cooldown.reconcileWake(gapMs)) {
+        if (monotonicNow() >= st.resumeAt) {
+          cooldown.clearTimers()
+          loop.dispatch({ type: "resume_cooldown" })
+        }
       }
     } else {
       // Recover a possibly-missed session.idle. Isolate the async reconcile:
@@ -963,6 +965,7 @@ function AppContent(props: AppProps) {
         "session_idle",
         t("actReconciled", { result }),
       )
+      watchdog.notifyIdle()
       cooldown.resetAttempts()
       loop.dispatch({ type: "session_idle" })
     }

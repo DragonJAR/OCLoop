@@ -109,6 +109,14 @@ function openDebugPrompt(deps: KeybindingDeps): void {
  */
 export function useKeybindings(deps: KeybindingDeps): void {
   useKeyboard((key) => {
+    // Raw-mode Ctrl+C is a key event, not SIGINT. It must work in every state,
+    // including while a modal owns the rest of the keyboard.
+    if (key.ctrl && key.name === "c") {
+      key.preventDefault()
+      void deps.handleQuit()
+      return
+    }
+
     if (deps.verbose) {
       log.debug("keybinding", "Key pressed", {
         key: key.name,
@@ -130,6 +138,9 @@ export function useKeybindings(deps: KeybindingDeps): void {
       key.preventDefault()
       return
     }
+
+    // Modified letters must not fall through to the plain-letter actions.
+    if (key.ctrl || key.meta || key.super || key.hyper) return
 
     // ? — help overlay. Global (any state without an open dialog) so a new user
     // can discover the full keymap in one place.

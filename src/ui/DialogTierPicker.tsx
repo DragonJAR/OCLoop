@@ -13,15 +13,14 @@
  * lost; a single component never has an empty stack, so input is always
  * captured.
  *
- * The `.show()` helper mirrors `DialogConfirm.show` (ui/DialogConfirm.tsx:127):
- * it returns a Promise that settles with the `{ role: "provider/model" }`
- * mapping once the last step is picked, or `{}` on cancel/Esc/unmount. The
- * `resolved` guard + `onUnmount` net prevent the awaiter from ever hanging.
+ * The `.show()` helper returns the chosen mapping, or an empty mapping when
+ * its stack entry is removed. Covering the picker with another modal does not
+ * cancel the pending result.
  */
 
 import { createSignal, Show } from "solid-js"
 import { DialogSelect, type DialogSelectOption } from "./DialogSelect"
-import type { DialogContextValue } from "../context/DialogContext"
+import { showDialogResult, type DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
 
 /** A role the user can assign a model to. */
@@ -46,25 +45,30 @@ export interface DialogTierPickerProps {
   onDone: (mapping: Record<string, string>) => void
 }
 
-/** The canonical three roles, in pick order. */
-export const ROUTING_TIERS: TierRole[] = [
-  {
-    id: "heavy",
-    label: t("routingHeavyLabel"),
-  },
-  {
-    id: "judge",
-    label: t("routingJudgeLabel"),
-  },
-  {
-    id: "cheap",
-    label: t("routingCheapLabel"),
-  },
-]
+/** Canonical roles; translate on access so imports never capture a locale. */
+export function getRoutingTiers(): TierRole[] {
+  return [
+    {
+      id: "heavy",
+      get label() { return t("routingHeavyLabel") },
+    },
+    {
+      id: "judge",
+      get label() { return t("routingJudgeLabel") },
+    },
+    {
+      id: "cheap",
+      get label() { return t("routingCheapLabel") },
+    },
+  ]
+}
+
+// Compatibility for the App consumer: the array is stable, its labels are live.
+export const ROUTING_TIERS = getRoutingTiers()
 
 export function DialogTierPicker(props: DialogTierPickerProps) {
   const [step, setStep] = createSignal(0)
-  // Accumulated mapping across steps. A role not picked (skipped with Esc on
+  // Accumulated mapping across steps. A role not picked (skipped with Tab on
   // its step) simply isn't a key — the consumer falls back to the active model.
   const [mapping, setMapping] = createSignal<Record<string, string>>({})
 
@@ -92,16 +96,17 @@ export function DialogTierPicker(props: DialogTierPickerProps) {
   }
 
   return (
-    <Show when={currentTier()}>
+    <Show when={currentTier()} keyed>
+      {(tier) => (
       <DialogSelect
         title={t("routingStepTitle", {
           n: step() + 1,
           total: props.tiers.length,
-          label: currentTier().label,
+          label: tier.label,
         })}
         placeholder={t("routingPlaceholder")}
         options={props.options}
-        current={mapping()[currentTier().id] ?? currentTier().defaultModel}
+        current={mapping()[tier.id] ?? tier.defaultModel}
         onClose={() => {
           // Esc on the FIRST step = cancel entirely (empty mapping).
           // Esc on a later step = finish with whatever was picked so far.
@@ -114,49 +119,35 @@ export function DialogTierPicker(props: DialogTierPickerProps) {
         keybinds={[
           { label: t("kbSelect"), key: "Enter" },
           { label: t("kbNavigate"), key: "↑/↓" },
-          { label: t("routingSkip"), key: "S", onSelect: skip, bind: "S" },
+          { label: t("routingSkip"), key: "Tab", onSelect: skip, bind: "tab" },
         ]}
         onSelect={(opt) => {
           // DialogSelect stays open after onSelect; we drive the step transition.
           if (opt && opt.value) pick(opt.value)
         }}
       />
+      )}
     </Show>
   )
 }
 
 /**
  * Awaitable helper: show the tier picker and resolve with the mapping.
- * Mirrors DialogConfirm.show's resolved-guard + onUnmount safety net so the
- * awaiter can never hang (external clear/replace/teardown → settle({})).
+ * Uses stack-entry lifetime so clear/replace/teardown also settle the result.
  */
 DialogTierPicker.show = (
   dialog: DialogContextValue,
   tiers: TierRole[],
   options: DialogSelectOption[],
 ): Promise<Record<string, string>> => {
-  return new Promise((resolve) => {
-    let resolved = false
-    const settle = (value: Record<string, string>) => {
-      if (resolved) return
-      resolved = true
-      resolve(value)
-    }
-    dialog.replace(() => (
+  if (tiers.length === 0) return Promise.resolve({})
+  return showDialogResult<Record<string, string>>(dialog, (finish) => (
       <DialogTierPicker
         tiers={tiers}
         options={options}
-        onDone={(mapping) => {
-          // Settle BEFORE clear: clear() unmounts this dialog synchronously,
-          // firing onCleanup -> onUnmount -> settle({}). Settling the real
-          // mapping first makes that a no-op; otherwise "done" would discard the
-          // user's selection and resolve {}.
-          settle(mapping)
-          dialog.clear()
-        }}
+        onDone={finish}
       />
-    ))
-  })
+    ), {}, "replace")
 }
 
 // (No _JsxMarker export needed: the JSX runtime is retained by the

@@ -66,7 +66,10 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     case "server_ready": {
       // Only transition from starting to ready (waiting for user to start)
       if (state.type === "starting") {
-        return { type: "ready" }
+        return {
+          type: "ready",
+          ...(state.iteration !== undefined ? { iteration: state.iteration } : {}),
+        }
       }
       return state
     }
@@ -90,7 +93,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     case "start": {
       // User initiates iterations from ready state
       if (state.type === "ready") {
-        return { type: "running", iteration: 0, sessionId: "" }
+        return { type: "running", iteration: state.iteration ?? 0, sessionId: "" }
       }
       return state
     }
@@ -305,7 +308,7 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
         state.type === "error"
       ) {
         const iterations =
-          "iteration" in state ? state.iteration :
+          "iteration" in state ? (state.iteration ?? 0) :
           state.type === "error" ? (state.lastIteration ?? 0) : 0
         return { type: "complete", iterations, summary: action.summary }
       }
@@ -345,9 +348,12 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
     }
 
     case "retry": {
-      // Retry from error state - go back to starting
+      // Retry from error state - go back to starting, preserving last iteration count
       if (state.type === "error" && state.recoverable) {
-        return { type: "starting" }
+        return {
+          type: "starting",
+          ...(state.lastIteration !== undefined ? { iteration: state.lastIteration } : {}),
+        }
       }
       return state
     }
@@ -471,6 +477,7 @@ export function useLoopState(): UseLoopStateReturn {
     if (s.type === "paused") return s.iteration
     if (s.type === "cooldown") return s.iteration
     if (s.type === "complete") return s.iterations
+    if ("iteration" in s && typeof s.iteration === "number") return s.iteration
     return 0
   })
 

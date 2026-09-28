@@ -8,8 +8,8 @@ export type ErrorSource = "server" | "sse" | "pty" | "api" | "plan"
  * State machine type for the OCLoop harness
  */
 export type LoopState =
-  | { type: "starting" }
-  | { type: "ready" }  // Server ready, waiting for user to start iterations
+  | { type: "starting"; iteration?: number }
+  | { type: "ready"; iteration?: number }  // Server ready, waiting for user to start iterations
   // resumedFromIdle is set on the first `running` reached via iteration_resumed
   // (doResume idle branch). The next iteration_started consumes it: the in-flight
   // session's work was already done in the previous run, so the counter does not

@@ -148,7 +148,7 @@ export function getResolvedTheme(
   themeName: string,
   mode: ThemeMode = "dark"
 ): ThemeColors {
-  const themeDef = themes[themeName] ?? themes[DEFAULT_THEME];
+  const themeDef = isValidTheme(themeName) ? themes[themeName] : themes[DEFAULT_THEME];
   return resolveTheme(themeDef, mode);
 }
 
@@ -156,7 +156,7 @@ export function getResolvedTheme(
  * Check if a theme name is valid
  */
 export function isValidTheme(themeName: string): boolean {
-  return themeName in themes;
+  return Object.hasOwn(themes, themeName);
 }
 
 /**

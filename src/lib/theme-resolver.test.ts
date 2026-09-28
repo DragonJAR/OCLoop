@@ -159,6 +159,15 @@ describe("theme-resolver (Finding 18.2.E)", () => {
     expect(isValidTheme("nonexistent-theme")).toBe(false)
   })
 
+  for (const name of ["toString", "constructor", "__proto__", "hasOwnProperty"]) {
+    it(`rejects inherited theme name ${name} and safely falls back`, () => {
+      expect(isValidTheme(name)).toBe(false)
+      for (const mode of ["dark", "light"] as const) {
+        expect(getResolvedTheme(name, mode)).toEqual(getResolvedTheme("dragonjar", mode))
+      }
+    })
+  }
+
   it("toMonochrome collapses every fg token to text and every bg to background", () => {
     // Pin: when the terminal can't use color (NO_COLOR, TERM=dumb), every
     // semantic token should become the base text/background — color stops

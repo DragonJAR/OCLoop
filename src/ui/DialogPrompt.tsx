@@ -4,7 +4,7 @@ import type { InputRenderable } from "@opentui/core"
 import { Dialog } from "./Dialog"
 import { DialogHeader } from "./DialogControls"
 import { useTheme } from "../context/ThemeContext"
-import { DialogContextValue } from "../context/DialogContext"
+import { showDialogResult, type DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
 
 export interface DialogPromptProps {
@@ -12,7 +12,7 @@ export interface DialogPromptProps {
   onCancel: () => void
   /** Optional header label (defaults to the generic "send prompt" title). */
   title?: string
-  /** Fires on unmount; used by the static .show() Promise safety net. */
+  /** Fires on component unmount, including when covered by another modal. */
   onUnmount?: () => void
 }
 
@@ -24,11 +24,12 @@ export function DialogPrompt(props: DialogPromptProps) {
   onCleanup(() => props.onUnmount?.())
 
   onMount(() => {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (inputRef) {
         inputRef.focus()
       }
     }, 10)
+    onCleanup(() => clearTimeout(timer))
   })
 
   useKeyboard((key) => {
@@ -77,33 +78,17 @@ export function DialogPrompt(props: DialogPromptProps) {
 
 /**
  * Static helper: prompt for a line of text. Resolves the entered text, or `null`
- * if cancelled/dismissed. Settles BEFORE pop so the onUnmount safety net can't
- * override a real submit (see DialogConfirm.show for the rationale).
+ * if its stack entry is removed. Covering the prompt leaves the result pending.
  */
 DialogPrompt.show = (
   dialog: DialogContextValue,
   title?: string,
 ): Promise<string | null> => {
-  return new Promise((resolve) => {
-    let resolved = false
-    const settle = (value: string | null) => {
-      if (resolved) return
-      resolved = true
-      resolve(value)
-    }
-    dialog.show(() => (
-      <DialogPrompt
-        title={title}
-        onSubmit={(text) => {
-          settle(text)
-          dialog.pop()
-        }}
-        onCancel={() => {
-          settle(null)
-          dialog.pop()
-        }}
-        onUnmount={() => settle(null)}
-      />
-    ))
-  })
+  return showDialogResult<string | null>(dialog, (finish) => (
+    <DialogPrompt
+      title={title}
+      onSubmit={finish}
+      onCancel={() => finish(null)}
+    />
+  ), null)
 }

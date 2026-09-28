@@ -1,10 +1,10 @@
-import { createMemo, Show } from "solid-js"
+import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import type { LoopState, PlanProgress } from "../types"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import type { WatchdogHealth } from "../hooks/useWatchdog"
 import { stripMarkdown, truncate, formatDuration } from "../lib/format"
-import { getLayout, FILL_ROW } from "../lib/layout"
+import { getLayout, fitSegments, FILL_ROW } from "../lib/layout"
 import { glyph } from "../lib/glyphs"
 import { t } from "../lib/i18n"
 import { useTheme } from "../context/ThemeContext"
@@ -245,6 +245,34 @@ export function Dashboard(props: DashboardProps) {
     props.isActive ? theme().primary : theme().borderSubtle
   )
 
+  // Reserve both borders and horizontal padding. On small terminals keep
+  // each metric intact instead of letting Yoga squeeze words into columns.
+  const textWidth = () => Math.max(1, dimensions().width - 4)
+  const compactProgress = () => {
+    const p = props.progress
+    if (!p) return ""
+    const total = p.total - p.manual
+    const percent = total === 0 ? 100 : Math.round(Math.min(1, Math.max(0, p.completed / total)) * 100)
+    return fitSegments([
+      `${t("lblTasks")} ${progressText()} ${percent}%`,
+      iteration() > 0 ? `${t("lblIter")} ${iteration()}` : "",
+    ], textWidth())
+  }
+  const compactHints = createMemo(() => {
+    // Keep the primary action and the palette/quit escape routes. The palette
+    // exposes the secondary actions that cannot all fit on this small footer.
+    const hints = keybindHints().filter(h => !["C", "T", "↑/↓", "I"].includes(h.key))
+    const rows: string[] = []
+    for (const hint of hints) {
+      const segment = truncate(`${hint.key}${hint.key ? " " : ""}${hint.desc}`, textWidth())
+      const last = rows.length - 1
+      if (last >= 0 && rows[last].length + 2 + segment.length <= textWidth()) {
+        rows[last] += `  ${segment}`
+      } else rows.push(segment)
+    }
+    return rows
+  })
+
   return (
     <box
       border={true}
@@ -258,85 +286,109 @@ export function Dashboard(props: DashboardProps) {
         paddingRight: 1,
       }}
     >
-      {/* Row 1 — live run state (badge · progress · iter · health). Items spread to
-          fill the width (responsive: more room ⇒ more spacing, no trailing gap). */}
-      <box style={{ ...FILL_ROW }}>
-        <StatusBadge state={props.state} />
+      <Show when={dimensions().width <= 40} fallback={
+        <>
+          {/* Row 1 — live run state (badge · progress · iter · health). Items spread to
+              fill the width (responsive: more room ⇒ more spacing, no trailing gap). */}
+          <box style={{ ...FILL_ROW }}>
+            <StatusBadge state={props.state} />
 
-        {/* Plan progress (key journey signal) — hidden in debug mode. Label + bar
-            grouped so space-between never splits them. */}
-        <Show when={props.progress && props.state.type !== "debug"}>
-          <box style={{ flexDirection: "row" }}>
-            <LabelValue label={t("lblTasks")} value={progressText() ?? ""} valueColor={theme().primary} marginRight={1} />
-            <ProgressIndicator
-              completed={props.progress!.completed}
-              total={props.progress!.total - props.progress!.manual}
-              width={layout().progressWidth}
-            />
+            {/* Plan progress (key journey signal) — hidden in debug mode. Label + bar
+                grouped so space-between never splits them. */}
+            <Show when={props.progress && props.state.type !== "debug"}>
+              <box style={{ flexDirection: "row" }}>
+                <LabelValue label={t("lblTasks")} value={progressText() ?? ""} valueColor={theme().primary} marginRight={1} />
+                <ProgressIndicator
+                  completed={props.progress!.completed}
+                  total={props.progress!.total - props.progress!.manual}
+                  width={layout().progressWidth}
+                />
+              </box>
+            </Show>
+
+            {/* Iteration counter */}
+            <Show when={iteration() > 0}>
+              <LabelValue label={t("lblIter")} value={iteration()} />
+            </Show>
+
+            {/* Watchdog health indicator — dropped on narrow terminals */}
+            <Show when={watchdogIndicator() && !layout().compact}>
+              <text>
+                <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
+                <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> {glyph("dot", unicode())}</span>
+                <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
+              </text>
+            </Show>
           </box>
-        </Show>
 
-        {/* Iteration counter */}
-        <Show when={iteration() > 0}>
-          <LabelValue label={t("lblIter")} value={iteration()} />
-        </Show>
-
-        {/* Watchdog health indicator — dropped on narrow terminals */}
-        <Show when={watchdogIndicator() && !layout().compact}>
-          <text>
-            <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
-            <span style={{ fg: theme()[watchdogIndicator()!.colorKey] }}> {glyph("dot", unicode())}</span>
-            <span style={{ fg: theme().textMuted }}> {watchdogIndicator()!.label}</span>
-          </text>
-        </Show>
-      </box>
-
-      {/* Row 2 — details: static config (model/agent) + current-task timing. marginTop
-          gives a blank line of breathing; model/agent dropped on narrow terminals. */}
-      <box style={{ ...FILL_ROW, marginTop: 1 }}>
-        <Show when={props.model && !layout().compact}>
-          <LabelValue label={t("lblModel")} value={props.model!} />
-        </Show>
-        <Show when={props.agent && !layout().compact}>
-          <LabelValue label={t("lblAgent")} value={props.agent!} />
-        </Show>
-        <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime()).trim()} />
-        {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
-        <Show when={props.stats.averageTime() !== null}>
-          <LabelValue label={t("lblAvg")} value={averageDisplay()} />
-        </Show>
-        <Show when={estimatedDisplay() !== "N/A"}>
-          <LabelValue label={t("lblEta")} value={estimatedDisplay()} />
-        </Show>
-      </box>
-
-      {/* Row 3 — cooldown countdown (only when rate-limited / debug session), so no
-          empty row is reserved when idle. The task lives only in the bottom panel. */}
-      <Show when={cooldownText() || (props.state.type === "debug" && truncatedTask())}>
-        <box style={{ flexDirection: "row", marginTop: 1 }}>
-          <Show
-            when={cooldownText()}
-            fallback={<text><span style={{ fg: theme().textMuted }}>{truncatedTask()}</span></text>}
-          >
-            <text><span style={{ fg: theme().warning }}>{cooldownText()}</span></text>
+          {/* Row 2 — details: static config (model/agent) + current-task timing. marginTop
+              gives a blank line of breathing; model/agent dropped on narrow terminals. */}
+          <box style={{ ...FILL_ROW, marginTop: 1 }}>
+            <Show when={props.model && !layout().compact}>
+              <LabelValue label={t("lblModel")} value={props.model!} />
+            </Show>
+            <Show when={props.agent && !layout().compact}>
+              <LabelValue label={t("lblAgent")} value={props.agent!} />
+            </Show>
+            <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime()).trim()} />
+            {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
+            <Show when={props.stats.averageTime() !== null}>
+              <LabelValue label={t("lblAvg")} value={averageDisplay()} />
+            </Show>
+            <Show when={estimatedDisplay() !== "N/A"}>
+              <LabelValue label={t("lblEta")} value={estimatedDisplay()} />
+            </Show>
+          </box>
+          {/* Row 3 — cooldown countdown (only when rate-limited / debug session), so no
+              empty row is reserved when idle. The task lives only in the bottom panel. */}
+          <Show when={cooldownText() || (props.state.type === "debug" && truncatedTask())}>
+            <box style={{ flexDirection: "row", marginTop: 1 }}>
+              <Show
+                when={cooldownText()}
+                fallback={<text><span style={{ fg: theme().textMuted }}>{truncatedTask()}</span></text>}
+              >
+                <text><span style={{ fg: theme().warning }}>{cooldownText()}</span></text>
+              </Show>
+            </box>
           </Show>
+
+          {/* Row 4 — keybind hints, spread across the width like a footer bar. */}
+          <box style={{ ...FILL_ROW, marginTop: 1 }}>
+            {keybindHints().map((hint) => (
+              <text>
+                <Show when={hint.key}>
+                  <span style={{ fg: theme().text }}>{hint.key}</span>
+                  <span style={{ fg: theme().textMuted }}> {hint.desc}</span>
+                </Show>
+                <Show when={!hint.key}>
+                  <span style={{ fg: theme().textMuted }}>{hint.desc}</span>
+                </Show>
+              </text>
+            ))}
+          </box>
+        </>
+      }>
+        <StatusBadge state={props.state} />
+        <Show when={props.progress && props.state.type !== "debug"}>
+          <text><span style={{ fg: theme().primary }}>{compactProgress()}</span></text>
+        </Show>
+        <text>
+          <span style={{ fg: theme().text }}>{fitSegments([
+            `${t("lblTime")} ${formatDuration(props.stats.elapsedTime()).trim()}`,
+            props.stats.averageTime() !== null ? `${t("lblAvg")} ${averageDisplay()}` : "",
+            estimatedDisplay() !== "N/A" ? `${t("lblEta")} ${estimatedDisplay()}` : "",
+          ], textWidth())}</span>
+        </text>
+        <Show when={cooldownText() || (props.state.type === "debug" && truncatedTask())}>
+          <text><span style={{ fg: theme().textMuted }}>{truncate(cooldownText() ?? truncatedTask() ?? "", textWidth())}</span></text>
+        </Show>
+        <box style={{ flexDirection: "column", marginTop: 1 }}>
+          <For each={compactHints()}>
+            {(line) => <text><span style={{ fg: theme().textMuted }}>{line}</span></text>}
+          </For>
         </box>
       </Show>
 
-      {/* Row 4 — keybind hints, spread across the width like a footer bar. */}
-      <box style={{ ...FILL_ROW, marginTop: 1 }}>
-        {keybindHints().map((hint) => (
-          <text>
-            <Show when={hint.key}>
-              <span style={{ fg: theme().text }}>{hint.key}</span>
-              <span style={{ fg: theme().textMuted }}> {hint.desc}</span>
-            </Show>
-            <Show when={!hint.key}>
-              <span style={{ fg: theme().textMuted }}>{hint.desc}</span>
-            </Show>
-          </text>
-        ))}
-      </box>
     </box>
   )
 }

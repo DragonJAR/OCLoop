@@ -3,7 +3,7 @@ import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "./Dialog"
 import { useTheme } from "../context/ThemeContext"
 import { DialogHeader, DialogButton, dialogScrollbarOptions } from "./DialogControls"
-import { DialogContextValue } from "../context/DialogContext"
+import { showDialogResult, type DialogContextValue } from "../context/DialogContext"
 import { t } from "../lib/i18n"
 
 export interface DialogConfirmProps {
@@ -13,12 +13,8 @@ export interface DialogConfirmProps {
   cancelLabel?: string
   onConfirm?: () => void
   onCancel?: () => void
-  /**
-   * Fires when the component unmounts (the dialog is removed for any reason —
-   * button press, external clear()/replace(), teardown). Used by the static
-   * {@link DialogConfirm.show} Promise helper to settle on dismissal paths that
-   * bypass onConfirm/onCancel, so an awaiter never hangs. Optional for direct
-   * <DialogConfirm> usage.
+  /** Fires on component unmount, including when covered by another modal.
+   * Awaitable results use stack membership rather than this notification.
    */
   onUnmount?: () => void
   /** Dialog width (default 60). */
@@ -33,9 +29,6 @@ export function DialogConfirm(props: DialogConfirmProps) {
   const { theme } = useTheme()
   const [activeButton, setActiveButton] = createSignal<"cancel" | "confirm">("confirm")
 
-  // Release the static .show() Promise if the dialog unmounts without a button
-  // press (external clear/replace/teardown). No-op for direct <DialogConfirm>
-  // usage where onUnmount is undefined.
   onCleanup(() => props.onUnmount?.())
 
   useKeyboard((key) => {
@@ -122,41 +115,13 @@ DialogConfirm.show = (
   message: string,
   options: Partial<Omit<DialogConfirmProps, "title" | "message" | "onConfirm" | "onCancel">> = {}
 ): Promise<boolean> => {
-  return new Promise((resolve) => {
-    // Guard against double-resolve: the button callbacks (true/false) and the
-    // unmount cleanup (false) can race if the dialog is dismissed by an
-    // external clear()/replace()/teardown right as the user clicks. Once
-    // resolved, further calls are no-ops — a Promise only settles once.
-    let resolved = false
-    const settle = (value: boolean) => {
-      if (resolved) return
-      resolved = true
-      resolve(value)
-    }
-    dialog.show(() => (
-      <DialogConfirm
-        title={title}
-        message={message}
-        {...options}
-        onConfirm={() => {
-          // Settle BEFORE pop: pop() unmounts this dialog synchronously
-          // (DialogStack renders only the top via <Show keyed>), which fires
-          // onCleanup -> onUnmount -> settle(false). Settling true first makes
-          // that a no-op; otherwise "confirm" would resolve false.
-          settle(true)
-          dialog.pop()
-        }}
-        onCancel={() => {
-          settle(false)
-          dialog.pop()
-        }}
-        // If the dialog is removed by anything other than the confirm/cancel
-        // buttons (an external dialog.clear()/replace(), app teardown, the
-        // stack being popped by another path), the Promise would otherwise hang
-        // forever. onCleanup fires on unmount in every one of those cases, so
-        // settle as "not confirmed" (false) to release the awaiter.
-        onUnmount={() => settle(false)}
-      />
-    ))
-  })
+  return showDialogResult(dialog, (finish) => (
+    <DialogConfirm
+      title={title}
+      message={message}
+      {...options}
+      onConfirm={() => finish(true)}
+      onCancel={() => finish(false)}
+    />
+  ), false)
 }
