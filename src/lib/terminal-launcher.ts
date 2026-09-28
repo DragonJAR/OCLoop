@@ -9,6 +9,8 @@ import type { TerminalConfig } from "./config"
 import { commandExists, resolveSpawnable } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
+import { t } from "./i18n"
+import { join } from "node:path"
 
 /**
  * A known terminal emulator with its launch configuration
@@ -33,6 +35,7 @@ export interface LaunchResult {
 }
 
 const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
+const EARLY_EXIT_MS = 100
 
 /**
  * List of known terminal emulators with their configurations.
@@ -138,7 +141,7 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
         quote = null
         continue
       }
-      if (quote === '"' && char === "\\") {
+      if (quote === '"' && char === "\\" && process.platform !== "win32") {
         escaping = true
         continue
       }
@@ -158,7 +161,8 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
     }
 
     if (char === "\\") {
-      escaping = true
+      if (process.platform === "win32") value += char
+      else escaping = true
       continue
     }
 
@@ -170,7 +174,7 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
   }
 
   if (quote) {
-    throw new Error("Unterminated quote in custom terminal args")
+    throw new Error(t("errTerminalArgsQuote"))
   }
 
   push()
@@ -179,6 +183,18 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
 
 function isWindowsShellShim(command: string): boolean {
   return process.platform === "win32" && WIN_SHELL_SHIM_RE.test(command)
+}
+
+/** Pass shim path and argv as PowerShell string literals, never as shell code. */
+function windowsShimInvocation(command: string, args: string[]): string[] {
+  const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
+  const script = `$ErrorActionPreference = 'Stop'; & ${[command, ...args].map(literal).join(" ")}; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }`
+  const powershell = join(
+    process.env.SystemRoot ?? "C:\\Windows",
+    "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
+  )
+  return [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+    "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
 }
 
 /**
@@ -207,10 +223,10 @@ export function getAttachCommand(url: string, sessionId: string): string {
  */
 function getAttachCommandArgs(url: string, sessionId: string): string[] {
   if (!url) {
-    throw new Error("getAttachCommand: url is required")
+    throw new Error(t("errTerminalUrlRequired"))
   }
   if (!sessionId) {
-    throw new Error("getAttachCommand: sessionId is required")
+    throw new Error(t("errTerminalSessionRequired"))
   }
   return ["opencode", "attach", url, "--session", sessionId]
 }
@@ -231,7 +247,7 @@ function buildArgs(argsPattern: ArgsPatternToken[], cmdParts: string[]): string[
   // `launchTerminal`. Every entry in KNOWN_TERMINALS carries a `{cmd}` token,
   // so an empty `cmdParts` always reaches this throw.
   if (cmdParts.length === 0) {
-    throw new Error("attach command is empty; cannot construct terminal command")
+    throw new Error(t("errTerminalAttachEmpty"))
   }
 
   // For terminals launched via a wrapper that takes the command as a single
@@ -286,7 +302,7 @@ export async function launchTerminal(
       if (!terminal) {
         return {
           success: false,
-          error: `Unknown terminal: ${config.name}`,
+          error: t("errTerminalUnknown", { name: config.name }),
         }
       }
       command = terminal.command
@@ -305,7 +321,7 @@ export async function launchTerminal(
       if (argsPattern.length === 0) {
         return {
           success: false,
-          error: "Custom terminal args must include the {cmd} placeholder",
+          error: t("errTerminalPlaceholder"),
         }
       }
 
@@ -319,7 +335,7 @@ export async function launchTerminal(
       if (!argsPattern.some((arg) => arg.value.includes("{cmd}"))) {
         return {
           success: false,
-          error: "Custom terminal args must include the {cmd} placeholder",
+          error: t("errTerminalPlaceholder"),
         }
       }
       args = buildArgs(argsPattern, cmdParts)
@@ -333,7 +349,7 @@ export async function launchTerminal(
       log.warn("terminal", "Command not found", { command })
       return {
         success: false,
-        error: `Terminal command not found: ${command}`,
+        error: t("errTerminalCommandNotFound", { command }),
       }
     }
 
@@ -343,14 +359,36 @@ export async function launchTerminal(
     // does not SIGHUP the launched terminal. stdio: "ignore" because the terminal
     // owns its own TTY/display and we don't want OCLoop blocked on its output.
     // proc.unref() keeps the parent from waiting on the child.
-    const proc = Bun.spawn([spawnCommand, ...args], {
+    const spawnArgs = isWindowsShellShim(spawnCommand)
+      ? windowsShimInvocation(spawnCommand, args)
+      : [spawnCommand, ...args]
+    const proc = Bun.spawn(spawnArgs, {
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
       detached: true,
       windowsHide: true,
-      ...(isWindowsShellShim(spawnCommand) ? { shell: true } : {}),
     })
+
+    // A wrapper that exits immediately with an error never opened a terminal.
+    // Bound the observation so a running GUI process cannot hold up the TUI.
+    if (proc.exited) {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let earlyExit: number | null
+      try {
+        earlyExit = await Promise.race([
+          proc.exited,
+          new Promise<null>((resolve) => {
+            timer = setTimeout(() => resolve(null), EARLY_EXIT_MS)
+          }),
+        ])
+      } finally {
+        if (timer) clearTimeout(timer)
+      }
+      if (earlyExit !== null && earlyExit !== 0) {
+        return { success: false, error: t("errTerminalExited", { code: earlyExit }) }
+      }
+    }
 
     // Unref the process so it doesn't keep the parent alive
     proc.unref()

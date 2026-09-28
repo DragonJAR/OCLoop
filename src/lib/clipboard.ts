@@ -101,12 +101,14 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
   // via `await proc.exited`, but a throw before that line leaves the handle
   // dangling until GC. Kill + await the exit best-effort so we never leak.
   let proc: ReturnType<typeof Bun.spawn> | null = null
+  let stderrRead: Promise<string> | null = null
   try {
     proc = Bun.spawn([tool.command, ...tool.args], {
       stdin: "pipe",
       stdout: "ignore",
       stderr: "pipe",
     });
+    stderrRead = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
 
     // Write text to stdin, awaiting the flush + close so the child receives
     // the full payload before we wait on its exit (avoids truncation/hangs).
@@ -119,13 +121,14 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      const stderr = await new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+      const stderr = await stderrRead;
       return {
         success: false,
         error: stderr.trim() || t("errClipboardFailed", { code: String(exitCode), stderr: "" }),
       };
     }
 
+    await stderrRead;
     return { success: true };
   } catch (err) {
     // Reap the child if it's still around (e.g. write threw before we awaited
@@ -136,11 +139,11 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
       try { proc.kill(); } catch { /* already dead */ }
       try { await proc.exited; } catch { /* already dead */ }
     }
+    try { await stderrRead; } catch { /* preserve the original error */ }
     return {
       success: false,
       error: toErrorMessage(err),
     };
   }
 }
-
 

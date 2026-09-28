@@ -36,25 +36,34 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
     resolveSpawnableImpl = defaultResolveSpawnableImpl
   })
 
-  it.skipIf(process.platform !== "darwin")(
+  it(
     "returns pbcopy on darwin when pbcopy is on PATH",
     async () => {
-      commandExistsImpl = async (cmd) => cmd === "pbcopy"
-      expect(await detectClipboardTool()).toEqual({
-        command: "pbcopy",
-        args: [],
-      })
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+      Object.defineProperty(process, "platform", { value: "darwin" })
+      try {
+        commandExistsImpl = async (cmd) => cmd === "pbcopy"
+        expect(await detectClipboardTool()).toEqual({ command: "pbcopy", args: [] })
+      } finally {
+        if (descriptor) Object.defineProperty(process, "platform", descriptor)
+      }
     },
   )
 
-  it.skipIf(process.platform !== "win32")(
+  it(
     "returns clip on win32 when clip is on PATH",
     async () => {
-      commandExistsImpl = async (cmd) => cmd === "clip"
-      expect(await detectClipboardTool()).toEqual({
-        command: "clip",
-        args: [],
-      })
+      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+      Object.defineProperty(process, "platform", { value: "win32" })
+      try {
+        resolveSpawnableImpl = async (cmd) => cmd === "clip" ? String.raw`C:\Windows\System32\clip.exe` : null
+        expect(await detectClipboardTool()).toEqual({
+          command: String.raw`C:\Windows\System32\clip.exe`,
+          args: [],
+        })
+      } finally {
+        if (descriptor) Object.defineProperty(process, "platform", descriptor)
+      }
     },
   )
 
@@ -84,6 +93,40 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       expect(result.error).toContain("clip.exe")
     } else {
       expect(result.error).toMatch(/wl-copy|xclip|xsel/)
+    }
+  })
+
+  it("drains a full stderr stream before waiting for child exit", async () => {
+    commandExistsImpl = async () => true
+    resolveSpawnableImpl = async (cmd) => cmd
+    const originalSpawn = Bun.spawn
+    let finish!: (code: number) => void
+    const exited = new Promise<number>((resolve) => { finish = resolve })
+    let chunks = 0
+    const stderr = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (chunks++ < 80) controller.enqueue(new Uint8Array(4096))
+        else { controller.close(); finish(1) }
+      },
+    })
+    Bun.spawn = (() => ({
+      stdin: { write: async () => 5, end: async () => {} },
+      stderr,
+      exited,
+      kill: () => {},
+    })) as unknown as typeof Bun.spawn
+    let timeout: ReturnType<typeof setTimeout> | undefined
+    try {
+      const result = await Promise.race([
+        copyToClipboard("hello"),
+        new Promise<never>((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("clipboard deadlock")), 1000)
+        }),
+      ])
+      expect(result.success).toBe(false)
+    } finally {
+      if (timeout) clearTimeout(timeout)
+      Bun.spawn = originalSpawn
     }
   })
 })

@@ -8,6 +8,11 @@ import { runCli } from "./cli-runner"
 import { VERSION } from "./cli-args"
 
 describe("runCli", () => {
+  it("runs with a PATH that cannot resolve a bare bun name", async () => {
+    const result = await runCli(["--version"], { env: { PATH: "/definitely-not-a-bin-directory" } })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("ocloop ")
+  })
   it("--version prints the version string on stdout and exits 0", async () => {
     const result = await runCli(["--version"])
     expect(result.exitCode).toBe(0)

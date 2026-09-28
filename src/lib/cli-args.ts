@@ -81,15 +81,15 @@ export function showVersion(): void {
  * a test (cli-args.test.ts) guards against an ADDED key being forgotten here.
  */
 const RESILIENCE_GROUPS: ReadonlyArray<
-  readonly [string, readonly (keyof ResilienceConfig)[]]
+  readonly ["cliResilienceTimeouts" | "cliResilienceRates" | "cliResilienceSleep" | "cliResilienceWatchdog" | "cliResilienceLifecycle" | "cliResilienceStuck" | "cliResilienceSplit", readonly (keyof ResilienceConfig)[]]
 > = [
-  ["Timeouts (ms)", ["createTimeoutMs", "promptTimeoutMs", "abortTimeoutMs", "statusTimeoutMs", "pingTimeoutMs", "planTimeoutMs"]],
-  ["Rate limits", ["backoffBaseMs", "backoffMaxMs", "backoffJitter", "maxRateLimitRetries", "minIterationGapMs"]],
-  ["Sleep/suspend", ["sleepTickMs", "sleepThresholdMs", "caffeinate"]],
-  ["Watchdog", ["watchdogTickMs", "watchdogSuspectMs", "watchdogConfirmMs", "maxRecoveryAttempts"]],
-  ["Lifecycle", ["resume", "chaos", "planDrift"]],
-  ["Stuck-task halt", ["noProgressThreshold"]],
-  ["Stalled-task split", ["decomposeTimeoutMs"]],
+  ["cliResilienceTimeouts", ["createTimeoutMs", "promptTimeoutMs", "abortTimeoutMs", "statusTimeoutMs", "pingTimeoutMs", "planTimeoutMs"]],
+  ["cliResilienceRates", ["backoffBaseMs", "backoffMaxMs", "backoffJitter", "maxRateLimitRetries", "minIterationGapMs"]],
+  ["cliResilienceSleep", ["sleepTickMs", "sleepThresholdMs", "caffeinate"]],
+  ["cliResilienceWatchdog", ["watchdogTickMs", "watchdogSuspectMs", "watchdogConfirmMs", "maxRecoveryAttempts"]],
+  ["cliResilienceLifecycle", ["resume", "chaos", "planDrift"]],
+  ["cliResilienceStuck", ["noProgressThreshold"]],
+  ["cliResilienceSplit", ["decomposeTimeoutMs"]],
 ]
 
 /**
@@ -98,64 +98,15 @@ const RESILIENCE_GROUPS: ReadonlyArray<
 export function showHelp(): void {
   // Enumerate the --resilience keys (grouped) with their live defaults from
   // DEFAULT_RESILIENCE so they're discoverable from the CLI, not just the README.
-  const labelPad = Math.max(...RESILIENCE_GROUPS.map(([label]) => label.length))
+  const labelPad = Math.max(...RESILIENCE_GROUPS.map(([label]) => t(label).length))
   const resilienceKeys = RESILIENCE_GROUPS.map(
     ([label, keys]) =>
-      `  ${label.padEnd(labelPad)}  ${keys
+      `  ${t(label).padEnd(labelPad)}  ${keys
         .map((k) => `${k}=${DEFAULT_RESILIENCE[k]}`)
         .join(", ")}`,
   ).join("\n")
 
-  console.log(`
-ocloop ${VERSION}
-
-Usage: ocloop [options]
-
-OCLoop is a loop harness that orchestrates opencode to execute tasks from a
-PLAN.md file iteratively. Each iteration runs in an isolated session, with
-the opencode TUI embedded and visible throughout.
-
-Getting started:
-  First time here? Generate a plan interactively, then start the loop:
-    ocloop --create-plan
-    ocloop                 # then press [S] to begin (or: ocloop -r to auto-start)
-
-  Tip: press Ctrl+P in the TUI for the command palette; --lang es switches the UI to Spanish.
-
-Options:
-  -p, --port <number>      OpenCode server port (if omitted, opencode picks 4096 or a random free port)
-  -m, --model <provider/model> Model to use (for example openai/gpt-5)
-  -a, --agent <string>     Agent to use (passed to opencode)
-  -r, --run                Start iterations immediately (default: wait for [S])
-  -c, --create-plan        Interactively generate PLAN.md (model zai-coding-plan/glm-5.2, agent plan)
-  -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
-  --verbose                Enable verbose logging (keyboard events, etc.)
-  --routing                Show the model-routing panel at startup (assign models to heavy/cheap/judge roles)
-  --prompt <path>          Path to loop prompt file (default: ${DEFAULTS.PROMPT_FILE})
-  --plan <path>            Path to plan file (default: ${DEFAULTS.PLAN_FILE})
-  --lang <en|es>           UI language (default: en; also settable in Ctrl+P; --language is an alias)
-  --resume                 Reconcile a persisted in-flight session on startup
-  --no-caffeinate          Do not keep the system awake while running (macOS)
-  --chaos                  Enable chaos fault-injection (debug only)
-  --resilience <key=value> Override a resilience threshold (repeatable; keys + defaults below)
-  -v, --version            Show version number
-  -h, --help               Show help
-
-Resilience keys (--resilience <key>=<value>, repeatable; defaults shown):
-${resilienceKeys}
-
-Config file (~/.config/ocloop/ocloop.json): also sets evals, theme, terminal, scrollbar_visible — see README.
-
-Examples:
-  ocloop                           # Start, wait for [S] to begin
-  ocloop --create-plan             # Generate a PLAN.md interactively, then exit
-  ocloop -r                        # Start iterations immediately
-  ocloop -m opencode/claude-sonnet-4 # Use specific provider/model
-  ocloop -a plan                   # Use specific agent
-  ocloop --plan my-plan.md         # Use custom plan file
-  ocloop --lang es                 # Run the UI in Spanish
-  ocloop -c && ocloop -r           # Generate a plan, then auto-start
-`)
+  console.log(t("cliHelp", { version: VERSION, resilienceKeys }))
   process.exit(0)
 }
 
@@ -211,7 +162,7 @@ export function applyResilienceOverride(
       process.exit(1)
     }
     const num = Number(raw)
-    if (!Number.isFinite(num) || !Number.isInteger(num) || num < 0) {
+    if (!Number.isSafeInteger(num) || num < 0) {
       console.error(t("errResilienceInt", { key, raw }))
       process.exit(1)
     }

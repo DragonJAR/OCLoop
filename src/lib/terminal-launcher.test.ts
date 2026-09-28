@@ -357,8 +357,8 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     expect(opts.windowsHide).toBe(true)
   })
 
-  it("uses a shell when a Windows custom terminal resolves to a shell shim", async () => {
-    const shim = String.raw`C:\Users\dev\AppData\Roaming\npm\my-term.cmd`
+  it("uses an encoded PowerShell invocation for a Windows shell shim", async () => {
+    const shim = String.raw`C:\Program Files\my-term.cmd`
     resolveSpawnableImpl = async (cmd) => (cmd === "my-term" ? shim : null)
 
     const result = await withPlatform("win32", async () =>
@@ -370,7 +370,51 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     )
 
     expect(result).toEqual({ success: true })
-    expect(spawnState.calls[0].cmd[0]).toBe(shim)
-    expect((spawnState.calls[0].opts as { shell?: boolean }).shell).toBe(true)
+    const invocation = spawnState.calls[0].cmd
+    expect(invocation[0]).toEndWith("powershell.exe")
+    expect((spawnState.calls[0].opts as { shell?: boolean }).shell).not.toBe(true)
+    const script = Buffer.from(invocation.at(-1)!, "base64").toString("utf16le")
+    expect(script).toContain(`& '${shim}' '-e' 'opencode'`)
+    expect(script).toContain("exit $LASTEXITCODE")
+  })
+
+  it("keeps metacharacters inside a literal argument for a Windows shim", async () => {
+    const shim = String.raw`C:\Program Files\my-term.ps1`
+    resolveSpawnableImpl = async () => shim
+    await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "my-term", args: `-e "{cmd} & whoami"` },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    const invocation = spawnState.calls[0].cmd
+    const script = Buffer.from(invocation.at(-1)!, "base64").toString("utf16le")
+    expect(script).toContain(`'opencode attach http://127.0.0.1:4096 --session ses_abc & whoami'`)
+    expect((spawnState.calls[0].opts as { shell?: boolean }).shell).not.toBe(true)
+  })
+
+  it("preserves Windows backslashes in custom arguments", async () => {
+    resolveSpawnableImpl = async () => "my-term.exe"
+    await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "my-term", args: String.raw`--working-directory C:\Users\Ana -e {cmd}` },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls[0].cmd).toContain(String.raw`C:\Users\Ana`)
+  })
+
+  it("preserves a quoted Windows path with a trailing backslash", async () => {
+    resolveSpawnableImpl = async () => "my-term.exe"
+    await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "my-term", args: String.raw`--working-directory "C:\Program Files\" -e {cmd}` },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls[0].cmd).toContain("C:\\Program Files\\")
+  })
+
+  it("reports a child that exits with an early error", async () => {
+    spawnState.impl = () => ({ unref: () => {}, kill: () => {}, pid: 42,
+      exited: Promise.resolve(3) }) as unknown as ReturnType<typeof spawnState.impl>
+    const result = await launchTerminal({ type: "known", name: "xterm" },
+      "http://127.0.0.1:4096", "ses_abc")
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("3")
   })
 })

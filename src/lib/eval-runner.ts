@@ -74,8 +74,7 @@ function failClosed(raw: string): EvalResult {
  * Strictly parse the judge's reply into an `EvalResult`. Returns fail-closed
  * for anything that is not a well-formed object with the expected fields.
  *
- * `rubricFailures` defaults to `[]` when the judge omits it; `score` defaults
- * to 0. `pass` and `reasoning` are required. We do not coerce: a `pass` that
+ * Every verdict field is required. We do not coerce: a `pass` that
  * is not a boolean is a parse error (fail-closed), not a silent default.
  * Tolerates a ```json``` fence wrapper defensively, though the prompt asks
  * for raw JSON.
@@ -105,20 +104,18 @@ export function parseEvalResult(raw: string): EvalResult {
 
   if (typeof pass !== "boolean") return failClosed(raw)
   if (typeof reasoning !== "string") return failClosed(raw)
-
-  const safeScore =
-    typeof score === "number" && Number.isFinite(score)
-      ? Math.max(0, Math.min(100, score))
-      : 0
-  const safeFailures =
-    Array.isArray(rubricFailures) && rubricFailures.every((f) => typeof f === "string")
-      ? (rubricFailures as string[])
-      : []
+  if (typeof score !== "number" || !Number.isFinite(score) || score < 0 || score > 100) {
+    return failClosed(raw)
+  }
+  if (!Array.isArray(rubricFailures) || !rubricFailures.every((f) => typeof f === "string")) {
+    return failClosed(raw)
+  }
+  if (pass && rubricFailures.length > 0) return failClosed(raw)
 
   return {
     pass,
-    score: safeScore,
-    rubricFailures: safeFailures,
+    score,
+    rubricFailures: rubricFailures as string[],
     reasoning,
   }
 }

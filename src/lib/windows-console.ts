@@ -1,24 +1,43 @@
-import { dlopen, FFIType, ptr } from "bun:ffi"
+import { dlopen, FFIType, ptr, type Pointer } from "bun:ffi"
 
 const STD_INPUT_HANDLE = -10
 const STD_OUTPUT_HANDLE = -11
 const STD_ERROR_HANDLE = -12
 const ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+const ENABLE_VIRTUAL_TERMINAL_INPUT = 0x0200
+const INVALID_HANDLE_VALUE_64 = Number(0xffffffffffffffffn)
 
 let prepared: boolean | null = null
 
-function enableVtOnHandle(
-  getStdHandle: (which: number) => number,
-  getConsoleMode: (handle: number, modePtr: number) => boolean,
-  setConsoleMode: (handle: number, mode: number) => boolean,
+export function enableVtOnHandle(
+  getStdHandle: (which: number) => Pointer | null,
+  getConsoleMode: (handle: Pointer, modePtr: Pointer) => boolean,
+  setConsoleMode: (handle: Pointer, mode: number) => boolean,
   which: number,
-): void {
+): boolean {
   const handle = getStdHandle(which)
-  if (handle === 0 || handle === 0xffffffff) return
+  if (handle === null || handle === 0 || handle === -1 ||
+      handle === 0xffffffff || handle === INVALID_HANDLE_VALUE_64) return false
 
   const modeBuf = new Uint32Array(1)
-  if (!getConsoleMode(handle, ptr(modeBuf))) return
-  setConsoleMode(handle, modeBuf[0]! | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+  if (!getConsoleMode(handle, ptr(modeBuf))) return false
+  const flag = which === STD_INPUT_HANDLE
+    ? ENABLE_VIRTUAL_TERMINAL_INPUT
+    : ENABLE_VIRTUAL_TERMINAL_PROCESSING
+  return setConsoleMode(handle, modeBuf[0]! | flag)
+}
+
+export function prepareConsoleHandles(
+  getStdHandle: (which: number) => Pointer | null,
+  getConsoleMode: (handle: Pointer, modePtr: Pointer) => boolean,
+  setConsoleMode: (handle: Pointer, mode: number) => boolean,
+  stderrIsTTY: boolean,
+): boolean {
+  const handles = stderrIsTTY
+    ? [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE, STD_INPUT_HANDLE]
+    : [STD_OUTPUT_HANDLE, STD_INPUT_HANDLE]
+  return handles.every((which) =>
+    enableVtOnHandle(getStdHandle, getConsoleMode, setConsoleMode, which))
 }
 
 /**
@@ -35,18 +54,16 @@ export function ensureWindowsConsoleReady(): boolean {
 
   try {
     const kernel32 = dlopen("kernel32.dll", {
-      GetStdHandle: { args: [FFIType.i32], returns: FFIType.u32 },
-      GetConsoleMode: { args: [FFIType.u32, FFIType.ptr], returns: FFIType.bool },
-      SetConsoleMode: { args: [FFIType.u32, FFIType.u32], returns: FFIType.bool },
+      GetStdHandle: { args: [FFIType.i32], returns: FFIType.ptr },
+      GetConsoleMode: { args: [FFIType.ptr, FFIType.ptr], returns: FFIType.bool },
+      SetConsoleMode: { args: [FFIType.ptr, FFIType.u32], returns: FFIType.bool },
     })
 
     const { GetStdHandle, GetConsoleMode, SetConsoleMode } = kernel32.symbols
-    for (const which of [STD_OUTPUT_HANDLE, STD_ERROR_HANDLE, STD_INPUT_HANDLE]) {
-      enableVtOnHandle(GetStdHandle, GetConsoleMode, SetConsoleMode, which)
-    }
-
-    prepared = true
-    return true
+    prepared = prepareConsoleHandles(
+      GetStdHandle, GetConsoleMode, SetConsoleMode, !!process.stderr.isTTY,
+    )
+    return prepared
   } catch {
     prepared = false
     return false

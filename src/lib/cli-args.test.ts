@@ -2,6 +2,7 @@ import { describe, expect, it } from "bun:test"
 import { parseArgs, preScanLang } from "./cli-args"
 import { DEFAULTS } from "./constants"
 import { DEFAULT_RESILIENCE } from "./config"
+import { setLocale } from "./i18n"
 
 /**
  * parseArgs calls process.exit() on --help/--version and on invalid input.
@@ -106,6 +107,16 @@ describe("parseArgs — defaults & single flags", () => {
 })
 
 describe("parseArgs — help/version exit", () => {
+  it("renders Spanish help when the active locale is es", () => {
+    setLocale("es")
+    try {
+      const help = runParse(["--help"]).logs.join("\n")
+      expect(help).toContain("Uso: ocloop")
+      expect(help).toContain("Límites de frecuencia")
+    } finally {
+      setLocale("en")
+    }
+  })
   it("-h/--help print help and exit 0", () => {
     for (const f of ["-h", "--help"]) {
       const r = runParse([f])
@@ -765,6 +776,10 @@ describe("parseArgs — --resilience key=value edge cases (Phase 1 Task 1.5)", (
 })
 
 describe("parseArgs — --resilience numeric coercion strictness (Finding 1.5.A)", () => {
+  it("rejects an integer greater than Number.MAX_SAFE_INTEGER", () => {
+    const result = runParse(["--resilience", "backoffBaseMs=9007199254740993"])
+    expect(result.exitCode).toBe(1)
+  })
   // FINDING 1.5.A — MEDIUM. The numeric branch of applyResilienceOverride
   // used to coerce via `Number(raw)`, which is permissive: it accepted
   // scientific notation (1e3), hex literals (0x10), decimal-as-integer (1.0),

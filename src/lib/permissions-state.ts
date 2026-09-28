@@ -17,9 +17,11 @@ export function createPermissionsState(
   const [working, setWorking] = createSignal<PermissionsConfig>({ ...initial() })
 
   const toggle = (tool: PermissionTool) => {
-    const value = !working()[tool]
-    setWorking((prev) => ({ ...prev, [tool]: value }))
+    const value = !initial()[tool]
     onToggle(tool, value)
+    // App updates its source synchronously only after saveConfig succeeds.
+    // A failed save leaves that source unchanged, so keep the view in sync.
+    setWorking({ ...initial() })
   }
 
   return { activeIndex, setActiveIndex, working, toggle }

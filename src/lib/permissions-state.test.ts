@@ -19,12 +19,13 @@ describe("createPermissionsState", () => {
   })
 
   it("toggle flips a flag and forwards the new value via onToggle", () => {
-    const [src] = createSignal(DEFAULT_PERMISSIONS)
+    const [src, setSrc] = createSignal(DEFAULT_PERMISSIONS)
     // Capture in an array so TS doesn't narrow a `let` to its initial `null`.
     const calls: Array<{ tool: PermissionTool; value: boolean }> = []
-    const state = createPermissionsState(src, (tool, value) =>
-      calls.push({ tool, value }),
-    )
+    const state = createPermissionsState(src, (tool, value) => {
+      calls.push({ tool, value })
+      setSrc((prev) => ({ ...prev, [tool]: value }))
+    })
 
     expect(state.working().bash).toBe(true)
     state.toggle("bash")
@@ -41,8 +42,10 @@ describe("createPermissionsState", () => {
   })
 
   it("toggle on one tool does not affect the others", () => {
-    const [src] = createSignal(DEFAULT_PERMISSIONS)
-    const state = createPermissionsState(src, () => {})
+    const [src, setSrc] = createSignal(DEFAULT_PERMISSIONS)
+    const state = createPermissionsState(src, (tool, value) => {
+      setSrc((prev) => ({ ...prev, [tool]: value }))
+    })
     state.toggle("edit")
     expect(state.working().edit).toBe(false)
     expect(state.working().bash).toBe(true)
@@ -55,5 +58,12 @@ describe("createPermissionsState", () => {
     expect(state.activeIndex()).toBe(0)
     state.setActiveIndex(2)
     expect(state.activeIndex()).toBe(2)
+  })
+
+  it("keeps the prior visual value when persistence does not update the source", () => {
+    const [src] = createSignal(DEFAULT_PERMISSIONS)
+    const state = createPermissionsState(src, () => { /* failed save */ })
+    state.toggle("bash")
+    expect(state.working().bash).toBe(true)
   })
 })

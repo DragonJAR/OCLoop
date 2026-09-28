@@ -33,7 +33,7 @@ describe("parseEvalResult", () => {
   })
 
   it("tolerates a ```json fenced wrapper", () => {
-    const raw = '```json\n{"pass": true, "score": 100, "reasoning": "ok"}\n```'
+    const raw = '```json\n{"pass": true, "score": 100, "rubricFailures": [], "reasoning": "ok"}\n```'
     const r = parseEvalResult(raw)
     expect(r.pass).toBe(true)
     expect(r.score).toBe(100)
@@ -50,16 +50,16 @@ describe("parseEvalResult", () => {
     expect(parseEvalResult(raw).rubricFailures).toEqual(["x"])
   })
 
-  it("defaults score to 0 when omitted", () => {
+  it("fails closed when score is omitted", () => {
     const raw = JSON.stringify({ pass: true, reasoning: "ok" })
-    expect(parseEvalResult(raw).score).toBe(0)
+    expect(parseEvalResult(raw).rubricFailures).toEqual(["judge_parse_error"])
   })
 
-  it("defaults rubricFailures to [] when omitted or non-string elements", () => {
-    expect(parseEvalResult(JSON.stringify({ pass: true, reasoning: "ok" })).rubricFailures).toEqual([])
+  it("fails closed when rubricFailures is omitted or has non-string elements", () => {
+    expect(parseEvalResult(JSON.stringify({ pass: true, score: 90, reasoning: "ok" })).rubricFailures).toEqual(["judge_parse_error"])
     expect(
-      parseEvalResult(JSON.stringify({ pass: true, reasoning: "ok", rubricFailures: ["a", 3] })).rubricFailures,
-    ).toEqual([])
+      parseEvalResult(JSON.stringify({ pass: true, score: 90, reasoning: "ok", rubricFailures: ["a", 3] })).rubricFailures,
+    ).toEqual(["judge_parse_error"])
   })
 
   it("is fail-closed on malformed JSON", () => {
@@ -88,11 +88,17 @@ describe("parseEvalResult", () => {
     expect(r.rubricFailures).toEqual(["judge_parse_error"])
   })
 
-  it("clamps score to [0, 100]", () => {
-    const hi = parseEvalResult(JSON.stringify({ pass: true, score: 250, reasoning: "x" }))
-    const lo = parseEvalResult(JSON.stringify({ pass: true, score: -5, reasoning: "x" }))
-    expect(hi.score).toBe(100)
-    expect(lo.score).toBe(0)
+  it("fails closed for scores outside [0, 100]", () => {
+    const hi = parseEvalResult(JSON.stringify({ pass: true, score: 250, rubricFailures: [], reasoning: "x" }))
+    const lo = parseEvalResult(JSON.stringify({ pass: true, score: -5, rubricFailures: [], reasoning: "x" }))
+    expect(hi.pass).toBe(false)
+    expect(lo.pass).toBe(false)
+    expect(hi.rubricFailures).toEqual(["judge_parse_error"])
+  })
+
+  it("fails closed when pass conflicts with nonempty rubric failures", () => {
+    const result = parseEvalResult(JSON.stringify({ pass: true, score: 80, rubricFailures: ["missing"], reasoning: "x" }))
+    expect(result.rubricFailures).toEqual(["judge_parse_error"])
   })
 })
 
