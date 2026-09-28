@@ -199,7 +199,7 @@ describe("opencode-server — startOpencodeServer carries permissions into confi
 })
 
 describe("opencode-server — Windows process cleanup", () => {
-  it("kills the spawned process when Windows startup times out", async () => {
+  it("kills the spawned process tree when Windows startup times out", async () => {
     const proc = createFakeProcess(4321)
     nextProc = proc
     resolveCommandPathImpl = async () => String.raw`C:\Program Files\opencode\opencode.exe`
@@ -210,7 +210,7 @@ describe("opencode-server — Windows process cleanup", () => {
       )
     })
 
-    expect(proc.kill).toHaveBeenCalled()
+    expect(spawnCalls.some((c) => c.command === "taskkill" && c.args.includes("4321"))).toBe(true)
   })
 
   it("closes Windows shell shims by killing the process tree", async () => {
@@ -237,6 +237,28 @@ describe("opencode-server — Windows process cleanup", () => {
     expect((spawnCalls[0].opts as { shell?: boolean }).shell).toBe(true)
     expect(spawnCalls[1].command).toBe("taskkill")
     expect(spawnCalls[1].args).toEqual(["/pid", "5555", "/t", "/f"])
+    expect(proc.kill).not.toHaveBeenCalled()
+  })
+
+  it("closes Windows native binaries by killing the process tree", async () => {
+    const proc = createFakeProcess(6666)
+    nextProc = proc
+    resolveCommandPathImpl = async () =>
+      String.raw`C:\Program Files\opencode\opencode.exe`
+
+    await withPlatform("win32", async () => {
+      const serverPromise = startOpencodeServer({ timeout: 1000 })
+      await waitForSpawnCalls(1)
+      proc.stdout.emit(
+        "data",
+        Buffer.from("opencode server listening on http://127.0.0.1:4096\n"),
+      )
+
+      const server = await serverPromise
+      server.close()
+    })
+
+    expect(spawnCalls.some((c) => c.command === "taskkill" && c.args.includes("6666"))).toBe(true)
     expect(proc.kill).not.toHaveBeenCalled()
   })
 })

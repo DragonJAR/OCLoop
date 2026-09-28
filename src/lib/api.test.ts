@@ -27,6 +27,23 @@ describe("assertResponse", () => {
   it("never crashes when both error and response are missing", () => {
     expect(() => assertResponse({}, "op")).toThrow(/op.*no response/)
   })
+
+  it("handles null and undefined result safely", () => {
+    expect(() => assertResponse(null, "op")).toThrow(/op.*no response/)
+    expect(() => assertResponse(undefined, "op")).toThrow(/op.*no response/)
+  })
+
+  it("surfaces server error body detail when response is non-ok and error is present", () => {
+    expect(() =>
+      assertResponse(
+        {
+          error: { message: "Provider anthropic not connected" },
+          response: { ok: false, status: 400, statusText: "Bad Request" },
+        },
+        "create session",
+      ),
+    ).toThrow(/create session.*400 Bad Request - Provider anthropic not connected/)
+  })
 })
 
 describe("model normalization", () => {

@@ -59,7 +59,7 @@ export type ErrorAction =
  * - isAborted: true → returns null. The abort policy is source-specific (SSE
  *   does toggle_pause, the API does not abort through this path) so the call
  *   site keeps ownership.
- * - kind: rate_limit | transient + (running | pausing) → cooldown. retryAfter
+ * - kind: rate_limit | transient + (running | pausing | debug) → cooldown. retryAfter
  *   is propagated for rate_limit; transient leaves it undefined.
  * - kind: rate_limit | transient + other state → null (no live iteration to
  *   retry; the error is dormant).
@@ -81,7 +81,7 @@ export function routeSessionError(
     return null
   }
   if (classified.kind === "rate_limit" || classified.kind === "transient") {
-    if (stateType === "running" || stateType === "pausing") {
+    if (stateType === "running" || stateType === "pausing" || stateType === "debug") {
       // `retryAfter` is only meaningful for `rate_limit`; transient
       // always goes in without one. The original code at App.tsx:561
       // and App.tsx:575 calls `enterCooldown(message, undefined, "transient")`

@@ -1,6 +1,6 @@
 import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import type { Event, Todo } from "@opencode-ai/sdk/v2"
+import { createClient } from "../lib/api"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
 import { computeBackoff } from "../lib/backoff"
@@ -206,16 +206,26 @@ function extractRetryAfter(e: Record<string, any>): number | undefined {
 
   if (typeof e?.message === "string") {
     const m = e.message.match(
-      /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days)?/i,
+      /(?:retry|try again|wait)[^0-9]*([0-9]+(?:\.[0-9]+)?)\s*(ms|msec|msecs|millis|milliseconds|s|sec|secs|seconds|m|min|mins|minutes|h|hr|hrs|hours|d|day|days)?/i,
     )
     if (m) {
       let v = parseFloat(m[1])
       const unit = (m[2] || "s").toLowerCase()
-      // Scale by the captured unit. Branch on the first letter so every alias
-      // of a unit resolves the same way (m*/min/minutes, h*/hours, d*/days).
-      if (unit.startsWith("m")) v *= 60
-      else if (unit.startsWith("h")) v *= 3600
-      else if (unit.startsWith("d")) v *= 86400
+      // Scale by the captured unit. Check millisecond aliases first so they are
+      // not matched as minutes by unit.startsWith("m").
+      if (
+        unit === "ms" ||
+        unit.startsWith("msec") ||
+        unit.startsWith("milli")
+      ) {
+        v /= 1000
+      } else if (unit.startsWith("m")) {
+        v *= 60
+      } else if (unit.startsWith("h")) {
+        v *= 3600
+      } else if (unit.startsWith("d")) {
+        v *= 86400
+      }
       if (Number.isFinite(v) && v >= 0) return v
     }
   }
@@ -247,8 +257,15 @@ export function classifySessionError(rawError: unknown): SessionError {
     message = "Unknown error"
   }
 
+  const statusCode =
+    typeof rawError === "object" && rawError !== null
+      ? (rawError as Record<string, any>).data?.statusCode ??
+        (rawError as Record<string, any>).statusCode ??
+        (rawError as Record<string, any>).status ??
+        (rawError as Record<string, any>).response?.status
+      : undefined
   const kind = typeof rawError === "object" && rawError !== null
-    ? classifyKindWithStatus(name, message, (rawError as Record<string, any>).data?.statusCode)
+    ? classifyKindWithStatus(name, message, statusCode)
     : classifyKind(name, message)
   return {
     message,
@@ -283,6 +300,8 @@ export interface SSEEventHandlers {
   onReasoning?: (part: ReasoningPart) => void
   /** Called when a step finishes */
   onStepFinish?: (part: StepFinishPart) => void
+  /** Called on any streaming progress/alive activity from the active session */
+  onHeartbeat?: () => void
 }
 
 /**
@@ -468,6 +487,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
         if (!part || !part.id) return
 
+        handlers.onHeartbeat?.()
+
         if (part.type === "tool-use" || part.type === "tool") {
           // Only emit when we have input data (running) and haven't seen this tool call yet
           const status = (part as any).state?.status
@@ -529,10 +550,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     log.info("sse", "Connecting", { url: currentUrl, directory })
 
     try {
-      const client = createOpencodeClient({
-        baseUrl: currentUrl,
-        directory,
-      })
+      const client = createClient(currentUrl, directory)
 
       const events = await client.event.subscribe(
         { directory },
@@ -614,6 +632,11 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   function scheduleReconnect(): void {
     if (!shouldReconnect) {
       return
+    }
+
+    if (reconnectTimeout !== null) {
+      clearTimeout(reconnectTimeout)
+      reconnectTimeout = null
     }
 
     // Exponential backoff with full jitter (max 30 seconds). Reuses the

@@ -115,4 +115,36 @@ describe("fetchModelCatalog", () => {
       { id: "anthropic/claude-haiku-4-5", name: "Haiku", provider: "anthropic" },
     ])
   })
+
+  it("handles models provided as an array of objects or strings (W1-11)", async () => {
+    const client = {
+      provider: {
+        list: async () => ({
+          data: {
+            all: [
+              {
+                id: "custom",
+                models: [
+                  { id: "model-alpha", name: "Model Alpha" },
+                  { id: "model-beta" },
+                  "model-gamma",
+                  null,
+                ],
+              },
+            ],
+            connected: ["custom"],
+            default: {},
+          },
+          response: OK,
+        }),
+      },
+    } as unknown as OpencodeClient
+
+    const catalog = await fetchModelCatalog(client)
+    expect(catalog).toEqual([
+      { id: "custom/model-alpha", name: "Model Alpha", provider: "custom" },
+      { id: "custom/model-beta", name: "model-beta", provider: "custom" },
+      { id: "custom/model-gamma", name: "model-gamma", provider: "custom" },
+    ])
+  })
 })

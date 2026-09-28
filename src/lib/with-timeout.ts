@@ -35,21 +35,27 @@ export class TimeoutError extends Error {
 
 type TimeoutTask<T> = Promise<T> | ((signal: AbortSignal) => Promise<T>)
 
+interface CombinedSignal {
+  signal: AbortSignal
+  cleanup: () => void
+}
+
 /**
  * Combine the timeout's signal with an optional caller-supplied signal so the
  * operation aborts if EITHER fires. Falls back gracefully if `AbortSignal.any`
- * is unavailable.
+ * is unavailable. Returns a cleanup function to unsubscribe listeners.
  */
 function combineSignals(
   timeoutSignal: AbortSignal,
   external?: AbortSignal,
-): AbortSignal {
-  if (!external) return timeoutSignal
+): CombinedSignal {
+  const noop = () => {}
+  if (!external) return { signal: timeoutSignal, cleanup: noop }
   const anyFn = (
     AbortSignal as unknown as { any?: (signals: AbortSignal[]) => AbortSignal }
   ).any
   if (typeof anyFn === "function") {
-    return anyFn([timeoutSignal, external])
+    return { signal: anyFn([timeoutSignal, external]), cleanup: noop }
   }
   const controller = new AbortController()
   const relay = (source: AbortSignal) => {
@@ -61,25 +67,27 @@ function combineSignals(
 
   if (timeoutSignal.aborted) {
     relay(timeoutSignal)
-    return controller.signal
+    return { signal: controller.signal, cleanup: noop }
   }
   if (external.aborted) {
     relay(external)
-    return controller.signal
+    return { signal: controller.signal, cleanup: noop }
+  }
+
+  let cleanedUp = false
+  const cleanup = () => {
+    if (cleanedUp) return
+    cleanedUp = true
+    timeoutSignal.removeEventListener("abort", onTimeout)
+    external.removeEventListener("abort", onExternal)
+    controller.signal.removeEventListener("abort", cleanup)
   }
 
   timeoutSignal.addEventListener("abort", onTimeout, { once: true })
   external.addEventListener("abort", onExternal, { once: true })
-  controller.signal.addEventListener(
-    "abort",
-    () => {
-      timeoutSignal.removeEventListener("abort", onTimeout)
-      external.removeEventListener("abort", onExternal)
-    },
-    { once: true },
-  )
+  controller.signal.addEventListener("abort", cleanup, { once: true })
 
-  return controller.signal
+  return { signal: controller.signal, cleanup }
 }
 
 export async function withTimeout<T>(
@@ -91,12 +99,17 @@ export async function withTimeout<T>(
   // Disabled timeout: run the task to completion with no deadline.
   if (!Number.isFinite(ms) || ms <= 0) {
     const controller = new AbortController()
-    const signal = combineSignals(controller.signal, externalSignal)
-    return typeof task === "function" ? task(signal) : task
+    const { signal, cleanup } = combineSignals(controller.signal, externalSignal)
+    try {
+      return await (typeof task === "function" ? task(signal) : task)
+    } finally {
+      cleanup()
+    }
   }
 
   const controller = new AbortController()
   let timer: ReturnType<typeof setTimeout> | undefined
+  let cleanupSignals = () => {}
 
   const timeoutError = new TimeoutError(label, ms)
   const timeout = new Promise<never>((_, reject) => {
@@ -107,12 +120,14 @@ export async function withTimeout<T>(
   })
 
   try {
-    const signal = combineSignals(controller.signal, externalSignal)
-    const work = typeof task === "function" ? task(signal) : task
+    const combined = combineSignals(controller.signal, externalSignal)
+    cleanupSignals = combined.cleanup
+    const work = typeof task === "function" ? task(combined.signal) : task
     return await Promise.race([work, timeout])
   } finally {
     // Timer is always cleared — on success, on task error, and on timeout.
     // No dangling handles keep the process alive.
     if (timer) clearTimeout(timer)
+    cleanupSignals()
   }
 }

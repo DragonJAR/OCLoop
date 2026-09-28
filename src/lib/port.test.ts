@@ -39,4 +39,13 @@ describe("isPortAvailable", () => {
     await close()
     expect(await isPortAvailable(port, HOST)).toBe(true)
   })
+
+  it("returns false for invalid port numbers without throwing", async () => {
+    expect(await isPortAvailable(-1, HOST)).toBe(false)
+    expect(await isPortAvailable(0, HOST)).toBe(false)
+    expect(await isPortAvailable(65536, HOST)).toBe(false)
+    expect(await isPortAvailable(70000, HOST)).toBe(false)
+    expect(await isPortAvailable(NaN, HOST)).toBe(false)
+    expect(await isPortAvailable(4096.5, HOST)).toBe(false)
+  })
 })

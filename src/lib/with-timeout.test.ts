@@ -154,4 +154,33 @@ describe("withTimeout", () => {
     // The fact that this whole file finishes in ~150ms (see other tests)
     // is the indirect evidence that the timer was cleared.
   })
+
+  it("cleans up external signal listeners on task success when AbortSignal.any is unavailable (W1-09)", async () => {
+    const abortSignalAny = AbortSignal as AbortSignalWithAny
+    const originalAny = abortSignalAny.any
+    abortSignalAny.any = undefined
+
+    try {
+      const external = new AbortController()
+      let listenersCount = 0
+      const origAdd = external.signal.addEventListener.bind(external.signal)
+      const origRemove = external.signal.removeEventListener.bind(external.signal)
+
+      external.signal.addEventListener = ((type: string, listener: any, options: any) => {
+        if (type === "abort") listenersCount++
+        return origAdd(type, listener, options)
+      }) as typeof external.signal.addEventListener
+
+      external.signal.removeEventListener = ((type: string, listener: any, options: any) => {
+        if (type === "abort") listenersCount--
+        return origRemove(type, listener, options)
+      }) as typeof external.signal.removeEventListener
+
+      const res = await withTimeout(async () => "done", 500, "cleanup-check", external.signal)
+      expect(res).toBe("done")
+      expect(listenersCount).toBe(0)
+    } finally {
+      abortSignalAny.any = originalAny
+    }
+  })
 })

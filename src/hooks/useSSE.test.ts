@@ -223,5 +223,28 @@ describe("classifySessionError", () => {
       expect(e.kind).toBe("rate_limit")
       expect(e.retryAfter).toBe(2)
     })
+
+    it("extracts retryAfter from message duration in milliseconds (ms)", () => {
+      const e = classifySessionError({ message: "rate limit exceeded, retry in 500ms" })
+      expect(e.kind).toBe("rate_limit")
+      expect(e.retryAfter).toBe(0.5)
+    })
+
+    it("extracts retryAfter from message duration with 'milliseconds' unit", () => {
+      const e = classifySessionError({ message: "rate limit exceeded, wait 1500 milliseconds" })
+      expect(e.kind).toBe("rate_limit")
+      expect(e.retryAfter).toBe(1.5)
+    })
+
+    it("classifies rate limit from top-level status and statusCode", () => {
+      const e1 = classifySessionError({ status: 429, message: "Resource exhausted" })
+      expect(e1.kind).toBe("rate_limit")
+
+      const e2 = classifySessionError({ statusCode: 429, message: "Too many calls" })
+      expect(e2.kind).toBe("rate_limit")
+
+      const e3 = classifySessionError({ response: { status: 429 }, message: "Blocked" })
+      expect(e3.kind).toBe("rate_limit")
+    })
   })
 })

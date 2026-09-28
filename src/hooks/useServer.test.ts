@@ -51,6 +51,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { createRoot } from "solid-js"
+import { __resetClientCacheForTests } from "../lib/api"
 
 // Mutable impls swapped by individual tests. The factory closure makes the
 // reference stable across the cache lifetime of the mocked module.
@@ -123,6 +124,7 @@ async function withServer<T>(
 
 describe("useServer (Finding 18.2.A)", () => {
   beforeEach(() => {
+    __resetClientCacheForTests()
     serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => ({
       url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
       close: () => {},
@@ -242,6 +244,47 @@ describe("useServer (Finding 18.2.A)", () => {
 
       expect(launches).toBe(1)
       expect(server.status()).toBe("ready")
+      dispose()
+    })
+  })
+
+  it("restart() called during a stopped in-flight restart proceeds rather than dropping silently (W1-07)", async () => {
+    await withServer({ port: 4096 }, async (server, dispose) => {
+      let launches = 0
+      let resolveFirstLaunch!: () => void
+      const firstLaunchGate = new Promise<void>((r) => {
+        resolveFirstLaunch = r
+      })
+
+      serverImpl = async (opts) => {
+        launches++
+        if (launches === 1) {
+          await firstLaunchGate
+        }
+        return {
+          url: `http://127.0.0.1:${opts?.port ?? 4096}`,
+          close: () => {},
+        }
+      }
+
+      expect(server.status()).toBe("ready")
+
+      const r1 = server.restart()
+      await tick(5)
+      expect(server.status()).toBe("starting")
+
+      await server.stop()
+      expect(server.status()).toBe("stopped")
+
+      const r2 = server.restart()
+      await tick(2)
+
+      resolveFirstLaunch()
+      await r1
+      await r2
+
+      expect(server.status()).toBe("ready")
+      expect(launches).toBe(2)
       dispose()
     })
   })

@@ -13,9 +13,8 @@
  * fall back to the single resolved model) — it must NEVER crash startup.
  */
 
-import { type OpencodeClient } from "./api"
+import { assertResponse, type OpencodeClient } from "./api"
 import { withTimeout } from "./with-timeout"
-import { assertResponse } from "./api"
 import { log } from "./debug-logger"
 
 /** One pickable model in the routing panel. */
@@ -56,6 +55,28 @@ export async function fetchModelCatalog(
       if (!connected.has(provider.id)) continue
       const models = provider.models
       if (!models || typeof models !== "object") continue
+      if (Array.isArray(models)) {
+        for (const item of models) {
+          if (!item) continue
+          if (typeof item === "string") {
+            entries.push({
+              id: `${provider.id}/${item}`,
+              name: item,
+              provider: provider.id,
+            })
+          } else if (typeof item === "object") {
+            const mId = "id" in item && typeof item.id === "string" ? item.id : undefined
+            if (!mId) continue
+            const name = "name" in item && typeof item.name === "string" ? item.name : mId
+            entries.push({
+              id: `${provider.id}/${mId}`,
+              name,
+              provider: provider.id,
+            })
+          }
+        }
+        continue
+      }
       for (const [modelKey, model] of Object.entries(models)) {
         // modelKey is the model id (e.g. "claude-haiku-4-5"); the canonical
         // "provider/model" composite is provider.id + "/" + modelKey.

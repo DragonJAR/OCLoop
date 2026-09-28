@@ -104,7 +104,7 @@ function isWindowsShellShim(command: string): boolean {
   return WIN_SHELL_SHIM_RE.test(command)
 }
 
-function killServerProcess(proc: ServerProcess, killTree: boolean): void {
+function killServerProcess(proc: ServerProcess, killTree = true): void {
   if (killTree && process.platform === "win32" && proc.pid) {
     try {
       const killer = spawn("taskkill", ["/pid", String(proc.pid), "/t", "/f"], {
@@ -197,7 +197,7 @@ export async function startOpencodeServer(
 
     const rejectStartup = (error: Error, kill: boolean) => {
       if (!settle()) return
-      if (kill) killServerProcess(proc, useShell)
+      if (kill) killServerProcess(proc, true)
       reject(error)
     }
 
@@ -248,5 +248,5 @@ export async function startOpencodeServer(
     merged.signal?.addEventListener("abort", abortHandler)
   })
 
-  return { url, close: () => killServerProcess(proc, useShell) }
+  return { url, close: () => killServerProcess(proc, true) }
 }

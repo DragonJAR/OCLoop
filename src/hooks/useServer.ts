@@ -1,8 +1,7 @@
 import { createSignal, onMount, onCleanup } from "solid-js"
 import { startOpencodeServer, type StartOpencodeServerOptions } from "../lib/opencode-server"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import { withTimeout } from "../lib/with-timeout"
-import { assertResponse, getApiTimeouts } from "../lib/api"
+import { assertResponse, getApiTimeouts, createClient } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
@@ -95,6 +94,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   let serverRef: { url: string; close: () => void } | null = null
   let abortController: AbortController | null = null
   let launchGeneration = 0
+  let inFlightRestart: Promise<void> | null = null
   const launchGate = createLaunchGate()
 
   /**
@@ -199,7 +199,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     if (!current) return false
 
     try {
-      const client = createOpencodeClient({ baseUrl: current })
+      const client = createClient(current)
       const result = await withTimeout(
         (signal) => client.app.agents({}, { signal }),
         getApiTimeouts().ping,
@@ -229,58 +229,77 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Falls back to an ephemeral port if the old one is not yet released.
    */
   async function restart(): Promise<void> {
-    const started = await launchGate.tryRunExclusive(async () => {
-      const generation = ++launchGeneration
-      const preferredPort = serverPort() ?? port ?? 0
-      log.health("server", "restart_begin", { preferredPort })
+    while (inFlightRestart) {
+      await inFlightRestart
+      if (status() === "ready") {
+        return
+      }
+    }
 
-      setStatus("starting")
-      setError(undefined)
-      closeCurrent()
-      setUrl(null)
+    const doRestart = async () => {
+      const started = await launchGate.tryRunExclusive(async () => {
+        const generation = ++launchGeneration
+        const preferredPort = serverPort() ?? port ?? 0
+        log.health("server", "restart_begin", { preferredPort })
 
-      try {
-        const launchedPreferred = await launch(preferredPort, generation)
-        if (!launchedPreferred) {
-          return
-        }
-        log.health("server", "restart_done", { url: url(), port: serverPort() })
-      } catch (errPreferred) {
-        if (generation !== launchGeneration) {
-          return
-        }
-        log.health("server", "restart_retry_ephemeral", {
-          message:
-            errPreferred instanceof Error
-              ? errPreferred.message
-              : String(errPreferred),
-        })
+        setStatus("starting")
+        setError(undefined)
+        closeCurrent()
+        setUrl(null)
+
         try {
-          // Old port may still be held; let the OS pick a fresh one.
-          const launchedEphemeral = await launch(0, generation)
-          if (!launchedEphemeral) {
+          const launchedPreferred = await launch(preferredPort, generation)
+          if (!launchedPreferred) {
             return
           }
-          log.health("server", "restart_done", {
-            url: url(),
-            port: serverPort(),
-            ephemeral: true,
-          })
-        } catch (err) {
+          log.health("server", "restart_done", { url: url(), port: serverPort() })
+        } catch (errPreferred) {
           if (generation !== launchGeneration) {
             return
           }
-          const serverError = err instanceof Error ? err : new Error(String(err))
-          setError(serverError)
-          setStatus("error")
-          serverRef = null
-          log.health("server", "restart_failed", { message: serverError.message })
+          log.health("server", "restart_retry_ephemeral", {
+            message:
+              errPreferred instanceof Error
+                ? errPreferred.message
+                : String(errPreferred),
+          })
+          try {
+            // Old port may still be held; let the OS pick a fresh one.
+            const launchedEphemeral = await launch(0, generation)
+            if (!launchedEphemeral) {
+              return
+            }
+            log.health("server", "restart_done", {
+              url: url(),
+              port: serverPort(),
+              ephemeral: true,
+            })
+          } catch (err) {
+            if (generation !== launchGeneration) {
+              return
+            }
+            const serverError = err instanceof Error ? err : new Error(String(err))
+            setError(serverError)
+            setStatus("error")
+            serverRef = null
+            log.health("server", "restart_failed", { message: serverError.message })
+          }
         }
-      }
-    })
+      })
 
-    if (!started) {
-      log.health("server", "restart_in_flight_noop", { url: url() })
+      if (!started) {
+        log.health("server", "restart_in_flight_noop", { url: url() })
+      }
+    }
+
+    const promise = doRestart()
+    inFlightRestart = promise
+    try {
+      await promise
+    } finally {
+      if (inFlightRestart === promise) {
+        inFlightRestart = null
+      }
     }
   }
 

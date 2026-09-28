@@ -14,10 +14,18 @@ export function isPortAvailable(
   port: number,
   hostname = "127.0.0.1",
 ): Promise<boolean> {
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65535) {
+    return Promise.resolve(false)
+  }
   return new Promise((resolve) => {
     const srv = net.createServer()
+    srv.unref()
     srv.once("error", () => resolve(false)) // EADDRINUSE (or perms) → not free
     srv.once("listening", () => srv.close(() => resolve(true)))
-    srv.listen(port, hostname)
+    try {
+      srv.listen(port, hostname)
+    } catch {
+      resolve(false)
+    }
   })
 }

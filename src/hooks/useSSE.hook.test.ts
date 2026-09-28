@@ -971,5 +971,52 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           dispose()
         },
       ))
+
+    it("message.part.updated triggers onHeartbeat on every chunk even when seenPartIds dedups onMessageText", () =>
+      withSSE(
+        { url: () => "http://x", handlers: {} },
+        async (sse, dispose) => {
+          const sub = driveableSubscribe()
+          let textCount = 0
+          let heartbeatCount = 0
+          const sseWithHandler = await import("./useSSE").then((m) =>
+            createRoot((d) => {
+              const h = m.useSSE({
+                url: () => "http://x",
+                handlers: {
+                  onMessageText: () => {
+                    textCount++
+                  },
+                  onHeartbeat: () => {
+                    heartbeatCount++
+                  },
+                },
+              })
+              return { h, d }
+            }),
+          )
+
+          await sseWithHandler.h.reconnect()
+          await waitForStatus(sseWithHandler.h, "connected")
+
+          // Push first chunk of part-1
+          sub.push(evMessagePartText("part-1", "msg-1", "sess-1", "Hello"))
+          await tick(5)
+          expect(textCount).toBe(1)
+          expect(heartbeatCount).toBe(1)
+
+          // Push second streaming chunk of same part-1
+          sub.push(evMessagePartText("part-1", "msg-1", "sess-1", "Hello world"))
+          await tick(5)
+          // onMessageText is deduped by seenPartIds
+          expect(textCount).toBe(1)
+          // onHeartbeat is NOT blocked by seenPartIds — receives both streaming chunks
+          expect(heartbeatCount).toBe(2)
+
+          sseWithHandler.d()
+          dispose()
+        },
+      ))
   })
 })
+

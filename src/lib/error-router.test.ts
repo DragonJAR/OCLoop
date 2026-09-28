@@ -76,10 +76,18 @@ describe("routeSessionError", () => {
       ).toBeNull()
     })
 
-    it("debug → null (debug sessions have their own error path)", () => {
-      expect(
-        routeSessionError(baseError({ kind: "rate_limit" }), "debug", "sse"),
-      ).toBeNull()
+    it("debug → cooldown (consistent rate-limit handling across debug)", () => {
+      const action = routeSessionError(
+        baseError({ kind: "rate_limit", message: "429", retryAfter: 15 }),
+        "debug",
+        "sse",
+      )
+      expect(action).toEqual({
+        type: "cooldown",
+        message: "429",
+        retryAfter: 15,
+        kind: "rate_limit",
+      })
     })
 
     it("retryAfter is optional (transient / unknown carriers drop it)", () => {
@@ -114,6 +122,20 @@ describe("routeSessionError", () => {
         "api",
       )
       expect(action).toMatchObject({ type: "cooldown", kind: "transient" })
+    })
+
+    it("debug → cooldown with kind: 'transient'", () => {
+      const action = routeSessionError(
+        baseError({ kind: "transient", message: "503" }),
+        "debug",
+        "api",
+      )
+      expect(action).toEqual({
+        type: "cooldown",
+        message: "503",
+        retryAfter: undefined,
+        kind: "transient",
+      })
     })
 
     it("paused → null (no live iteration to retry)", () => {

@@ -30,13 +30,14 @@ export type { OpencodeClient, SessionStatus }
  */
 const MAX_CACHE_SIZE = 10
 const clientCache = new Map<string, OpencodeClient>()
-export function createClient(url: string): OpencodeClient {
+export function createClient(url: string, directory?: string): OpencodeClient {
   // Check for a cache HIT first. A HIT must never trigger eviction — otherwise
   // asking for an already-cached URL when the cache is full would delete the
   // oldest half (potentially including the requested URL itself if it's old,
   // forcing a needless rebuild), even though we're not inserting anything new.
   // Eviction only makes room for an insertion, so it belongs on the MISS path.
-  const cached = clientCache.get(url)
+  const cacheKey = directory ? `${url}::${directory}` : url
+  const cached = clientCache.get(cacheKey)
   if (cached) return cached
 
   // MISS: make room before inserting so the cache stays bounded.
@@ -48,8 +49,8 @@ export function createClient(url: string): OpencodeClient {
       clientCache.delete(key)
     }
   }
-  const client = createOpencodeClient({ baseUrl: url })
-  clientCache.set(url, client)
+  const client = createOpencodeClient({ baseUrl: url, directory })
+  clientCache.set(cacheKey, client)
   return client
 }
 
@@ -202,14 +203,19 @@ function sdkErrorMessage(error: unknown): string {
  * fetchMessages → `?? []`), or doesn't read data at all (sendPromptAsync, ping).
  */
 export function assertResponse(
-  result: { error?: unknown; response?: { ok: boolean; status: number; statusText: string } },
+  result: { error?: unknown; response?: { ok: boolean; status: number; statusText: string } } | null | undefined,
   op: string,
 ): void {
-  if (!result.response) {
-    throw new Error(`Failed to ${op}: ${sdkErrorMessage(result.error)}`)
+  if (!result || !result.response) {
+    throw new Error(`Failed to ${op}: ${sdkErrorMessage(result?.error)}`)
   }
   if (!result.response.ok) {
-    throw new Error(`Failed to ${op}: ${result.response.status} ${result.response.statusText}`)
+    const errorDetail = result.error ? sdkErrorMessage(result.error) : ""
+    const message =
+      errorDetail && errorDetail !== "network or connection error (no response)"
+        ? `Failed to ${op}: ${result.response.status} ${result.response.statusText} - ${errorDetail}`
+        : `Failed to ${op}: ${result.response.status} ${result.response.statusText}`
+    throw new Error(message)
   }
 }
 
