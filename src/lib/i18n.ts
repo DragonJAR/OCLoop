@@ -13,7 +13,7 @@
  */
 
 import { createSignal } from "solid-js"
-import { DEFAULTS } from "./constants"
+import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./constants"
 
 export type Locale = "en" | "es"
 
@@ -154,7 +154,7 @@ Options:
   -m, --model <provider/model> Model to use (for example openai/gpt-5)
   -a, --agent <string>     Agent to use (passed to opencode)
   -r, --run                Start iterations immediately (default: wait for [S])
-  -c, --create-plan        Interactively generate PLAN.md (model zai-coding-plan/glm-5.2, agent plan)
+  -c, --create-plan        Interactively generate PLAN.md (model ${DEFAULT_PLAN_MODEL}, agent ${DEFAULT_PLAN_AGENT})
   -d, --debug              Debug/sandbox mode (no plan file validation, manual sessions)
   --verbose                Enable verbose logging (keyboard events, etc.)
   --routing                Show the model-routing panel at startup (assign models to heavy/cheap/judge roles)
@@ -889,17 +889,17 @@ Opciones:
   -m, --model <proveedor/modelo> Modelo que se utilizará
   -a, --agent <texto>       Agente enviado a opencode
   -r, --run                 Iniciar las iteraciones de inmediato
-  -c, --create-plan         Generar PLAN.md de forma interactiva
+  -c, --create-plan         Generar PLAN.md de forma interactiva (modelo ${DEFAULT_PLAN_MODEL}, agente ${DEFAULT_PLAN_AGENT})
   -d, --debug               Modo de depuración sin validar el plan
   --verbose                 Activar registros detallados
   --routing                 Mostrar el panel de asignación de modelos
   --prompt <ruta>           Archivo de instrucciones (por defecto: ${DEFAULTS.PROMPT_FILE})
   --plan <ruta>             Archivo del plan (por defecto: ${DEFAULTS.PLAN_FILE})
-  --lang <en|es>            Idioma de la interfaz (--language es un alias)
+  --lang <en|es>            Idioma de la interfaz (por defecto: en; también se cambia en Ctrl+P; --language es un alias)
   --resume                  Reconciliar una sesión guardada
   --no-caffeinate           No impedir la suspensión del sistema (macOS)
   --chaos                   Activar inyección de fallos (solo depuración)
-  --resilience <clave=valor> Cambiar un umbral de resiliencia (repetible)
+  --resilience <clave=valor> Cambiar un umbral de resiliencia (repetible; claves y valores por defecto abajo)
   -v, --version             Mostrar versión
   -h, --help                Mostrar ayuda
 
