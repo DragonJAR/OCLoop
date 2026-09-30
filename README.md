@@ -385,6 +385,7 @@ Every operation has a 10-minute floor; the longer agent-work budgets scale above
 | `noProgressThreshold` | Consecutive iterations that start with the same task before halting with `errNoProgress` (default 3 — gives the agent N-1 retries before halting instead of looping forever) |
 | `resume` | Auto-resume a persisted run on startup |
 | `chaos` | Enable chaos fault-injection |
+| `planDrift` | Reaction when the first pending task changes without progress: `warn` (log only) or `halt` (stop with a recoverable error; default `warn`) |
 
 ## Configuration
 

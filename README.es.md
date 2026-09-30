@@ -385,6 +385,7 @@ Cada operación tiene un piso de 10 minutos; los presupuestos de trabajo del age
 | `noProgressThreshold` | Iteraciones consecutivas que arrancan con la misma tarea antes de que el bucle se detenga con `errNoProgress` (por defecto 3 — le da al agente N-1 reintentos antes de detenerse en vez de quedar en bucle infinito) |
 | `resume` | Reanudar automáticamente una ejecución persistida al arrancar |
 | `chaos` | Activar la inyección de fallos |
+| `planDrift` | Reacción cuando cambia la primera tarea pendiente sin progreso: `warn` (solo registra) o `halt` (se detiene con un error recuperable; por defecto `warn`) |
 
 ## Configuración
 
