@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterAll, afterEach, describe, expect, it } from "bun:test"
 
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import {
@@ -12,15 +12,33 @@ import { createRoot } from "solid-js"
 import type { OpencodeBackend } from "./lib/api"
 import type { LoopState } from "./types"
 import { t as T } from "./lib/i18n"
-import { rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 
-/** Path of the scratch prompt file makeHarness writes; cleaned after each test
- * so no temp artifact leaks into the working tree. */
-const SCRATCH_PROMPT = `${import.meta.dir}/__it_prompt.tmp`
+/**
+ * Single source for every scratch path this file uses, isolated per process
+ * with `mkdtemp` like the rest of the suite. Fixed paths (a file next to the
+ * source, `/tmp/__it_plan.md`) are shared across concurrent `bun test`
+ * processes: one run's `afterEach` deletes the prompt another run is reading
+ * ("Prompt file not found"/ENOENT) or overwrites its content ("Prompt file is
+ * empty"), so several suites in parallel failed at random.
+ */
+const SCRATCH_DIR = mkdtempSync(join(tmpdir(), "ocloop-iteration-"))
+/** Prompt file makeHarness writes; cleaned after each test. */
+const SCRATCH_PROMPT = join(SCRATCH_DIR, "prompt.md")
+/** Plan path the deps carry — only ever substituted into the prompt, never read. */
+const SCRATCH_PLAN = join(SCRATCH_DIR, "plan.md")
+/** Deliberately never created: the "missing prompt file" case points here. */
+const MISSING_PROMPT = join(SCRATCH_DIR, "definitely-missing-prompt.md")
 
 afterEach(() => {
   // Best-effort: a test may have redirected promptPath, so force+ignore.
   rmSync(SCRATCH_PROMPT, { force: true })
+})
+
+afterAll(() => {
+  rmSync(SCRATCH_DIR, { recursive: true, force: true })
 })
 
 /**
@@ -127,9 +145,11 @@ function makeHarness(over: {
 
   const resilienceFn = (): ResilienceConfig => ({ ...DEFAULT_RESILIENCE, ...over.resilience })
 
-  // Use a temp file so the prompt read succeeds; write it once.
+  // Use a temp file so the prompt read succeeds; write it once. Synchronous so
+  // the file is fully on disk before the test calls runIteration — makeHarness
+  // is sync, so an un-awaited Bun.write left the read racing the write.
   const promptPath = SCRATCH_PROMPT
-  Bun.write(promptPath, over.promptContent ?? "do task {{PLAN_FILE}}")
+  writeFileSync(promptPath, over.promptContent ?? "do task {{PLAN_FILE}}")
 
   const dispatched: import("./types").LoopAction[] = []
   const realDispatch = loop.dispatch
@@ -139,7 +159,7 @@ function makeHarness(over: {
   }
 
   const deps: IterationDeps = {
-    planPath: "/tmp/__it_plan.md",
+    planPath: SCRATCH_PLAN,
     promptPath,
     loop,
     client,
@@ -199,7 +219,7 @@ describe("runIteration", () => {
     expect(h.calls.sendPromptAsync).toHaveLength(1)
     // The {{PLAN_FILE}} placeholder was substituted.
     expect((h.calls.sendPromptAsync[0] as { parts: { text: string }[] }).parts[0].text).toBe(
-      "do task /tmp/__it_plan.md",
+      `do task ${SCRATCH_PLAN}`,
     )
     // Manifest task captured (same task the no-progress detector read).
     expect(h.pendingManifestTask()).toBe("task one")
@@ -367,7 +387,7 @@ describe("runIteration", () => {
   it("missing prompt file throws (guarded)", async () => {
     const h = makeHarness()
     // Point promptPath at a file that does not exist.
-    h.deps.promptPath = "/tmp/__it_definitely_missing_prompt.md"
+    h.deps.promptPath = MISSING_PROMPT
     await expect(runIteration(h.deps)).rejects.toThrow(/Prompt file not found/)
   })
 
