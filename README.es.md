@@ -5,7 +5,7 @@
   <i>Round and round we go</i>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.7.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
   <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>
@@ -72,6 +72,8 @@
 - **Ejecución automática de tareas** — recorre un plan tarea por tarea, cada una con una ventana de contexto nueva.
 - **Memoria entre tareas** — cada tarea completada deja una nota breve de decisión para la siguiente iteración (ver [Formato del archivo de plan](#formato-del-archivo-de-plan)).
 - **Generador interactivo de planes** — `--create-plan` redacta un `PLAN.md` a partir de un objetivo de una línea.
+- **OpenCode v1 y v2** — un lanzador que reconoce la versión detecta la versión mayor instalada antes de iniciar el servidor y normaliza los eventos y el catálogo de modelos de v2 a la estructura de v1.
+- **Valores dinámicos por defecto para agente y modelo** — sin flags, OCLoop ya no fija el agente `build`. La precedencia del agente es `--agent` → `default_agent` de la configuración (si es `primary`) → agente de OpenCode con el perfil `build` → agente predeterminado del servidor → primer agente `primary`. La precedencia del modelo es `--model` → modelo propio del agente elegido → `model` global de la configuración.
 - **Dashboard en vivo** — estado, tiempos por iteración, promedio, ETA, barra de progreso, estimación de coste e indicador de salud del guardián.
 - **Registro de actividad** — uso de herramientas, ediciones de archivos y conteo de tokens en tiempo real.
 - **Resiliencia sin supervisión** — un guardián de tarea que sobrevive a rate limits, suspensión, cuelgues de servidor/sesión y caídas totales (ver [Resiliencia](#resiliencia)).
@@ -98,7 +100,7 @@
   ```
 
   Alternativa multiplataforma (cualquier SO con Node): `npm install -g bun`. Luego verifica con `bun --version`.
-- [OpenCode](https://opencode.ai) instalado **y ya funcionando** — OCLoop no trae modelo propio; solo orquesta OpenCode. Por eso OpenCode debe estar ya configurado con un proveedor/clave de API **y un modelo utilizable** antes de que OCLoop pueda hacer nada. Verifícalo por tu cuenta primero: ejecuta `opencode`, envía un mensaje y confirma que el modelo responde. Si OpenCode no puede alcanzar un modelo, OCLoop tampoco. Consulta la [documentación de OpenCode](https://opencode.ai/docs) para configurar proveedor y modelo.
+- [OpenCode](https://opencode.ai) instalado **y ya funcionando** — OCLoop no trae modelo propio; solo orquesta OpenCode. Por eso OpenCode debe estar ya configurado con un proveedor/clave de API **y un modelo utilizable** antes de que OCLoop pueda hacer nada. Verifícalo por tu cuenta primero: ejecuta `opencode`, envía un mensaje y confirma que el modelo responde. Si OpenCode no puede alcanzar un modelo, OCLoop tampoco. OCLoop es compatible con OpenCode v1 y v2 y detecta automáticamente la versión mayor antes de iniciar el servidor. v1 no usa contraseña; v2 usa autenticación HTTP Basic mediante `OPENCODE_SERVER_PASSWORD`, que OCLoop gestiona automáticamente. Consulta la [documentación de OpenCode](https://opencode.ai/docs) para configurar proveedor y modelo.
   - **Permisos autónomos**: OCLoop funciona sin supervisión, así que lanza el servidor de OpenCode con las aprobaciones de llamadas a herramientas auto-permitidas (ediciones de archivos, shell, web fetch, etc.) — de lo contrario el bucle se colgaría en un mensaje de confirmación que nadie está mirando para responder. Las cinco herramientas bloqueantes (`edit`, `bash`, `webfetch`, `doom_loop`, `external_directory`) están activadas por defecto. Puedes desactivar cualquiera desde **Ctrl+P → Permisos**: desmarcar una hace que OpenCode pregunte antes de ejecutarla (interactivo) en vez de aprobarla automáticamente. Los cambios persisten y **reinician el servidor** para que se apliquen de inmediato. Estas aprobaciones se inyectan vía `OPENCODE_CONFIG_CONTENT`, que OpenCode carga con la precedencia **más alta** — así que para los tools que OCLoop auto-aprueba (los cinco de arriba, por defecto) **sobrescribe** el `permission` correspondiente de tu `opencode.json`. Para mantener un tool interactivo — o respetar un `deny` que pusiste en `opencode.json` — **desactívalo aquí**: un tool deshabilitado se omite de la config de OCLoop, y entonces tu ajuste de `opencode.json` para ese tool aplica. (La ruta *headless* `--create-plan` siempre funciona totalmente autónoma.)
 
 ## Instalación

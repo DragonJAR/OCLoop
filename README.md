@@ -5,7 +5,7 @@
   <i>Round and round we go</i>
 </p>
 <p align="center">
-  <img src="https://img.shields.io/badge/version-0.7.0-blue" alt="version" />
+  <img src="https://img.shields.io/badge/version-0.8.0-blue" alt="version" />
   <img src="https://img.shields.io/badge/runtime-Bun-black" alt="Bun" />
   <img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT" />
   <a href="https://www.DragonJAR.org"><img src="https://img.shields.io/badge/author-DragonJAR%20SAS-orange.svg" alt="Author" /></a>
@@ -72,6 +72,8 @@
 - **Automated task execution** — run a plan one task at a time, each in a fresh context window.
 - **Inter-task memory** — each completed task carries a short decision note forward to the next iteration (see [Plan file format](#plan-file-format)).
 - **Interactive plan generator** — `--create-plan` drafts a `PLAN.md` for you from a one-line goal.
+- **OpenCode v1 and v2** — a version-aware launcher detects the installed major version before starting the server and normalizes v2 events and model catalogs to v1's shape.
+- **Dynamic agent and model defaults** — with no flags, OCLoop no longer hardcodes the `build` agent. Agent precedence is `--agent` → `default_agent` from config (if primary) → OpenCode's `build`-profile agent → server default agent → first primary agent. Model precedence is `--model` → the selected agent's own model → global `model` config.
 - **Live dashboard** — status badge, iteration timing, average, ETA, progress bar, cost estimate, and a watchdog health indicator.
 - **Activity log** — real-time tool usage, file edits, and token counts.
 - **Unattended resilience** — a task guardian that survives rate limits, sleep/suspension, server/session hangs, and total crashes (see [Resilience](#resilience)).
@@ -98,7 +100,7 @@
   ```
 
   Cross-platform alternative (any OS with Node): `npm install -g bun`. Then verify with `bun --version`.
-- [OpenCode](https://opencode.ai) installed **and already working** — OCLoop has no model of its own; it only drives OpenCode. So OpenCode must already be configured with a provider/API key **and a usable model** before OCLoop can do anything. Verify it on its own first: run `opencode`, send a message, and confirm the model replies. If OpenCode can't reach a model, neither can OCLoop. See the [OpenCode docs](https://opencode.ai/docs) for provider and model setup.
+- [OpenCode](https://opencode.ai) installed **and already working** — OCLoop has no model of its own; it only drives OpenCode. So OpenCode must already be configured with a provider/API key **and a usable model** before OCLoop can do anything. Verify it on its own first: run `opencode`, send a message, and confirm the model replies. If OpenCode can't reach a model, neither can OCLoop. OCLoop supports OpenCode v1 and v2 and detects the major version automatically before launching the server. v1 does not use a password; v2 uses HTTP Basic authentication through `OPENCODE_SERVER_PASSWORD`, which OCLoop manages automatically. See the [OpenCode docs](https://opencode.ai/docs) for provider and model setup.
   - **Autonomous permissions**: OCLoop runs unattended, so it launches the OpenCode server with tool-call approvals auto-allowed (file edits, shell, web fetch, etc.) — otherwise the loop would hang on a confirmation prompt nobody is watching to answer. The five blocking tools (`edit`, `bash`, `webfetch`, `doom_loop`, `external_directory`) are all on by default. You can toggle any of them off from **Ctrl+P → Permissions**: unticking one makes OpenCode ask before running it (interactive) instead of auto-approving. Changes persist and **restart the server** so they apply immediately. These approvals are injected via `OPENCODE_CONFIG_CONTENT`, which OpenCode loads at the **highest** precedence — so for the tools OCLoop auto-approves (the five above, by default) it **overrides** the matching `permission` in your `opencode.json`. To keep a tool interactive — or to honor a `deny` you set in `opencode.json` — turn it **off** here: a disabled tool is left out of OCLoop's config, so your `opencode.json` setting for it applies. (The headless `--create-plan` path always runs fully autonomous.)
 
 ## Installation
