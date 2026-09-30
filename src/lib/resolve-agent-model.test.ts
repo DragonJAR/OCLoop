@@ -123,6 +123,23 @@ describe("resolveAgentAndModel", () => {
     expect(r.planAgent).toBe("architect")
   })
 
+  it("dynamically resolves planAgent via config.agent role 'plan' (same chain as build)", () => {
+    // Regression: the plan chain previously omitted the config `role` links
+    // its build twin consulted, so this config resolved for build but the
+    // split/decompose one-shot fell back to the "plan" agent name.
+    const architect: OcAgent = { name: "architect", mode: "primary" }
+    const cfg = { agent: { architect: { role: "plan" } } }
+    const r = resolveAgentAndModel(cfg, [build, architect], undefined, undefined)
+    expect(r.planAgent).toBe("architect")
+  })
+
+  it("dynamically resolves planAgent via config.mode role 'plan'", () => {
+    const planner: OcAgent = { name: "planner-x", mode: "primary" }
+    const cfg = { mode: { "planner-x": { role: "plan" } } }
+    const r = resolveAgentAndModel(cfg, [build, planner], undefined, undefined)
+    expect(r.planAgent).toBe("planner-x")
+  })
+
   it("falls back to server default (first agent in list) when no explicit build profile", () => {
     const agentA: OcAgent = { name: "alpha", mode: "primary" }
     const agentB: OcAgent = { name: "beta", mode: "primary" }

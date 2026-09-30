@@ -91,10 +91,17 @@ export function isEligiblePrimaryAgent(agent: OcAgent, config?: OcConfig): boole
 }
 
 /**
- * Check if an agent explicitly has the "build" profile or role assigned.
+ * Effective profile/role designation for an agent: the agent's own declaration
+ * first (profile > role > options.profile > options.role), then the OpenCode
+ * config mappings (`agent.<name>` / `mode.<name>`, `profile` then `role`).
+ *
+ * Single source shared by the build and plan profile lookups so the two chains
+ * cannot drift apart (the plan chain previously omitted the config `role` links
+ * its build twin consulted — a config with `{ "agent": { "x": { "role":
+ * "plan" } } }` resolved for build but not for plan).
  */
-function hasBuildProfile(agent: OcAgent, config?: OcConfig): boolean {
-  const profile =
+function resolveProfileDesignation(agent: OcAgent, config?: OcConfig): string | undefined {
+  return (
     agent.profile ??
     agent.role ??
     (typeof agent.options?.profile === "string" ? agent.options.profile : undefined) ??
@@ -103,6 +110,14 @@ function hasBuildProfile(agent: OcAgent, config?: OcConfig): boolean {
     config?.agent?.[agent.name]?.role ??
     config?.mode?.[agent.name]?.profile ??
     config?.mode?.[agent.name]?.role
+  )
+}
+
+/**
+ * Check if an agent explicitly has the "build" profile or role assigned.
+ */
+function hasBuildProfile(agent: OcAgent, config?: OcConfig): boolean {
+  const profile = resolveProfileDesignation(agent, config)
 
   if (typeof profile === "string" && profile.toLowerCase() === "build") {
     return true
@@ -218,15 +233,9 @@ export function findPlanProfileAgent(
 ): string | undefined {
   const primaryAgents = agents.filter((a) => isEligiblePrimaryAgent(a, config))
 
-  // Explicit plan profile or role
+  // Explicit plan profile or role (same designation chain as the build lookup)
   const explicitPlan = primaryAgents.find((a) => {
-    const profile =
-      a.profile ??
-      a.role ??
-      (typeof a.options?.profile === "string" ? a.options.profile : undefined) ??
-      (typeof a.options?.role === "string" ? a.options.role : undefined) ??
-      config?.agent?.[a.name]?.profile ??
-      config?.mode?.[a.name]?.profile
+    const profile = resolveProfileDesignation(a, config)
     return typeof profile === "string" && profile.toLowerCase() === "plan"
   })
   if (explicitPlan) return explicitPlan.name

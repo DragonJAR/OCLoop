@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, replaceTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, findPendingLineIndex, findTaskLineIndex, reopenTaskForEvalRetry, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1122,6 +1122,75 @@ describe("replacePendingTaskWithBlocked", () => {
   })
   it("returns null when the target is not pending", () => {
     expect(replacePendingTaskWithBlocked("- [x] one", "one", "x")).toBeNull()
+  })
+})
+
+describe("eval write path (status-tolerant, mirrors the rubric reader C2-10)", () => {
+  it("findTaskLineIndex locates a completed task findPendingLineIndex cannot", () => {
+    const content = "- [x] done task\n- [ ] next"
+    expect(findPendingLineIndex(content, "done task")).toBe(-1)
+    expect(findTaskLineIndex(content, "done task")).toBe(0)
+    expect(findTaskLineIndex(content, "next")).toBe(1)
+  })
+
+  it("findTaskLineIndex skips fenced examples (same grammar as task selection)", () => {
+    const content = "- [ ] real\n\n```markdown\n- [x] example\n```\n"
+    expect(findTaskLineIndex(content, "real")).toBe(0)
+    expect(findTaskLineIndex(content, "example")).toBe(-1)
+  })
+
+  it("replaceTaskWithBlocked blocks a completed task (the common eval-time case: the agent already marked it [x])", () => {
+    const content = "- [x] Task A\n  - eval: must pass\n- [ ] Task B"
+    expect(replaceTaskWithBlocked(content, "Task A", "eval failed")).toBe(
+      "- [BLOCKED: eval failed] Task A\n  - eval: must pass\n- [ ] Task B",
+    )
+  })
+
+  it("replaceTaskWithBlocked still blocks a pending task (a retried task)", () => {
+    expect(replaceTaskWithBlocked("- [ ] one", "one", "eval failed")).toBe(
+      "- [BLOCKED: eval failed] one",
+    )
+  })
+
+  it("replaceTaskWithBlocked never overwrites a manual/blocked marking", () => {
+    expect(replaceTaskWithBlocked("- [MANUAL] one", "one", "x")).toBeNull()
+    expect(replaceTaskWithBlocked("- [BLOCKED: earlier] one", "one", "x")).toBeNull()
+  })
+
+  it("reopenTaskForEvalRetry flips a completed task back to pending and inserts the note under it", () => {
+    const content = "- [x] Task A\n- [ ] Task B"
+    expect(reopenTaskForEvalRetry(content, "Task A", "  - eval feedback: fix X")).toBe(
+      "- [ ] Task A\n  - eval feedback: fix X\n- [ ] Task B",
+    )
+  })
+
+  it("reopenTaskForEvalRetry tolerates uppercase X and inner checkbox spaces", () => {
+    expect(reopenTaskForEvalRetry("- [X] Task", "Task", "  - n")).toBe("- [ ] Task\n  - n")
+    expect(reopenTaskForEvalRetry("- [ x ] Task", "Task", "  - n")).toBe("- [ ] Task\n  - n")
+  })
+
+  it("reopenTaskForEvalRetry keeps an already-pending task pending (note still inserted)", () => {
+    const content = "- [ ] Task A\n- [ ] Task B"
+    expect(reopenTaskForEvalRetry(content, "Task A", "  - eval feedback: fix X")).toBe(
+      "- [ ] Task A\n  - eval feedback: fix X\n- [ ] Task B",
+    )
+  })
+
+  it("reopenTaskForEvalRetry never flips a manual/blocked marking (note still inserted as feedback)", () => {
+    const content = "- [MANUAL] Task A\n- [ ] Task B"
+    expect(reopenTaskForEvalRetry(content, "Task A", "  - n")).toBe(
+      "- [MANUAL] Task A\n  - n\n- [ ] Task B",
+    )
+  })
+
+  it("reopenTaskForEvalRetry returns null when the task is gone (the CAS defers)", () => {
+    expect(reopenTaskForEvalRetry("- [ ] other", "Task A", "  - n")).toBeNull()
+  })
+
+  it("reopenTaskForEvalRetry preserves indentation and normalizes line endings", () => {
+    expect(reopenTaskForEvalRetry("  - [x] Task\r\n  - [ ] next", "Task", "  - n")).toBe(
+      "  - [ ] Task\n  - n\n  - [ ] next",
+    )
   })
 })
 

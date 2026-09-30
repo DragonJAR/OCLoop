@@ -440,18 +440,44 @@ export function findTaskStatusByDescription(
 }
 
 /**
- * Line index of the first pending task matching `description`, or -1.
- * Scans outside code fences only (same grammar as task selection).
+ * Line index of the first task matching `description` whose status passes
+ * `accepts`, or -1. Scans outside code fences only (same grammar as task
+ * selection) and normalizes line endings first so the index aligns with
+ * `splitLines(normalizeLineEndings(content))`. Shared core of the pending-only
+ * and status-tolerant finders so the two grammars cannot drift apart.
  */
-export function findPendingLineIndex(content: string, description: string): number {
+function findTaskLineIndexWhere(
+  content: string,
+  description: string,
+  accepts: (type: TaskType) => boolean,
+): number {
   const normalized = normalizeLineEndings(content)
   for (const entry of planLinesOutsideCodeFences(normalized)) {
     const task = parseTaskLine(entry.line)
-    if (task.type === "pending" && task.description === description) {
+    if (accepts(task.type) && task.description === description) {
       return entry.index
     }
   }
   return -1
+}
+
+/**
+ * Line index of the first pending task matching `description`, or -1.
+ * Scans outside code fences only (same grammar as task selection).
+ */
+export function findPendingLineIndex(content: string, description: string): number {
+  return findTaskLineIndexWhere(content, description, (type) => type === "pending")
+}
+
+/**
+ * Line index of the first task matching `description` regardless of status
+ * (pending/completed/manual/blocked), or -1. Same status-tolerant grammar as
+ * the eval rubric reader (`getEvalRubricForTask`, C2-10): at eval time the
+ * agent has usually already marked the just-finished task `[x]`, so the eval
+ * WRITE surfaces must locate completed tasks too — not just the reads.
+ */
+export function findTaskLineIndex(content: string, description: string): number {
+  return findTaskLineIndexWhere(content, description, (type) => type !== "not-a-task")
 }
 
 export function getCurrentTaskFromContent(content: string): string | null {
@@ -607,6 +633,43 @@ export function getEvalRubricForTask(
 }
 
 /**
+ * Prepare an eval-driven retry in PLAN.md: insert the judge's feedback note
+ * right under the task line, and flip a completed task (`[x]`) back to pending
+ * (`[ ]`) so the retry genuinely re-runs the SAME task — a `[x]` task is
+ * never first-pending again, so without the flip the loop would silently
+ * advance to the next task instead of retrying this one.
+ *
+ * The task is located regardless of status (the agent has usually already
+ * marked it `[x]` at eval time — same grammar as `getEvalRubricForTask`,
+ * C2-10). A task still pending is left as-is apart from the note; a
+ * manual/blocked task keeps its marking (the agent's explicit choice is never
+ * overwritten — the note is still written as feedback documentation).
+ *
+ * `note` is inserted verbatim as its own line (the caller passes a prose
+ * sub-bullet like `  - eval feedback: …` — never a `- [ ]` line, so task
+ * counting is unaffected). Returns the new content, or `null` when the task
+ * is not found (the caller's compare-and-swap defers instead of writing).
+ */
+export function reopenTaskForEvalRetry(
+  content: string,
+  taskDescription: string,
+  note: string,
+): string | null {
+  const normalized = normalizeLineEndings(content)
+  const lines = splitLines(normalized)
+  const idx = findTaskLineIndex(normalized, taskDescription)
+  if (idx === -1) return null
+  const task = parseTaskLine(lines[idx])
+  if (task.type === "completed") {
+    // Flip only the checkbox (`[x]`/`[X]`, inner spaces tolerated), preserving
+    // the leading indentation and the description.
+    lines[idx] = lines[idx].replace(/^(\s*)-\s*\[\s*[xX]\s*\]/, "$1- [ ]")
+  }
+  lines.splice(idx + 1, 0, note)
+  return lines.join("\n")
+}
+
+/**
  * Mark the FIRST pending task (`- [ ]`) as `- [BLOCKED: <reason>]`, preserving
  * the original line's leading indentation and the rest of the description.
  *
@@ -639,6 +702,47 @@ export function replacePendingTaskWithBlocked(
   taskDescription: string,
   reason: string,
 ): string | null {
+  return replaceTaskLineWithBlocked(
+    content,
+    taskDescription,
+    reason,
+    (type) => type === "pending",
+  )
+}
+
+/**
+ * Mark a specific task `- [BLOCKED: <reason>]` by description, pending OR
+ * completed. The eval layer calls this when the judge fails a task the agent
+ * already marked `[x]` — the common case at eval time (see
+ * `getEvalRubricForTask` C2-10) — or one still pending after a retry. A
+ * manual/blocked target returns null: the agent's explicit marking is never
+ * overwritten with ours.
+ */
+export function replaceTaskWithBlocked(
+  content: string,
+  taskDescription: string,
+  reason: string,
+): string | null {
+  return replaceTaskLineWithBlocked(
+    content,
+    taskDescription,
+    reason,
+    (type) => type === "pending" || type === "completed",
+  )
+}
+
+/**
+ * Shared splice core of the blocked-replacement variants: find the task line
+ * by description + status predicate, then rewrite it in place preserving the
+ * leading indentation (mirrors replaceFirstPendingTaskWithSubtasks'
+ * normalize-first pattern so the written file is consistently `\n`).
+ */
+function replaceTaskLineWithBlocked(
+  content: string,
+  taskDescription: string,
+  reason: string,
+  accepts: (type: TaskType) => boolean,
+): string | null {
   const cleanReason = reason
     .replace(/[\r\n]+/g, " ")
     .replace(/\[/g, "(")
@@ -646,11 +750,10 @@ export function replacePendingTaskWithBlocked(
     .trim()
   const normalized = normalizeLineEndings(content)
   const lines = splitLines(normalized)
-  const idx = findPendingLineIndex(normalized, taskDescription)
+  const idx = findTaskLineIndexWhere(normalized, taskDescription, accepts)
   if (idx === -1) return null
   const indent = lines[idx].match(/^(\s*)/)?.[1] ?? ""
   const task = parseTaskLine(lines[idx])
-  if (task.type !== "pending") return null
   lines[idx] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
   return lines.join("\n")
 }

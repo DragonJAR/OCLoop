@@ -76,18 +76,18 @@ describe("routeSessionError", () => {
       ).toBeNull()
     })
 
-    it("debug → cooldown (consistent rate-limit handling across debug)", () => {
+    it("debug → null for rate_limit (the reducer no-ops rate_limited from debug; a cooldown there would be phantom)", () => {
+      // There is no automated iteration driver in debug mode: the reducer
+      // ignores `rate_limited` from `debug` (pinned by useLoopState.test.ts),
+      // so routing debug 429s to a cooldown would show an invisible countdown
+      // with nothing retrying, and repeated 429s would escalate into a
+      // recoverable-error dialog that force-kills the debug session.
       const action = routeSessionError(
         baseError({ kind: "rate_limit", message: "429", retryAfter: 15 }),
         "debug",
         "sse",
       )
-      expect(action).toEqual({
-        type: "cooldown",
-        message: "429",
-        retryAfter: 15,
-        kind: "rate_limit",
-      })
+      expect(action).toBeNull()
     })
 
     it("retryAfter is optional (transient / unknown carriers drop it)", () => {
@@ -124,18 +124,13 @@ describe("routeSessionError", () => {
       expect(action).toMatchObject({ type: "cooldown", kind: "transient" })
     })
 
-    it("debug → cooldown with kind: 'transient'", () => {
+    it("debug → null with kind: 'transient' (same phantom-cooldown exclusion as rate_limit)", () => {
       const action = routeSessionError(
         baseError({ kind: "transient", message: "503" }),
         "debug",
         "api",
       )
-      expect(action).toEqual({
-        type: "cooldown",
-        message: "503",
-        retryAfter: undefined,
-        kind: "transient",
-      })
+      expect(action).toBeNull()
     })
 
     it("paused → null (no live iteration to retry)", () => {

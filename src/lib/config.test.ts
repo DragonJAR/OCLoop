@@ -287,6 +287,19 @@ describe("loadConfig — resilience per-field type validation (Finding 12.3.B)",
     expect(config.resilience).toBeUndefined()
   })
 
+  it("drops the whole block when a numeric field exceeds MAX_SAFE_INTEGER", () => {
+    // Same strictness as the CLI override path (Number.isSafeInteger):
+    // beyond 2^53−1 a count is garbage input, and Node/Bun clamp
+    // setTimeout delays > 2^31−1 to 1 ms, so a hand-edited 1e300
+    // promptTimeoutMs would burn every retry in milliseconds.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ resilience: { promptTimeoutMs: 1e300 } }),
+    )
+    const config = loadConfig()
+    expect(config.resilience).toBeUndefined()
+  })
+
   it("keeps the whole block when every field is valid and uses the right type", () => {
     writeConfig(
       "ocloop.json",
@@ -371,6 +384,17 @@ describe("loadConfig — evals block validation (mirrors resilience all-or-nothi
     writeConfig(
       "ocloop.json",
       JSON.stringify({ evals: { enabled: true, judgeTimeoutMs: "slow" } }),
+    )
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when a numeric field exceeds MAX_SAFE_INTEGER", () => {
+    // judgeTimeoutMs feeds the same setTimeout machinery as promptTimeoutMs:
+    // a value beyond 2^53−1 is garbage input (Node/Bun clamp timer delays
+    // > 2^31−1 to 1 ms), so drop the block instead of burning retries.
+    writeConfig(
+      "ocloop.json",
+      JSON.stringify({ evals: { enabled: true, judgeTimeoutMs: 1e300 } }),
     )
     expect(loadConfig().evals).toBeUndefined()
   })

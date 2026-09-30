@@ -59,10 +59,15 @@ export type ErrorAction =
  * - isAborted: true → returns null. The abort policy is source-specific (SSE
  *   does toggle_pause, the API does not abort through this path) so the call
  *   site keeps ownership.
- * - kind: rate_limit | transient + (running | pausing | debug) → cooldown. retryAfter
- *   is propagated for rate_limit; transient leaves it undefined.
- * - kind: rate_limit | transient + other state → null (no live iteration to
- *   retry; the error is dormant).
+ * - kind: rate_limit | transient + (running | pausing) → cooldown. retryAfter
+ *   is propagated for rate_limit; transient leaves it undefined. `debug` is
+ *   NOT cooldown-routable: the reducer no-ops `rate_limited` from `debug`
+ *   (there is no automated iteration driver in debug mode), so routing there
+ *   would be a phantom cooldown — an invisible countdown with nothing
+ *   retrying, and repeated 429s would eventually escalate into a
+ *   recoverable-error dialog that force-kills the debug session.
+ * - kind: rate_limit | transient + other state (incl. debug) → null (no live
+ *   iteration to retry; the error is dormant).
  * - kind: auth | fatal + (running | pausing | debug) → non-recoverable error.
  *   The recoverable flag is false for these two kinds.
  * - kind: auth | fatal + other state → null.
@@ -81,11 +86,12 @@ export function routeSessionError(
     return null
   }
   if (classified.kind === "rate_limit" || classified.kind === "transient") {
-    if (stateType === "running" || stateType === "pausing" || stateType === "debug") {
+    if (stateType === "running" || stateType === "pausing") {
       // `retryAfter` is only meaningful for `rate_limit`; transient
       // always goes in without one. The original code at App.tsx:561
       // and App.tsx:575 calls `enterCooldown(message, undefined, "transient")`
-      // explicitly; the helper preserves that contract.
+      // explicitly; the helper preserves that contract. `debug` is excluded —
+      // the reducer no-ops `rate_limited` from `debug` (see the policy above).
       return {
         type: "cooldown",
         message: classified.message,

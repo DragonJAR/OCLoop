@@ -155,6 +155,13 @@ describe("loop-state-store", () => {
       expect(await loadLoopState()).toBeNull()
     })
 
+    it("rejects an iteration beyond MAX_SAFE_INTEGER (garbage hand-edited count)", async () => {
+      // Same safe-integer cap the CLI override path enforces: a count
+      // beyond 2^53−1 is a corrupted/hand-edited value, not a run position.
+      writeRawState(JSON.stringify({ ...sample, iteration: 1e300 }))
+      expect(await loadLoopState()).toBeNull()
+    })
+
     it("rejects a negative rateLimitAttempts (would defeat the circuit breaker)", async () => {
       writeRawState(JSON.stringify({ ...sample, rateLimitAttempts: -3 }))
       expect(await loadLoopState()).toBeNull()

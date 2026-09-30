@@ -19,7 +19,11 @@
  *   non-TTY pre-flight fix lands.
  * - It does not isolate the process group (no setsid). The child shares
  *   the parent's signals; a parent abort will leave a zombie until the
- *   timeout fires. Acceptable for a test helper.
+ *   timeout fires. A grandchild holding the stdio pipes can also outlive
+ *   the killed child. On timeout the runner escalates SIGTERM → SIGKILL
+ *   after a 1s grace so a signal-ignoring child cannot hang the await
+ *   forever, but the no-setsid limitations remain. Acceptable for a test
+ *   helper.
  *
  * ponytail: one `Bun.spawn` call, four knobs (env, cwd, stdin, timeout).
  * The previous inline pattern in `cli-args.test.ts` is for unit-level
@@ -49,6 +53,8 @@ export interface CliRunOptions {
 
 const DEFAULT_ENTRYPOINT = "src/index.tsx"
 const DEFAULT_TIMEOUT_MS = 10_000
+/** Grace period between SIGTERM and SIGKILL escalation on timeout. */
+const KILL_GRACE_MS = 1_000
 /** Conventional timeout-kill exit code (matches `timeout(1)`). */
 const TIMEOUT_EXIT_CODE = 124
 
@@ -75,13 +81,27 @@ export async function runCli(
   })
 
   let timedOut = false
+  let killEscalation: ReturnType<typeof setTimeout> | undefined
   const timer = setTimeout(() => {
     timedOut = true
     try {
+      // SIGTERM first so a well-behaved child can flush and exit cleanly.
       proc.kill()
     } catch {
       // Already exited — kill throws on a dead handle, safe to ignore.
+      return
     }
+    // Escalation: a child that traps/ignores SIGTERM would otherwise leave
+    // `proc.exited` (and the `Promise.all` below) pending forever. SIGKILL
+    // cannot be ignored, so the await always settles (with the timeout exit
+    // code, not the child's).
+    killEscalation = setTimeout(() => {
+      try {
+        proc.kill("SIGKILL")
+      } catch {
+        // Exited between the two kills — nothing to escalate.
+      }
+    }, KILL_GRACE_MS)
   }, timeoutMs)
 
   try {
@@ -98,5 +118,6 @@ export async function runCli(
     }
   } finally {
     clearTimeout(timer)
+    if (killEscalation !== undefined) clearTimeout(killEscalation)
   }
 }

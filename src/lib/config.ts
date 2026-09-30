@@ -329,19 +329,27 @@ const ALLOWED_CONFIG_KEYS = new Set([
 ])
 
 /**
- * A finite, non-negative integer — the shape every count field
+ * A finite, non-negative, safe integer — the shape every count field
  * (`iteration`, `rateLimitAttempts`, `createTimeoutMs`, …) must have.
  * `typeof === "number"` alone admits `NaN`, `Infinity`, and negatives, which
  * would otherwise round-trip through reducers and config merges poisoning
  * downstream math (e.g. `iteration: NaN` makes `iteration + 1` NaN forever).
+ * The safe-integer cap (≤ Number.MAX_SAFE_INTEGER) matches the CLI override
+ * path (`Number.isSafeInteger` in `applyResilienceOverride`): beyond 2^53−1 a
+ * count is garbage input, and for timeout fields it is actively harmful —
+ * Node/Bun clamp `setTimeout` delays > 2^31−1 to 1 ms, so an absurd
+ * `promptTimeoutMs: 1e300` from a hand-edited config would burn every retry
+ * in milliseconds.
  *
  * Single source of truth (REPARAR.md B7): previously this exact predicate was
  * copy-pasted in `isValidResilienceValue`, `isValidEvalsValue`, and
  * `loop-state-store.isNonNegInt` — a drift hazard (a notion of "valid count"
- * that could evolve in one place but not the others).
+ * that could evolve in one place but not the others). All three now share
+ * this one predicate, so the safe-integer floor holds everywhere at once.
  */
 export function isNonNegativeInteger(v: unknown): boolean {
-  return typeof v === "number" && Number.isFinite(v) && Number.isInteger(v) && v >= 0
+  // Number.isSafeInteger implies Number.isInteger and finiteness.
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0
 }
 
 /**
