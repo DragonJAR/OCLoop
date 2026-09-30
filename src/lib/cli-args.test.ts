@@ -1,4 +1,5 @@
 import { describe, expect, it } from "bun:test"
+import { resolve } from "node:path"
 import { parseArgs, preScanLang } from "./cli-args"
 import { DEFAULTS } from "./constants"
 import { DEFAULT_RESILIENCE } from "./config"
@@ -41,6 +42,79 @@ function runParse(argv: string[]) {
     process.exit = origExit
     console.error = origErr
     console.log = origLog
+  }
+}
+
+function extractHelpFlags(help: string): Set<string> {
+  const optionsStart = help.indexOf("Options:")
+  const resilienceStart = help.indexOf("Resilience keys (")
+  if (optionsStart < 0 || resilienceStart < 0 || resilienceStart <= optionsStart) {
+    throw new Error("Could not locate the Options section in generated CLI help")
+  }
+
+  const options = help.slice(optionsStart, resilienceStart)
+  return new Set(options.match(/(?<![\w-])--?[a-z][a-z-]*(?![\w-])/g) ?? [])
+}
+
+function extractHelpResilienceKeys(help: string): Set<string> {
+  const keysStart = help.indexOf("Resilience keys (")
+  const configStart = help.indexOf("\nConfig file", keysStart)
+  if (keysStart < 0 || configStart < 0) {
+    throw new Error("Could not locate the resilience key list in generated CLI help")
+  }
+
+  const keyList = help.slice(keysStart, configStart)
+  return new Set(
+    [...keyList.matchAll(/\b([A-Za-z][A-Za-z0-9]*)=/g)].map((match) => match[1]!),
+  )
+}
+
+function extractReadmeResilienceKeys(readme: string, fileName: string): Set<string> {
+  const tables: string[][] = []
+  let currentTable: string[] = []
+
+  for (const line of readme.split(/\r?\n/)) {
+    if (line.trimStart().startsWith("|")) {
+      currentTable.push(line)
+    } else if (currentTable.length > 0) {
+      tables.push(currentTable)
+      currentTable = []
+    }
+  }
+  if (currentTable.length > 0) tables.push(currentTable)
+
+  const knownKeys = Object.keys(DEFAULT_RESILIENCE)
+  let bestKeys = new Set<string>()
+  let bestOverlap = 0
+  for (const table of tables) {
+    const keys = new Set(
+      table.flatMap((line) => {
+        const match = line.match(/^\s*\|\s*`([^`]+)`\s*\|/)
+        return match ? [match[1]!] : []
+      }),
+    )
+    const overlap = knownKeys.filter((key) => keys.has(key)).length
+    if (overlap > bestOverlap) {
+      bestKeys = keys
+      bestOverlap = overlap
+    }
+  }
+
+  if (bestOverlap === 0) {
+    const firstKey = knownKeys[0]
+    throw new Error(`Missing resilience key "${firstKey}" in ${fileName}`)
+  }
+  return bestKeys
+}
+
+function assertResilienceKeysPresent(
+  availableKeys: ReadonlySet<string>,
+  fileName: string,
+): void {
+  for (const key of Object.keys(DEFAULT_RESILIENCE)) {
+    if (!availableKeys.has(key)) {
+      throw new Error(`Missing resilience key "${key}" in ${fileName}`)
+    }
   }
 }
 
@@ -131,6 +205,46 @@ describe("parseArgs — help/version exit", () => {
     const help = runParse(["--help"]).logs.join("\n")
     for (const key of Object.keys(DEFAULT_RESILIENCE)) {
       expect(help).toContain(`${key}=`)
+    }
+  })
+  it("keeps the documented help flags in sync with parseArgs flag cases", async () => {
+    const parserSource = await Bun.file(resolve(import.meta.dir, "cli-args.ts")).text()
+    const parseArgsStart = parserSource.indexOf("export function parseArgs(")
+    if (parseArgsStart < 0) {
+      throw new Error("Could not locate parseArgs in src/lib/cli-args.ts")
+    }
+
+    const parserFlags = new Set(
+      [...parserSource.slice(parseArgsStart).matchAll(/case\s+["'](-{1,2}[a-z][a-z-]*)["']\s*:/g)]
+        .map((match) => match[1]!),
+    )
+    setLocale("en")
+    const help = runParse(["--help"]).logs.join("\n")
+    const helpFlags = extractHelpFlags(help)
+    const parserFlagsMissingFromHelp = [...parserFlags]
+      .filter((flag) => !helpFlags.has(flag))
+      .sort()
+    const helpFlagsNotAcceptedByParser = [...helpFlags]
+      .filter((flag) => !parserFlags.has(flag))
+      .sort()
+
+    expect({ parserFlagsMissingFromHelp, helpFlagsNotAcceptedByParser }).toEqual({
+      parserFlagsMissingFromHelp: [],
+      helpFlagsNotAcceptedByParser: [],
+    })
+  })
+  it("lists every DEFAULT_RESILIENCE key in help and both README tables", async () => {
+    setLocale("en")
+    const help = runParse(["--help"]).logs.join("\n")
+    assertResilienceKeysPresent(
+      extractHelpResilienceKeys(help),
+      "generated CLI help (src/lib/i18n.ts)",
+    )
+
+    for (const fileName of ["README.md", "README.es.md"]) {
+      const readmePath = resolve(import.meta.dir, "../..", fileName)
+      const readme = await Bun.file(readmePath).text()
+      assertResilienceKeysPresent(extractReadmeResilienceKeys(readme, fileName), fileName)
     }
   })
   it("-v/--version print version and exit 0", () => {
