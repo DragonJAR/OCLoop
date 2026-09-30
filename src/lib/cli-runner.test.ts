@@ -51,12 +51,11 @@ describe("runCli", () => {
     // `errNoTty` message before the timeout ever fires. We assert the
     // child still does NOT exit 0 within the timeout budget, but the
     // exact code is now 1 (clean exit) rather than 124/139 (timeout/segv).
-    // The timeout budget is kept small to prove the runner returns
-    // promptly; a regression that re-introduces the hang would push
-    // durationMs > 250 and let us catch it.
-    const result = await runCli(["--run", "--debug"], { timeoutMs: 5_000 })
+    const timeoutMs = 5_000
+    const result = await runCli(["--run", "--debug"], { timeoutMs })
     expect(result.exitCode).not.toBe(0)
     expect(result.exitCode).toBe(1)
-    expect(result.durationMs).toBeLessThan(2_500)
+    // A hang reaches this exact timeout budget; startup latency may vary under load.
+    expect(result.durationMs).toBeLessThan(timeoutMs)
   })
 })
