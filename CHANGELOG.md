@@ -5,6 +5,42 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.8.0] — 2026-09-30
+
+### Added
+- **OpenCode v1 and v2 support** — `opencode-version` reads the major from
+  `opencode --version` before launch, and `opencode-server` spawns `opencode
+  serve` itself because the startup line and auth differ: v1 prints `opencode
+  server listening on …` with no password, v2 prints `server listening on …` and
+  uses Basic auth via `OPENCODE_SERVER_PASSWORD`.
+- **Version-agnostic backend** — the new `opencode-backend` normalizes v2 events
+  and the model catalog to the v1 shape, so the rest of the app never branches
+  on the server version.
+- **Dynamic default agent/model** — with no flags, OCLoop resolves both from
+  OpenCode instead of hardcoding `build`: agent is `--agent` > config
+  `default_agent` (if primary) > the agent carrying OpenCode's `build` profile >
+  the server default > the first primary agent; model is `--model` > the chosen
+  agent's own model > the global config model.
+
+### Changed
+- **Drift guards** — tests now fail when the help flags or the resilience keys
+  fall out of sync with the parser or with either README.
+- **Test isolation** — the iteration integration fixtures moved to a per-process
+  `mkdtemp` directory, so concurrent `bun test` runs no longer delete or
+  overwrite each other's scratch prompt.
+- **`cli-runner` timeout assert** — derived from the run's real budget instead of
+  a magic number, removing a flake under load.
+
+### Fixed
+- **Segfault on termination** — SIGTERM/SIGINT/SIGHUP restore the terminal and
+  exit through the JS path; killing a running TUI used to crash Bun with
+  `panic(main thread): Segmentation fault`.
+- **`planDrift` documented** — the `warn`/`halt` resilience key (default `warn`)
+  was missing from the tuning tables in `README.md` and `README.es.md`.
+- **Spanish help parity** — `--lang es` now carries the same information as the
+  English help: the plan-generation model/agent (interpolated from the shared
+  constants), the `en` language default, and the pointer to the resilience keys.
+
 ## [0.7.0] — 2026-07-02
 
 ### Added
