@@ -402,6 +402,33 @@ process.on("unhandledRejection", (reason) => {
   process.exit(1)
 })
 
+/**
+ * Terminating signals, paired with their POSIX number for the conventional
+ * `128 + n` exit code.
+ *
+ * Terminating while OpenTUI's renderer still holds its native (FFI) state
+ * crashes Bun instead of exiting — `panic(main thread): Segmentation fault`
+ * plus a crash report, reproducible with any `kill` of a running TUI. Exiting
+ * from a signal listener keeps teardown on the JS path (terminal restored,
+ * normal exit) and never reaches that state.
+ *
+ * Interactive Ctrl+C is untouched: the TUI owns stdin in raw mode (ISIG off),
+ * so the keypress is read as a key and never becomes a SIGINT — only an
+ * external `kill -INT` lands here.
+ */
+const TERMINATION_SIGNALS = [
+  ["SIGTERM", 15],
+  ["SIGINT", 2],
+  ["SIGHUP", 1],
+] as const
+
+for (const [signal, signo] of TERMINATION_SIGNALS) {
+  process.on(signal, () => {
+    restoreTerminal()
+    process.exit(128 + signo)
+  })
+}
+
 async function main(): Promise<void> {
   // Pre-scan --lang/--language so argparse errors localize correctly. Without
   // this, a user passing `--lang es` still gets every parseArgs error
