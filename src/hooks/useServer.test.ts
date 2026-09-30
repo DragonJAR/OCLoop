@@ -9,11 +9,15 @@
  * below pin the hook's own surface, so both findings are closed by this
  * file.
  *
- * The hook wraps `createOpencodeServer` and `createOpencodeClient` from the
- * OpenCode SDK. Both are mocked at the module boundary via `mock.module`
- * (the same pattern that `clipboard.test.ts` already uses for
- * `command-exists`). The mock factory reads from a mutable closure so each
- * test can swap behavior between runs.
+ * The hook wraps `startOpencodeServer` from `../lib/opencode-server` (our own
+ * direct-spawn launcher, version-aware for OpenCode v1/v2) and, for `ping()`,
+ * `createOpencodeClient` through `../lib/api`. Both are mocked at the module
+ * boundary via `mock.module` (the same pattern that `clipboard.test.ts`
+ * already uses for `command-exists`). The mock factory reads from a mutable
+ * closure so each test can swap behavior between runs. The launcher's own
+ * behavior (permissions merge into OPENCODE_CONFIG_CONTENT, v1/v2 ready
+ * markers, auth) is pinned by `opencode-server.test.ts`; this file only pins
+ * what the hook does with the launcher seam.
  *
  * The mock pattern is safe here because:
  * 1. `useServer.ts` has no JSX (so the `docs/testing.md` `@opentui/solid`
@@ -49,34 +53,56 @@
  * while a launch is in flight" check that `startServer`'s guard enforces.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import * as realSdkV2 from "@opencode-ai/sdk/v2"
 import { createRoot } from "solid-js"
 import { __resetClientCacheForTests } from "../lib/api"
+import { mockOpencodeServer } from "../lib/opencode-server-mock"
+// Type-only import: erased at runtime, so it does not resolve through the
+// partial mock — the fake below stays structurally honest against the real
+// launcher contract.
+import type { OpencodeServer, StartOpencodeServerOptions } from "../lib/opencode-server"
+
+const realSdkV2Snapshot = { ...realSdkV2 }
 
 // Mutable impls swapped by individual tests. The factory closure makes the
 // reference stable across the cache lifetime of the mocked module.
-type FakeServer = { url: string; close: () => void }
-let serverImpl: (opts: { port?: number; hostname?: string; config?: unknown }) => Promise<FakeServer> =
-  async (opts) => ({
-    url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
-    close: () => {},
-  })
+type FakeServer = Pick<OpencodeServer, "url" | "close">
+type FakeLaunchOptions = Pick<
+  StartOpencodeServerOptions,
+  "port" | "hostname" | "timeout" | "signal" | "permissions"
+>
+let serverImpl: (opts?: FakeLaunchOptions) => Promise<FakeServer> = async (opts) => ({
+  url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
+  close: () => {},
+})
 let clientAgentsImpl: () => Promise<unknown> = async () => ({
   response: { ok: true, status: 200, statusText: "OK" },
 })
 
 // The factory runs once per import of the mocked module. The closure over the
-// mutable impls keeps the swap-during-test pattern working.
-mock.module("@opencode-ai/sdk/server", () => ({
-  createOpencodeServer: (opts: { port?: number; hostname?: string; config?: unknown }) =>
-    serverImpl(opts),
-}))
+// mutable impls keeps the swap-during-test pattern working. The partial mock
+// keeps `buildPermissionConfig` (and any other unlisted export) real for the
+// rest of the process; `opencode-server.test.ts` restores its own SUT with
+// `mockOpencodeServer({})`.
+mockOpencodeServer({
+  // The fake only models what the hook consumes (url/close); the wrapper
+  // completes the launcher contract (version) at the seam.
+  startOpencodeServer: (opts) =>
+    serverImpl(opts).then((fake) => ({ ...fake, version: 1 as const })),
+})
 
 mock.module("@opencode-ai/sdk/v2", () => ({
   createOpencodeClient: () => ({
     app: { agents: () => clientAgentsImpl() },
   }),
 }))
+
+// Restore the real SDK exports after this file; Bun's module mocks persist
+// across files in the full-suite run.
+afterAll(() => {
+  mock.module("@opencode-ai/sdk/v2", () => ({ ...realSdkV2Snapshot }))
+})
 
 const { useServer } = await import("./useServer")
 
@@ -125,7 +151,7 @@ async function withServer<T>(
 describe("useServer (Finding 18.2.A)", () => {
   beforeEach(() => {
     __resetClientCacheForTests()
-    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => ({
+    serverImpl = async (opts?: FakeLaunchOptions) => ({
       url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
       close: () => {},
     })
@@ -135,7 +161,7 @@ describe("useServer (Finding 18.2.A)", () => {
   })
 
   afterEach(() => {
-    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => ({
+    serverImpl = async (opts?: FakeLaunchOptions) => ({
       url: `http://${opts?.hostname ?? "127.0.0.1"}:${opts?.port ?? 4096}`,
       close: () => {},
     })
@@ -432,48 +458,48 @@ describe("useServer (Finding 18.2.A)", () => {
     })
   })
 
-  it("launches the server with autonomous allow-all permissions by default", async () => {
-    let captured: unknown = undefined
-    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => {
-      captured = opts.config
-      return { url: `http://127.0.0.1:${opts.port ?? 4096}`, close: () => {} }
+  it("delegates the autonomous default: no permissions accessor → permissions undefined", async () => {
+    const captured: unknown[] = []
+    serverImpl = async (opts?: FakeLaunchOptions) => {
+      captured.push(opts?.permissions)
+      return { url: `http://127.0.0.1:${opts?.port ?? 4096}`, close: () => {} }
     }
 
     await withServer({ port: 4096 }, async (server, dispose) => {
       expect(server.status()).toBe("ready")
-      const config = captured as { permission: Record<string, string> }
-      // OCLoop is unattended; the five blocking tools must be auto-allowed so
-      // no iteration hangs on an unanswered confirmation.
-      expect(config.permission.edit).toBe("allow")
-      expect(config.permission.bash).toBe("allow")
-      expect(config.permission.webfetch).toBe("allow")
-      expect(config.permission.doom_loop).toBe("allow")
-      expect(config.permission.external_directory).toBe("allow")
+      // `permissions: undefined` is startOpencodeServer's documented
+      // fully-autonomous default; the merge itself is pinned by
+      // opencode-server.test.ts ("defaults to fully-autonomous...").
+      expect(captured).toEqual([undefined])
       dispose()
     })
   })
 
-  it("forwards a per-tool permission opt-out to the server config", async () => {
-    let captured: unknown = undefined
-    serverImpl = async (opts: { port?: number; hostname?: string; config?: unknown }) => {
-      captured = opts.config
-      return { url: `http://127.0.0.1:${opts.port ?? 4096}`, close: () => {} }
+  it("forwards the permissions accessor result fresh on each launch", async () => {
+    const captured: unknown[] = []
+    serverImpl = async (opts?: FakeLaunchOptions) => {
+      captured.push(opts?.permissions)
+      return { url: `http://127.0.0.1:${opts?.port ?? 4096}`, close: () => {} }
     }
 
+    let policy: Partial<Record<string, boolean>> = { bash: false }
     await withServer(
       {
         port: 4096,
-        // User opted bash out of autonomous approval.
-        permissions: () => ({ bash: false }),
+        // Read fresh on every launch so a restart picks up a just-saved
+        // permission change without recreating the hook.
+        permissions: () => policy,
       },
       async (server, dispose) => {
         expect(server.status()).toBe("ready")
-        const config = captured as { permission: Record<string, string | undefined> }
-        // bash omitted → OpenCode applies its interactive default for it.
-        expect(config.permission.bash).toBeUndefined()
-        // the others stay autonomous.
-        expect(config.permission.edit).toBe("allow")
-        expect(config.permission.webfetch).toBe("allow")
+        // bootServer's launch saw the initial opt-out.
+        expect(captured).toEqual([{ bash: false }])
+
+        // The user flips the policy; a restart must see the NEW value.
+        policy = { edit: false }
+        await server.restart()
+        expect(server.status()).toBe("ready")
+        expect(captured).toEqual([{ bash: false }, { edit: false }])
         dispose()
       },
     )

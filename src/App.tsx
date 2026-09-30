@@ -29,7 +29,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replacePendingTaskWithBlocked, listPendingTaskDescriptions, findPendingLineIndex } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile } from "./lib/plan-file"
@@ -67,7 +67,6 @@ import {
   tryGetClient,
   type ReconcileResult,
 } from "./lib/api"
-import { withTimeout } from "./lib/with-timeout"
 import { monotonicNow } from "./lib/clock"
 import { t } from "./lib/i18n"
 import { createSleepDetector, type SleepDetector } from "./lib/sleep-detector"
@@ -154,6 +153,16 @@ function AppContent(props: AppProps) {
     port: props.port,
     autoStart: true,
     permissions: () => permissions(),
+  })
+
+  // Launch info for the API layer: url + detected version + the launch's auth
+  // header — everything the version-aware backend (opencode-backend.ts) needs
+  // to talk to THIS exact server. Single source threaded through every
+  // tryGetClient call site below.
+  const launchInfo = () => ({
+    url: server.url(),
+    version: server.version(),
+    authorization: server.authorization(),
   })
 
   // Loop state machine
@@ -321,7 +330,7 @@ function AppContent(props: AppProps) {
       reconcile: () =>
         chaos.reconcile(async () => {
           const sid = getActiveSessionId(loop.state())
-          const client = tryGetClient(server.url)
+          const client = tryGetClient(launchInfo)
           if (!client || !sid) return "unknown"
           return reconcileSession(client, sid)
         }),
@@ -339,7 +348,7 @@ function AppContent(props: AppProps) {
       abortAndRetry: async () => {
         activityLog.addEvent("task", t("actGuardAbort"), { level: "warn" })
         const sid = getActiveSessionId(loop.state())
-            const client = tryGetClient(server.url)
+            const client = tryGetClient(launchInfo)
         if (client && sid) {
           try {
             await abortSession(client, sid)
@@ -401,6 +410,14 @@ function AppContent(props: AppProps) {
   // whenever the task changes (genuine progress) or on completion/retry.
   let evalAttemptsForTask = 0
   let evalTaskKey: string | null = null
+  // One-shot: set when the eval gate asks for a same-task retry, so the NEXT
+  // startIteration skips the gate and re-attempts the task (the feedback note
+  // is already in PLAN.md); the gate re-judges the FRESH evidence after that
+  // iteration idles. Without the skip, the retry would re-enter the gate and
+  // re-judge the SAME evidence — no new session has run — burning the budget
+  // on identical failures and blocking the task without the agent ever
+  // seeing the feedback.
+  let evalRetrySkipGate = false
   // Task description for the in-flight iteration, captured at startIteration so
   // the manifest (written at session_idle) records the task that actually ran —
   // currentTask() may have advanced to the next pending task by then. Same
@@ -531,7 +548,7 @@ function AppContent(props: AppProps) {
     if (state.type === "cooldown" && (prev.type === "running" || prev.type === "pausing")) {
       const staleSid = staleSessionIdOnCooldownEntry(state, prev)
       if (staleSid) {
-        const client = tryGetClient(server.url)
+        const client = tryGetClient(launchInfo)
         if (client) {
           void abortSession(client, staleSid).catch(() => {
             // Best effort — the session may already be gone after a 429.
@@ -574,10 +591,14 @@ function AppContent(props: AppProps) {
     }
 
     // Detect session_idle: transitioning from running/pausing with sessionId to running without
-    // or from pausing to paused
+    // or from pausing to paused, or a cooldown entered mid-pause resuming into paused
+    // (rate_limited { wasPausing } → resume_cooldown → paused: the session was
+    // aborted at cooldown entry, so the iteration ended there — without this
+    // arm the aborted iteration's active time and manifest record are lost).
     if (
       (state.type === "running" && !state.sessionId && prev.type === "running" && prev.sessionId) ||
-      (state.type === "paused" && prev.type === "pausing")
+      (state.type === "paused" && prev.type === "pausing") ||
+      (state.type === "paused" && prev.type === "cooldown")
     ) {
       log.iterationEnd(state.iteration)
       log.debug("state", "Iteration ended", { iteration: state.iteration })
@@ -719,7 +740,7 @@ function AppContent(props: AppProps) {
 
   // SSE subscription (only when server is ready)
   const sse = useSSE({
-    url: () => server.url() || "",
+    info: launchInfo,
     sessionId: sessionId,
     autoConnect: false, // We'll connect when server is ready
     handlers: {
@@ -955,7 +976,7 @@ function AppContent(props: AppProps) {
    */
   async function reconcileAndAdvance(): Promise<ReconcileResult> {
     const sid = getActiveSessionId(loop.state())
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
     if (!client || !sid) return "unknown"
 
     const result = await reconcileSession(client, sid)
@@ -1062,8 +1083,10 @@ function AppContent(props: AppProps) {
   /**
    * Run the eval layer for the just-finished task BEFORE starting the next
    * iteration. Returns `true` to proceed (start the next session / advance),
-   * `false` to abort this startIteration (the iteration-driver will re-fire
-   * `running("")` and call startIteration again for the eval-driven retry).
+   * `false` to abort this startIteration — the eval-driven retry is then
+   * scheduled via `scheduleRetry` (which re-enters the guarded wrapper) and
+   * the one-shot `evalRetrySkipGate` makes that retry re-attempt the task
+   * instead of re-judging the same evidence.
    *
    * Opt-in: `evals.enabled === false` (the default) returns `true`
    * immediately — the loop is byte-identical to today. A task without a
@@ -1077,6 +1100,15 @@ function AppContent(props: AppProps) {
   async function runEvalIfPending(): Promise<boolean> {
     const cfg = evalsConfig()
     if (!cfg.enabled) return true
+
+    // One-shot skip: this is the eval-driven retry of the same task. Re-attempt
+    // the task now (the feedback note is under it in PLAN.md); the gate re-judges
+    // the FRESH evidence when this iteration idles, not the evidence that
+    // already failed.
+    if (evalRetrySkipGate) {
+      evalRetrySkipGate = false
+      return true
+    }
 
     const task = lastWorkedTask
     if (!task) return true
@@ -1110,7 +1142,7 @@ function AppContent(props: AppProps) {
       return true
     }
 
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
     if (!client) return true // server gone — don't block on a missing judge
 
     // Run the judge with bounded retries on transient failure (timeout/network).
@@ -1173,8 +1205,11 @@ function AppContent(props: AppProps) {
       // note uses the same prose sub-bullet convention as inter-task notes
       // (never a `- [ ]` line). Compare-and-swap to avoid clobbering the agent.
       await writeEvalNote(task, result.reasoning)
+      // One-shot skip so the scheduled retry re-attempts the task (see the
+      // evalRetrySkipGate declaration for why a gate re-entry would be wrong).
+      evalRetrySkipGate = true
       // Return false: don't start a new session. The state stays running("")
-      // and the iteration-driver re-fires startIteration for the retry.
+      // and scheduleRetry re-enters the guarded wrapper for the retry.
       return false
     }
 
@@ -1186,27 +1221,22 @@ function AppContent(props: AppProps) {
   }
 
   /**
-   * Append an eval-feedback note under the task in PLAN.md. Compare-and-swap:
-   * re-read + byte-compare before writing so a concurrent agent edit is never
-   * clobbered. Best-effort — a failure to write the note is logged but does
-   * not abort the retry (the iteration re-reads the plan regardless).
+   * Prepare the eval retry in PLAN.md with compare-and-swap: re-read +
+   * byte-compare before writing so a concurrent agent edit is never clobbered.
+   * Best-effort — a failure to write is logged but does not abort the retry
+   * (the iteration re-reads the plan regardless).
    */
   async function writeEvalNote(task: string, feedback: string): Promise<void> {
     try {
       const planPath = resolvePlanFile(props.planFile)
-      const before = await Bun.file(planPath).text()
       // Insert the note right after the task line. Keep it simple and safe:
-      // append a single indented prose line (never a `- [ ]`).
+      // append a single indented prose line (never a `- [ ]`). The parser
+      // transform also flips a completed task back to pending so the retry
+      // genuinely re-runs the SAME task (see reopenTaskForEvalRetry).
       const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
       await compareAndSwapPlan(
         planPath,
-        (c) => {
-          const lines = c.split("\n")
-          const idx = findPendingLineIndex(c, task)
-          if (idx === -1) return null // task gone (plan edited) — nothing to annotate
-          lines.splice(idx + 1, 0, note)
-          return lines.join("\n")
-        },
+        (c) => reopenTaskForEvalRetry(c, task, note),
         "eval",
       )
     } catch (err) {
@@ -1225,7 +1255,7 @@ function AppContent(props: AppProps) {
       const planPath = resolvePlanFile(props.planFile)
       const cas = await compareAndSwapPlan(
         planPath,
-        (c) => replacePendingTaskWithBlocked(c, task, reason),
+        (c) => replaceTaskWithBlocked(c, task, reason),
         "eval",
       )
       if (!cas.wrote) return // no pending task, or PLAN.md changed underfoot
@@ -1245,7 +1275,7 @@ function AppContent(props: AppProps) {
     if (startingIteration) return
     // Resolve once and reuse across the iteration; the catch reuses the same
     // client for the best-effort abort (no second createClient / url resolve).
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
     if (!client) {
       log.error("iteration", "Cannot start iteration: server not ready")
       return
@@ -1296,6 +1326,24 @@ function AppContent(props: AppProps) {
         getCurrentTask,
         refreshPlan,
         getPlanCompleteSummary,
+        scheduleRetry: () => {
+          // Route the eval retry through the guarded wrapper instead of
+          // letting start-iteration.ts call runIteration directly: the
+          // wrapper owns the in-flight guard and the error funnel, so a
+          // throwing retry (429 on createSession, prompt I/O failure)
+          // reaches handleIterationError (cooldown/recoverable error)
+          // instead of an unhandled rejection that kills the TUI. The extra
+          // tick lets the current call's finally release startingIteration
+          // before the retry re-enters. Mirrors the fallback's state check:
+          // if the user paused in this window, the driver-driven
+          // startIteration on resume performs the retry.
+          setTimeout(() => {
+            const state = loop.state()
+            if (state.type === "running" && state.sessionId === "") {
+              void startIteration()
+            }
+          }, 0)
+        },
       })
     } catch (err) {
       // Best-effort: abort the session we just created so a failure after
@@ -1308,6 +1356,14 @@ function AppContent(props: AppProps) {
         } catch {
           // Best effort — the session may already be gone.
         }
+      } else {
+        // The iteration never started (createSession threw: e.g. a 429):
+        // reset the no-progress streak so infrastructure failures never burn
+        // the "agent stuck on task" budget — otherwise a persistent 429
+        // trips the no-progress threshold (default 3) with a misleading
+        // decompose offer while the rate-limit circuit breaker (default 8
+        // attempts) can never fire. Both mechanisms retry the same attempt.
+        noProgressDetector?.reset()
       }
       // Rate limits → cooldown + retry; anything else → recoverable error.
       handleIterationError(err)
@@ -1336,7 +1392,7 @@ function AppContent(props: AppProps) {
    */
   async function createDebugSession(): Promise<void> {
     log.info("session", "Creating debug session...")
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
     if (!client) {
       log.error("session", "Cannot create debug session: server not ready")
       return
@@ -1368,7 +1424,7 @@ function AppContent(props: AppProps) {
 
   async function sendDebugPrompt(text: string): Promise<void> {
     const sid = resolveActiveSessionId(sessionId(), lastSessionId())
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
 
     if (!client || !sid) {
       toast.show({ variant: "error", message: t("toastNoSessionPrompt") })
@@ -1437,7 +1493,7 @@ function AppContent(props: AppProps) {
     const currentSessionId = sessionId()
     if (currentSessionId) {
       try {
-            const client = tryGetClient(server.url)
+            const client = tryGetClient(launchInfo)
         if (client) {
           await abortSession(client, currentSessionId)
         }
@@ -1508,20 +1564,20 @@ function AppContent(props: AppProps) {
       // that configures the model only per-agent still runs. Single source of
       // truth for the precedence rules: resolveAgentAndModel. We fetch config +
       // agents in parallel, once, and never block startup on an infra failure.
-      const client = tryGetClient(server.url)
+      const client = tryGetClient(launchInfo)
       if (!client) {
         // No URL yet; the effect re-runs reactively when server.url() resolves.
         startOnce()
       } else {
         Promise.all([
-          withTimeout((signal) => client.config.get({}, { signal }), 15_000, "config.get")
-            .then((res) => res.data as OcConfig | undefined)
+          client.fetchConfig({ timeoutMs: 15_000 })
+            .then((config) => config as OcConfig)
             .catch((err) => {
               log.error("config", "Failed to fetch config", err)
-              return undefined
+              return undefined as OcConfig | undefined
             }),
-          withTimeout((signal) => client.app.agents({}, { signal }), 15_000, "app.agents")
-            .then((res) => (res.data ?? []) as OcAgent[])
+          client.fetchAgents({ timeoutMs: 15_000 })
+            .then((agents) => agents as OcAgent[])
             .catch((err) => {
               log.error("agent", "Failed to fetch agents", err)
               return [] as OcAgent[]
@@ -1613,7 +1669,7 @@ function AppContent(props: AppProps) {
     dialog,
     t,
     resilience,
-    serverUrl: server.url,
+    serverInfo: launchInfo,
     createDebugSession,
     reconcileAndAdvance,
   })
@@ -1770,6 +1826,16 @@ function AppContent(props: AppProps) {
             // threshold window. The user explicitly chose to resume.
             noProgressDetector?.reset()
             loop.dispatch({ type: "retry" })
+            // A server-source error leaves useServer in `error`, and nothing
+            // else relaunches it from there: startServer's guard rejects
+            // `error`, and every restartServer caller (watchdog, SSE
+            // exhaustion) only fires while the loop is running. Without
+            // this, the R button wedges the loop in `starting` forever.
+            // restartServer owns its own re-entry guard, and the ready
+            // effect then composes the resume (server_ready → start).
+            if (server.status() === "error") {
+              void restartServer()
+            }
           }
         }}
         onDecompose={
@@ -1791,7 +1857,7 @@ function AppContent(props: AppProps) {
     // user always lands back on R/Q. Avoids two stacked dialogs fighting over
     // the keyboard.
     dialog.clear()
-    const client = tryGetClient(server.url)
+    const client = tryGetClient(launchInfo)
     if (!client) {
       toast.show({ message: t("errDecomposeFailed"), variant: "error" })
       presentError(view)

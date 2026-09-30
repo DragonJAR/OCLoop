@@ -1,150 +1,57 @@
 import { describe, expect, it } from "bun:test"
 import { fetchModelCatalog } from "./fetch-models"
-import type { OpencodeClient } from "./api"
-
-const OK = { ok: true, status: 200, statusText: "OK" }
+import type { ModelCatalogEntry } from "./fetch-models"
+import type { OpencodeBackend } from "./api"
 
 /**
- * Build a mock client whose `provider.list` returns the given providers and
- * connected set. Mirrors the mock pattern of one-shot-agent.test.ts.
+ * Build a mock backend whose `fetchProviderCatalog` returns the given entries
+ * (or throws). The flattening of each dialect's provider response lives in
+ * the backend (parseV1ProviderCatalog / parseV2ProviderCatalog, pinned by
+ * opencode-backend.test.ts); these tests pin the wrapper's fail-safe
+ * contract: never crash startup, always return `[]` on failure.
  */
-function mockClient(
-  providers: Array<{ id: string; models: Record<string, { name?: string }> }>,
-  connected: string[],
-): OpencodeClient {
+function mockBackend(
+  entries: ModelCatalogEntry[] = [],
+): OpencodeBackend {
   return {
-    provider: {
-      list: async () => ({ data: { all: providers, connected, default: {} }, response: OK }),
+    version: 1,
+    url: "http://test",
+    createSession: async () => {
+      throw new Error("unused")
     },
-  } as unknown as OpencodeClient
+    sendPrompt: async () => {},
+    abortSession: async () => false,
+    getSessionStatus: async () => undefined,
+    fetchMessages: async () => [],
+    fetchAgents: async () => [],
+    fetchConfig: async () => ({}),
+    fetchProviderCatalog: async () => entries,
+    subscribeEvents: async () => {
+      throw new Error("unused")
+    },
+  } as unknown as OpencodeBackend
 }
 
 describe("fetchModelCatalog", () => {
-  it("flattens connected providers and their models into entries", async () => {
-    const client = mockClient(
-      [
-        {
-          id: "anthropic",
-          models: {
-            "claude-haiku-4-5": { name: "Claude Haiku 4.5" },
-            "claude-opus-4-8": { name: "Claude Opus 4.8" },
-          },
-        },
-        {
-          id: "openai",
-          models: {
-            "gpt-5.2": { name: "GPT-5.2" },
-          },
-        },
-      ],
-      ["anthropic", "openai"],
-    )
-    const catalog = await fetchModelCatalog(client)
-    expect(catalog).toEqual([
+  it("returns the backend's catalog entries", async () => {
+    const entries: ModelCatalogEntry[] = [
       { id: "anthropic/claude-haiku-4-5", name: "Claude Haiku 4.5", provider: "anthropic" },
-      { id: "anthropic/claude-opus-4-8", name: "Claude Opus 4.8", provider: "anthropic" },
       { id: "openai/gpt-5.2", name: "GPT-5.2", provider: "openai" },
-    ])
+    ]
+    expect(await fetchModelCatalog(mockBackend(entries))).toEqual(entries)
   })
 
-  it("excludes providers that are NOT connected (no valid credentials)", async () => {
-    const client = mockClient(
-      [
-        { id: "anthropic", models: { "claude-haiku-4-5": { name: "Haiku" } } },
-        { id: "google", models: { "gemini-2.5-pro": { name: "Gemini" } } },
-      ],
-      ["anthropic"], // google not connected
-    )
-    const catalog = await fetchModelCatalog(client)
-    expect(catalog).toEqual([
-      { id: "anthropic/claude-haiku-4-5", name: "Haiku", provider: "anthropic" },
-    ])
+  it("returns [] when the backend catalog is empty", async () => {
+    expect(await fetchModelCatalog(mockBackend([]))).toEqual([])
   })
 
-  it("falls back to the model key as the name when the model has no name field", async () => {
-    const client = mockClient(
-      [{ id: "zai", models: { "glm-5.2": {} } }],
-      ["zai"],
-    )
-    const catalog = await fetchModelCatalog(client)
-    expect(catalog).toEqual([{ id: "zai/glm-5.2", name: "glm-5.2", provider: "zai" }])
-  })
-
-  it("returns [] when no providers are connected", async () => {
-    const client = mockClient(
-      [{ id: "anthropic", models: { "claude-haiku-4-5": { name: "Haiku" } } }],
-      [],
-    )
-    expect(await fetchModelCatalog(client)).toEqual([])
-  })
-
-  it("returns [] on a malformed response (no data)", async () => {
-    const client = {
-      provider: { list: async () => ({ response: OK }) },
-    } as unknown as OpencodeClient
-    expect(await fetchModelCatalog(client)).toEqual([])
-  })
-
-  it("returns [] when provider.list throws (never crashes startup)", async () => {
-    const client = {
-      provider: { list: async () => { throw new Error("network down") } },
-    } as unknown as OpencodeClient
-    expect(await fetchModelCatalog(client)).toEqual([])
-  })
-
-  it("returns [] when the HTTP response is not ok", async () => {
-    const client = {
-      provider: {
-        list: async () => ({ response: { ok: false, status: 500, statusText: "Server Error" } }),
+  it("returns [] when fetchProviderCatalog throws (never crashes startup)", async () => {
+    const backend = {
+      ...mockBackend([]),
+      fetchProviderCatalog: async () => {
+        throw new Error("network down")
       },
-    } as unknown as OpencodeClient
-    expect(await fetchModelCatalog(client)).toEqual([])
-  })
-
-  it("tolerates a provider with no models field", async () => {
-    const client = mockClient(
-      [
-        { id: "anthropic", models: { "claude-haiku-4-5": { name: "Haiku" } } },
-        // @ts-expect-error — simulating a malformed provider entry
-        { id: "broken" },
-      ],
-      ["anthropic", "broken"],
-    )
-    const catalog = await fetchModelCatalog(client)
-    expect(catalog).toEqual([
-      { id: "anthropic/claude-haiku-4-5", name: "Haiku", provider: "anthropic" },
-    ])
-  })
-
-  it("handles models provided as an array of objects or strings (W1-11)", async () => {
-    const client = {
-      provider: {
-        list: async () => ({
-          data: {
-            all: [
-              {
-                id: "custom",
-                models: [
-                  { id: "model-alpha", name: "Model Alpha" },
-                  { id: "model-beta" },
-                  "model-gamma",
-                  null,
-                ],
-              },
-            ],
-            connected: ["custom"],
-            default: {},
-          },
-          response: OK,
-        }),
-      },
-    } as unknown as OpencodeClient
-
-    const catalog = await fetchModelCatalog(client)
-    expect(catalog).toEqual([
-      { id: "custom/model-alpha", name: "Model Alpha", provider: "custom" },
-      { id: "custom/model-beta", name: "model-beta", provider: "custom" },
-      { id: "custom/model-gamma", name: "model-gamma", provider: "custom" },
-    ])
+    } as unknown as OpencodeBackend
+    expect(await fetchModelCatalog(backend)).toEqual([])
   })
 })

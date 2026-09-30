@@ -1,6 +1,6 @@
 import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
-import type { Event, Todo } from "@opencode-ai/sdk/v2"
-import { createClient } from "../lib/api"
+import type { Todo } from "@opencode-ai/sdk/v2"
+import { createClient, getApiTimeouts, type LaunchInfo, type BackendEvent } from "../lib/api"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
 import { computeBackoff } from "../lib/backoff"
@@ -107,6 +107,17 @@ const TRANSIENT_RE =
 
 function getMessageRoleKey(sessionId: string | undefined, messageId: string): string {
   return sessionId ? `${sessionId}:${messageId}` : messageId
+}
+
+/**
+ * Read a string-valued event property (undefined when absent or another
+ * type). The backend normalizes both dialects' events to
+ * `{type, properties: Record<string, unknown>}`; consumers care about the
+ * well-known string keys.
+ */
+function propString(properties: Record<string, unknown>, key: string): string | undefined {
+  const value = properties[key]
+  return typeof value === "string" ? value : undefined
 }
 
 /**
@@ -291,7 +302,7 @@ export interface SSEEventHandlers {
   /** Called when a session error occurs */
   onSessionError?: (sessionId: string | undefined, error: SessionError) => void
   /** Called for any event (useful for debugging) */
-  onAnyEvent?: (event: Event) => void
+  onAnyEvent?: (event: BackendEvent) => void
   /** Called when a tool is used */
   onToolUse?: (part: ToolPart) => void
   /** Called when a message part (text) is received */
@@ -308,8 +319,8 @@ export interface SSEEventHandlers {
  * Options for the useSSE hook
  */
 export interface UseSSEOptions {
-  /** Server URL to connect to (reactive accessor) */
-  url: Accessor<string>
+  /** Server launch info (reactive accessor: url + version + auth). */
+  info: Accessor<LaunchInfo>
   /** Directory scope for the SSE connection */
   directory?: string
   /** Event handlers */
@@ -369,7 +380,7 @@ export interface UseSSEReturn {
  */
 export function useSSE(options: UseSSEOptions): UseSSEReturn {
   const {
-    url,
+    info,
     directory,
     handlers,
     sessionId,
@@ -390,7 +401,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
   /**
    * Process an incoming SSE event and call appropriate handlers
    */
-  function processEvent(event: Event): void {
+  function processEvent(event: BackendEvent): void {
     log.debug("sse", "Event received", { type: event.type, sessionId: sessionId?.(), data: truncateForLog(event.properties) })
 
     if (handlers.onAnyEvent) {
@@ -424,7 +435,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       // into a state with no session context. The SDK always populates
       // sessionID, so this path is dormant in practice.
       case "session.idle": {
-        const eventSessionId = event.properties.sessionID
+        const eventSessionId = propString(event.properties, "sessionID")
+        // Session-scoped event without a sessionID: dropped at the hook layer
+        // (per-session filter policy — see the comment above).
+        if (eventSessionId === undefined) break
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
@@ -433,10 +447,9 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       case "session.error": {
-        const eventSessionId = (event.properties as { sessionID?: string })
-          .sessionID
+        const eventSessionId = propString(event.properties, "sessionID")
 
-        const rawError = (event.properties as any).error
+        const rawError = event.properties.error
         const sessionError = classifySessionError(rawError)
 
         if (filterSessionId && eventSessionId !== filterSessionId) {
@@ -447,16 +460,24 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       case "todo.updated": {
-        const eventSessionId = event.properties.sessionID
+        const eventSessionId = propString(event.properties, "sessionID")
+        // Session-scoped event without a sessionID: dropped at the hook layer
+        // (per-session filter policy — see the comment above).
+        if (eventSessionId === undefined) break
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
         }
-        handlers.onTodoUpdated?.(eventSessionId, event.properties.todos)
+        const rawTodos = event.properties.todos
+        const todos = Array.isArray(rawTodos) ? (rawTodos as Todo[]) : []
+        handlers.onTodoUpdated?.(eventSessionId, todos)
         break
       }
 
       case "file.edited": {
-        handlers.onFileEdited?.(event.properties.file)
+        const file = propString(event.properties, "file")
+        if (file !== undefined) {
+          handlers.onFileEdited?.(file)
+        }
         break
       }
 
@@ -529,7 +550,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       return
     }
 
-    const currentUrl = url()
+    const currentInfo = info()
+    const currentUrl = currentInfo.url
 
     if (!currentUrl) {
       log.warn("sse", "Cannot connect: URL is empty")
@@ -550,19 +572,21 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
     log.info("sse", "Connecting", { url: currentUrl, directory })
 
     try {
-      const client = createClient(currentUrl, directory)
+      // The version-aware backend normalizes both dialects' event streams to
+      // the v1 event shapes this hook consumes (v2 servers also require the
+      // launch's Authorization header). The subscribe promise resolves only
+      // once the server accepted the subscription, so "connected" still means
+      // the stream is live — a failed handshake throws below.
+      const client = createClient(currentUrl, directory, currentInfo)
 
-      const events = await client.event.subscribe(
-        { directory },
-        { signal: myController.signal },
-      )
+      const events = await client.subscribeEvents({
+        directory,
+        signal: myController.signal,
+        timeoutMs: getApiTimeouts().ping,
+      })
 
       // Superseded while awaiting the subscription? Leave status to the winner.
       if (abortController !== myController) return
-
-      if (!events.stream) {
-        throw new Error("Failed to subscribe to SSE events: no stream returned")
-      }
 
       setStatus("connected")
       // A successful connection clears the reconnect streak.
@@ -682,7 +706,6 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
    * Manually trigger a reconnection
    */
   function reconnect(): void {
-    setReconnectAttempts(0)
     shouldReconnect = true
 
     if (abortController) {

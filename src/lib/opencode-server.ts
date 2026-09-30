@@ -1,88 +1,54 @@
-/**
- * Embedded OpenCode server launcher.
- *
- * On macOS/Linux this delegates VERBATIM to the SDK's `createOpencodeServer`,
- * so non-Windows behavior is byte-identical to before — this module cannot
- * regress those systems.
- *
- * ONLY on Windows do we take over. The SDK (`@opencode-ai/sdk/dist/server.js`)
- * spawns the bare command `opencode` with no shell and no path option. On
- * Windows that fails with `uv_spawn 'opencode' ENOENT` even when
- * `opencode --version` works in the user's shell, because `spawn` without a
- * shell can't resolve a `.cmd`/`.ps1` shim (CreateProcess only appends `.exe`)
- * the way the shell does. Since the SDK exposes no way to configure its spawn,
- * we mirror its bootstrap exactly but spawn opencode's RESOLVED full path —
- * spawning a native `.exe` directly (so `proc` IS opencode and `close()` kills
- * it cleanly), and using a shell only for a Windows shim.
- *
- * The Windows bootstrap below is a faithful copy of the SDK's
- * `createOpencodeServer` (args, env, the "opencode server listening on <url>"
- * stdout parse, and the timeout/exit/error/abort handlers) — only the spawn
- * differs. If the SDK ever changes that "listening" line, mirror it here.
- */
+/** Embedded OpenCode server launcher with v1/v2 startup and auth handling. */
 
+import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
-import { createOpencodeServer, type ServerOptions } from "@opencode-ai/sdk/server"
 import type { Config } from "@opencode-ai/sdk"
-import { resolveCommandPath } from "./command-exists"
+import type { ServerOptions } from "@opencode-ai/sdk/server"
+import { resolveSpawnable } from "./command-exists"
+import { detectOpencodeVersion, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 
-/** Handle returned by the launcher (matches the SDK's return shape). */
 export interface OpencodeServer {
   url: string
+  version: OpencodeMajor | null
+  /** Present for v2 and unknown-version launches so capability probes can authenticate. */
+  authorization?: string
   close: () => void
 }
 
 const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
+const READY_PREFIX_RE = /^(?:opencode\s+)?server\s+listening\b/
+const READY_URL_RE = /^(?:opencode\s+)?server\s+listening\s+on\s+(https?:\/\/\S+)/
+const V2_USERNAME = "opencode"
+const PASSWORD_OUTPUT_LINE_RE = /^(?:opencode[ \t]+)?server[ \t]+password\b[^\r\n]*$/gim
+
+/** Remove server-generated password lines before startup output reaches errors or logs. */
+function redactSensitiveOutputImpl(output: string): string {
+  if (typeof output !== "string") return ""
+  return output.replace(PASSWORD_OUTPUT_LINE_RE, "<redacted>")
+}
 
 type ServerProcess = ReturnType<typeof spawn>
 
-/**
- * Options for {@link startOpencodeServer}. Extends the SDK's `ServerOptions`
- * with `permissions`, a per-tool autonomous-approval map (true/absent → allow,
- * false → OpenCode's interactive default). Omitted means fully autonomous —
- * used by `--create-plan`, which is headless and must never block.
- */
 export interface StartOpencodeServerOptions extends ServerOptions {
   permissions?: Partial<PermissionsConfig>
 }
 
-/**
- * Build the OpenCode `permission` block for the autonomous loop.
- *
- * OCLoop is unattended: nothing answers an interactive confirmation, so any
- * tool OpenCode would "ask" about (edit, bash, webfetch, …) hangs the iteration
- * forever. Read-only tools never ask, so the {@link PERMISSION_TOOLS} set is the
- * complete list that can block. For each tool, `true` (or absent, the default)
- * → `"allow"` (auto-approve); `false` → the field is OMITTED so OpenCode falls
- * back to its own policy (`ask`/interactive) for that tool.
- *
- * This is applied via OPENCODE_CONFIG_CONTENT, which OpenCode loads at the
- * HIGHEST precedence (after opencode.json) — so an emitted `"allow"` OVERRIDES
- * the matching permission in the user's opencode.json. A tool dropped to `false`
- * here is OMITTED (no conflicting key), so the user's opencode.json setting for
- * it is preserved — that (not a `deny` in opencode.json while the tool stays
- * enabled here) is how a user keeps a tool interactive/denied under OCLoop.
- */
+/** Build the autonomous OpenCode permission block consumed through config. */
 export function buildPermissionConfig(
   enabled?: Partial<PermissionsConfig>,
 ): NonNullable<Config["permission"]> {
   const permission: NonNullable<Config["permission"]> = {}
   for (const tool of PERMISSION_TOOLS) {
-    // Absent or true → autonomous allow; only an explicit false falls back to
-    // OpenCode's interactive default for that tool.
-    if (enabled?.[tool] !== false) {
-      permission[tool] = "allow"
-    }
+    if (enabled?.[tool] !== false) permission[tool] = "allow"
   }
   return permission
 }
 
 /**
- * Merge the autonomous permission policy into `options`. `enabled`, when given,
- * lets a caller drop specific tools back to OpenCode's interactive default;
- * omitted means fully autonomous (all five allowed) — equivalent to
- * `buildPermissionConfig()` with no args.
+ * Merge OCLoop's autonomous permissions over the caller's config. OpenCode v2
+ * loads OPENCODE_CONFIG_CONTENT last and applies the last matching permission
+ * rule, so an injected allow can override a deny from a lower-priority config.
  */
 function withAutonomousPermissions(
   options: ServerOptions,
@@ -131,21 +97,28 @@ function killServerProcess(proc: ServerProcess, killTree = true): void {
   }
 }
 
-export async function startOpencodeServer(
+async function getServerSpawnTarget(): Promise<{ command: string; shell: boolean }> {
+  if (process.platform !== "win32") return { command: "opencode", shell: false }
+
+  const resolved = await resolveSpawnable("opencode")
+  const binary = resolved ?? "opencode"
+  const shell = isWindowsShellShim(binary)
+  return {
+    command: shell ? `"${binary}"` : binary,
+    shell,
+  }
+}
+
+type StartOpencodeServerFunction = {
+  (options?: StartOpencodeServerOptions): Promise<OpencodeServer>
+  readonly redactSensitiveOutput?: (output: string) => string
+}
+
+const startOpencodeServerImpl = async function startOpencodeServer(
   options: StartOpencodeServerOptions = {},
 ): Promise<OpencodeServer> {
-  // Force the autonomous permission policy once, here, so the "never blocks on
-  // a confirmation" invariant holds regardless of which caller spawns the
-  // server. Both the SDK delegation below and the Windows bootstrap serialize
-  // `config` the same way, so merging once covers both paths.
   const merged = withAutonomousPermissions(options, options.permissions)
-
-  // macOS / Linux: go through the SDK exactly as before.
-  if (process.platform !== "win32") {
-    return createOpencodeServer(merged)
-  }
-
-  // --- Windows-only path ---
+  const version = await detectOpencodeVersion()
   const hostname = merged.hostname ?? "127.0.0.1"
   const port = merged.port ?? 4096
   const timeout = merged.timeout ?? 5000
@@ -155,24 +128,31 @@ export async function startOpencodeServer(
   const logLevel = (config as { logLevel?: string } | undefined)?.logLevel
   if (logLevel) args.push(`--log-level=${logLevel}`)
 
-  // Resolve opencode's real path. A native `.exe` (the official installer) is
-  // spawned directly (no shell) so the kill in close() reaps opencode itself.
-  // A `.cmd`/`.bat`/`.ps1` shim (npm install) needs a shell; quote the path so
-  // a directory with spaces still works. Fall back to the bare name if
-  // resolution fails — same behavior (and same error) the SDK had.
-  const resolved = await resolveCommandPath("opencode")
-  const bin = resolved ?? "opencode"
-  const useShell = isWindowsShellShim(bin)
-  const command = useShell ? `"${bin}"` : bin
+  const target = await getServerSpawnTarget()
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
+  }
+  // Use our own credential for v2 and unknown versions. Unknown launches may
+  // be v2 and need this header for the backend's capability probe; older v1
+  // servers ignore the env override, while newer v1 builds honor this same
+  // credential.
+  delete env.OPENCODE_SERVER_PASSWORD
 
-  const proc = spawn(command, args, {
+  let authorization: string | undefined
+  if (version === 2 || version === null) {
+    const password = randomBytes(32).toString("hex")
+    env.OPENCODE_SERVER_PASSWORD = password
+    authorization = `Basic ${Buffer.from(`${V2_USERNAME}:${password}`, "utf8").toString("base64")}`
+  }
+
+  const spawnOptions: Parameters<typeof spawn>[2] = {
     signal: merged.signal,
-    shell: useShell,
-    env: {
-      ...process.env,
-      OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
-    },
-  })
+    env,
+  }
+  if (target.shell) spawnOptions.shell = true
+
+  const proc = spawn(target.command, args, spawnOptions)
 
   const url = await new Promise<string>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -206,13 +186,13 @@ export async function startOpencodeServer(
       resolve(serverUrl)
     }
 
-    abortHandler = () => {
-      rejectStartup(new Error("Aborted"), true)
-    }
+    abortHandler = () => rejectStartup(new Error("Aborted"), true)
 
     timer = setTimeout(() => {
+      const safeOutput = redactSensitiveOutputImpl(output)
+      const outputDetail = safeOutput.trim() ? `\nServer output: ${safeOutput}` : ""
       rejectStartup(
-        new Error(`Timeout waiting for server to start after ${timeout}ms`),
+        new Error(`Timeout waiting for server to start after ${timeout}ms${outputDetail}`),
         true,
       )
     }, timeout)
@@ -220,18 +200,17 @@ export async function startOpencodeServer(
     proc.stdout?.on("data", (chunk) => {
       output += chunk.toString()
       for (const line of output.split("\n")) {
-        if (line.startsWith("opencode server listening")) {
-          const match = line.match(/on\s+(https?:\/\/[^\s]+)/)
-          if (!match?.[1]) {
-            rejectStartup(
-              new Error(`Failed to parse server url from output: ${line}`),
-              true,
-            )
-            return
-          }
-          resolveStartup(match[1])
+        if (!READY_PREFIX_RE.test(line)) continue
+        const match = READY_URL_RE.exec(line)
+        if (!match?.[1]) {
+          rejectStartup(
+            new Error(`Failed to parse server url from output: ${redactSensitiveOutputImpl(output)}`),
+            true,
+          )
           return
         }
+        resolveStartup(match[1])
+        return
       }
     })
     proc.stderr?.on("data", (chunk) => {
@@ -239,14 +218,23 @@ export async function startOpencodeServer(
     })
     proc.on("exit", (code) => {
       let msg = `Server exited with code ${code}`
-      if (output.trim()) msg += `\nServer output: ${output}`
+      const safeOutput = redactSensitiveOutputImpl(output)
+      if (safeOutput.trim()) msg += `\nServer output: ${safeOutput}`
       rejectStartup(new Error(msg), false)
     })
-    proc.on("error", (error) => {
-      rejectStartup(error, true)
-    })
+    proc.on("error", (error) => rejectStartup(error, true))
     merged.signal?.addEventListener("abort", abortHandler)
   })
 
-  return { url, close: () => killServerProcess(proc, true) }
+  return {
+    url,
+    version,
+    ...(authorization ? { authorization } : {}),
+    close: () => killServerProcess(proc, true),
+  }
 }
+
+export const startOpencodeServer: StartOpencodeServerFunction = Object.assign(
+  startOpencodeServerImpl,
+  { redactSensitiveOutput: redactSensitiveOutputImpl },
+)

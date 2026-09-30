@@ -1,46 +1,56 @@
 import { describe, expect, it } from "bun:test"
 import { runOneShotAgent } from "./one-shot-agent"
-import type { OpencodeClient } from "./api"
-
-const OK = { ok: true, status: 200, statusText: "OK" }
+import type { OpencodeBackend } from "./api"
 
 describe("runOneShotAgent", () => {
   it("returns the agent's reply once the session goes idle with a new message", async () => {
     let msgCalls = 0
-    const client = {
-      session: {
-        create: async () => ({ data: { id: "ses_1" }, response: OK }),
-        promptAsync: async () => ({ response: OK }),
-        status: async () => ({ data: { ses_1: { type: "idle" } }, response: OK }),
-        messages: async () => {
-          msgCalls++
-          // First call seeds the "before" count (empty); later calls carry the
-          // assistant reply so hasNewAssistantReply trips.
-          const data =
-            msgCalls === 1
-              ? []
-              : [{ info: { role: "assistant" }, parts: [{ type: "text", text: "- [ ] one\n- [ ] two" }] }]
-          return { data, response: OK }
-        },
-        abort: async () => ({ data: true, response: OK }),
+    // Backend-shaped stub: createSession returns {id, title}; status/messages
+    // return the verdicts directly (no RequestResult wrappers).
+    const backend = {
+      version: 1,
+      url: "http://test",
+      createSession: async () => ({ id: "ses_1", title: "" }),
+      sendPrompt: async () => {},
+      abortSession: async () => true,
+      getSessionStatus: async () => ({ type: "idle" as const }),
+      fetchMessages: async () => {
+        msgCalls++
+        // First call seeds the "before" count (empty); later calls carry the
+        // assistant reply so hasNewAssistantReply trips.
+        return msgCalls === 1
+          ? []
+          : [{ info: { role: "assistant" }, parts: [{ type: "text", text: "- [ ] one\n- [ ] two" }] }]
       },
-    } as unknown as OpencodeClient
+      fetchAgents: async () => [],
+      fetchConfig: async () => ({}),
+      fetchProviderCatalog: async () => [],
+      subscribeEvents: async () => {
+        throw new Error("unused")
+      },
+    } as unknown as OpencodeBackend
 
-    const reply = await runOneShotAgent(client, "split this", { pollMs: 1, timeoutMs: 2000 })
+    const reply = await runOneShotAgent(backend, "split this", { pollMs: 1, timeoutMs: 2000 })
     expect(reply).toBe("- [ ] one\n- [ ] two")
   })
 
   it("throws when no reply lands before the deadline", async () => {
-    const client = {
-      session: {
-        create: async () => ({ data: { id: "ses_1" }, response: OK }),
-        promptAsync: async () => ({ response: OK }),
-        status: async () => ({ data: { ses_1: { type: "busy" } }, response: OK }),
-        messages: async () => ({ data: [], response: OK }),
-        abort: async () => ({ data: true, response: OK }),
+    const backend = {
+      version: 1,
+      url: "http://test",
+      createSession: async () => ({ id: "ses_1", title: "" }),
+      sendPrompt: async () => {},
+      abortSession: async () => true,
+      getSessionStatus: async () => ({ type: "busy" as const }),
+      fetchMessages: async () => [],
+      fetchAgents: async () => [],
+      fetchConfig: async () => ({}),
+      fetchProviderCatalog: async () => [],
+      subscribeEvents: async () => {
+        throw new Error("unused")
       },
-    } as unknown as OpencodeClient
+    } as unknown as OpencodeBackend
 
-    await expect(runOneShotAgent(client, "x", { pollMs: 1, timeoutMs: 30 })).rejects.toThrow(/timed out/)
+    await expect(runOneShotAgent(backend, "x", { pollMs: 1, timeoutMs: 30 })).rejects.toThrow(/timed out/)
   })
 })

@@ -1,12 +1,11 @@
 #!/usr/bin/env bun
 
 import { render } from "@opentui/solid"
-import { startOpencodeServer } from "./lib/opencode-server"
+import { startOpencodeServer, type OpencodeServer } from "./lib/opencode-server"
 import { isPortAvailable } from "./lib/port"
-import { createOpencodeClient } from "@opencode-ai/sdk/v2"
+import { createClient } from "./lib/api"
 import { App } from "./App"
 import {
-  assertResponse,
   configureApiTimeouts,
   toSdkModel,
   reconcileSession,
@@ -271,18 +270,21 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
   }
 
   console.log("\n" + t("cpStartingServer"))
-  let server: { url: string; close: () => void } | null = null
+  let server: OpencodeServer | null = null
   try {
     server = await startOpencodeServer({
       hostname: "127.0.0.1",
       port,
       timeout: 15000,
     })
-    const client = createOpencodeClient({ baseUrl: server.url })
-    const created = await client.session.create({})
-    assertResponse(created, "create session")
-    if (!created.data) throw new Error(t("cpSessionFail"))
-    const sessionID = created.data.id
+    // The version-aware backend handles both dialects (v2 servers require the
+    // launch's Authorization header; v1's session.create route differs).
+    const client = createClient(server.url, undefined, {
+      version: server.version,
+      authorization: server.authorization,
+    })
+    const created = await client.createSession()
+    const sessionID = created.id
 
     // Delegate the poll/choices flow to runCreatePlanFlow. The four I/O seams
     // are wired to the real primitives; the outcome maps back to exit semantics.

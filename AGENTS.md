@@ -61,4 +61,5 @@ línea. Ejemplo:
 - @docs/opencode-sdk.md — peculiaridades del SDK de sesiones
 -->
 
-- @docs/opencode-permissions.md — OCLoop fuerza `permission: "allow"` al levantar el servidor; deep-merge de OPENCODE_CONFIG_CONTENT respeta los `deny` del usuario.
+- @docs/opencode-permissions.md — OCLoop fuerza `permission: "allow"` al levantar el servidor. En OpenCode v1 el deep-merge respeta los `deny` del usuario; en v2 la config inline se carga al final y la última regla gana, así que el `allow` inyectado puede pisar un `deny` del usuario (desactívalo con Ctrl+P → Permissions si necesitas garantizarlo).
+- Lanzador propio: `src/lib/opencode-server.ts` spawnea `opencode serve` directamente (no usa el helper del SDK) porque la línea de arranque y la auth difieren entre v1 (`opencode server listening on …`, sin password) y v2 (`server listening on …`, Basic auth con `OPENCODE_SERVER_PASSWORD`); `src/lib/opencode-version.ts` detecta la major a priori.

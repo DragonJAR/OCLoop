@@ -1,6 +1,16 @@
 import { describe, expect, it, beforeEach } from "bun:test"
-import { reconcileSession, getSessionStatus, assertResponse, sendPromptAsync, toSdkModel, createClient, tryGetClient, __resetClientCacheForTests, type OpencodeClient } from "./api"
-import type { SessionStatus } from "@opencode-ai/sdk/v2"
+import {
+  reconcileSession,
+  getSessionStatus,
+  assertResponse,
+  sendPromptAsync,
+  toSdkModel,
+  createClient,
+  tryGetClient,
+  __resetClientCacheForTests,
+  type OpencodeBackend,
+  type LaunchInfo,
+} from "./api"
 
 describe("assertResponse", () => {
   it("passes through a 2xx response", () => {
@@ -75,110 +85,120 @@ describe("model normalization", () => {
     expect(toSdkModel("  ")).toBeUndefined()
   })
 
-  it("passes the normalized model through promptAsync", async () => {
+  it("passes the prompt params through to the backend verbatim", async () => {
     let seen: unknown
-    const client = {
-      session: {
-        promptAsync: async (params: unknown) => {
-          seen = params
-          return { response: { ok: true, status: 200, statusText: "OK" } }
-        },
+    const backend = {
+      sendPrompt: async (params: unknown) => {
+        seen = params
       },
-    } as unknown as OpencodeClient
+    } as unknown as OpencodeBackend
 
-    await sendPromptAsync(client, {
+    await sendPromptAsync(backend, {
       sessionID: "s1",
       parts: [{ type: "text", text: "hello" }],
       model: "anthropic/claude-sonnet-4",
     })
 
+    // The facade forwards the params untouched; the model string is
+    // normalized to the SDK object INSIDE the backend's dialect paths
+    // (toSdkModel itself is fully unit-tested above).
     expect(seen).toMatchObject({
       sessionID: "s1",
-      model: { providerID: "anthropic", modelID: "claude-sonnet-4" },
+      parts: [{ type: "text", text: "hello" }],
+      model: "anthropic/claude-sonnet-4",
     })
   })
 })
 
+/** The status verdicts reconcileSession maps over, in the backend's shape. */
+type StatusVerdict = { type: "idle" | "busy" | "retry" }
+
 /**
- * Build a minimal fake OpencodeClient whose `session.status` returns a chosen
- * record (or throws / hangs) so we can drive reconcileSession deterministically.
+ * Build a minimal fake backend whose `getSessionStatus` behaves as chosen
+ * (returns a verdict / undefined, throws, or outlives its timeout budget) so
+ * we can drive reconcileSession deterministically.
  */
-function fakeClient(opts: {
-  data?: Record<string, SessionStatus>
-  ok?: boolean
+function fakeBackend(opts: {
+  status?: StatusVerdict | undefined
   throws?: boolean
   hangMs?: number
-}): OpencodeClient {
+}): OpencodeBackend {
   return {
-    session: {
-      status: async (_params: unknown, _options?: { signal?: AbortSignal }) => {
-        if (opts.throws) throw new Error("connection refused")
-        if (opts.hangMs) {
-          await new Promise((r) => setTimeout(r, opts.hangMs))
-        }
-        return {
-          response: { ok: opts.ok ?? true, status: 200, statusText: "OK" },
-          data: opts.data ?? {},
-        }
-      },
+    version: 1,
+    url: "http://test",
+    createSession: async () => {
+      throw new Error("unused")
     },
-  } as unknown as OpencodeClient
+    sendPrompt: async () => {},
+    abortSession: async () => false,
+    getSessionStatus: async (_id: string, callOpts?: { timeoutMs?: number }) => {
+      if (opts.throws) throw new Error("connection refused")
+      if (opts.hangMs) {
+        // Model a probe slower than its budget: it "resolves" only after the
+        // hang, so a per-call timeout shorter than the hang rejects exactly
+        // like the real backend's withTimeout wrapper would.
+        const budget = callOpts?.timeoutMs
+        await new Promise((r) => setTimeout(r, opts.hangMs))
+        if (budget !== undefined && budget < opts.hangMs) {
+          throw new Error(`Timed out after ${budget}ms`)
+        }
+      }
+      return opts.status
+    },
+    fetchMessages: async () => [],
+    fetchAgents: async () => [],
+    fetchConfig: async () => ({}),
+    fetchProviderCatalog: async () => [],
+    subscribeEvents: async () => {
+      throw new Error("unused")
+    },
+  } as unknown as OpencodeBackend
 }
 
 describe("reconcileSession", () => {
   it("returns 'working' when the session is busy", async () => {
-    const client = fakeClient({ data: { s1: { type: "busy" } } })
-    expect(await reconcileSession(client, "s1")).toBe("working")
+    const backend = fakeBackend({ status: { type: "busy" } })
+    expect(await reconcileSession(backend, "s1")).toBe("working")
   })
 
   it("returns 'working' when the server is retrying (rate limit)", async () => {
-    const client = fakeClient({
-      data: { s1: { type: "retry", attempt: 2, message: "rate limit", next: 0 } },
-    })
-    expect(await reconcileSession(client, "s1")).toBe("working")
+    const backend = fakeBackend({ status: { type: "retry" } })
+    expect(await reconcileSession(backend, "s1")).toBe("working")
   })
 
   it("returns 'idle' when the session is idle", async () => {
-    const client = fakeClient({ data: { s1: { type: "idle" } } })
-    expect(await reconcileSession(client, "s1")).toBe("idle")
+    const backend = fakeBackend({ status: { type: "idle" } })
+    expect(await reconcileSession(backend, "s1")).toBe("idle")
   })
 
-  it("returns 'missing' when the session is absent from the record", async () => {
-    const client = fakeClient({ data: { other: { type: "busy" } } })
-    expect(await reconcileSession(client, "s1")).toBe("missing")
+  it("returns 'missing' when the server no longer knows the session", async () => {
+    const backend = fakeBackend({ status: undefined })
+    expect(await reconcileSession(backend, "s1")).toBe("missing")
   })
 
   it("returns 'unknown' when the status call throws", async () => {
-    const client = fakeClient({ throws: true })
-    expect(await reconcileSession(client, "s1")).toBe("unknown")
+    const backend = fakeBackend({ throws: true })
+    expect(await reconcileSession(backend, "s1")).toBe("unknown")
   })
 
   it("returns 'unknown' when the status call times out", async () => {
-    const client = fakeClient({ hangMs: 200 })
+    const backend = fakeBackend({ hangMs: 200 })
     // Force a short timeout so the probe is treated as a hung server.
-    expect(await reconcileSession(client, "s1", { timeoutMs: 20 })).toBe(
+    expect(await reconcileSession(backend, "s1", { timeoutMs: 20 })).toBe(
       "unknown",
     )
-  })
-
-  it("returns 'unknown' on a non-ok response", async () => {
-    const client = fakeClient({ ok: false, data: { s1: { type: "idle" } } })
-    expect(await reconcileSession(client, "s1")).toBe("unknown")
   })
 })
 
 describe("getSessionStatus", () => {
-  it("looks up the status for the given session id in the record", async () => {
-    const client = fakeClient({
-      data: { a: { type: "idle" }, b: { type: "busy" } },
-    })
-    expect(await getSessionStatus(client, "b")).toEqual({ type: "busy" })
-    expect(await getSessionStatus(client, "a")).toEqual({ type: "idle" })
+  it("returns the backend's verdict for the given session id", async () => {
+    const backend = fakeBackend({ status: { type: "busy" } })
+    expect(await getSessionStatus(backend, "b")).toEqual({ type: "busy" })
   })
 
   it("returns undefined for an unknown session id", async () => {
-    const client = fakeClient({ data: { a: { type: "idle" } } })
-    expect(await getSessionStatus(client, "zzz")).toBeUndefined()
+    const backend = fakeBackend({ status: undefined })
+    expect(await getSessionStatus(backend, "zzz")).toBeUndefined()
   })
 })
 
@@ -205,13 +225,15 @@ describe("Phase 4 — API layer edge cases", () => {
 
   describe("reconcileSession — unknown status type", () => {
     it("returns 'unknown' for an unrecognized session status type", async () => {
-      const client = fakeClient({ data: { s1: { type: "suspended" } as unknown as SessionStatus } })
-      expect(await reconcileSession(client, "s1")).toBe("unknown")
+      // The backend's contract narrows to idle/busy/retry; an unrecognized
+      // verdict still degrades to "unknown" rather than guessing.
+      const backend = fakeBackend({ status: { type: "suspended" } as unknown as StatusVerdict })
+      expect(await reconcileSession(backend, "s1")).toBe("unknown")
     })
   })
 
   describe("createClient — cache eviction", () => {
-    // Reset the module-level `clientCache` between tests so the eviction
+    // Reset the module-level `backendCache` between tests so the eviction
     // path is exercised deterministically. Without this reset, entries from
     // prior tests (or prior runs in the same process) could fill the cache
     // and the test would only verify "the newest URL is cached" — a
@@ -222,7 +244,7 @@ describe("Phase 4 — API layer edge cases", () => {
 
     it("evicts the oldest half when cache exceeds MAX_CACHE_SIZE", () => {
       // Fill the cache past MAX_CACHE_SIZE (10) with unique URLs.
-      const clients: OpencodeClient[] = []
+      const clients: OpencodeBackend[] = []
       for (let i = 0; i < 12; i++) {
         clients.push(createClient(`http://localhost:${10000 + i}`))
       }
@@ -255,37 +277,46 @@ describe("Phase 4 — API layer edge cases", () => {
     })
   })
 
-  describe("tryGetClient — server.url() + createClient() collapse", () => {
-    // tryGetClient is the helper introduced for Finding 16.2.A: it replaces
-    // the repeated `const url = server.url(); if (!url) ...; const client =
-    // createClient(url)` boilerplate at 10+ call sites in App.tsx.
-    it("returns null when the URL getter returns null (server not ready)", () => {
-      expect(tryGetClient(() => null)).toBeNull()
+  describe("tryGetClient — launchInfo() + createClient() collapse", () => {
+    // tryGetClient replaces the repeated
+    // `const url = server.url(); if (!url) ...; const client = createClient(url)`
+    // boilerplate at 10+ call sites in App.tsx with a single LaunchInfo getter.
+    it("returns null when the launch info getter has no URL (server not ready)", () => {
+      expect(tryGetClient(() => ({ url: null }))).toBeNull()
     })
 
-    it("returns a client when the URL getter returns a URL", () => {
+    it("returns a backend when the launch info getter has a URL", () => {
       // Use a unique URL so we don't share cache state with the eviction test.
-      const client = tryGetClient(() => "http://localhost:20001")
+      const client = tryGetClient(() => ({ url: "http://localhost:20001", version: 1 }))
       expect(client).not.toBeNull()
     })
 
-    it("returns null when the URL getter returns an empty string", () => {
-      // Defensive: an empty string is treated as "not ready" (matches the
+    it("returns null when the launch info getter has an empty URL", () => {
+      // Defensive: an empty URL is treated as "not ready" (matches the
       // `if (!url) return` guards that the helper replaces).
-      expect(tryGetClient(() => "")).toBeNull()
+      expect(tryGetClient(() => ({ url: "" }))).toBeNull()
     })
 
-    it("memoizes the client per URL (cache hit on repeated call)", () => {
-      const a = tryGetClient(() => "http://localhost:20002")
-      const b = tryGetClient(() => "http://localhost:20002")
+    it("memoizes the backend per launch identity (cache hit on repeated call)", () => {
+      const info = (): LaunchInfo => ({ url: "http://localhost:20002", version: 1 })
+      const a = tryGetClient(info)
+      const b = tryGetClient(info)
       expect(a).toBe(b)
+    })
+
+    it("rebuilds the backend when the launch's authorization changes (v2 restart password)", () => {
+      // A v2 restart issues a fresh random password; the auth participates in
+      // the cache key so the new launch never reuses the stale 401-ing backend.
+      const a = tryGetClient(() => ({ url: "http://localhost:20004", version: 2, authorization: "Basic one" }))
+      const b = tryGetClient(() => ({ url: "http://localhost:20004", version: 2, authorization: "Basic two" }))
+      expect(a).not.toBe(b)
     })
 
     it("invokes the getter exactly once per call (no re-reads)", () => {
       let calls = 0
-      const getter = () => {
+      const getter = (): LaunchInfo => {
         calls++
-        return "http://localhost:20003"
+        return { url: "http://localhost:20003" }
       }
       tryGetClient(getter)
       expect(calls).toBe(1)
@@ -312,18 +343,15 @@ describe("Phase 4 — API layer edge cases", () => {
   })
 
   describe("sendPromptAsync — empty but ok response", () => {
-    it("returns void when assertResponse passes (no data read)", async () => {
-      const client = {
-        session: {
-          promptAsync: async () => ({
-            response: { ok: true, status: 200, statusText: "OK" },
-          }),
-        },
-      } as unknown as OpencodeClient
+    it("resolves without reading data (the backend owns response validation)", async () => {
+      const backend = {
+        sendPrompt: async () => {},
+      } as unknown as OpencodeBackend
 
-      // Should not throw — sendPromptAsync only calls assertResponse and returns.
+      // Should not throw — the facade only forwards; validation lives in the
+      // backend.
       await expect(
-        sendPromptAsync(client, {
+        sendPromptAsync(backend, {
           sessionID: "s1",
           parts: [{ type: "text", text: "go" }],
         }),

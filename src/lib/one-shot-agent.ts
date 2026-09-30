@@ -10,7 +10,7 @@
  */
 
 import {
-  type OpencodeClient,
+  type OpencodeBackend,
   type SessionMessage,
   type ReconcileResult,
   createSession,
@@ -49,7 +49,7 @@ export interface OneShotOptions {
  * Throws on timeout (no non-empty assistant reply before the deadline).
  */
 export async function runOneShotAgent(
-  client: OpencodeClient,
+  client: OpencodeBackend,
   promptText: string,
   opts: OneShotOptions = {},
 ): Promise<string> {

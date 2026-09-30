@@ -29,7 +29,7 @@ import { describeResumeAttempt } from "../lib/resume-decision"
 import { describeResumeAlignment } from "../lib/resume-alignment"
 import { resolvePlanFile } from "../lib/plan-file"
 import { ensureGitignore } from "../lib/project"
-import { tryGetClient, reconcileSession } from "../lib/api"
+import { tryGetClient, reconcileSession, type LaunchInfo } from "../lib/api"
 import { doResumeFlow } from "../lib/resume-flow"
 import { log } from "../lib/debug-logger"
 
@@ -51,11 +51,9 @@ export interface ResumeDeps {
   dialog: DialogContextValue
   t: typeof Tfn
   resilience: () => ResilienceConfig
-  // `() => string | null` matches useServer.url (the sole caller source) and
-  // tryGetClient's getter contract in api.ts. Was typed `string | undefined`,
-  // which diverged from the source and forced the App.tsx call site to pass a
-  // `() => string | null` into a `string | undefined` slot — a type error.
-  serverUrl: () => string | null
+  // Launch info (url + version + auth) matches useServer's accessors (the
+  // sole caller source) and tryGetClient's getter contract in api.ts.
+  serverInfo: () => LaunchInfo
   // Imperative actions owned by AppContent
   createDebugSession: () => Promise<void>
   reconcileAndAdvance: () => Promise<ReconcileResult>
@@ -83,7 +81,7 @@ export function useResume(deps: ResumeDeps): ResumeApi {
         watchdog,
         activityLog,
         t,
-        resolveClient: () => tryGetClient(deps.serverUrl),
+        resolveClient: () => tryGetClient(deps.serverInfo),
         reconcile: (client, sessionId) => reconcileSession(client, sessionId),
         clearLoopState,
         reconcileAndAdvance: deps.reconcileAndAdvance,

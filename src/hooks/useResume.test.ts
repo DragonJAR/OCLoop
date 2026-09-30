@@ -140,7 +140,7 @@ if (process.env.OCLOOP_RESUME_TEST !== "1") {
         cooldownSeconds: 5,
         watchdogTimeoutMinutes: 10,
       } as any),
-      serverUrl: () => null,
+      serverInfo: () => ({ url: null }),
       createDebugSession: async () => {
         harness.debugCreated = true
       },

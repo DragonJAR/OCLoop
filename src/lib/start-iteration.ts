@@ -26,7 +26,7 @@
  * where the wrapper aborts the half-created session and routes the error.
  */
 
-import type { OpencodeClient } from "./api"
+import type { OpencodeBackend } from "./api"
 import type { Watchdog } from "../hooks/useWatchdog"
 import type { NoProgressDetector } from "./no-progress-detector"
 import type { LoopState, LoopAction } from "../types"
@@ -34,6 +34,7 @@ import type { ResilienceConfig } from "./config"
 import type { t as Tfn } from "./i18n"
 import { getActiveSessionId } from "../hooks/useLoopState"
 import { createSession, sendPromptAsync, abortSession } from "./api"
+import { toErrorMessage } from "./format"
 
 /** Result of a single PLAN.md read at iteration start (transition + task selection). */
 export interface PlanIterationPrep {
@@ -67,7 +68,7 @@ export interface IterationDeps {
   }
 
   // --- collaborators (real instances from App.tsx) ---
-  client: OpencodeClient
+  client: OpencodeBackend
   watchdog: Pick<Watchdog, "notifyIterationStart">
   noProgressDetector: NoProgressDetector
 
@@ -230,8 +231,15 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   let promptContent: string
   try {
     promptContent = await promptFile.text()
-  } catch {
-    throw new Error(deps.t("errCannotReadFile", { path: deps.promptPath }))
+  } catch (err) {
+    // Both template params are required (en/es): without `message` the error
+    // surfaces with a literal "undefined" where the cause should be.
+    throw new Error(
+      deps.t("errCannotReadFile", {
+        path: deps.promptPath,
+        message: toErrorMessage(err),
+      }),
+    )
   }
   const taskLabel = currentTask ?? ""
   const prompt = promptContent
@@ -260,7 +268,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
 }
 
 async function abortOrphanSession(
-  client: OpencodeClient,
+  client: OpencodeBackend,
   sessionId: string,
   loop?: { state: () => LoopState; dispatch: (action: LoopAction) => void },
 ): Promise<IterationResult> {

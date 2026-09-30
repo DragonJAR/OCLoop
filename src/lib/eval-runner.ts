@@ -27,7 +27,7 @@
  * `getEvalRubricForTask`), and what to do with a failure (retry vs block).
  */
 
-import { type OpencodeClient } from "./api"
+import { type OpencodeBackend } from "./api"
 import { runOneShotAgent } from "./one-shot-agent"
 
 /** Structured verdict from the LM-judge over one iteration's evidence. */
@@ -43,7 +43,7 @@ export interface EvalResult {
 }
 
 export interface RunEvalOptions {
-  client: OpencodeClient
+  client: OpencodeBackend
   /** The rubric the evidence is scored against (free-form prose). */
   rubric: string
   /**

@@ -1,7 +1,7 @@
 import { createSignal, onMount, onCleanup } from "solid-js"
 import { startOpencodeServer, type StartOpencodeServerOptions } from "../lib/opencode-server"
-import { withTimeout } from "../lib/with-timeout"
-import { assertResponse, getApiTimeouts, createClient } from "../lib/api"
+import type { OpencodeMajor } from "../lib/opencode-version"
+import { createClient, getApiTimeouts } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
@@ -27,6 +27,10 @@ export type ServerStatus =
 export interface UseServerReturn {
   url: () => string | null
   port: () => number | null
+  /** OpenCode major detected at launch (null until detected). */
+  version: () => OpencodeMajor | null
+  /** Launcher-issued Authorization header (v2 servers; undefined on v1). */
+  authorization: () => string | undefined
   status: () => ServerStatus
   error: () => Error | undefined
   /** Monotonic ms of the last successful health check (or server start). */
@@ -87,6 +91,8 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
 
   const [url, setUrl] = createSignal<string | null>(null)
   const [serverPort, setServerPort] = createSignal<number | null>(null)
+  const [serverVersion, setServerVersion] = createSignal<OpencodeMajor | null>(null)
+  const [serverAuthorization, setServerAuthorization] = createSignal<string | undefined>(undefined)
   const [status, setStatus] = createSignal<ServerStatus>("starting")
   const [error, setError] = createSignal<Error | undefined>(undefined)
   const [lastHealthyAt, setLastHealthyAt] = createSignal<number>(0)
@@ -132,6 +138,10 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
     const actualPort = parseInt(parsedUrl.port, 10)
 
     setUrl(serverRef.url)
+    // Surface the launch's version verdict and auth header so the API layer
+    // can build a version-aware backend for this exact server.
+    setServerVersion(started.version)
+    setServerAuthorization(started.authorization)
     // Keep null (not NaN) when the URL has no explicit port, so restart()'s
     // `serverPort() ?? port ?? 0` fallback works (?? doesn't catch NaN).
     setServerPort(Number.isFinite(actualPort) ? actualPort : null)
@@ -188,24 +198,27 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
       }
       serverRef = null
     }
+    // The version/auth of the dying launch no longer describe a usable server.
+    setServerVersion(null)
+    setServerAuthorization(undefined)
   }
 
   /**
-   * Active health probe: a lightweight `app.agents()` call with the ping
-   * timeout. Marks the server healthy/unhealthy and returns success.
+   * Active health probe: a lightweight agents fetch with the ping timeout.
+   * Marks the server healthy/unhealthy and returns success. Goes through the
+   * version-aware backend (v2 servers 401 without the Authorization header;
+   * v1 servers ignore it harmlessly).
    */
   async function ping(): Promise<boolean> {
     const current = url()
     if (!current) return false
 
     try {
-      const client = createClient(current)
-      const result = await withTimeout(
-        (signal) => client.app.agents({}, { signal }),
-        getApiTimeouts().ping,
-        "server.ping",
-      )
-      assertResponse(result, "server ping")
+      const backend = createClient(current, undefined, {
+        version: serverVersion(),
+        authorization: serverAuthorization(),
+      })
+      await backend.fetchAgents({ timeoutMs: getApiTimeouts().ping })
       setLastHealthyAt(monotonicNow())
       if (status() === "unhealthy") {
         setStatus("ready")
@@ -328,6 +341,8 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
   return {
     url,
     port: serverPort,
+    version: serverVersion,
+    authorization: serverAuthorization,
     status,
     error,
     lastHealthyAt,

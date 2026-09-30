@@ -29,7 +29,7 @@
  * maps outcomes to exit codes; the flow itself is pure-ish.
  */
 
-import type { OpencodeClient, SessionMessage, ReconcileResult } from "./api"
+import type { OpencodeBackend, SessionMessage, ReconcileResult } from "./api"
 import { hasNewAssistantReply, extractLastAssistantText, countAssistantMessages } from "./api"
 import { stripCodeFences } from "./plan-parser"
 import { t } from "./i18n"
@@ -48,8 +48,8 @@ export type CreatePlanOutcome =
 
 /** The four I/O seams + config the flow needs. */
 export interface CreatePlanFlowDeps {
-  /** SDK client bound to the plan-gen server. */
-  client: OpencodeClient
+  /** Backend bound to the plan-gen server. */
+  client: OpencodeBackend
   /** Create the plan-generation session; returns its id. */
   createSessionID: () => Promise<string>
   /** Close the server (best-effort; called in finally). */
@@ -63,17 +63,17 @@ export interface CreatePlanFlowDeps {
   /** Overall generation budget (default 10 min). */
   planTimeoutMs: number
 
-  // --- SDK call seams (injected so tests stub the catalog/status/messages
-  // without modeling the full OpencodeClient surface; production wires them
+  // --- API call seams (injected so tests stub the catalog/status/messages
+  // without modeling the full backend surface; production wires them
   // to the real api.ts implementations). ---
-  sendPrompt: (client: OpencodeClient, params: {
+  sendPrompt: (client: OpencodeBackend, params: {
     sessionID: string
     parts: { type: "text"; text: string }[]
     agent: string
     model: string | undefined
   }, opts: { timeoutMs: number }) => Promise<void>
-  reconcile: (client: OpencodeClient, sessionID: string) => Promise<ReconcileResult>
-  fetchMessages: (client: OpencodeClient, sessionID: string) => Promise<SessionMessage[]>
+  reconcile: (client: OpencodeBackend, sessionID: string) => Promise<ReconcileResult>
+  fetchMessages: (client: OpencodeBackend, sessionID: string) => Promise<SessionMessage[]>
 
   // --- injected I/O seams ---
   /** Read the (possibly multi-line) goal. null/"" → no-goal outcome. */

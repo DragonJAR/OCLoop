@@ -20,7 +20,7 @@
 
 import type { t as Tfn } from "./i18n"
 import type { PersistedLoopState } from "./loop-state-store"
-import type { ReconcileResult, OpencodeClient } from "./api"
+import type { ReconcileResult, OpencodeBackend } from "./api"
 import type { LoopAction } from "../types"
 import type { UseActivityLogReturn } from "../hooks/useActivityLog"
 import { log } from "./debug-logger"
@@ -31,15 +31,15 @@ import { log } from "./debug-logger"
  * methods actually used so a test stub has the smallest possible surface.
  *
  * Generic in the client type so the production wrapper passes a real
- * `OpencodeClient` (via `tryGetClient`) while tests pass a stub — both without
+ * `OpencodeBackend` (via `tryGetClient`) while tests pass a stub — both without
  * `as` casts. `C` is inferred from `resolveClient`/`reconcile` at the call
  * site. Earlier revisions used a hand-rolled `{ reconcile: ... }` shape that
- * diverged from `OpencodeClient` and forced the wrapper to `as`-cast on every
+ * diverged from `OpencodeBackend` and forced the wrapper to `as`-cast on every
  * call (TS2322/TS2345); using the real SDK type (re-exported from api.ts, a
  * `.ts`) removes those casts while keeping this file SDK-import-free of any
  * runtime value.
  */
-export interface ResumeFlowDeps<C = OpencodeClient> {
+export interface ResumeFlowDeps<C = OpencodeBackend> {
   /** Loop state-machine dispatch. */
   loop: { dispatch: (action: LoopAction) => void }
   /** Restores the rate-limit retry counter from the persisted snapshot. */
@@ -84,7 +84,7 @@ interface ResumeOutcome {
  *
  * Behavior is byte-identical to the former inline `doResume` closure.
  */
-export async function doResumeFlow<C = OpencodeClient>(
+export async function doResumeFlow<C = OpencodeBackend>(
   deps: ResumeFlowDeps<C>,
   p: PersistedLoopState,
 ): Promise<ResumeOutcome> {

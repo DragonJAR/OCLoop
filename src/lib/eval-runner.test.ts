@@ -1,8 +1,6 @@
 import { describe, expect, it } from "bun:test"
 import { buildJudgePrompt, parseEvalResult, runEval } from "./eval-runner"
-import type { OpencodeClient } from "./api"
-
-const OK = { ok: true, status: 200, statusText: "OK" }
+import type { OpencodeBackend } from "./api"
 
 describe("parseEvalResult", () => {
   it("parses a passing verdict with all fields", () => {
@@ -113,27 +111,31 @@ describe("buildJudgePrompt", () => {
 })
 
 describe("runEval", () => {
-  // Build a mock client whose one-shot reply is `reply`. The polling loop in
-  // runOneShotAgent needs: create → messages(before=[]) → promptAsync →
+  // Build a mock backend whose one-shot reply is `reply`. The polling loop in
+  // runOneShotAgent needs: create → messages(before=[]) → prompt →
   // status(idle) → messages(reply) → abort. Mirrors one-shot-agent.test.ts.
-  function mockClient(reply: string): OpencodeClient {
+  function mockClient(reply: string): OpencodeBackend {
     let msgCalls = 0
     return {
-      session: {
-        create: async () => ({ data: { id: "ses_j" }, response: OK }),
-        promptAsync: async () => ({ response: OK }),
-        status: async () => ({ data: { ses_j: { type: "idle" } }, response: OK }),
-        messages: async () => {
-          msgCalls++
-          const data =
-            msgCalls === 1
-              ? []
-              : [{ info: { role: "assistant" }, parts: [{ type: "text", text: reply }] }]
-          return { data, response: OK }
-        },
-        abort: async () => ({ data: true, response: OK }),
+      version: 1,
+      url: "http://test",
+      createSession: async () => ({ id: "ses_j", title: "" }),
+      sendPrompt: async () => {},
+      abortSession: async () => true,
+      getSessionStatus: async () => ({ type: "idle" as const }),
+      fetchMessages: async () => {
+        msgCalls++
+        return msgCalls === 1
+          ? []
+          : [{ info: { role: "assistant" }, parts: [{ type: "text", text: reply }] }]
       },
-    } as unknown as OpencodeClient
+      fetchAgents: async () => [],
+      fetchConfig: async () => ({}),
+      fetchProviderCatalog: async () => [],
+      subscribeEvents: async () => {
+        throw new Error("unused")
+      },
+    } as unknown as OpencodeBackend
   }
 
   it("returns a parsed passing verdict from the judge", async () => {

@@ -9,7 +9,7 @@ import {
 import { NoProgressDetector } from "./lib/no-progress-detector"
 import { DEFAULT_RESILIENCE, type ResilienceConfig } from "./lib/config"
 import { createRoot } from "solid-js"
-import type { OpencodeClient } from "./lib/api"
+import type { OpencodeBackend } from "./lib/api"
 import type { LoopState } from "./types"
 import { t as T } from "./lib/i18n"
 import { rmSync } from "node:fs"
@@ -40,36 +40,43 @@ afterEach(() => {
  *   5. race guard — user pauses during createSession → orphan aborted, orphan_aborted
  */
 
-/** Minimal SDK client shape: only what runIteration calls. The shapes returned
- * must satisfy api.ts's `assertResponse` (which requires `{ response: { ok,
- * status, statusText } }`) and unwrap `result.data` — so the fakes return the
- * full SDK envelope, not bare payloads. */
+/** Minimal backend shape: only what runIteration calls. The fakes return
+ * bare payloads (no SDK RequestResult envelope) — the version-aware backend
+ * owns response validation, and api.ts's facade forwards to it. */
 function fakeClient(opts: {
   sessionId?: string
   createThrows?: boolean
   createDelayMs?: number
-}): { client: OpencodeClient; calls: Record<string, unknown[]> } {
+}): { client: OpencodeBackend; calls: Record<string, unknown[]> } {
   const calls: Record<string, unknown[]> = { createSession: [], sendPromptAsync: [], abortSession: [] }
-  const ok = { ok: true, status: 200, statusText: "OK" }
   const client = {
-    session: {
-      create: async () => {
-        if (opts.createDelayMs) await new Promise((r) => setTimeout(r, opts.createDelayMs))
-        if (opts.createThrows) throw new Error("create failed")
-        const id = opts.sessionId ?? "sess-created-1"
-        calls.createSession.push(id)
-        return { response: ok, data: { id } }
-      },
-      promptAsync: async (params: unknown) => {
-        calls.sendPromptAsync.push(params)
-        return { response: ok, data: undefined }
-      },
-      abort: async (params: unknown) => {
-        calls.abortSession.push(params)
-        return { response: ok, data: undefined }
-      },
+    version: 1,
+    url: "http://test",
+    createSession: async () => {
+      if (opts.createDelayMs) await new Promise((r) => setTimeout(r, opts.createDelayMs))
+      if (opts.createThrows) throw new Error("create failed")
+      const id = opts.sessionId ?? "sess-created-1"
+      calls.createSession.push(id)
+      return { id, title: "" }
     },
-  } as unknown as OpencodeClient
+    sendPrompt: async (params: unknown) => {
+      calls.sendPromptAsync.push(params)
+    },
+    abortSession: async (id: string) => {
+      calls.abortSession.push(id)
+      return true
+    },
+    getSessionStatus: async () => {
+      throw new Error("unused")
+    },
+    fetchMessages: async () => [],
+    fetchAgents: async () => [],
+    fetchConfig: async () => ({}),
+    fetchProviderCatalog: async () => [],
+    subscribeEvents: async () => {
+      throw new Error("unused")
+    },
+  } as unknown as OpencodeBackend
   return { client, calls }
 }
 
@@ -265,12 +272,12 @@ describe("runIteration", () => {
     const h = makeHarness({
       clientOpts: { sessionId: "sess-race", createDelayMs: 10 },
     })
-    const origCreate = (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create
-      ; (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create = async () => {
-        const r = await origCreate()
-        h.loop.dispatch({ type: "quit" })
-        return r
-      }
+    const origCreate = h.deps.client.createSession
+    h.deps.client.createSession = async () => {
+      const r = await origCreate()
+      h.loop.dispatch({ type: "quit" })
+      return r
+    }
 
     const result = await runIteration(h.deps)
 
@@ -333,12 +340,12 @@ describe("runIteration", () => {
     const h = makeHarness({
       clientOpts: { sessionId: "sess-race", createDelayMs: 10 },
     })
-    const origCreate = (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create
-      ; (h.deps.client as unknown as { session: { create: () => Promise<{ id: string }> } }).session.create = async () => {
-        const r = await origCreate()
-        h.loop.dispatch({ type: "toggle_pause" })
-        return r
-      }
+    const origCreate = h.deps.client.createSession
+    h.deps.client.createSession = async () => {
+      const r = await origCreate()
+      h.loop.dispatch({ type: "toggle_pause" })
+      return r
+    }
 
     const result = await runIteration(h.deps)
 
@@ -398,11 +405,10 @@ describe("runIteration", () => {
   it("W3-02: aborting orphan session while pausing dispatches session_idle to complete pause transition", async () => {
     const h = makeHarness()
     // Simulate user pausing after session was created
-    const origCreate = h.deps.client.session.create
-    h.deps.client.session.create = (async (...args: any[]) => {
-      const res = await (origCreate as any)(...args)
-      return res
-    }) as any
+    const origCreate = h.deps.client.createSession
+    h.deps.client.createSession = (async (...args: Parameters<typeof origCreate>) => {
+      return origCreate(...args)
+    }) as typeof origCreate
     const origPromptText = Bun.file(h.deps.promptPath).text
     // Mutate state to pausing during prompt read
     const origExists = Bun.file(h.deps.promptPath).exists

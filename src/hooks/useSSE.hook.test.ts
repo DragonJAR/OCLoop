@@ -10,7 +10,7 @@
  *
  *   1. Connection lifecycle: `connect()` early-returns on empty URL.
  *   2. Status transitions: disconnected → connecting → connected → disconnected.
- *   3. Reconnection backoff: `reconnectAttempts` is incremented on error.
+ *   3. Reconnection backoff: failures increment the streak, which only resets after a successful handshake.
  *   4. Event filtering by sessionId: 6 event types share the same shape.
  *   5. `processEvent` dispatch wiring: 9 event types call the right `onX`.
  *   6. `seenPartIds` dedup: a second `tool-use` with the same id is silent.
@@ -22,6 +22,7 @@
  *  12. non-AbortError connection error path: `status=error`, `onError`, schedule reconnect.
  *  13. Stream ended naturally: `status=disconnected`, schedule reconnect.
  *  14. `session.created` dedup-map reset: `seenPartIds` and `messageRoles` are cleared.
+ *  15. The configured ping timeout is passed to `subscribeEvents`.
  *
  * ## Why we drive connections via `reconnect()` (not `onMount`)
  *
@@ -47,7 +48,7 @@
  * `mock.module` (the same pattern `useServer.test.ts` uses for
  * `@opencode-ai/sdk/server`). The mock factory reads from a mutable
  * closure so each test can swap the subscribe implementation. The fake
- * subscribe returns `{ stream: AsyncIterable<Event> }` that the test
+ * subscribe returns `{ stream: AsyncIterable<BackendEvent> }` that the test
  * controls via a push API (`push` an event, `close` to simulate a
  * server-side disconnect). An `abort` listener on the signal closes
  * the stream so `disconnect()` unblocks the `for await` loop.
@@ -56,33 +57,56 @@
  * `@opentui/solid` `mock.module` warning is JSX-transform specific).
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { createRoot } from "solid-js"
-import type { Event } from "@opencode-ai/sdk/v2"
+import type { BackendEvent } from "../lib/api"
 
-// Mutable subscribe impl swapped by individual tests. The factory closure
-// keeps the reference stable across the cache lifetime of the mocked module.
+const TEST_PING_TIMEOUT_MS = 12_345
+let observedSubscribeTimeout: number | undefined
+
+// Mutable subscribe impl swapped by individual tests. The fake API boundary
+// records the options useSSE passes before returning the controlled stream.
 let subscribeImpl: (
   params: { directory?: string },
   options: { signal?: AbortSignal },
-) => Promise<{ stream: AsyncIterable<Event> }> = async () => ({
+) => Promise<{ stream: AsyncIterable<BackendEvent> }> = async () => ({
   stream: (async function* () {})(),
 })
 
-mock.module("@opencode-ai/sdk/v2", () => ({
-  createOpencodeClient: () => ({
-    event: {
-      subscribe: (
-        params: { directory?: string },
-        options: { signal?: AbortSignal },
-      ) => subscribeImpl(params, options),
+const realApiExports = await import("../lib/api")
+const realApiSnapshot = { ...realApiExports }
+
+mock.module("../lib/api", () => ({
+  createClient: () => ({
+    subscribeEvents: (options: {
+      directory?: string
+      signal?: AbortSignal
+      timeoutMs?: number
+    }) => {
+      observedSubscribeTimeout = options.timeoutMs
+      return subscribeImpl(
+        { directory: options.directory },
+        { signal: options.signal },
+      )
     },
   }),
+  getApiTimeouts: () => ({ ping: TEST_PING_TIMEOUT_MS }),
 }))
 
 const { useSSE } = await import("./useSSE")
+// Restore the real API exports after this file finishes; Bun's module mocks
+// persist across test files in the full-suite run.
+afterAll(() => {
+  mock.module("../lib/api", () => ({ ...realApiSnapshot }))
+})
 
 const tick = (ms = 5) => new Promise<void>((r) => setTimeout(r, ms))
+
+async function flushMicrotasks(count = 8): Promise<void> {
+  for (let i = 0; i < count; i++) {
+    await Promise.resolve()
+  }
+}
 
 /**
  * Push-based async iterable the test controls. Events pushed before the
@@ -137,50 +161,50 @@ function makePushStream<T>(): {
   }
 }
 
-// Event factory helpers. Each constructs a real `Event` shape (so the
+// Event factory helpers. Each constructs a real `BackendEvent` shape (so the
 // switch in processEvent matches) while keeping the test readable.
 
-function evSessionCreated(sessionId: string): Event {
+function evSessionCreated(sessionId: string): BackendEvent {
   return {
     type: "session.created",
     properties: { info: { id: sessionId } },
-  } as unknown as Event
+  }
 }
 
-function evSessionIdle(sessionId: string): Event {
-  return { type: "session.idle", properties: { sessionID: sessionId } } as unknown as Event
+function evSessionIdle(sessionId: string): BackendEvent {
+  return { type: "session.idle", properties: { sessionID: sessionId } }
 }
 
-function evTodoUpdated(sessionId: string): Event {
+function evTodoUpdated(sessionId: string): BackendEvent {
   return {
     type: "todo.updated",
     properties: {
       sessionID: sessionId,
       todos: [{ id: "1", content: "task", status: "in_progress", priority: "high" }],
     },
-  } as unknown as Event
+  }
 }
 
-function evFileEdited(file: string): Event {
-  return { type: "file.edited", properties: { file } } as unknown as Event
+function evFileEdited(file: string): BackendEvent {
+  return { type: "file.edited", properties: { file } }
 }
 
-function evSessionError(sessionId: string | undefined, error: unknown): Event {
+function evSessionError(sessionId: string | undefined, error: unknown): BackendEvent {
   return {
     type: "session.error",
     properties: { sessionID: sessionId, error },
-  } as unknown as Event
+  }
 }
 
 function evMessageUpdated(
   messageId: string,
   role: "user" | "assistant",
   sessionId?: string,
-): Event {
+): BackendEvent {
   return {
     type: "message.updated",
     properties: { info: { id: messageId, role, sessionID: sessionId } },
-  } as unknown as Event
+  }
 }
 
 function evMessagePartToolUse(
@@ -188,7 +212,7 @@ function evMessagePartToolUse(
   messageId: string,
   sessionId: string,
   state: "running" | "completed" = "running",
-): Event {
+): BackendEvent {
   return {
     type: "message.part.updated",
     properties: {
@@ -201,7 +225,7 @@ function evMessagePartToolUse(
         state: { tool: "bash", input: { cmd: "ls" }, status: state },
       },
     },
-  } as unknown as Event
+  }
 }
 
 function evMessagePartText(
@@ -209,7 +233,7 @@ function evMessagePartText(
   messageId: string,
   sessionId: string,
   text: string,
-): Event {
+): BackendEvent {
   return {
     type: "message.part.updated",
     properties: {
@@ -221,7 +245,7 @@ function evMessagePartText(
         text,
       },
     },
-  } as unknown as Event
+  }
 }
 
 /**
@@ -258,8 +282,8 @@ function withSSE<T>(
  * The signal's `abort` event is wired to close the stream so `disconnect()`
  * unblocks the `for await` loop.
  */
-function driveableSubscribe(): ReturnType<typeof makePushStream<Event>> {
-  const sub = makePushStream<Event>()
+function driveableSubscribe(): ReturnType<typeof makePushStream<BackendEvent>> {
+  const sub = makePushStream<BackendEvent>()
   subscribeImpl = async (_params, options) => {
     options?.signal?.addEventListener("abort", () => sub.close())
     return { stream: sub.stream }
@@ -292,6 +316,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
   beforeEach(() => {
     defaultSubscribeImpl = async () => ({ stream: (async function* () {})() })
     subscribeImpl = defaultSubscribeImpl
+    observedSubscribeTimeout = undefined
   })
 
   afterEach(() => {
@@ -301,7 +326,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
   describe("connection lifecycle", () => {
     it("initial state: status=disconnected, no error, no attempts", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         (sse, dispose) => {
           expect(sse.status()).toBe("disconnected")
           expect(sse.error()).toBeUndefined()
@@ -312,7 +337,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("reconnect with empty URL: status stays disconnected (no state change)", () =>
       withSSE(
-        { url: () => "", handlers: {} },
+        { info: () => ({ url: "", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           await sse.reconnect()
           await tick(10)
@@ -325,7 +350,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("reconnect with valid URL: status transitions disconnected → connecting → connected", () =>
       withSSE(
-        { url: () => "http://127.0.0.1:4096", handlers: {} },
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           driveableSubscribe()
           await sse.reconnect()
@@ -340,7 +365,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("disconnect: status=disconnected, abortController fires abort on the signal", () =>
       withSSE(
-        { url: () => "http://127.0.0.1:4096", handlers: {} },
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           const sub = driveableSubscribe()
           let aborted = false
@@ -364,12 +389,12 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("reconnect from a connected state: fresh subscribe, status resets through connecting", () =>
       withSSE(
-        { url: () => "http://127.0.0.1:4096", handlers: {} },
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           let subscribes = 0
           subscribeImpl = async (_params, options) => {
             subscribes++
-            const sub = makePushStream<Event>()
+            const sub = makePushStream<BackendEvent>()
             options?.signal?.addEventListener("abort", () => sub.close())
             return { stream: sub.stream }
           }
@@ -388,9 +413,9 @@ describe("useSSE hook (Finding 18.3.A)", () => {
         },
       ))
 
-    it("reconnect resets reconnectAttempts to 0 (clears the streak before any new failures)", () =>
+    it("successful manual reconnect clears the reconnect streak after handshake", () =>
       withSSE(
-        { url: () => "http://127.0.0.1:4096", handlers: {} },
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           // First subscribe: throw to bump reconnectAttempts to 1.
           let subscribes = 0
@@ -400,20 +425,65 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           }
 
           await sse.reconnect()
-          await tick(5)
+          await flushMicrotasks()
           expect(subscribes).toBe(1)
           // After the error, status=error and the scheduleReconnect path
           // has bumped reconnectAttempts to 1.
           expect(sse.reconnectAttempts()).toBe(1)
           expect(sse.status()).toBe("error")
 
-          // Now switch to a successful subscribe and reconnect: the new
-          // attempt resets attempts to 0 BEFORE the (now successful)
-          // connect clears them again at the end of a successful cycle.
+          // A successful manual reconnect clears the streak in connect()
+          // after its subscription handshake resolves.
           driveableSubscribe()
           await sse.reconnect()
           await waitForStatus(sse, "connected")
           expect(sse.reconnectAttempts()).toBe(0)
+          dispose()
+        },
+      ))
+
+    it("failed manual reconnect preserves the accumulated reconnect streak", () =>
+      withSSE(
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
+        async (sse, dispose) => {
+          let subscribes = 0
+          let firstStream!: ReturnType<typeof makePushStream<BackendEvent>>
+          subscribeImpl = async (_params, options) => {
+            subscribes++
+            if (subscribes === 1) {
+              firstStream = makePushStream<BackendEvent>()
+              options?.signal?.addEventListener("abort", () => firstStream.close())
+              return { stream: firstStream.stream }
+            }
+            throw new Error("manual reconnect failed")
+          }
+
+          await sse.reconnect()
+          await waitForStatus(sse, "connected")
+          firstStream.close()
+          await flushMicrotasks()
+          expect(sse.status()).toBe("disconnected")
+          expect(sse.reconnectAttempts()).toBe(1)
+
+          // Cancel the scheduled retry and force the next handshake to fail.
+          await sse.reconnect()
+          await flushMicrotasks()
+          expect(subscribes).toBe(2)
+          expect(sse.status()).toBe("error")
+          expect(sse.error()?.message).toBe("manual reconnect failed")
+          expect(sse.reconnectAttempts()).toBe(2)
+          dispose()
+        },
+      ))
+
+    it("passes the configured ping timeout to subscribeEvents", () =>
+      withSSE(
+        { info: () => ({ url: "http://127.0.0.1:4096", version: 1 }), handlers: {} },
+        async (sse, dispose) => {
+          driveableSubscribe()
+          await sse.reconnect()
+          await waitForStatus(sse, "connected")
+          expect(observedSubscribeTimeout).toBe(TEST_PING_TIMEOUT_MS)
           dispose()
         },
       ))
@@ -422,14 +492,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
   describe("event dispatch (onX wiring)", () => {
     it("session.created → onSessionCreated with the session id", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           const sub = driveableSubscribe()
           let captured: string | undefined
           const sseWithHandler = await import("./useSSE").then((m) =>
             createRoot((d) => {
               const h = m.useSSE({
-                url: () => "http://x",
+                info: () => ({ url: "http://x", version: 1 }),
                 handlers: {
                   onSessionCreated: (id) => {
                     captured = id
@@ -456,14 +526,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("session.idle → onSessionIdle with the session id", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let captured: string | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: { onSessionIdle: (id) => (captured = id) },
             })
             return { h, d }
@@ -481,14 +551,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("todo.updated → onTodoUpdated with the todos array", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let capturedTodos: unknown
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: { onTodoUpdated: (_id, todos) => (capturedTodos = todos) },
             })
             return { h, d }
@@ -507,14 +577,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("file.edited → onFileEdited with the file path", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let captured: string | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: { onFileEdited: (file) => (captured = file) },
             })
             return { h, d }
@@ -532,14 +602,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("session.error → onSessionError with a classified SessionError", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let capturedError: { kind: string; isAborted: boolean; message: string } | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {
                 onSessionError: (_id, err) => {
                   capturedError = { kind: err.kind, isAborted: err.isAborted, message: err.message }
@@ -563,7 +633,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("message.part.updated (tool-use) → onToolUse, dedup on part.id", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let calls = 0
@@ -571,7 +641,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {
                 onToolUse: (part) => {
                   calls++
@@ -598,14 +668,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("message.part.updated (text) → onMessageText defaults to 'assistant' without message.updated", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let capturedRole: string | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {
                 onMessageText: (_part, role) => {
                   capturedRole = role
@@ -628,14 +698,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("message.part.updated (text) → onMessageText uses role from a prior message.updated", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let capturedRole: string | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {
                 onMessageText: (_part, role) => {
                   capturedRole = role
@@ -661,14 +731,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("message.updated from another session does not leak into the filtered session", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let capturedRole: string | undefined
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               sessionId: () => "sess-target",
               handlers: {
                 onMessageText: (_part, role) => {
@@ -695,14 +765,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
   describe("filtering and dedup", () => {
     it("session.idle with mismatched filterSessionId is dropped (no onSessionIdle)", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let calls = 0
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               sessionId: () => "sess-A",
               handlers: { onSessionIdle: () => calls++ },
             })
@@ -721,14 +791,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("session.idle matching the filterSessionId is dispatched", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let calls = 0
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               sessionId: () => "sess-A",
               handlers: { onSessionIdle: () => calls++ },
             })
@@ -747,14 +817,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("session.created clears seenPartIds: a tool-use emitted again after session.created re-fires", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           let calls = 0
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: { onToolUse: () => calls++ },
             })
             return { h, d }
@@ -787,14 +857,14 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("onAnyEvent fires for every event before the per-type switch", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           const seen: string[] = []
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {
                 onAnyEvent: (e) => seen.push(e.type),
                 onFileEdited: () => {},
@@ -819,7 +889,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
   describe("error and end-of-stream paths", () => {
     it("non-AbortError on subscribe: status=error, onError called, reconnectAttempts++", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           subscribeImpl = async () => {
             throw new Error("connection refused")
@@ -828,7 +898,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               onError: () => {
                 onErrorCalled = true
               },
@@ -838,7 +908,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           })
 
           await wrapped.h.reconnect()
-          await tick(10)
+          await flushMicrotasks()
           expect(wrapped.h.status()).toBe("error")
           expect(wrapped.h.error()?.message).toBe("connection refused")
           expect(wrapped.h.reconnectAttempts()).toBe(1)
@@ -853,7 +923,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("AbortError (from disconnect during connect) leaves status alone, no onError", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           // Subscribe resolves AFTER the signal is aborted — simulates the
           // race where the user disconnects mid-handshake.
@@ -870,7 +940,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               onError: () => {
                 onErrorCalled = true
               },
@@ -895,13 +965,13 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("stream ends naturally (server closes it): status=disconnected, reconnectAttempts++", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {},
             })
             return { h, d }
@@ -924,13 +994,13 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("superseded controller: a second reconnect during an in-flight connect does not let the stale connect clobber status", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           // First subscribe: never resolves until we call `releaseFirst`,
           // so the first connect() is stuck on the `await subscribe` line.
           let releaseFirst!: () => void
           subscribeImpl = async (_params, options) => {
-            const sub = makePushStream<Event>()
+            const sub = makePushStream<BackendEvent>()
             options?.signal?.addEventListener("abort", () => sub.close())
             await new Promise<void>((r) => {
               releaseFirst = () => r()
@@ -941,7 +1011,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           const { useSSE } = await import("./useSSE")
           const wrapped = createRoot((d) => {
             const h = useSSE({
-              url: () => "http://x",
+              info: () => ({ url: "http://x", version: 1 }),
               handlers: {},
             })
             return { h, d }
@@ -974,7 +1044,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
 
     it("message.part.updated triggers onHeartbeat on every chunk even when seenPartIds dedups onMessageText", () =>
       withSSE(
-        { url: () => "http://x", handlers: {} },
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (sse, dispose) => {
           const sub = driveableSubscribe()
           let textCount = 0
@@ -982,7 +1052,7 @@ describe("useSSE hook (Finding 18.3.A)", () => {
           const sseWithHandler = await import("./useSSE").then((m) =>
             createRoot((d) => {
               const h = m.useSSE({
-                url: () => "http://x",
+                info: () => ({ url: "http://x", version: 1 }),
                 handlers: {
                   onMessageText: () => {
                     textCount++
@@ -1019,4 +1089,3 @@ describe("useSSE hook (Finding 18.3.A)", () => {
       ))
   })
 })
-

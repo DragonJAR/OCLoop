@@ -1,7 +1,7 @@
 import { describe, expect, it } from "bun:test"
 
 import { runCreatePlanFlow, type CreatePlanFlowDeps } from "./create-plan-flow"
-import type { OpencodeClient, SessionMessage } from "./api"
+import type { OpencodeBackend, SessionMessage } from "./api"
 import type { ReconcileResult } from "./api"
 
 /**
@@ -24,8 +24,6 @@ import type { ReconcileResult } from "./api"
  * planTimeoutMs in real time: tests advance the clock past the deadline.
  */
 
-const OK = { response: { ok: true, status: 200, statusText: "OK" } }
-
 /** Build a SessionMessage in the shape api.ts's helpers expect:
  * `{ info: { role }, parts: [{ type: "text", text }] }`. The earlier cast
  * `{ role, content }` did NOT match, so countAssistantMessages/extractLastAssistantText
@@ -34,27 +32,40 @@ function assistantMsg(text: string): SessionMessage {
   return { info: { role: "assistant" }, parts: [{ type: "text", text }] }
 }
 
-/** Fake SDK client. `messages` is returned by fetchMessages; `verdict` by
- * reconcileSession (mapped from session.status). `promptAsync` is a no-op. */
+/** Fake backend. `messages` is returned by fetchMessages; `verdict` by
+ * reconcileSession (mapped from the status). `sendPrompt` is a counting
+ * no-op. The real call seams are the injected deps, so the client only
+ * counts what flows through it. */
 function fakeClient(opts: {
   messages?: SessionMessage[]
   status?: "idle" | "busy"
   messageFetchThrows?: boolean
-}): { client: OpencodeClient; calls: { promptAsync: number; status: number } } {
+}): { client: OpencodeBackend; calls: { promptAsync: number; status: number } } {
   const calls = { promptAsync: 0, status: 0 }
   const client = {
-    session: {
-      promptAsync: async () => {
-        calls.promptAsync++
-        return { ...OK, data: undefined }
-      },
-      status: async () => {
-        calls.status++
-        return { ...OK, data: { "sess-1": { type: opts.status ?? "idle" } } }
-      },
+    version: 1,
+    url: "http://test",
+    createSession: async () => {
+      throw new Error("unused (createSessionID is injected)")
     },
-  } as unknown as OpencodeClient
-  void opts // messages/throw are wired via the deps stubs below, not the client
+    sendPrompt: async () => {
+      calls.promptAsync++
+    },
+    abortSession: async () => true,
+    getSessionStatus: async () => {
+      calls.status++
+      return { type: opts.status ?? ("idle" as const) }
+    },
+    fetchMessages: async () => {
+      throw new Error("unused (fetchMessages is injected)")
+    },
+    fetchAgents: async () => [],
+    fetchConfig: async () => ({}),
+    fetchProviderCatalog: async () => [],
+    subscribeEvents: async () => {
+      throw new Error("unused")
+    },
+  } as unknown as OpencodeBackend
   return { client, calls }
 }
 
