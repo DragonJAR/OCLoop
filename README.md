@@ -117,17 +117,9 @@ bun link        # makes `ocloop` available globally
 
 ### Install from Git
 
-This fork is distributed from its GitHub repository, not from npm: the npm package named `ocloop` is the original d3vr project.
+This fork is distributed from its GitHub repository, not from npm: the npm package named `ocloop` is the original d3vr project. Building **from source** as shown above is the supported installation, and `bun link` makes `ocloop` available globally.
 
-The reliable installation path is **From source** above (`git clone` + `bun install` + `bun run build` + `bun link`), which makes `ocloop` available globally.
-
-A direct global install from Git is a conditional alternative. npm 11+ blocks package build scripts by default, leaving the binary unbuilt unless `prepare` is allowed. npm suggests `--allow-scripts=ocloop`, but it did not trigger the build in the tested setup; only use the command below if your npm version supports the option and actually runs `prepare`. Otherwise, use **From source**. Bun must be installed and available in your PATH in either case.
-
-Conditional alternative:
-
-```bash
-npm install -g --allow-scripts=ocloop git+https://github.com/DragonJAR/OCLoop.git
-```
+A direct global install from Git (`npm install -g git+https://github.com/DragonJAR/OCLoop.git`) is not supported: npm runs the package's build script before its dependencies are installed, so the binary is never built.
 
 ## Quick start
 
