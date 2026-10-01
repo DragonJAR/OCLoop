@@ -3,7 +3,19 @@
   "version": "0.8.0",
   "type": "module",
   "description": "An unattended loop harness for OpenCode — runs your PLAN.md one task at a time and survives rate limits, sleep, and crashes.",
-  "author": "Fayçal Mitidji (d3vr); DragonJAR SAS (fork)",
+  "author": {
+    "name": "Faycal Mitidji",
+    "url": "https://github.com/d3vr"
+  },
+  "contributors": [
+    {
+      "name": "DragonJAR SAS",
+      "url": "https://www.DragonJAR.org"
+    }
+  ],
+  "engines": {
+    "bun": ">=1.0.0"
+  },
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -30,7 +42,7 @@
   "scripts": {
     "dev": "bun run src/index.tsx",
     "build": "bun run build.ts",
-    "prepublishOnly": "bun run build",
+    "prepare": "bun run build",
     "test": "bun test"
   },
   "dependencies": {
@@ -38,7 +50,7 @@
     "@opentui/core": "0.1.68",
     "@opentui/solid": "0.1.68",
     "fuzzysort": "^3.1.0",
-    "solid-js": "^1.9.13"
+    "solid-js": "1.9.9"
   },
   "devDependencies": {
     "@types/bun": "latest",
