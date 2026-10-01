@@ -42,7 +42,7 @@
   "scripts": {
     "dev": "bun run src/index.tsx",
     "build": "bun run build.ts",
-    "prepare": "bun run build",
+    "prepublishOnly": "bun run build",
     "test": "bun test"
   },
   "dependencies": {
