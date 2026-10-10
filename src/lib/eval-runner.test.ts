@@ -38,6 +38,22 @@ describe("parseEvalResult", () => {
     expect(r.rubricFailures).toEqual([])
   })
 
+  // CRLF variant — some Windows shells / IDE save-on-Windows wrap stdout in
+  // \r\n. The regex `\s*` around the fence body matches both \n and \r\n,
+  // but the contract was implicit. Pin the CRLF shape so a future
+  // "tighten the fence regex" refactor doesn't silently fail-closed on a
+  // judge that emits Windows line endings.
+  it("tolerates CRLF line endings inside the ```json fenced wrapper", () => {
+    const raw =
+      "```json\r\n" +
+      '{"pass": true, "score": 80, "rubricFailures": [], "reasoning": "ok"}\r\n' +
+      "```"
+    const r = parseEvalResult(raw)
+    expect(r.pass).toBe(true)
+    expect(r.score).toBe(80)
+    expect(r.reasoning).toBe("ok")
+  })
+
   it("tolerates snake_case rubric_failures", () => {
     const raw = JSON.stringify({
       pass: false,
