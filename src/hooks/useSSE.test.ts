@@ -246,5 +246,61 @@ describe("classifySessionError", () => {
       const e3 = classifySessionError({ response: { status: 429 }, message: "Blocked" })
       expect(e3.kind).toBe("rate_limit")
     })
+
+    // RFC 7231 §7.1.3 allows BOTH a delta-seconds form ("120") AND an
+    // HTTP-date form ("Wed, 21 Oct 2025 07:28:00 GMT"). Some gateways
+    // (Cloudflare, nginx) emit the date form, and classifySessionError
+    // falls back to `Date.parse` for that shape (B1 audit fix). The tests
+    // below pin the behaviour so the parser cannot silently regress to
+    // "header ignored → heuristic backoff".
+    it("parses Retry-After header in HTTP-date form (RFC 7231)", () => {
+      const future = new Date(Date.now() + 30_000)
+      const e = classifySessionError({
+        message: "rate limit",
+        headers: { "retry-after": future.toUTCString() },
+      })
+      expect(e.kind).toBe("rate_limit")
+      // ±2 s tolerance for test execution time between the parse and the assert.
+      expect(e.retryAfter).not.toBeUndefined()
+      expect(e.retryAfter).toBeGreaterThanOrEqual(28)
+      expect(e.retryAfter).toBeLessThanOrEqual(32)
+    })
+
+    it("clamps a past HTTP-date Retry-After to >= 0 (never negative)", () => {
+      const past = new Date(Date.now() - 60_000)
+      const e = classifySessionError({
+        message: "rate limit",
+        headers: { "retry-after": past.toUTCString() },
+      })
+      expect(e.retryAfter).toBe(0)
+    })
+
+    it("parses HTTP-date Retry-After from the SDK-shaped data.headers location", () => {
+      const future = new Date(Date.now() + 5_000)
+      const e = classifySessionError({
+        name: "APIError",
+        data: {
+          message: "request failed",
+          statusCode: 429,
+          headers: { "retry-after": future.toUTCString() },
+        },
+      })
+      expect(e.kind).toBe("rate_limit")
+      expect(e.retryAfter).toBeGreaterThanOrEqual(3)
+      expect(e.retryAfter).toBeLessThanOrEqual(7)
+    })
+
+    it("falls back to heuristic when Retry-After is an unparseable string", () => {
+      // "definitely-not-a-date" is not an RFC 1123 / ISO date and not a
+      // numeric string — the parser should fall through to the message
+      // regex or to `undefined`. With no message hint, retryAfter is
+      // undefined and `kind` falls back to the classifier's default
+      // (no 429 → "fatal").
+      const e = classifySessionError({
+        headers: { "retry-after": "definitely-not-a-date" },
+        message: "some random failure",
+      })
+      expect(e.retryAfter).toBeUndefined()
+    })
   })
 })
