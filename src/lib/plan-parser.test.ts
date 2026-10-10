@@ -1305,6 +1305,59 @@ describe("splitPlanLinesWithFenceState", () => {
     expect(lines[2].isFenced).toBe(true)
     expect(lines[3].isFenced).toBe(false)
   })
+
+  // CommonMark §4.5: a closing fence may be the SAME LENGTH OR LONGER than
+  // the opening fence (as long as it uses the same char and meets the
+  // {n,} rule). OCLoop matches this so a real (e.g.) `~~~` opening can be
+  // closed by a stray `~~~~~` line without breaking parsing — the longer
+  // run is treated as the closing delimiter. Pin the contract explicitly
+  // so a future regex tightening can't silently regress to "opening fence
+  // length MUST equal closing fence length" (which would close prematurely
+  // on a noisy agent reply).
+  it("accepts a closing fence longer than the opening (CommonMark §4.5)", () => {
+    const content = [
+      "```",            // 3-backtick open
+      "- [ ] fenced",   // fenced (1)
+      "`````",          // 5-backtick close (longer than open)
+      "- [ ] real task",// outside fence (1)
+    ].join("\n")
+    const lines = splitPlanLinesWithFenceState(content)
+    expect(lines[0].isFenced).toBe(true)
+    expect(lines[0].isFenceDelimiter).toBe(true)
+    expect(lines[1].isFenced).toBe(true)
+    expect(lines[1].isFenceDelimiter).toBe(false)
+    expect(lines[2].isFenced).toBe(true)
+    expect(lines[2].isFenceDelimiter).toBe(true)
+    expect(lines[3].isFenced).toBe(false)
+    expect(lines[3].isFenceDelimiter).toBe(false)
+  })
+
+  it("does not open a new fence on a mid-line backtick run (anchoring to line start)", () => {
+    // parseOpeningFence requires the backtick run to sit at line start
+    // (matching ^[^\S\r\n]{0,3}). A run of 5 backticks mid-line must NOT
+    // be promoted to a fence opener — otherwise a stray ``` in prose
+    // would silently flip the rest of the plan into fenced status. Pin
+    // the anchoring invariant explicitly so a future "make the regex
+    // more permissive" refactor is caught.
+    const content = [
+      "```",
+      "stuff that mentions a literal ````` somewhere in prose",
+      "- [ ] still inside the fence",
+      "- [ ] also fenced",
+      "```",
+    ].join("\n")
+    const lines = splitPlanLinesWithFenceState(content)
+    // All 5 lines are inside the fence (3-backtick open to 3-backtick close).
+    expect(lines.every((l) => l.isFenced)).toBe(true)
+    // Only the lines that are actually a delimiter should carry that flag:
+    // line 0 (open) and line 4 (close). The mid-line ````` run on line 1
+    // is inside the fence but NOT a delimiter.
+    expect(lines[0].isFenceDelimiter).toBe(true)
+    expect(lines[1].isFenceDelimiter).toBe(false)
+    expect(lines[2].isFenceDelimiter).toBe(false)
+    expect(lines[3].isFenceDelimiter).toBe(false)
+    expect(lines[4].isFenceDelimiter).toBe(true)
+  })
 })
 
 describe("parseSubtasksFromReply (extended)", () => {
