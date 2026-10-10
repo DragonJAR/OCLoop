@@ -5,6 +5,100 @@ import { log } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
 import { computeBackoff } from "../lib/backoff"
 
+/**
+ * Event-property narrowings. `BackendEvent.properties` is typed
+ * `Record<string, unknown>`, so each event case casts to the minimal shape it
+ * actually reads. Keeps tsc strict (no `as any`) while still allowing the
+ * runtime to be permissive about extra fields from upstream SDK versions.
+ */
+type MessageUpdatedProps = {
+  info?: { id?: string; role?: string; sessionID?: string; sessionId?: string }
+  message?: { id?: string; role?: string; sessionID?: string; sessionId?: string }
+  sessionID?: string
+  sessionId?: string
+}
+type MessagePartUpdatedProps = {
+  part?: {
+    id?: string
+    type?: string
+    messageID?: string
+    sessionID?: string
+  } & Record<string, unknown>
+  delta?: string
+}
+
+function isObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === "object" && v !== null && !Array.isArray(v)
+}
+
+/**
+ * Try each candidate path in order; return the first one that resolves to a
+ * non-null `object` record. Used to walk SDK-shaped payloads where the same
+ * field may live at `error.data.foo` or at the top-level `error.foo`.
+ */
+function digAny(record: Record<string, unknown>, paths: string[][]): Record<string, unknown> | undefined {
+  for (const path of paths) {
+    let cur: unknown = record
+    let valid = true
+    for (const k of path) {
+      if (!isObject(cur)) {
+        valid = false
+        break
+      }
+      cur = cur[k]
+    }
+    if (valid && isObject(cur)) return cur
+  }
+  return undefined
+}
+
+/**
+ * Try each candidate path in order; return the first one that resolves to a
+ * string. The path may be nested (e.g. `["data", "name"]`) and may have to
+ * traverse an intermediate record.
+ */
+function readStringAt(record: Record<string, unknown>, paths: string[][]): string | undefined {
+  for (const path of paths) {
+    let cur: unknown = record
+    let valid = true
+    for (const k of path) {
+      if (!isObject(cur)) {
+        valid = false
+        break
+      }
+      cur = cur[k]
+    }
+    if (valid && typeof cur === "string") return cur
+  }
+  return undefined
+}
+
+/** Like `readStringAt` but for numeric leaves (HTTP-style status codes). */
+function readNumberAt(record: Record<string, unknown>, paths: string[][]): number | undefined {
+  for (const path of paths) {
+    let cur: unknown = record
+    let valid = true
+    for (const k of path) {
+      if (!isObject(cur)) {
+        valid = false
+        break
+      }
+      cur = cur[k]
+    }
+    if (valid && typeof cur === "number") return cur
+  }
+  return undefined
+}
+
+function dig(record: Record<string, unknown>, ...path: string[]): Record<string, unknown> | undefined {
+  let cur: unknown = record
+  for (const p of path) {
+    if (!isObject(cur)) return undefined
+    cur = cur[p]
+  }
+  return isObject(cur) ? cur : undefined
+}
+
 /** Maximum length for individual string values in logged event data */
 const MAX_LOG_VALUE_LENGTH = 200
 
@@ -182,20 +276,21 @@ function parseRetryAfterValue(raw: unknown): number | undefined {
   return undefined
 }
 
-function extractRetryAfter(e: Record<string, any>): number | undefined {
+function extractRetryAfter(e: Record<string, unknown>): number | undefined {
+  const data = dig(e, "data")
   const candidates = [
-    e?.retryAfter,
-    e?.retry_after,
-    e?.data?.retryAfter,
-    e?.data?.retry_after,
+    e.retryAfter,
+    e.retry_after,
+    data?.retryAfter,
+    data?.retry_after,
   ]
   for (const c of candidates) {
     const n = parseRetryAfterValue(c)
     if (n !== undefined) return n
   }
 
-  const headers = e?.headers ?? e?.response?.headers
-  const dataHeaders = e?.data?.responseHeaders ?? e?.data?.headers
+  const headers = e.headers ?? dig(e, "response")?.headers
+  const dataHeaders = data?.responseHeaders ?? data?.headers
   const readRetryAfter = (headersLike: unknown): unknown => {
     if (!headersLike) return undefined
     const h = headersLike as {
@@ -254,13 +349,14 @@ export function classifySessionError(rawError: unknown): SessionError {
   let message: string
   let retryAfter: number | undefined
 
-  if (typeof rawError === "object" && rawError !== null) {
-    const e = rawError as Record<string, any>
-    name = typeof e.name === "string" ? e.name : undefined
-    message = e.message || e.data?.message || "Unknown error"
-    if (!name && typeof e.data?.name === "string") {
-      name = e.data.name
-    }
+  if (isObject(rawError)) {
+    const e = rawError
+    name = readStringAt(e, [["data", "name"], ["name"]])
+    const nested = dig(e, "data")
+    message =
+      readStringAt(e, [["message"]]) ??
+      (nested ? readStringAt(nested, [["message"]]) : undefined) ??
+      "Unknown error"
     retryAfter = extractRetryAfter(e)
   } else if (typeof rawError === "string") {
     message = rawError
@@ -268,13 +364,10 @@ export function classifySessionError(rawError: unknown): SessionError {
     message = "Unknown error"
   }
 
-  const statusCode =
-    typeof rawError === "object" && rawError !== null
-      ? (rawError as Record<string, any>).data?.statusCode ??
-        (rawError as Record<string, any>).statusCode ??
-        (rawError as Record<string, any>).status ??
-        (rawError as Record<string, any>).response?.status
-      : undefined
+  const statusCode = isObject(rawError)
+    ? readNumberAt(rawError, [["data", "statusCode"], ["statusCode"]]) ??
+      readNumberAt(rawError, [["data", "status"], ["status"], ["response", "status"]])
+    : undefined
   const kind = typeof rawError === "object" && rawError !== null
     ? classifyKindWithStatus(name, message, statusCode)
     : classifyKind(name, message)
@@ -482,7 +575,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       case "message.updated": {
-        const props = event.properties as any
+        const props = event.properties as MessageUpdatedProps
         const message = props.info || props.message
         const messageSessionId =
           props.sessionID ?? props.sessionId ?? message?.sessionID ?? message?.sessionId
@@ -497,10 +590,15 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       }
 
       case "message.part.updated": {
-        const props = event.properties as any
-        const part = props.part
-        const messageId = part?.messageID
-        const eventSessionId = part?.sessionID
+        const props = event.properties as MessagePartUpdatedProps
+        const part = props.part as
+          | (ToolPart & { messageID?: string; sessionID?: string })
+          | TextPart
+          | ReasoningPart
+          | StepFinishPart
+          | undefined
+        const messageId = part && "messageID" in part ? part.messageID : undefined
+        const eventSessionId = part && "sessionID" in part ? part.sessionID : undefined
 
         if (filterSessionId && eventSessionId !== filterSessionId) {
           return
@@ -512,7 +610,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
         if (part.type === "tool-use" || part.type === "tool") {
           // Only emit when we have input data (running) and haven't seen this tool call yet
-          const status = (part as any).state?.status
+          const status = (part as ToolPart).state?.status
           if (status === "running" && !seenPartIds.has(part.id)) {
             seenPartIds.add(part.id)
             handlers.onToolUse?.(part as ToolPart)
@@ -520,10 +618,15 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         } else if (part.type === "text") {
           if (!seenPartIds.has(part.id)) {
             seenPartIds.add(part.id)
-            const role =
-              messageRoles.get(getMessageRoleKey(eventSessionId, messageId)) ||
-              messageRoles.get(messageId) ||
-              "assistant"
+            // Without an `as any` escape hatch, `messageId` is properly
+            // `string | undefined`. When the SDK omits `messageID` on a text
+            // part, fall back to "assistant" — we never want to crash the SSE
+            // consumer over a missing field.
+            const role = messageId
+              ? messageRoles.get(getMessageRoleKey(eventSessionId, messageId)) ||
+                messageRoles.get(messageId) ||
+                "assistant"
+              : "assistant"
             handlers.onMessageText?.(part as TextPart, role)
           }
         } else if (part.type === "reasoning") {
