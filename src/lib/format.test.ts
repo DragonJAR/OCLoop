@@ -30,7 +30,18 @@ describe("format utilities", () => {
     expect(formatTokenCount(100)).toBe("100");
     const formatted1000 = formatTokenCount(1000);
     expect(formatted1000.length).toBeGreaterThan(4); // "1,000" or "1 000"
-  });
+  })
+
+  test("formatTokenCount falls back to '0' for non-finite numbers", () => {
+    // A corrupted or missing token count could be NaN/Infinity from a bad
+    // upstream signal. The function MUST not render "NaN" or "∞" in the
+    // TUI (the BottomPanel would otherwise show broken labels), so pin
+    // the non-finite → "0" guard explicitly. (Catches a regression where
+    // the guard is removed or weakened.)
+    expect(formatTokenCount(NaN)).toBe("0")
+    expect(formatTokenCount(Infinity)).toBe("0")
+    expect(formatTokenCount(-Infinity)).toBe("0")
+  })
 
   test("truncateText truncates correctly", () => {
     expect(truncateText("hello world", 11)).toBe("hello world");
