@@ -57,4 +57,17 @@ describe("scrollTopToRevealIndex", () => {
       }),
     ).toBe(5)
   })
+
+  // Guard against div-by-zero / negative viewport: the function returns
+  // null (the caller treats null as "no scroll needed") rather than a
+  // negative scrollTop, which would otherwise wrap-around in unsigned
+  // contexts and break the list UI. Pin the contract.
+  it("returns null for non-positive viewportHeight", () => {
+    expect(
+      scrollTopToRevealIndex({ index: 3, scrollTop: 0, viewportHeight: 0 }),
+    ).toBeNull()
+    expect(
+      scrollTopToRevealIndex({ index: 3, scrollTop: 0, viewportHeight: -5 }),
+    ).toBeNull()
+  })
 })
