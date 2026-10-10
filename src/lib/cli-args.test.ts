@@ -360,6 +360,28 @@ describe("parseArgs — duplicate flag behavior (Finding 1.1.B / A2)", () => {
     expect(r.args).toBeNull()
   })
 
+  // The other value flags share the same rejectDuplicateFlag guard as
+  // --port but were never tested individually. Pin them so a switch-case
+  // refactor that drops one of the calls is caught at `bun test` time
+  // instead of by a typo-driven silent-overwrite in production.
+  // `--model` needs `provider/model`, `--lang` needs `en|es`; pass values
+  // valid for the first occurrence so we reach the duplicate-guard path.
+  const duplicateValueCases: Array<readonly [string, string]> = [
+    ["--model", "openai/gpt-5"],
+    ["--agent", "plan"],
+    ["--prompt", "first.md"],
+    ["--plan", "first.md"],
+    ["--lang", "en"],
+  ]
+  for (const [flag, firstValue] of duplicateValueCases) {
+    it(`duplicate ${flag} flags: error and exit ≠ 0`, () => {
+      const r = runParse([flag, firstValue, flag, "second"])
+      expect(r.exitCode).toBe(1)
+      expect(r.errors.join("\n")).toContain(`duplicate flag ${flag}`)
+      expect(r.args).toBeNull()
+    })
+  }
+
   it("duplicate --debug flags: idempotent", () => {
     const { args } = runParse(["--debug", "--debug"])
     expect(args?.debug).toBe(true)
