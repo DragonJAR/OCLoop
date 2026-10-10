@@ -82,10 +82,17 @@ export function Dialog(props: DialogProps) {
   const left = () => Math.max(0, Math.floor((dimensions().width - dialogWidth()) / 2))
   const top = () => Math.max(0, Math.floor((dimensions().height - dialogHeight()) / 2))
 
-  // Handle backdrop click
+  // Handle backdrop click. If the user is mid-selection (drag-selecting text
+  // with the mouse), don't treat a mouse-up on the backdrop as a dialog-dismiss
+  // — otherwise releasing the mouse anywhere outside the dialog would close it
+  // and swallow the selection. The renderer's `selection` field is private;
+  // the public surface is `getSelection()` (returns the active Selection, or
+  // null) plus its `isActive` getter — together they replace the old
+  // `@ts-ignore`-gated `renderer.selection?.active` access, which was both
+  // untyped AND pointed at a property that does not exist (`active` vs
+  // `isActive`).
   const handleBackdropClick = () => {
-    // @ts-ignore - selection property exists at runtime
-    if (renderer.selection?.active) return
+    if (renderer.getSelection()?.isActive) return
     props.onClose()
   }
 
