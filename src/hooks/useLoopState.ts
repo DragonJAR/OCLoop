@@ -477,7 +477,7 @@ export function useLoopState(): UseLoopStateReturn {
     if (s.type === "paused") return s.iteration
     if (s.type === "cooldown") return s.iteration
     if (s.type === "complete") return s.iterations
-    if ("iteration" in s && typeof s.iteration === "number") return s.iteration
+    if ("iteration" in s && typeof s.iteration === "number" && Number.isFinite(s.iteration) && s.iteration >= 0) return s.iteration
     return 0
   })
 

@@ -62,6 +62,32 @@ describe("formatActivityLine — content, progress, collapse, width", () => {
     const f = formatActivityLine({ type: "task", message: "x".repeat(200) }, 20)
     expect(f.text.length).toBeLessThanOrEqual(20)
   })
+
+  it("handles non-finite contentWidth safely with fallback", () => {
+    const f = formatActivityLine({ type: "task", message: "important message" }, Number.NaN)
+    expect(f.text).not.toBe("")
+    expect(f.text.length).toBeGreaterThan(0)
+  })
+
+  it("ignores NaN, non-finite, and negative progress values", () => {
+    const f1 = formatActivityLine(
+      { type: "task", message: "work", progress: { current: Number.NaN, total: 10 } },
+      80,
+    )
+    expect(f1.text).not.toContain("NaN")
+
+    const f2 = formatActivityLine(
+      { type: "task", message: "work", progress: { current: -1, total: 10 } },
+      80,
+    )
+    expect(f2.text).not.toContain("-1/10")
+
+    const f3 = formatActivityLine(
+      { type: "task", message: "work", progress: { current: 5, total: Number.POSITIVE_INFINITY } },
+      80,
+    )
+    expect(f3.text).not.toContain("Infinity")
+  })
 })
 
 describe("formatTime", () => {

@@ -85,7 +85,7 @@ function readNumberAt(record: Record<string, unknown>, paths: string[][]): numbe
       }
       cur = cur[k]
     }
-    if (valid && typeof cur === "number") return cur
+    if (valid && typeof cur === "number" && Number.isFinite(cur)) return cur
   }
   return undefined
 }
@@ -280,7 +280,7 @@ function classifyKindWithStatus(
   message: string,
   statusCode?: number,
 ): SessionErrorKind {
-  const statusText = typeof statusCode === "number" ? ` ${statusCode}` : ""
+  const statusText = typeof statusCode === "number" && Number.isFinite(statusCode) ? ` ${statusCode}` : ""
   return classifyKind(name, `${message}${statusText}`)
 }
 

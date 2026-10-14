@@ -95,7 +95,14 @@ export interface FormattedLine {
 function progressSuffix(p?: FormatInput["progress"]): string {
   if (!p) return ""
   const parts: string[] = []
-  if (typeof p.current === "number" && typeof p.total === "number" && p.total > 0) {
+  if (
+    typeof p.current === "number" &&
+    Number.isFinite(p.current) &&
+    p.current >= 0 &&
+    typeof p.total === "number" &&
+    Number.isFinite(p.total) &&
+    p.total > 0
+  ) {
     // Clamp the percentage to [0, 100] so an upstream bug (current > total)
     // doesn't render a misleading "150%". The raw current/total counts are
     // shown as-is for diagnosis.
@@ -116,7 +123,8 @@ export function formatActivityLine(e: FormatInput, contentWidth: number, unicode
   // Tool calls read better as "preview: message"; everything else is the message.
   const base = e.type === "tool_use" && e.detail ? `${e.detail}: ${e.message}` : e.message
   const count = e.count && e.count > 1 ? `  (${glyph("times", unicode)}${e.count})` : ""
-  const text = truncateText(base + progressSuffix(e.progress) + count, Math.max(8, contentWidth))
+  const safeWidth = Number.isFinite(contentWidth) ? Math.max(8, contentWidth) : 8
+  const text = truncateText(base + progressSuffix(e.progress) + count, safeWidth)
   return {
     glyph: glyph(LEVEL_TO_GLYPH[level], unicode),
     glyphColor: LEVEL_COLOR[level],

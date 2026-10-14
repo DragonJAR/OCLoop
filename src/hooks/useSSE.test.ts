@@ -247,6 +247,14 @@ describe("classifySessionError", () => {
       expect(e3.kind).toBe("rate_limit")
     })
 
+    it("ignores NaN or non-finite status / statusCode in classifySessionError", () => {
+      const e1 = classifySessionError({ status: Number.NaN, message: "Resource issue" })
+      expect(e1.kind).toBe("fatal")
+
+      const e2 = classifySessionError({ statusCode: Number.POSITIVE_INFINITY, message: "Resource issue" })
+      expect(e2.kind).toBe("fatal")
+    })
+
     // RFC 7231 §7.1.3 allows BOTH a delta-seconds form ("120") AND an
     // HTTP-date form ("Wed, 21 Oct 2025 07:28:00 GMT"). Some gateways
     // (Cloudflare, nginx) emit the date form, and classifySessionError
