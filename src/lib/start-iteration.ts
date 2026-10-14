@@ -35,6 +35,7 @@ import type { t as Tfn } from "./i18n"
 import { getActiveSessionId } from "../hooks/useLoopState"
 import { createSession, sendPromptAsync, abortSession } from "./api"
 import { toErrorMessage } from "./format"
+import { MAX_TIMEOUT_MS } from "./constants"
 
 /** Result of a single PLAN.md read at iteration start (transition + task selection). */
 export interface PlanIterationPrep {
@@ -195,7 +196,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   if (gap > 0) {
     const since = deps.monotonicNow() - deps.getLastIterationStartAt()
     if (since < gap) {
-      await new Promise((r) => setTimeout(r, gap - since))
+      await new Promise((r) => setTimeout(r, Math.min(gap - since, MAX_TIMEOUT_MS)))
     }
   }
   deps.setLastIterationStartAt(deps.monotonicNow())
