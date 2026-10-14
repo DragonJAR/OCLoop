@@ -19,6 +19,8 @@
  * `Math.random` (available at runtime, unlike inside workflow scripts).
  */
 
+import { MAX_TIMEOUT_MS } from "./constants"
+
 export interface BackoffOptions {
   /** Base delay in milliseconds (the t=0 unit). */
   base: number
@@ -36,14 +38,16 @@ export function computeBackoff(attempt: number, opts: BackoffOptions): number {
   const { base, max, jitter = true, retryAfterSeconds, random = Math.random } =
     opts
 
-  // Server's Retry-After wins outright (converted to ms, never negative).
+  // Server's Retry-After wins outright (converted to ms, never negative, capped at MAX_TIMEOUT_MS).
   if (retryAfterSeconds !== undefined && Number.isFinite(retryAfterSeconds)) {
-    return Math.max(0, Math.round(retryAfterSeconds * 1000))
+    return Math.min(MAX_TIMEOUT_MS, Math.max(0, Math.round(retryAfterSeconds * 1000)))
   }
 
   const safeAttempt = Number.isFinite(attempt) ? Math.max(0, Math.floor(attempt)) : 0
-  const safeBase = Number.isFinite(base) ? Math.max(0, base) : 1000
-  const safeMax = Number.isFinite(max) ? Math.max(0, max) : Math.max(safeBase, 30000)
+  const safeBase = Number.isFinite(base) ? Math.min(MAX_TIMEOUT_MS, Math.max(0, base)) : 1000
+  const safeMax = Number.isFinite(max)
+    ? Math.min(MAX_TIMEOUT_MS, Math.max(0, max))
+    : Math.min(MAX_TIMEOUT_MS, Math.max(safeBase, 30000))
 
   // min(max, base * 2^attempt) — guard against Infinity from large attempts.
   // When uncapped is Infinity (e.g. attempt=100), Number.isFinite catches it

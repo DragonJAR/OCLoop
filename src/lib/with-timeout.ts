@@ -19,6 +19,8 @@
  * runs to completion). This lets a config value of `0` mean "no timeout".
  */
 
+import { MAX_TIMEOUT_MS } from "./constants"
+
 export class TimeoutError extends Error {
   /** The label passed to `withTimeout`, identifying which operation timed out. */
   readonly label: string
@@ -112,11 +114,12 @@ export async function withTimeout<T>(
   let cleanupSignals = () => {}
 
   const timeoutError = new TimeoutError(label, ms)
+  const delayMs = Math.min(ms, MAX_TIMEOUT_MS)
   const timeout = new Promise<never>((_, reject) => {
     timer = setTimeout(() => {
       reject(timeoutError)
       queueMicrotask(() => controller.abort(timeoutError))
-    }, ms)
+    }, delayMs)
   })
 
   try {

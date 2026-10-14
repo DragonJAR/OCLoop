@@ -183,4 +183,19 @@ describe("withTimeout", () => {
       abortSignalAny.any = originalAny
     }
   })
+
+  it("clamps delays > 2^31 - 1 to MAX_TIMEOUT_MS avoiding 32-bit setTimeout overflow", async () => {
+    // Delays > 2^31 - 1 (2,147,483,647) overflow 32-bit signed integer in setTimeout
+    // and fire immediately in 1ms. Verify that withTimeout clamps the delay so the task
+    // completes successfully instead of failing prematurely.
+    const result = await withTimeout(
+      (async () => {
+        await delay(15)
+        return "success"
+      })(),
+      1e12,
+      "huge-timeout",
+    )
+    expect(result).toBe("success")
+  })
 })

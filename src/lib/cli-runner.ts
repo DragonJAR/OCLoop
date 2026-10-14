@@ -30,6 +30,8 @@
  * stubs; this file is its subprocess twin. Keep them separate.
  */
 
+import { MAX_TIMEOUT_MS } from "./constants"
+
 export interface CliRunResult {
   stdout: string
   stderr: string
@@ -66,7 +68,7 @@ export async function runCli(
   const env = { ...process.env, ...(options.env ?? {}) }
   const cwd = options.cwd ?? process.cwd()
   const entrypoint = options.entrypoint ?? DEFAULT_ENTRYPOINT
-  const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
 
   const proc = Bun.spawn({
     cmd: [process.execPath, "run", entrypoint, ...argv],

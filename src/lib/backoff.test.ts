@@ -95,6 +95,22 @@ describe("computeBackoff", () => {
       })
       expect(v).toBe(0)
     })
+
+    it("caps Retry-After and max at MAX_TIMEOUT_MS to avoid 32-bit setTimeout overflow", () => {
+      const v1 = computeBackoff(0, {
+        base: 1000,
+        max: 60_000,
+        retryAfterSeconds: 10_000_000, // 10 million seconds = 10 billion ms
+      })
+      expect(v1).toBe(2_147_483_647)
+
+      const v2 = computeBackoff(50, {
+        base: 1000,
+        max: 5_000_000_000,
+        jitter: false,
+      })
+      expect(v2).toBe(2_147_483_647)
+    })
   })
 
   describe("NaN robustness (W3-12)", () => {

@@ -22,3 +22,10 @@ export const DEFAULT_PLAN_AGENT = "plan"
  * Any keypress in either dialog cancels its timer (the user took control).
  */
 export const AUTO_SELECT_MS = 30_000
+
+/**
+ * Maximum delay in milliseconds that Node/Bun's `setTimeout` accepts without
+ * 32-bit signed integer overflow (2^31 - 1, ~24.85 days). Delays exceeding this
+ * overflow and cause runtime warnings and immediate (1ms) execution.
+ */
+export const MAX_TIMEOUT_MS = 2_147_483_647
