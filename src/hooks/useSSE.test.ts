@@ -302,5 +302,36 @@ describe("classifySessionError", () => {
       })
       expect(e.retryAfter).toBeUndefined()
     })
+
+    it("treats empty, whitespace-only, negative, or non-finite Retry-After as undefined", () => {
+      // Number("") is 0 in JS — ensure empty string is not misparsed as 0 seconds
+      expect(
+        classifySessionError({
+          headers: { "retry-after": "" },
+          message: "429 rate limit",
+        }).retryAfter,
+      ).toBeUndefined()
+
+      expect(
+        classifySessionError({
+          headers: { "retry-after": "   " },
+          message: "429 rate limit",
+        }).retryAfter,
+      ).toBeUndefined()
+
+      expect(
+        classifySessionError({
+          retryAfter: -10,
+          message: "429 rate limit",
+        }).retryAfter,
+      ).toBeUndefined()
+
+      expect(
+        classifySessionError({
+          retryAfter: NaN,
+          message: "429 rate limit",
+        }).retryAfter,
+      ).toBeUndefined()
+    })
   })
 })

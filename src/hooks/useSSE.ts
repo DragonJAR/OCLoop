@@ -298,16 +298,22 @@ function classifyKindWithStatus(
  * Returns `undefined` when neither form parses.
  */
 function parseRetryAfterValue(raw: unknown): number | undefined {
-  // Seconds form: a numeric string or number. `Number("120")` works; a date
-  // string yields NaN and falls through.
-  const asNum = typeof raw === "string" ? Number(raw) : raw
-  if (typeof asNum === "number" && Number.isFinite(asNum) && asNum >= 0) {
-    return asNum
+  if (typeof raw === "number") {
+    return Number.isFinite(raw) && raw >= 0 ? raw : undefined
   }
-  // HTTP-date form: `Date.parse` accepts RFC 1123 (the HTTP-date grammar) and
-  // returns epoch ms (NaN if unparseable). Convert to a non-negative delta.
   if (typeof raw === "string") {
-    const target = Date.parse(raw)
+    const trimmed = raw.trim()
+    if (!trimmed) return undefined
+
+    // Seconds form: a numeric string. `Number("120")` works; a date
+    // string yields NaN and falls through.
+    const asNum = Number(trimmed)
+    if (Number.isFinite(asNum) && asNum >= 0) {
+      return asNum
+    }
+    // HTTP-date form: `Date.parse` accepts RFC 1123 (the HTTP-date grammar) and
+    // returns epoch ms (NaN if unparseable). Convert to a non-negative delta.
+    const target = Date.parse(trimmed)
     if (Number.isFinite(target)) {
       const secs = Math.ceil((target - Date.now()) / 1000)
       return Math.max(0, secs)
