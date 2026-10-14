@@ -120,4 +120,13 @@ describe("createSleepDetector", () => {
     expect(() => d.poll()).not.toThrow()
     expect(rejected).toBe(true)
   })
+
+  it("starts timer safely with tickMs > 2^31 - 1 avoiding 32-bit overflow", () => {
+    const clock = fakeClock()
+    const d = createSleepDetector({ tickMs: 1e12, onWake: () => {}, clock })
+    d.start()
+    expect(d.isRunning()).toBe(true)
+    d.stop()
+    expect(d.isRunning()).toBe(false)
+  })
 })

@@ -29,6 +29,7 @@ function setup(initial?: {
   ping?: boolean
   reconcile?: ReconcileResult
   maxRecoveryAttempts?: number
+  tickMs?: number
 }) {
   let isActive = initial?.isActive ?? true
   let ping = initial?.ping ?? true
@@ -56,7 +57,7 @@ function setup(initial?: {
     config: () => ({
       suspectMs: T1,
       confirmMs: T2,
-      tickMs: 15_000,
+      tickMs: initial?.tickMs ?? 15_000,
       maxRecoveryAttempts: initial?.maxRecoveryAttempts ?? 3,
     }),
     clock: clk.clock,
@@ -954,5 +955,11 @@ describe("watchdog — anti-false-positive details", () => {
     await s.wd.tick()
     expect(s.calls.fail.length).toBe(1)
     expect(s.wd.health()).toBe("HEALTHY")
+  })
+
+  it("starts timer safely with tickMs > 2^31 - 1 avoiding 32-bit overflow", () => {
+    const s = setup({ tickMs: 1e12 })
+    s.wd.start()
+    s.wd.stop()
   })
 })

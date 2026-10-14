@@ -25,6 +25,7 @@ import { type Clock, systemClock } from "../lib/clock"
 import type { ReconcileResult } from "../lib/api"
 import { log as defaultLog } from "../lib/debug-logger"
 import { toErrorMessage } from "../lib/format"
+import { MAX_TIMEOUT_MS } from "../lib/constants"
 
 export type WatchdogHealth =
   | "HEALTHY"
@@ -331,7 +332,7 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
             message: toErrorMessage(err),
           })
         })
-      }, options.config().tickMs)
+      }, Math.min(options.config().tickMs, MAX_TIMEOUT_MS))
     },
     stop() {
       if (timer) {

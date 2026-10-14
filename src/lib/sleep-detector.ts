@@ -16,6 +16,7 @@
 import { type Clock, systemClock } from "./clock"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
+import { MAX_TIMEOUT_MS } from "./constants"
 
 export interface SleepDetectorOptions {
   /** Sampling interval in ms (default 5000). */
@@ -89,7 +90,7 @@ export function createSleepDetector(options: SleepDetectorOptions): SleepDetecto
     start() {
       if (timer) return
       lastSeen = clock.wallClockNow()
-      timer = setInterval(poll, tickMs)
+      timer = setInterval(poll, Math.min(tickMs, MAX_TIMEOUT_MS))
     },
     stop() {
       if (timer) {
