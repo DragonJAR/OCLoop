@@ -212,6 +212,18 @@ export function parseTaskLine(line: string): ParsedTask {
   return { type: "not-a-task", description: "" }
 }
 
+/** Walk every task line outside code fences (shared by parsePlan/list/find/getCurrent). */
+function forEachTaskLine(
+  content: string,
+  visit: (task: ParsedTask, line: string) => void,
+): void {
+  for (const { line } of planLinesOutsideCodeFences(content)) {
+    const task = parseTaskLine(line)
+    if (task.type === "not-a-task") continue
+    visit(task, line)
+  }
+}
+
 /**
  * Parses a PLAN.md file content and extracts progress information.
  *
@@ -225,25 +237,16 @@ export function parseTaskLine(line: string): ParsedTask {
  * @returns PlanProgress object with task counts and percentages
  */
 export function parsePlan(content: string): PlanProgress {
-  // Strip fenced code blocks so a documented example (a ```markdown block with
-  // `- [ ] example` lines) is NOT counted as a real task — otherwise total/
-  // completed/percentComplete are inflated and the pre-flight completion check
-  // (isStructurallyComplete) can misfire. See stripInlineCodeFences.
-  const lines = splitLines(stripInlineCodeFences(content))
+  // Walks lines outside fenced code blocks so documented examples (e.g. ```markdown
+  // blocks with `- [ ] example`) are NOT counted as real tasks — otherwise total/
+  // completed/percentComplete are inflated and isStructurallyComplete can misfire.
   let total = 0
   let completed = 0
   let manual = 0
   let blocked = 0
 
-  for (const line of lines) {
-    const task = parseTaskLine(line)
-    
-    if (task.type === "not-a-task") {
-      continue
-    }
-
+  forEachTaskLine(content, (task) => {
     total++
-    
     switch (task.type) {
       case "completed":
         completed++
@@ -256,7 +259,7 @@ export function parsePlan(content: string): PlanProgress {
         break
       // pending counts towards total but not specific buckets here
     }
-  }
+  })
 
   const pending = total - completed - manual - blocked
   const automatable = pending
@@ -410,17 +413,6 @@ export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
  * @param content - The content of the PLAN.md file
  * @returns The task description or null if no unchecked tasks found
  */
-/** Walk every task line outside code fences (shared by list/find/getCurrent). */
-function forEachTaskLine(
-  content: string,
-  visit: (task: ParsedTask, line: string) => void,
-): void {
-  for (const { line } of planLinesOutsideCodeFences(content)) {
-    const task = parseTaskLine(line)
-    if (task.type === "not-a-task") continue
-    visit(task, line)
-  }
-}
 
 /**
  * All pending task descriptions in document order (outside code fences).
