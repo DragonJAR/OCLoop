@@ -1271,6 +1271,16 @@ describe("stripCodeFences (extended)", () => {
   it("returns content unchanged when not enclosed in code fences", () => {
     expect(stripCodeFences("# Plan\n- [ ] Task")).toBe("# Plan\n- [ ] Task")
   })
+
+  it("handles closing fences longer than opening per CommonMark §4.5", () => {
+    expect(stripCodeFences("```markdown\n# Plan\n- [ ] Task\n`````")).toBe("# Plan\n- [ ] Task")
+    expect(stripCodeFences("~~~json\n{}\n~~~~~")).toBe("{}")
+  })
+
+  it("handles uppercase language tags and single-line code fences", () => {
+    expect(stripCodeFences("```JSON\n{\"pass\": true}\n```")).toBe("{\"pass\": true}")
+    expect(stripCodeFences("```json {\"pass\": true} ```")).toBe("{\"pass\": true}")
+  })
 })
 
 describe("splitPlanLinesWithFenceState", () => {

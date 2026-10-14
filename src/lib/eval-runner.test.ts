@@ -54,6 +54,27 @@ describe("parseEvalResult", () => {
     expect(r.reasoning).toBe("ok")
   })
 
+  it("tolerates uppercase JSON, tilde fences, 4-backtick, and longer closing fences", () => {
+    const upper = '```JSON\n{"pass": true, "score": 95, "rubricFailures": [], "reasoning": "upper"}\n```'
+    expect(parseEvalResult(upper).pass).toBe(true)
+    expect(parseEvalResult(upper).score).toBe(95)
+
+    const mixed = '```Json\n{"pass": true, "score": 90, "rubricFailures": [], "reasoning": "mixed"}\n```'
+    expect(parseEvalResult(mixed).pass).toBe(true)
+
+    const tilde = '~~~json\n{"pass": true, "score": 85, "rubricFailures": [], "reasoning": "tilde"}\n~~~'
+    expect(parseEvalResult(tilde).pass).toBe(true)
+
+    const fourBackticks = '````json\n{"pass": true, "score": 88, "rubricFailures": [], "reasoning": "four"}\n````'
+    expect(parseEvalResult(fourBackticks).pass).toBe(true)
+
+    const longerClosing = '```json\n{"pass": true, "score": 92, "rubricFailures": [], "reasoning": "longer"}\n`````'
+    expect(parseEvalResult(longerClosing).pass).toBe(true)
+
+    const singleLine = '```json {"pass": true, "score": 100, "rubricFailures": [], "reasoning": "single"} ```'
+    expect(parseEvalResult(singleLine).pass).toBe(true)
+  })
+
   it("tolerates snake_case rubric_failures", () => {
     const raw = JSON.stringify({
       pass: false,

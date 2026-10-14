@@ -93,13 +93,24 @@ export function planLinesOutsideCodeFences(content: string): PlanLine[] {
 
 /**
  * Strip a surrounding ```fence``` or ~~~fence~~~ if the model wrapped its output in one.
- * Used by --create-plan to clean the generated plan before saving. Supports CRLF,
- * tildes, and language tags with non-alphabetic characters (W2-06, W2-07).
+ * Used by --create-plan to clean the generated plan before saving, and by parseEvalResult
+ * to extract JSON verdicts (DRY). Supports CRLF, tildes, language tags with non-alphabetic
+ * characters, single-line fences, and closing fences longer than opening per CommonMark §4.5.
  */
 export function stripCodeFences(text: string): string {
   const trimmed = text.trim()
-  const m = trimmed.match(/^(`{3,}|~{3,})[^\r\n]*\r?\n([\s\S]*?)\r?\n\1$/)
-  return m ? m[2].trim() : trimmed
+  const openMatch = trimmed.match(/^(`{3,}|~{3,})(?:[^\r\n]*\r?\n|[a-zA-Z0-9_-]*\s+)/)
+  if (!openMatch) return trimmed
+
+  const fenceChar = openMatch[1][0]
+  const fenceLen = openMatch[1].length
+
+  const closePattern = new RegExp(`(?:\\r?\\n|\\s+)[^\\S\\r\\n]{0,3}${fenceChar === "`" ? "`" : "~"}{${fenceLen},}\\s*$`)
+  const closeMatch = trimmed.slice(openMatch[0].length).match(closePattern)
+  if (!closeMatch || closeMatch.index === undefined) return trimmed
+
+  const inner = trimmed.slice(openMatch[0].length, openMatch[0].length + closeMatch.index)
+  return inner.trim()
 }
 
 /**

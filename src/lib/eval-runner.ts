@@ -28,6 +28,7 @@
  */
 
 import { type OpencodeBackend } from "./api"
+import { stripCodeFences } from "./plan-parser"
 import { runOneShotAgent } from "./one-shot-agent"
 
 /** Structured verdict from the LM-judge over one iteration's evidence. */
@@ -80,9 +81,7 @@ function failClosed(raw: string): EvalResult {
  * for raw JSON.
  */
 export function parseEvalResult(raw: string): EvalResult {
-  const trimmed = raw.trim()
-  const fenceMatch = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/)
-  const jsonSrc = fenceMatch ? fenceMatch[1] : trimmed
+  const jsonSrc = stripCodeFences(raw)
 
   let parsed: unknown
   try {
