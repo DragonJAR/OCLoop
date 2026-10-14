@@ -62,6 +62,26 @@ describe("parseTaskLine", () => {
       })
     })
 
+    it("anchors the [BLOCKED] tag after empty checkbox so prefixes like [BLOCKEDABC] stay pending", () => {
+      expect(parseTaskLine("- [ ] [BLOCKEDABC] Normal task")).toEqual({
+        type: "pending",
+        description: "[BLOCKEDABC] Normal task",
+      })
+      expect(parseTaskLine("- [ ] [BLOCKED_BY_USER] Normal task")).toEqual({
+        type: "pending",
+        description: "[BLOCKED_BY_USER] Normal task",
+      })
+      expect(parseTaskLine("- [ ] [BLOCKED] Actual blocked task")).toEqual({
+        type: "blocked",
+        description: "Actual blocked task",
+        blockedReason: "",
+      })
+      expect(parseTaskLine("- [ ] [BLOCKED: api down] Actual blocked task")).toEqual({
+        type: "blocked",
+        description: "Actual blocked task",
+        blockedReason: "api down",
+      })
+    })
   })
 
   // ──────────────────────────────────────────────────────────────────────────
@@ -942,6 +962,21 @@ describe("parseSubtasksFromReply", () => {
   it("ignores non-pending markers (completed, MANUAL, BLOCKED)", () => {
     const reply = "- [x] already done\n- [MANUAL] human step\n- [BLOCKED] waiting\n- [ ] real subtask"
     expect(parseSubtasksFromReply(reply)).toEqual(["real subtask"])
+  })
+
+  it("does not drop subtasks whose descriptions begin with bracketed tags like [x86], [x64], [XML]", () => {
+    const reply = [
+      "1. [x86] Support 32-bit compilation",
+      "2. [x64] Support 64-bit compilation",
+      "3. [XML] Parse xml configuration",
+      "4. [arm64] Support Apple Silicon",
+    ].join("\n")
+    expect(parseSubtasksFromReply(reply)).toEqual([
+      "[x86] Support 32-bit compilation",
+      "[x64] Support 64-bit compilation",
+      "[XML] Parse xml configuration",
+      "[arm64] Support Apple Silicon",
+    ])
   })
 
   it("returns [] when the reply has no task lines", () => {

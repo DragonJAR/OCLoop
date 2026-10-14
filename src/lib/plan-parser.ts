@@ -187,7 +187,7 @@ export function parseTaskLine(line: string): ParsedTask {
   }
   
   // Check for [BLOCKED] tag after empty checkbox
-  if (checkboxContent === "" && /^\[BLOCKED/i.test(afterCheckbox)) {
+  if (checkboxContent === "" && /^\[BLOCKED(?=[:\s\]])/i.test(afterCheckbox)) {
     const match = afterCheckbox.match(/^\[BLOCKED[:\s]*([^\]]*)\]\s*(.*)$/i)
     if (match) {
       return { 
@@ -545,7 +545,7 @@ export function parseSubtasksFromReply(text: string): string[] {
     const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*)$/)
     if (!m) continue
     // If the bullet carried an explicit manual/blocked/done tag that wasn't standard, skip it
-    if (/^\[(?:[xX]|MANUAL|BLOCKED)/i.test(m[1])) continue
+    if (/^\[(?:[xX]\s*\]|MANUAL(?=[:\s\]])|BLOCKED(?=[:\s\]]))/i.test(m[1])) continue
     // Strip a leftover empty checkbox if the bullet still carried one (e.g. `* [ ] x`).
     const desc = m[1].replace(/^\[\s*\]\s*/, "").replace(/[\r\n]+/g, " ").trim()
     if (desc) out.push(desc)
