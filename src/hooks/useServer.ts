@@ -4,7 +4,7 @@ import type { OpencodeMajor } from "../lib/opencode-version"
 import { createClient, getApiTimeouts } from "../lib/api"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
-import { toErrorMessage } from "../lib/format"
+import { toError, toErrorMessage } from "../lib/format"
 import type { PermissionTool } from "../lib/config"
 import { createLaunchGate } from "../lib/launch-gate"
 
@@ -174,7 +174,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         if (generation !== launchGeneration) {
           return
         }
-        const serverError = err instanceof Error ? err : new Error(String(err))
+        const serverError = toError(err)
         setError(serverError)
         setStatus("error")
         serverRef = null
@@ -271,10 +271,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
             return
           }
           log.health("server", "restart_retry_ephemeral", {
-            message:
-              errPreferred instanceof Error
-                ? errPreferred.message
-                : String(errPreferred),
+            message: toErrorMessage(errPreferred),
           })
           try {
             // Old port may still be held; let the OS pick a fresh one.
@@ -291,7 +288,7 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
             if (generation !== launchGeneration) {
               return
             }
-            const serverError = err instanceof Error ? err : new Error(String(err))
+            const serverError = toError(err)
             setError(serverError)
             setStatus("error")
             serverRef = null

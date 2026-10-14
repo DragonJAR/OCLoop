@@ -2,7 +2,7 @@ import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
 import type { Todo } from "@opencode-ai/sdk/v2"
 import { createClient, getApiTimeouts, type LaunchInfo, type BackendEvent } from "../lib/api"
 import { log } from "../lib/debug-logger"
-import { toErrorMessage } from "../lib/format"
+import { toError, toErrorMessage } from "../lib/format"
 import { computeBackoff } from "../lib/backoff"
 
 /**
@@ -782,7 +782,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         return
       }
 
-      const connectionError = err instanceof Error ? err : new Error(String(err))
+      const connectionError = toError(err)
       setError(connectionError)
       setStatus("error")
       log.error("sse", "Connection error", connectionError)

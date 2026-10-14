@@ -1,6 +1,17 @@
 
 import { describe, expect, test } from "bun:test";
-import { formatTokenCount, truncate, truncateText, getToolPreview, stripMarkdown, tokensPerMin, wrapText, clampLines } from "./format";
+import {
+  formatTokenCount,
+  truncate,
+  truncateText,
+  getToolPreview,
+  stripMarkdown,
+  tokensPerMin,
+  wrapText,
+  clampLines,
+  toError,
+  toErrorMessage,
+} from "./format";
 
 describe("format utilities", () => {
   describe("truncate (width-exact, …)", () => {
@@ -155,6 +166,37 @@ describe("format utilities", () => {
     test("clamps non-positive/odd max to at least 1", () => {
       expect(clampLines(["a", "b"], 0)).toEqual({ shown: [], hidden: 2 });
       expect(clampLines(["a", "b", "c"], 2.9)).toEqual({ shown: ["a"], hidden: 2 });
+    });
+  });
+
+  describe("toError / toErrorMessage (DRY error narrowing)", () => {
+    test("toErrorMessage extracts message from Error and strings from non-Errors", () => {
+      expect(toErrorMessage(new Error("custom error"))).toBe("custom error");
+      expect(toErrorMessage("literal string")).toBe("literal string");
+      expect(toErrorMessage(404)).toBe("404");
+      expect(toErrorMessage(null)).toBe("null");
+      expect(toErrorMessage(undefined)).toBe("undefined");
+      expect(toErrorMessage({ code: "ECONNRESET" })).toBe("[object Object]");
+    });
+
+    test("toError returns existing Error instances unmodified", () => {
+      const err = new TypeError("cannot read property");
+      expect(toError(err)).toBe(err);
+      expect(toError(err) instanceof TypeError).toBe(true);
+    });
+
+    test("toError wraps non-Error values in Error instances with stringified message", () => {
+      const wrappedString = toError("connection reset");
+      expect(wrappedString instanceof Error).toBe(true);
+      expect(wrappedString.message).toBe("connection reset");
+
+      const wrappedNumber = toError(500);
+      expect(wrappedNumber instanceof Error).toBe(true);
+      expect(wrappedNumber.message).toBe("500");
+
+      const wrappedNull = toError(null);
+      expect(wrappedNull instanceof Error).toBe(true);
+      expect(wrappedNull.message).toBe("null");
     });
   });
 });

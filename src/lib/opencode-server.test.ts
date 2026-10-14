@@ -22,6 +22,7 @@ import { mockCommandExists } from "./command-exists-mock"
 import { mockOpencodeServer } from "./opencode-server-mock"
 import { EventEmitter } from "node:events"
 import { PERMISSION_TOOLS } from "./config"
+import { toError } from "./format"
 
 type FakeChildProcess = EventEmitter & {
   stdout: EventEmitter
@@ -145,7 +146,7 @@ async function failureFrom(promise: Promise<unknown>): Promise<Error> {
   try {
     await promise
   } catch (err) {
-    return err instanceof Error ? err : new Error(String(err))
+    return toError(err)
   }
   throw new Error("Expected startup to fail")
 }

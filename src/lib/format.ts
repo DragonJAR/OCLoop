@@ -17,6 +17,17 @@ export function toErrorMessage(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/**
+ * Narrow an unknown caught value to an `Error` instance.
+ *
+ * Symmetrical to `toErrorMessage(err)`:
+ * - `Error` instances are returned as-is (preserving error type, message, and stack).
+ * - Anything else is wrapped in a new `Error(String(value))`.
+ */
+export function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
+}
+
 export function formatTokenCount(n: number): string {
   // NaN/Infinity would render as "NaN"/"∞" — fall back to "0" so a corrupted
   // or missing token count shows a clean zero instead of a broken label.
