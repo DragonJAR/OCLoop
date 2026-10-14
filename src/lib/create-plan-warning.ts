@@ -9,6 +9,7 @@
  */
 
 import { DEFAULTS } from "./constants"
+import { resolvePromptFile } from "./plan-file"
 import type { CLIArgs } from "../types"
 
 /**
@@ -27,6 +28,6 @@ export function getIgnoredCreatePlanFlags(args: CLIArgs): string[] {
   // --prompt is reported only when the user actually overrode the path; the
   // default path is auto-created by validatePrerequisites in the TUI branch,
   // so a default --prompt carries no information.
-  if (args.promptFile !== DEFAULTS.PROMPT_FILE) ignored.push("--prompt")
+  if (resolvePromptFile(args.promptFile) !== DEFAULTS.PROMPT_FILE) ignored.push("--prompt")
   return ignored
 }

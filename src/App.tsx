@@ -32,7 +32,7 @@ import { log } from "./lib/debug-logger"
 import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
-import { resolvePlanFile } from "./lib/plan-file"
+import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { resolveTierMapping } from "./lib/resolve-tier-mapping"
@@ -1297,7 +1297,7 @@ function AppContent(props: AppProps) {
       // startingIteration, client, newSessionId and handleIterationError).
       await runIteration({
         planPath: resolvePlanFile(props.planFile),
-        promptPath: props.promptFile || DEFAULTS.PROMPT_FILE,
+        promptPath: resolvePromptFile(props.promptFile),
         loop: { state: loop.state, dispatch: loop.dispatch },
         client,
         watchdog,

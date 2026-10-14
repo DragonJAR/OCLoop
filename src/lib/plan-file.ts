@@ -18,3 +18,11 @@ export function resolvePlanFile(planFile: string | undefined): string {
   }
   return planFile.trim()
 }
+
+export function resolvePromptFile(promptFile: string | undefined): string {
+  if (!promptFile || !promptFile.trim()) {
+    return DEFAULTS.PROMPT_FILE
+  }
+  return promptFile.trim()
+}
+

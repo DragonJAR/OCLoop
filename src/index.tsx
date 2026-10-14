@@ -13,7 +13,7 @@ import {
   fetchMessages,
 } from "./lib/api"
 import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constants"
-import { resolvePlanFile } from "./lib/plan-file"
+import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
 import { runCreatePlanFlow } from "./lib/create-plan-flow"
 import type { CLIArgs } from "./types"
@@ -103,26 +103,27 @@ async function preflightCwdWritable(): Promise<{ ok: true } | { ok: false; messa
  * — without this the first auto-run iteration fails with "Prompt file not found".
  */
 async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
-  const promptExists = await fileExists(args.promptFile)
+  const promptPath = resolvePromptFile(args.promptFile)
+  const promptExists = await fileExists(promptPath)
   if (!promptExists) {
-    if (args.promptFile === DEFAULTS.PROMPT_FILE) {
+    if (promptPath === DEFAULTS.PROMPT_FILE) {
       // Bun.write() can reject on EACCES/EROFS/ENOENT/ENOSPC/EISDIR; wrap so the
       // rejection doesn't escape to main().catch() as a raw stack trace. Mirrors
       // the errPlanNotFound / errPromptNotFound pattern.
       try {
-        await Bun.write(args.promptFile, t("defaultLoopPrompt"))
-        console.log(t("promptCreated", { path: args.promptFile }))
+        await Bun.write(promptPath, t("defaultLoopPrompt"))
+        console.log(t("promptCreated", { path: promptPath }))
       } catch (err) {
         console.error(
           t("errCannotCreatePrompt", {
-            path: args.promptFile,
+            path: promptPath,
             message: toErrorMessage(err),
           }),
         )
         process.exit(1)
       }
     } else {
-      console.error(t("errPromptNotFound", { path: args.promptFile }))
+      console.error(t("errPromptNotFound", { path: promptPath }))
       process.exit(1)
     }
   }
@@ -137,10 +138,12 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
     return
   }
 
+  const planPath = resolvePlanFile(args.planFile)
+
   // Check PLAN.md exists
-  const planExists = await fileExists(args.planFile)
+  const planExists = await fileExists(planPath)
   if (!planExists) {
-    console.error(t("errPlanNotFound", { path: args.planFile }))
+    console.error(t("errPlanNotFound", { path: planPath }))
     process.exit(1)
   }
 
@@ -154,11 +157,11 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // main().catch() as a bare "Fatal error: <stack>".
   let planContent: string
   try {
-    planContent = await Bun.file(args.planFile).text()
+    planContent = await Bun.file(planPath).text()
   } catch (err) {
     console.error(
       t("errCannotReadFile", {
-        path: args.planFile,
+        path: planPath,
         message: toErrorMessage(err),
       }),
     )
@@ -170,7 +173,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // this pre-flight.
   const planProgress = parsePlan(planContent)
   if (planProgress.total === 0) {
-    console.error(t("errPlanEmpty", { path: args.planFile }))
+    console.error(t("errPlanEmpty", { path: planPath }))
     process.exit(1)
   }
 
@@ -193,7 +196,7 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   // doesn't drag in a default `.loop-prompt.md` the user didn't ask for.
   // Source: PLAN.md Phase 3 task 4 (matrix case 51).
   if (isStructurallyComplete(planProgress)) {
-    console.error(t("errPlanComplete", { path: args.planFile }))
+    console.error(t("errPlanComplete", { path: planPath }))
     process.exit(0)
   }
 
