@@ -3,7 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { deterministicTmpPath } from "./atomic-fs"
-import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, isValidResilienceValue, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -669,6 +669,39 @@ describe("resolveResilience — non-object layers (Finding 12.3.A)", () => {
       [42] as unknown as Partial<typeof DEFAULT_RESILIENCE>,
     )
     expect(result).toEqual(DEFAULT_RESILIENCE)
+  })
+})
+
+describe("resolveResilience — invalid-value skip", () => {
+  it("drops negative numbers and falls back to default", () => {
+    const result = resolveResilience({ createTimeoutMs: -100 } as any)
+    expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+  })
+
+  it("drops NaN and Infinity and falls back to default", () => {
+    const result = resolveResilience({ createTimeoutMs: NaN, promptTimeoutMs: Infinity } as any)
+    expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+    expect(result.promptTimeoutMs).toBe(DEFAULT_RESILIENCE.promptTimeoutMs)
+  })
+
+  it("drops non-integers and falls back to default", () => {
+    const result = resolveResilience({ createTimeoutMs: 12.34 } as any)
+    expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+  })
+
+  it("drops values below RESILIENCE_MINS floor (e.g. noProgressThreshold: 0)", () => {
+    const result = resolveResilience({ noProgressThreshold: 0 })
+    expect(result.noProgressThreshold).toBe(DEFAULT_RESILIENCE.noProgressThreshold)
+  })
+
+  it("drops invalid planDrift string values", () => {
+    const result = resolveResilience({ planDrift: "explode" as any })
+    expect(result.planDrift).toBe(DEFAULT_RESILIENCE.planDrift)
+  })
+
+  it("drops wrong-typed boolean fields", () => {
+    const result = resolveResilience({ caffeinate: "true" as any })
+    expect(result.caffeinate).toBe(DEFAULT_RESILIENCE.caffeinate)
   })
 })
 

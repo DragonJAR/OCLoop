@@ -265,15 +265,76 @@ export interface OcloopConfig {
 }
 
 /**
+ * A finite, non-negative, safe integer — the shape every count field
+ * (`iteration`, `rateLimitAttempts`, `createTimeoutMs`, …) must have.
+ * `typeof === "number"` alone admits `NaN`, `Infinity`, and negatives, which
+ * would otherwise round-trip through reducers and config merges poisoning
+ * downstream math (e.g. `iteration: NaN` makes `iteration + 1` NaN forever).
+ * The safe-integer cap (≤ Number.MAX_SAFE_INTEGER) matches the CLI override
+ * path (`Number.isSafeInteger` in `applyResilienceOverride`): beyond 2^53−1 a
+ * count is garbage input, and for timeout fields it is actively harmful —
+ * Node/Bun clamp `setTimeout` delays > 2^31−1 to 1 ms, so an absurd
+ * `promptTimeoutMs: 1e300` from a hand-edited config would burn every retry
+ * in milliseconds.
+ *
+ * Single source of truth (REPARAR.md B7): previously this exact predicate was
+ * copy-pasted in `isValidResilienceValue`, `isValidEvalsValue`, and
+ * `loop-state-store.isNonNegInt` — a drift hazard (a notion of "valid count"
+ * that could evolve in one place but not the others). All three now share
+ * this one predicate, so the safe-integer floor holds everywhere at once.
+ */
+export function isNonNegativeInteger(v: unknown): boolean {
+  // Number.isSafeInteger implies Number.isInteger and finiteness.
+  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0
+}
+
+/**
+ * Documented minimums for numeric resilience keys that have an invariant beyond
+ * "non-negative integer". A key NOT listed here has no extra floor. Today only
+ * `noProgressThreshold` is documented as "Must be >= 1" (a 0 makes
+ * NoProgressDetector trip on every iteration and breaks the
+ * `maxEvalRetries ≤ noProgressThreshold - 1` safety invariant). Kept as a map
+ * so the single validation site below is the only place to extend (DRY).
+ *
+ * Exported so the CLI override path (`applyResilienceOverride`) enforces the
+ * same floors as the config-file path (`isValidResilienceValue`) — one source
+ * of truth across both entry points.
+ */
+export const RESILIENCE_MINS: Partial<Record<keyof ResilienceConfig, number>> = {
+  noProgressThreshold: 1,
+}
+
+/**
+ * Per-field type guard for a single ResilienceConfig entry. Returns true iff
+ * key is known in DEFAULT_RESILIENCE and v has the expected runtime type and
+ * range. Shared by the file, CLI, and resolveResilience paths so none can
+ * silently accept invalid values (NaN, negatives, wrong types, or out-of-range).
+ */
+export function isValidResilienceValue(key: string, v: unknown): boolean {
+  if (!(key in DEFAULT_RESILIENCE)) return false
+  if (key === "planDrift") return v === "warn" || v === "halt"
+  const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
+  if (typeof def === "boolean") return typeof v === "boolean"
+  if (typeof def === "string") return typeof v === "string" && v === def
+  if (typeof def === "number") {
+    if (!isNonNegativeInteger(v)) return false
+    const min = RESILIENCE_MINS[key as keyof ResilienceConfig]
+    // min === undefined means "no floor beyond non-negative"; otherwise enforce.
+    return min === undefined || (v as number) >= min
+  }
+  return false
+}
+
+/**
  * Merge resilience config from defaults, the config file, and CLI overrides.
  *
- * `undefined`/`null` in either override layer are ignored so a partial file
- * inherits the lower layer. A null field ("createTimeoutMs": null) is treated
- * as "use the default" rather than overwriting with null, which would coerce
- * to 0 in setTimeout/setInterval and burn through retries in milliseconds.
- * Arrays are rejected (Object.entries would yield numeric keys and corrupt the
- * defaults). Unknown keys are dropped so they don't leak into the merged result
- * as a latent footgun for future consumers.
+ * `undefined`/`null`, wrong-typed, out-of-range, or unknown fields in either
+ * override layer are ignored (via `isValidResilienceValue`) so a partial file
+ * safely inherits the default/lower layer. A null or malformed field
+ * ("createTimeoutMs": null or "createTimeoutMs": -100) is treated as "use the
+ * default" rather than overwriting, which would coerce to 0/NaN in
+ * setTimeout/setInterval and burn through retries in milliseconds. Arrays are
+ * rejected (Object.entries would yield numeric keys and corrupt the defaults).
  */
 export function resolveResilience(
   fileConfig?: Partial<ResilienceConfig>,
@@ -283,7 +344,7 @@ export function resolveResilience(
     if (!obj || Array.isArray(obj)) return {}
     return Object.fromEntries(
       Object.entries(obj).filter(
-        ([k, v]) => k in DEFAULT_RESILIENCE && v !== undefined && v !== null,
+        ([k, v]) => isValidResilienceValue(k, v),
       ),
     ) as Partial<T>
   }
@@ -327,68 +388,6 @@ const ALLOWED_CONFIG_KEYS = new Set([
   "evals",
   "permissions",
 ])
-
-/**
- * A finite, non-negative, safe integer — the shape every count field
- * (`iteration`, `rateLimitAttempts`, `createTimeoutMs`, …) must have.
- * `typeof === "number"` alone admits `NaN`, `Infinity`, and negatives, which
- * would otherwise round-trip through reducers and config merges poisoning
- * downstream math (e.g. `iteration: NaN` makes `iteration + 1` NaN forever).
- * The safe-integer cap (≤ Number.MAX_SAFE_INTEGER) matches the CLI override
- * path (`Number.isSafeInteger` in `applyResilienceOverride`): beyond 2^53−1 a
- * count is garbage input, and for timeout fields it is actively harmful —
- * Node/Bun clamp `setTimeout` delays > 2^31−1 to 1 ms, so an absurd
- * `promptTimeoutMs: 1e300` from a hand-edited config would burn every retry
- * in milliseconds.
- *
- * Single source of truth (REPARAR.md B7): previously this exact predicate was
- * copy-pasted in `isValidResilienceValue`, `isValidEvalsValue`, and
- * `loop-state-store.isNonNegInt` — a drift hazard (a notion of "valid count"
- * that could evolve in one place but not the others). All three now share
- * this one predicate, so the safe-integer floor holds everywhere at once.
- */
-export function isNonNegativeInteger(v: unknown): boolean {
-  // Number.isSafeInteger implies Number.isInteger and finiteness.
-  return typeof v === "number" && Number.isSafeInteger(v) && v >= 0
-}
-
-/**
- * Per-field type guard for a single ResilienceConfig entry. Returns true iff
- * key is known in DEFAULT_RESILIENCE and v has the expected runtime type and
- * range. Shared by the file and CLI paths so neither can silently accept a
- * hand-edited "createTimeoutMs": "fast" (which would reach setTimeout and
- * coerce to NaN, burning retries in milliseconds).
- */
-/**
- * Documented minimums for numeric resilience keys that have an invariant beyond
- * "non-negative integer". A key NOT listed here has no extra floor. Today only
- * `noProgressThreshold` is documented as "Must be >= 1" (a 0 makes
- * NoProgressDetector trip on every iteration and breaks the
- * `maxEvalRetries ≤ noProgressThreshold - 1` safety invariant). Kept as a map
- * so the single validation site below is the only place to extend (DRY).
- *
- * Exported so the CLI override path (`applyResilienceOverride`) enforces the
- * same floors as the config-file path (`isValidResilienceValue`) — one source
- * of truth across both entry points.
- */
-export const RESILIENCE_MINS: Partial<Record<keyof ResilienceConfig, number>> = {
-  noProgressThreshold: 1,
-}
-
-function isValidResilienceValue(key: string, v: unknown): boolean {
-  if (!(key in DEFAULT_RESILIENCE)) return false
-  if (key === "planDrift") return v === "warn" || v === "halt"
-  const def = (DEFAULT_RESILIENCE as unknown as Record<string, unknown>)[key]
-  if (typeof def === "boolean") return typeof v === "boolean"
-  if (typeof def === "string") return typeof v === "string" && v === def
-  if (typeof def === "number") {
-    if (!isNonNegativeInteger(v)) return false
-    const min = RESILIENCE_MINS[key as keyof ResilienceConfig]
-    // min === undefined means "no floor beyond non-negative"; otherwise enforce.
-    return min === undefined || (v as number) >= min
-  }
-  return false
-}
 
 /**
  * Per-field type guard for a single EvalConfig entry. Mirrors
