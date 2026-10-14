@@ -68,7 +68,11 @@ export async function runCli(
   const env = { ...process.env, ...(options.env ?? {}) }
   const cwd = options.cwd ?? process.cwd()
   const entrypoint = options.entrypoint ?? DEFAULT_ENTRYPOINT
-  const timeoutMs = Math.min(options.timeoutMs ?? DEFAULT_TIMEOUT_MS, MAX_TIMEOUT_MS)
+  const rawTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+  const timeoutMs =
+    Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(rawTimeout, MAX_TIMEOUT_MS)
+      : DEFAULT_TIMEOUT_MS
 
   const proc = Bun.spawn({
     cmd: [process.execPath, "run", entrypoint, ...argv],

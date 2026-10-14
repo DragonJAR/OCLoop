@@ -58,4 +58,10 @@ describe("runCli", () => {
     // A hang reaches this exact timeout budget; startup latency may vary under load.
     expect(result.durationMs).toBeLessThan(timeoutMs)
   })
+
+  it("clamps delays > 2^31 - 1 to MAX_TIMEOUT_MS avoiding premature kill", async () => {
+    const result = await runCli(["--version"], { timeoutMs: 1e12 })
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain("ocloop ")
+  })
 })
