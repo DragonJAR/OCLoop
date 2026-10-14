@@ -8,6 +8,7 @@ import {
   cleanupDeterministicTmp,
   cleanupDeterministicTmpAsync,
   deterministicTmpPath,
+  isDeterministicTmpFile,
 } from "./atomic-fs"
 
 let dir = ""
@@ -84,5 +85,43 @@ describe("atomic-fs", () => {
     expect(existsSync(tmp)).toBe(true)
     cleanupDeterministicTmp(path)
     expect(existsSync(tmp)).toBe(false)
+  })
+
+  describe("isDeterministicTmpFile", () => {
+    it("matches current randomized tmp file for target and pid", () => {
+      expect(isDeterministicTmpFile("PLAN.md.1234.1700000000-abcdef12.tmp", "PLAN.md", 1234)).toBe(true)
+    })
+
+    it("matches legacy fixed tmp file for target and pid", () => {
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", 1234)).toBe(true)
+    })
+
+    it("defaults pid to process.pid", () => {
+      expect(isDeterministicTmpFile(`PLAN.md.${process.pid}.1700000000-abcdef12.tmp`, "PLAN.md")).toBe(true)
+      expect(isDeterministicTmpFile(`PLAN.md.${process.pid}.tmp`, "PLAN.md")).toBe(true)
+    })
+
+    it("rejects file from different pid", () => {
+      expect(isDeterministicTmpFile("PLAN.md.9999.1700000000-abcdef12.tmp", "PLAN.md", 1234)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.12345.tmp", "PLAN.md", 123)).toBe(false)
+    })
+
+    it("rejects file from different base name", () => {
+      expect(isDeterministicTmpFile("other.md.1234.1700000000-abcdef12.tmp", "PLAN.md", 1234)).toBe(false)
+    })
+
+    it("rejects file not ending with .tmp", () => {
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp.bak", "PLAN.md", 1234)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp~", "PLAN.md", 1234)).toBe(false)
+    })
+
+    it("safely rejects invalid inputs (empty strings, non-safe/non-positive pid)", () => {
+      expect(isDeterministicTmpFile("", "PLAN.md", 1234)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "", 1234)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", -1)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", 0)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", NaN)).toBe(false)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", Infinity)).toBe(false)
+    })
   })
 })

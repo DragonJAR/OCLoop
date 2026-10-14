@@ -33,15 +33,27 @@ export function atomicWriteTextSync(path: string, content: string): void {
   }
 }
 
+/**
+ * Test whether a filename matches the deterministic temporary file pattern for
+ * a target base file and process ID.
+ *
+ * Matches both randomized-suffix temporary files (`${base}.${pid}.*.tmp`) and
+ * legacy non-randomized files (`${base}.${pid}.tmp`).
+ */
+export function isDeterministicTmpFile(file: string, base: string, pid = process.pid): boolean {
+  if (!file || !base || !Number.isSafeInteger(pid) || pid <= 0) return false
+  const prefix = `${base}.${pid}.`
+  return (file.startsWith(prefix) && file.endsWith(".tmp")) || file === `${base}.${pid}.tmp`
+}
+
 /** Best-effort cleanup of a deterministic tmp left by a failed sync write. */
 export function cleanupDeterministicTmp(path: string): void {
   try {
     const dir = dirname(path)
     const base = basename(path)
-    const prefix = `${base}.${process.pid}.`
     if (!existsSync(dir)) return
     for (const file of readdirSync(dir)) {
-      if ((file.startsWith(prefix) && file.endsWith(".tmp")) || file === `${base}.${process.pid}.tmp`) {
+      if (isDeterministicTmpFile(file, base)) {
         try {
           unlinkSync(join(dir, file))
         } catch {
@@ -59,10 +71,9 @@ export async function cleanupDeterministicTmpAsync(path: string): Promise<void> 
   try {
     const dir = dirname(path)
     const base = basename(path)
-    const prefix = `${base}.${process.pid}.`
     const entries = await readdir(dir).catch(() => [] as string[])
     for (const file of entries) {
-      if ((file.startsWith(prefix) && file.endsWith(".tmp")) || file === `${base}.${process.pid}.tmp`) {
+      if (isDeterministicTmpFile(file, base)) {
         await rm(join(dir, file), { force: true }).catch(() => {})
       }
     }
