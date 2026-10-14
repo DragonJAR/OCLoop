@@ -104,9 +104,16 @@ export function getToolPreview(toolName: string, input: Record<string, unknown>)
   }
 }
 
-/** Token throughput in tokens/min. Guards elapsed<=0 to avoid div-by-zero/Infinity. */
+/** Token throughput in tokens/min. Guards non-finite and non-positive inputs. */
 export function tokensPerMin(totalTokens: number, elapsedMs: number): number {
-  if (elapsedMs <= 0) return 0;
+  if (
+    !Number.isFinite(elapsedMs) ||
+    elapsedMs <= 0 ||
+    !Number.isFinite(totalTokens) ||
+    totalTokens <= 0
+  ) {
+    return 0;
+  }
   return totalTokens / (elapsedMs / 60000);
 }
 

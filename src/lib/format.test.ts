@@ -111,6 +111,14 @@ describe("format utilities", () => {
       expect(tokensPerMin(600, 60000)).toBe(600);
       expect(tokensPerMin(300, 30000)).toBe(600);
     });
+    test("guards against non-finite or non-positive inputs", () => {
+      expect(tokensPerMin(NaN, 60000)).toBe(0);
+      expect(tokensPerMin(1000, NaN)).toBe(0);
+      expect(tokensPerMin(-500, 60000)).toBe(0);
+      expect(tokensPerMin(0, 60000)).toBe(0);
+      expect(tokensPerMin(Number.POSITIVE_INFINITY, 60000)).toBe(0);
+      expect(tokensPerMin(1000, Number.POSITIVE_INFINITY)).toBe(0);
+    });
   });
 
   describe("wrapText (full task across N lines, never cut)", () => {

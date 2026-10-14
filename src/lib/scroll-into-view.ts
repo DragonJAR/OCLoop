@@ -9,13 +9,22 @@ export function scrollTopToRevealIndex(args: {
   viewportHeight: number
 }): number | null {
   const { index, scrollTop, viewportHeight } = args
-  if (viewportHeight <= 0) return null
+  if (
+    !Number.isFinite(viewportHeight) ||
+    viewportHeight <= 0 ||
+    !Number.isFinite(index) ||
+    index < 0
+  ) {
+    return null
+  }
 
-  if (index < scrollTop) {
+  const safeScrollTop = Number.isFinite(scrollTop) ? Math.max(0, scrollTop) : 0
+
+  if (index < safeScrollTop) {
     return index
   }
-  if (index >= scrollTop + viewportHeight) {
-    return index - viewportHeight + 1
+  if (index >= safeScrollTop + viewportHeight) {
+    return Math.max(0, index - viewportHeight + 1)
   }
   return null
 }

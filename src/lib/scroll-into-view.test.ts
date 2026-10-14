@@ -62,12 +62,36 @@ describe("scrollTopToRevealIndex", () => {
   // null (the caller treats null as "no scroll needed") rather than a
   // negative scrollTop, which would otherwise wrap-around in unsigned
   // contexts and break the list UI. Pin the contract.
-  it("returns null for non-positive viewportHeight", () => {
+  it("returns null for non-positive or non-finite viewportHeight", () => {
     expect(
       scrollTopToRevealIndex({ index: 3, scrollTop: 0, viewportHeight: 0 }),
     ).toBeNull()
     expect(
       scrollTopToRevealIndex({ index: 3, scrollTop: 0, viewportHeight: -5 }),
     ).toBeNull()
+    expect(
+      scrollTopToRevealIndex({ index: 3, scrollTop: 0, viewportHeight: NaN }),
+    ).toBeNull()
+  })
+
+  it("returns null for negative or non-finite index", () => {
+    expect(
+      scrollTopToRevealIndex({ index: -1, scrollTop: 0, viewportHeight: viewport }),
+    ).toBeNull()
+    expect(
+      scrollTopToRevealIndex({ index: -10, scrollTop: 5, viewportHeight: viewport }),
+    ).toBeNull()
+    expect(
+      scrollTopToRevealIndex({ index: NaN, scrollTop: 0, viewportHeight: viewport }),
+    ).toBeNull()
+  })
+
+  it("handles negative or non-finite scrollTop safely without negative target", () => {
+    expect(
+      scrollTopToRevealIndex({ index: 0, scrollTop: -5, viewportHeight: viewport }),
+    ).toBeNull()
+    expect(
+      scrollTopToRevealIndex({ index: 8, scrollTop: NaN, viewportHeight: viewport }),
+    ).toBe(3)
   })
 })
