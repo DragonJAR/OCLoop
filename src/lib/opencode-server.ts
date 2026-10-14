@@ -4,7 +4,7 @@ import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
 import type { Config } from "@opencode-ai/sdk"
 import type { ServerOptions } from "@opencode-ai/sdk/server"
-import { resolveSpawnable } from "./command-exists"
+import { resolveSpawnable, isWindowsShellShim } from "./command-exists"
 import { detectOpencodeVersion, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 
@@ -16,7 +16,6 @@ export interface OpencodeServer {
   close: () => void
 }
 
-const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
 const READY_PREFIX_RE = /^(?:opencode\s+)?server\s+listening\b/
 const READY_URL_RE = /^(?:opencode\s+)?server\s+listening\s+on\s+(https?:\/\/\S+)/
 const V2_USERNAME = "opencode"
@@ -64,10 +63,6 @@ function withAutonomousPermissions(
       },
     },
   }
-}
-
-function isWindowsShellShim(command: string): boolean {
-  return WIN_SHELL_SHIM_RE.test(command)
 }
 
 function killServerProcess(proc: ServerProcess, killTree = true): void {
@@ -172,6 +167,17 @@ const startOpencodeServerImpl = async function startOpencodeServer(
       settled = true
       clearStartupTimer()
       merged.signal?.removeEventListener("abort", abortHandler)
+      if (proc.stdout) {
+        proc.stdout.removeListener("data", onStdout)
+        ;(proc.stdout as { resume?: () => void }).resume?.()
+      }
+      if (proc.stderr) {
+        proc.stderr.removeListener("data", onStderr)
+        ;(proc.stderr as { resume?: () => void }).resume?.()
+      }
+      proc.removeListener("exit", onExit)
+      proc.removeListener("error", onError)
+      output = ""
       return true
     }
 
@@ -197,7 +203,7 @@ const startOpencodeServerImpl = async function startOpencodeServer(
       )
     }, timeout)
 
-    proc.stdout?.on("data", (chunk) => {
+    const onStdout = (chunk: Buffer | string) => {
       output += chunk.toString()
       for (const line of output.split("\n")) {
         if (!READY_PREFIX_RE.test(line)) continue
@@ -212,17 +218,25 @@ const startOpencodeServerImpl = async function startOpencodeServer(
         resolveStartup(match[1])
         return
       }
-    })
-    proc.stderr?.on("data", (chunk) => {
+    }
+
+    const onStderr = (chunk: Buffer | string) => {
       output += chunk.toString()
-    })
-    proc.on("exit", (code) => {
+    }
+
+    const onExit = (code: number | null) => {
       let msg = `Server exited with code ${code}`
       const safeOutput = redactSensitiveOutputImpl(output)
       if (safeOutput.trim()) msg += `\nServer output: ${safeOutput}`
       rejectStartup(new Error(msg), false)
-    })
-    proc.on("error", (error) => rejectStartup(error, true))
+    }
+
+    const onError = (error: Error) => rejectStartup(error, true)
+
+    proc.stdout?.on("data", onStdout)
+    proc.stderr?.on("data", onStderr)
+    proc.on("exit", onExit)
+    proc.on("error", onError)
     merged.signal?.addEventListener("abort", abortHandler)
   })
 

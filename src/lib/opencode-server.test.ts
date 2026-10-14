@@ -413,4 +413,31 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(spawnCalls.some((c) => c.command === "taskkill" && c.args.includes("6666"))).toBe(true)
     expect(proc.kill).not.toHaveBeenCalled()
   })
+
+  it("detaches startup stdout/stderr listeners and clears memory once server is listening", async () => {
+    const proc = createFakeProcess(7777)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000 })
+    await waitForSpawnCalls(1)
+
+    expect(proc.stdout.listenerCount("data")).toBe(1)
+    expect(proc.stderr.listenerCount("data")).toBe(1)
+    expect(proc.listenerCount("exit")).toBe(1)
+    expect(proc.listenerCount("error")).toBe(1)
+
+    proc.stdout.emit(
+      "data",
+      Buffer.from("opencode server listening on http://127.0.0.1:4096\n"),
+    )
+    const server = await serverPromise
+
+    expect(proc.stdout.listenerCount("data")).toBe(0)
+    expect(proc.stderr.listenerCount("data")).toBe(0)
+    expect(proc.listenerCount("exit")).toBe(0)
+    expect(proc.listenerCount("error")).toBe(0)
+
+    server.close()
+  })
 })
