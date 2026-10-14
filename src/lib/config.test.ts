@@ -147,6 +147,12 @@ describe("loadConfig — per-field type validation (Finding 12.1.A)", () => {
     expect(config.theme).toBeUndefined()
   })
 
+  it("drops a whitespace-only theme field", () => {
+    writeConfig("ocloop.json", JSON.stringify({ theme: "   " }))
+    const config = loadConfig()
+    expect(config.theme).toBeUndefined()
+  })
+
   it("keeps a string theme (semantic check stays in the consumer)", () => {
     writeConfig("ocloop.json", JSON.stringify({ theme: "opencode" }))
     const config = loadConfig()
@@ -369,6 +375,15 @@ describe("loadConfig — evals block validation (mirrors resilience all-or-nothi
 
   it("drops the whole block when judgeModel is non-string", () => {
     writeConfig("ocloop.json", JSON.stringify({ evals: { judgeModel: 42 } }))
+    expect(loadConfig().evals).toBeUndefined()
+  })
+
+  it("drops the whole block when judgeModel is empty or whitespace-only", () => {
+    writeConfig("ocloop.json", JSON.stringify({ evals: { judgeModel: "" } }))
+    expect(loadConfig().evals).toBeUndefined()
+
+    __resetConfigCacheForTests()
+    writeConfig("ocloop.json", JSON.stringify({ evals: { judgeModel: "   " } }))
     expect(loadConfig().evals).toBeUndefined()
   })
 
@@ -797,6 +812,26 @@ describe("hasTerminalConfig (Finding 18.2.C items 12-13)", () => {
     expect(
       hasTerminalConfig({
         terminal: { type: "custom", command: "", args: "-e {cmd}" },
+      }),
+    ).toBe(false)
+  })
+
+  it("rejects a known terminal with a whitespace-only name", () => {
+    expect(
+      hasTerminalConfig({ terminal: { type: "known", name: "   " } }),
+    ).toBe(false)
+  })
+
+  it("rejects a custom terminal with whitespace-only command or args", () => {
+    expect(
+      hasTerminalConfig({
+        terminal: { type: "custom", command: "   ", args: "-e {cmd}" },
+      }),
+    ).toBe(false)
+
+    expect(
+      hasTerminalConfig({
+        terminal: { type: "custom", command: "wezterm", args: "   " },
       }),
     ).toBe(false)
   })

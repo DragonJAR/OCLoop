@@ -397,7 +397,7 @@ function isValidResilienceValue(key: string, v: unknown): boolean {
  * valid config may omit it; when present it must be a non-empty string.
  */
 function isValidEvalsValue(key: string, v: unknown): boolean {
-  if (key === "judgeModel") return typeof v === "string" && v.length > 0
+  if (key === "judgeModel") return typeof v === "string" && v.trim().length > 0
   if (!(key in DEFAULT_EVALS)) return false
   const def = (DEFAULT_EVALS as unknown as Record<string, unknown>)[key]
   if (typeof def === "boolean") return typeof v === "boolean"
@@ -447,8 +447,8 @@ function validateConfigShape(raw: unknown): OcloopConfig {
     }
   }
   if ("theme" in r) {
-    if (typeof r.theme === "string") {
-      out.theme = r.theme
+    if (typeof r.theme === "string" && r.theme.trim().length > 0) {
+      out.theme = r.theme.trim()
     } else {
       log.warn("config", "Ignoring malformed 'theme' field", r.theme)
     }
@@ -620,14 +620,15 @@ export function hasTerminalConfig(
   const terminal = config.terminal
 
   if (terminal.type === "known") {
-    return typeof terminal.name === "string" && terminal.name.length > 0
+    return typeof terminal.name === "string" && terminal.name.trim().length > 0
   }
 
   if (terminal.type === "custom") {
     return (
       typeof terminal.command === "string" &&
-      terminal.command.length > 0 &&
-      typeof terminal.args === "string"
+      terminal.command.trim().length > 0 &&
+      typeof terminal.args === "string" &&
+      terminal.args.trim().length > 0
     )
   }
 
