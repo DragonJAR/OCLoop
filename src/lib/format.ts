@@ -66,7 +66,7 @@ export function formatDuration(ms: number, pad = true): string {
 // touch) for TUI column fitting; `truncateText` normalizes whitespace and uses
 // "..." for log/preview text. Merging them would change one call site's output.
 export function truncate(str: string, len: number): string {
-  if (len <= 0) return "";
+  if (Number.isNaN(len) || len <= 0) return "";
   if (str.length <= len) return str;
   // Guard len === 1 too: slice(0, 0) keeps the ellipsis only, never a negative
   // (from-end) index that would paradoxically return a longer string.
@@ -74,6 +74,7 @@ export function truncate(str: string, len: number): string {
 }
 
 export function truncateText(text: string, maxLen: number): string {
+  if (Number.isNaN(maxLen) || maxLen <= 0) return "";
   const normalized = text.replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim();
   if (normalized.length <= maxLen) return normalized;
   // ponytail: maxLen < 3 can't fit the "..." ellipsis, so just slice without it.
@@ -135,7 +136,7 @@ export function tokensPerMin(totalTokens: number, elapsedMs: number): number {
  * callers can render one line per element and the box grows to fit.
  */
 export function wrapText(text: string, width: number): string[] {
-  if (width <= 0) return [];
+  if (Number.isNaN(width) || width <= 0) return [];
   const words = text.split(/\s+/).filter(Boolean);
   const lines: string[] = [];
   let line = "";
@@ -163,7 +164,7 @@ export function wrapText(text: string, width: number): string[] {
  * testable instead of buried inline in JSX.
  */
 export function clampLines(lines: string[], max: number): { shown: string[]; hidden: number } {
-  const m = Math.max(1, Math.floor(max));
+  const m = Number.isNaN(max) || max < 1 ? 1 : Math.floor(max);
   if (lines.length <= m) return { shown: lines, hidden: 0 };
   const shown = lines.slice(0, m - 1); // reserve one slot for the indicator line
   return { shown, hidden: lines.length - shown.length };

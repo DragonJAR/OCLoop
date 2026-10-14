@@ -33,6 +33,12 @@ describe("format utilities", () => {
       // len === 1 keeps only the ellipsis, never a negative index.
       expect(truncate("hello world", 1)).toBe("…");
     });
+
+    test("handles non-finite limit by returning empty string", () => {
+      expect(truncate("hello world", NaN)).toBe("");
+      expect(truncate("hello world", -Infinity)).toBe("");
+      expect(truncate("hello world", Infinity)).toBe("hello world");
+    });
   });
 
   test("formatTokenCount formats numbers with separators", () => {
@@ -72,6 +78,12 @@ describe("format utilities", () => {
     expect(truncateText("hello world", 3)).toBe("...");
     // Negative maxLen: return empty string
     expect(truncateText("hello world", -1)).toBe("");
+  });
+
+  test("truncateText handles non-finite maxLen by returning empty string", () => {
+    expect(truncateText("hello world", NaN)).toBe("");
+    expect(truncateText("hello world", -Infinity)).toBe("");
+    expect(truncateText("hello world", Infinity)).toBe("hello world");
   });
 
   test("truncateText normalizes whitespace", () => {
@@ -150,6 +162,11 @@ describe("format utilities", () => {
       expect(wrapText("", 10)).toEqual([]);
       expect(wrapText("hi", 0)).toEqual([]);
     });
+    test("returns [] for non-finite width", () => {
+      expect(wrapText("hello world", NaN)).toEqual([]);
+      expect(wrapText("hello world", -Infinity)).toEqual([]);
+      expect(wrapText("hello world", Infinity)).toEqual(["hello world"]);
+    });
   });
 
   describe("clampLines (bottom-panel task budget)", () => {
@@ -166,6 +183,12 @@ describe("format utilities", () => {
     test("clamps non-positive/odd max to at least 1", () => {
       expect(clampLines(["a", "b"], 0)).toEqual({ shown: [], hidden: 2 });
       expect(clampLines(["a", "b", "c"], 2.9)).toEqual({ shown: ["a"], hidden: 2 });
+    });
+    test("handles non-finite max safely by clamping to 1", () => {
+      expect(clampLines(["a", "b"], NaN)).toEqual({ shown: [], hidden: 2 });
+      expect(clampLines(["a"], NaN)).toEqual({ shown: ["a"], hidden: 0 });
+      expect(clampLines(["a", "b"], -Infinity)).toEqual({ shown: [], hidden: 2 });
+      expect(clampLines(["a", "b"], Infinity)).toEqual({ shown: ["a", "b"], hidden: 0 });
     });
   });
 
