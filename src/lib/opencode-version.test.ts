@@ -31,4 +31,17 @@ describe("parseOpencodeVersion", () => {
     // Whitespace around the input is also stripped via .trim().
     expect(parseOpencodeVersion("  opencode v2.0.18  \n")).toBe(2)
   })
+
+  it("extracts the version when surrounded by multi-line warnings or banners", () => {
+    const outputWithPreamble =
+      "[WARN] Plugin 'foo' is deprecated\n" +
+      "opencode v2.1.0\n" +
+      "Use --no-plugins to disable\n"
+    expect(parseOpencodeVersion(outputWithPreamble)).toBe(2)
+
+    const outputWithCrlf =
+      "Welcome to PowerShell\r\n" +
+      "opencode 1.18.33\r\n"
+    expect(parseOpencodeVersion(outputWithCrlf)).toBe(1)
+  })
 })

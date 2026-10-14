@@ -1,19 +1,24 @@
 import { spawn } from "node:child_process"
 import { resolveSpawnable, isWindowsShellShim } from "./command-exists"
+import { splitLines } from "./text"
 
 export type OpencodeMajor = 1 | 2
 
 /**
  * Parse the supported OpenCode version output forms without accepting another
- * CLI's version string by accident.
+ * CLI's version string by accident. Supports multi-line output where warnings
+ * or shell banners precede or follow the version string.
  */
 export function parseOpencodeVersion(raw: string): OpencodeMajor | null {
-  const value = raw.trim().toLowerCase()
-  if (/^(?:opencode\s+)?v1\.x$/.test(value)) return 1
+  for (const line of splitLines(raw)) {
+    const value = line.trim().toLowerCase()
+    if (!value) continue
+    if (/^(?:opencode\s+)?v1\.x$/.test(value)) return 1
 
-  const match = /^(?:opencode\s+)?v?([12])(?:\.\d+)+(?:[-+][0-9a-z.-]+)?$/.exec(value)
-  if (!match) return null
-  return Number(match[1]) as OpencodeMajor
+    const match = /^(?:opencode\s+)?v?([12])(?:\.\d+)+(?:[-+][0-9a-z.-]+)?$/.exec(value)
+    if (match) return Number(match[1]) as OpencodeMajor
+  }
+  return null
 }
 
 const VERSION_TIMEOUT_MS = 5_000
@@ -49,7 +54,8 @@ export async function detectOpencodeVersion(): Promise<OpencodeMajor | null> {
 
     return await new Promise<OpencodeMajor | null>((resolve) => {
       let proc: ReturnType<typeof spawn>
-      let output = ""
+      let stdout = ""
+      let stderr = ""
       let settled = false
 
       const settle = (version: OpencodeMajor | null) => {
@@ -80,14 +86,14 @@ export async function detectOpencodeVersion(): Promise<OpencodeMajor | null> {
       }
 
       proc.stdout?.on("data", (chunk: Buffer | string) => {
-        if (output.length < 4096) output += chunk.toString().slice(0, 4096 - output.length)
+        if (stdout.length < 4096) stdout += chunk.toString().slice(0, 4096 - stdout.length)
       })
       proc.stderr?.on("data", (chunk: Buffer | string) => {
-        if (output.length < 4096) output += chunk.toString().slice(0, 4096 - output.length)
+        if (stderr.length < 4096) stderr += chunk.toString().slice(0, 4096 - stderr.length)
       })
       proc.on("error", () => settle(null))
       proc.on("close", (code) => {
-        settle(code === 0 ? parseOpencodeVersion(output) : null)
+        settle(code === 0 ? parseOpencodeVersion(stdout) ?? parseOpencodeVersion(stderr) : null)
       })
     })
   } catch {
