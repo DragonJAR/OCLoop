@@ -440,4 +440,22 @@ describe("opencode-server — Windows process cleanup", () => {
 
     server.close()
   })
+
+  it("handles stdout chunking when the ready line arrives in split pieces", async () => {
+    const proc = createFakeProcess(8888)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000 })
+    await waitForSpawnCalls(1)
+
+    // Emit chunk 1: cuts off right after "listening on " (without url, without newline)
+    proc.stdout.emit("data", Buffer.from("opencode server listening on "))
+    // Emit chunk 2: url arrives and ends with newline
+    proc.stdout.emit("data", Buffer.from("http://127.0.0.1:4096\n"))
+
+    const server = await serverPromise
+    expect(server.url).toBe("http://127.0.0.1:4096")
+    server.close()
+  })
 })

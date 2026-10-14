@@ -152,6 +152,7 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   const url = await new Promise<string>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
     let output = ""
+    let stdoutBuffer = ""
     let settled = false
     let abortHandler = () => {}
 
@@ -178,6 +179,7 @@ const startOpencodeServerImpl = async function startOpencodeServer(
       proc.removeListener("exit", onExit)
       proc.removeListener("error", onError)
       output = ""
+      stdoutBuffer = ""
       return true
     }
 
@@ -204,8 +206,13 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     }, timeout)
 
     const onStdout = (chunk: Buffer | string) => {
-      output += chunk.toString()
-      for (const line of output.split("\n")) {
+      const text = chunk.toString()
+      output += text
+      stdoutBuffer += text
+      const lines = stdoutBuffer.split("\n")
+      stdoutBuffer = lines.pop() ?? ""
+      for (const rawLine of lines) {
+        const line = rawLine.trim()
         if (!READY_PREFIX_RE.test(line)) continue
         const match = READY_URL_RE.exec(line)
         if (!match?.[1]) {
