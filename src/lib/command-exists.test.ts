@@ -33,7 +33,8 @@ beforeEach(() => {
   mockCommandExists({})
 })
 
-const { commandExists, resolveCommandPath, resolveSpawnable } = realCommandExists
+const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim } =
+  realCommandExists
 
 // The shared FakeProc is the floor (unref/kill/pid); `commandExists` only reads
 // `proc.exited`, so extend it here per the helper's documented contract.
@@ -184,3 +185,25 @@ describe("resolveSpawnable — gate + spawn-form in one lookup", () => {
     expect(await resolveSpawnable("nope", "linux")).toBeNull()
   })
 })
+
+describe("isWindowsShellShim — unified Windows shell shim detection (DRY)", () => {
+  it("identifies .cmd, .bat, and .ps1 as shell shims on win32", () => {
+    expect(isWindowsShellShim("C:\\npm\\opencode.cmd", "win32")).toBe(true)
+    expect(isWindowsShellShim("C:\\npm\\opencode.CMD", "win32")).toBe(true)
+    expect(isWindowsShellShim("runner.bat", "win32")).toBe(true)
+    expect(isWindowsShellShim("script.ps1", "win32")).toBe(true)
+  })
+
+  it("returns false for native executables and other extensions on win32", () => {
+    expect(isWindowsShellShim("C:\\bin\\opencode.exe", "win32")).toBe(false)
+    expect(isWindowsShellShim("opencode", "win32")).toBe(false)
+    expect(isWindowsShellShim("script.sh", "win32")).toBe(false)
+  })
+
+  it("returns false on POSIX platforms even for .cmd / .bat / .ps1 filenames", () => {
+    expect(isWindowsShellShim("/usr/local/bin/opencode.cmd", "linux")).toBe(false)
+    expect(isWindowsShellShim("/usr/local/bin/opencode.cmd", "darwin")).toBe(false)
+    expect(isWindowsShellShim("script.bat", "linux")).toBe(false)
+  })
+})
+

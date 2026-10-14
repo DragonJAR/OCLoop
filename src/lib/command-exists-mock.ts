@@ -23,6 +23,8 @@ export const realCommandExists: CommandExistsModule = {
   commandExists: mod.commandExists,
   resolveCommandPath: mod.resolveCommandPath,
   resolveSpawnable: mod.resolveSpawnable,
+  isWindowsShellShim: mod.isWindowsShellShim,
+  WIN_SHELL_SHIM_RE: mod.WIN_SHELL_SHIM_RE,
 }
 
 /** Register a partial mock; unlisted exports stay real. */

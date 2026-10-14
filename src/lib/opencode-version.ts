@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process"
-import { resolveSpawnable } from "./command-exists"
+import { resolveSpawnable, isWindowsShellShim } from "./command-exists"
 
 export type OpencodeMajor = 1 | 2
 
@@ -17,7 +17,6 @@ export function parseOpencodeVersion(raw: string): OpencodeMajor | null {
 }
 
 const VERSION_TIMEOUT_MS = 5_000
-const WINDOWS_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
 
 interface SpawnTarget {
   command: string
@@ -31,7 +30,7 @@ async function getSpawnTarget(): Promise<SpawnTarget | null> {
 
   const resolved = await resolveSpawnable("opencode")
   if (!resolved) return null
-  const shell = WINDOWS_SHELL_SHIM_RE.test(resolved)
+  const shell = isWindowsShellShim(resolved)
   return {
     command: shell ? `"${resolved}"` : resolved,
     shell,

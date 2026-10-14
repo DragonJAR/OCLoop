@@ -6,7 +6,7 @@
  */
 
 import type { TerminalConfig } from "./config"
-import { commandExists, resolveSpawnable } from "./command-exists"
+import { commandExists, resolveSpawnable, isWindowsShellShim } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 import { t } from "./i18n"
@@ -34,7 +34,6 @@ export interface LaunchResult {
   error?: string
 }
 
-const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
 const EARLY_EXIT_MS = 100
 
 /**
@@ -179,10 +178,6 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
 
   push()
   return args
-}
-
-function isWindowsShellShim(command: string): boolean {
-  return process.platform === "win32" && WIN_SHELL_SHIM_RE.test(command)
 }
 
 /** Pass shim path and argv as PowerShell string literals, never as shell code. */

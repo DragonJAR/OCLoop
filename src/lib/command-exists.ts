@@ -97,15 +97,27 @@ export async function resolveSpawnable(
  *    can't launch it, but we surface it rather than `null` so the caller's
  *    error stays the SDK's familiar `ENOENT` instead of a silent "not found".
  */
+export const WIN_SHELL_SHIM_RE = /\.(cmd|bat|ps1)$/i
 const WIN_NATIVE_RE = /\.exe$/i
-const WIN_SHIM_RE = /\.(cmd|bat|ps1)$/i
+
+/**
+ * Check whether a command string refers to a Windows shell shim (.cmd, .bat, .ps1).
+ * On Windows, such files cannot be spawned directly via CreateProcess without a shell wrapper.
+ * On non-Windows platforms, returns false.
+ */
+export function isWindowsShellShim(
+  command: string,
+  platform: string = process.platform,
+): boolean {
+  return platform === "win32" && WIN_SHELL_SHIM_RE.test(command)
+}
 
 function pickSpawnable(matches: string[], platform: string): string | null {
   if (matches.length === 0) return null
   if (platform !== "win32") return matches[0]
   return (
     matches.find((m) => WIN_NATIVE_RE.test(m)) ??
-    matches.find((m) => WIN_SHIM_RE.test(m)) ??
+    matches.find((m) => WIN_SHELL_SHIM_RE.test(m)) ??
     matches[0]
   )
 }
