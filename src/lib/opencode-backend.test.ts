@@ -390,4 +390,19 @@ describe("OpenCode backend v2 normalization", () => {
       "/api/session/ses-missing",
     ])
   })
+
+  it("normalizes base URL with whitespace and trailing slashes", async () => {
+    let capturedUrl = ""
+    const mockedFetch = makeFetchMock(async (input) => {
+      capturedUrl = input instanceof Request ? input.url : String(input)
+      return new Response(JSON.stringify({}), { status: 200, headers: { "Content-Type": "application/json" } })
+    })
+
+    await withMockFetch(mockedFetch, async () => {
+      const backend = createBackend({ url: "  http://127.0.0.1:4096///  ", version: 1 })
+      expect(backend.url).toBe("http://127.0.0.1:4096")
+      await backend.fetchConfig({ timeoutMs: 100 })
+      expect(capturedUrl).toBe("http://127.0.0.1:4096/config")
+    })
+  })
 })

@@ -440,8 +440,11 @@ function parseV1Event(raw: unknown): BackendEvent | undefined {
 
 export function createBackend(init: CreateBackendOptions): OpencodeBackend {
   const authorization = authHeader(init.authorization)
+  const baseUrl = init.url.trim().replace(/\/+$/, "")
+  const endpoint = (path: string) => `${baseUrl}${path.startsWith("/") ? path : `/${path}`}`
+
   const client: OpencodeClient = createOpencodeClient({
-    baseUrl: init.url,
+    baseUrl,
     headers: { Authorization: authorization },
     ...(init.directory ? { directory: init.directory } : {}),
   })
@@ -450,7 +453,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
 
   async function request(path: string, label: string, options: RequestInit = {}, timeoutMs = DEFAULT_RESILIENCE.statusTimeoutMs, callerSignal?: AbortSignal): Promise<Response> {
     const response = await withTimeout(
-      (signal) => fetch(`${init.url.replace(/\/$/, "")}${path}`, {
+      (signal) => fetch(endpoint(path), {
         ...options,
         signal,
         headers: {
@@ -469,7 +472,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
 
   async function requestJson(path: string, label: string, options: RequestInit = {}, timeoutMs?: number, callerSignal?: AbortSignal): Promise<unknown> {
     return withTimeout(async (signal) => {
-      const response = await fetch(`${init.url.replace(/\/$/, "")}${path}`, {
+      const response = await fetch(endpoint(path), {
         ...options,
         signal,
         headers: {
@@ -494,7 +497,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
     callerSignal: AbortSignal,
   ): Promise<void> {
     await withTimeout(async (signal) => {
-      const response = await fetch(`${init.url.replace(/\/$/, "")}${path}`, {
+      const response = await fetch(endpoint(path), {
         headers: {
           Authorization: authorization,
           Accept: "text/event-stream",
@@ -523,7 +526,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
     try {
       apiInfo = await withTimeout(
         async (signal) => {
-          const response = await fetch(`${init.url.replace(/\/$/, "")}/api/info`, { signal, headers: { Authorization: authorization } })
+          const response = await fetch(endpoint("/api/info"), { signal, headers: { Authorization: authorization } })
           if (!response.ok) return undefined
           try { return await response.json() as unknown } catch { return undefined }
         },
@@ -542,7 +545,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
     try {
       legacyConfig = await withTimeout(
         async (signal) => {
-          const response = await fetch(`${init.url.replace(/\/$/, "")}/config`, { signal, headers: { Authorization: authorization } })
+          const response = await fetch(endpoint("/config"), { signal, headers: { Authorization: authorization } })
           if (!response.ok) return undefined
           try { return await response.json() as unknown } catch { return undefined }
         },
@@ -861,7 +864,7 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
 
   return {
     get version() { return resolvedVersion ?? 1 },
-    url: init.url,
+    url: baseUrl,
     async createSession(opts) {
       return (await ensureVersion(opts)) === 2 ? v2CreateSession(opts) : v1CreateSession(opts)
     },
