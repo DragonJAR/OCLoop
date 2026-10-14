@@ -15,6 +15,7 @@ import {
 import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
+import { atomicWriteText } from "./lib/atomic-fs"
 import { runCreatePlanFlow } from "./lib/create-plan-flow"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
@@ -313,9 +314,7 @@ async function runCreatePlan(args: CLIArgs): Promise<boolean> {
       readGoal: () => goal, // already collected above
       readChoice: () => (prompt(t("cpAskApprove")) || ""),
       readEditFeedback: () => prompt(t("cpAskEdit")),
-      writePlan: async (path, content) => {
-        await Bun.write(path, content)
-      },
+      writePlan: (path, content) => atomicWriteText(path, content),
       sleep: (ms) => Bun.sleep(ms),
       // Monotonic clock for the plan-generation deadline: a generation can run
       // for several minutes, so a wall-clock `Date.now()` would fire the timeout
