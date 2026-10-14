@@ -1,4 +1,4 @@
-import { createSignal, createMemo, Show, type Accessor, onMount } from "solid-js"
+import { createSignal, createMemo, Show, type Accessor, onMount, onCleanup } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import type { InputRenderable } from "@opentui/core"
 import { Dialog } from "../ui/Dialog"
@@ -104,13 +104,14 @@ function CustomTerminalForm(props: {
   let argsInput: InputRenderable | undefined
 
   onMount(() => {
-    setTimeout(() => {
+    const timer = setTimeout(() => {
       if (s.activeInput() === "command") {
         commandInput?.focus()
       } else {
         argsInput?.focus()
       }
     }, 10)
+    onCleanup(() => clearTimeout(timer))
   })
 
   useKeyboard((key) => {
