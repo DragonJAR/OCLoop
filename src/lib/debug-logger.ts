@@ -4,7 +4,7 @@ import path from 'node:path';
 const LOG_FILE = '.loop.log';
 const OLD_LOG_FILE = '.loop.log.old';
 
-type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'HEALTH';
+export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'HEALTH';
 
 /**
  * Structured metrics attached to a health-log entry. Kept open-ended so the
@@ -12,6 +12,30 @@ type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR' | 'HEALTH';
  * (heartbeat age, session status, probe results, attempt counters, ...).
  */
 export type HealthMetrics = Record<string, unknown>;
+
+export function formatLogEntry(
+  timestamp: string,
+  level: LogLevel,
+  context: string,
+  message: string,
+  data?: unknown,
+): string {
+  let line = `[${timestamp}] [${level}] [${context}] ${message}`;
+
+  if (data !== undefined) {
+    try {
+      if (data instanceof Error) {
+        line += ` ${JSON.stringify({ name: data.name, message: data.message, stack: data.stack })}`;
+      } else {
+        line += ` ${JSON.stringify(data)}`;
+      }
+    } catch {
+      line += ` [Circular or Non-Serializable Data]`;
+    }
+  }
+
+  return line;
+}
 
 class DebugLogger {
   private logFile: string;
@@ -92,20 +116,7 @@ class DebugLogger {
 
   private entry(level: LogLevel, context: string, message: string, data?: unknown) {
     const timestamp = new Date().toISOString().split('T')[1].slice(0, -1); // HH:MM:SS.mmm
-    let line = `[${timestamp}] [${level}] [${context}] ${message}`;
-    
-    if (data !== undefined) {
-      try {
-        if (data instanceof Error) {
-           line += ` { name: "${data.name}", message: "${data.message}", stack: ${JSON.stringify(data.stack)} }`;
-        } else {
-           line += ` ${JSON.stringify(data)}`;
-        }
-      } catch (e) {
-        line += ` [Circular or Non-Serializable Data]`;
-      }
-    }
-    
+    const line = formatLogEntry(timestamp, level, context, message, data);
     this.writeRaw(line + '\n');
   }
 
