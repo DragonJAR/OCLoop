@@ -263,16 +263,18 @@ describe("integration-queue", () => {
     }
   })
 
-  it("treats an already-marked task as integrated (CAS no_change with the task still present)", async () => {
+  it("treats a [BLOCKED] task as integrated when its description is present (CAS no_change, presence branch)", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-already-"))
     try {
       const wtPath = join(scratch, ".loop-worktrees", "slot-1")
       mkdirSync(wtPath, { recursive: true })
-      // The agent checked the task off itself in the root plan: the mark
-      // transform returns null (skipped:no_change) but the task is still
-      // present → benign, the integration must count as done.
-      writeFileSync(join(scratch, "PLAN.md"), "- [x] **1.1** Task A\n")
-      writeFileSync(join(wtPath, "PLAN.md"), "- [x] **1.1** Task A\n")
+      // The task was evaluated and [BLOCKED]-marked in the root plan (e.g. by
+      // a prior recovery pass): the mark transform returns null
+      // (skipped:no_change) but the description is still present → benign,
+      // the integration must count as done. This exercises the presence
+      // branch, not the normal write path.
+      writeFileSync(join(scratch, "PLAN.md"), "- [BLOCKED: stale eval] **1.1** Task A\n")
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A\n")
 
       const fakeGit: GitRunner = async (args) => {
         if (args[0] === "show") return { exitCode: 0, stdout: "- [ ] **1.1** Task A\n", stderr: "" }
