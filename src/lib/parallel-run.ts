@@ -239,6 +239,30 @@ export function createParallelCoordinator(
   ): Promise<void> {
     if (shuttingDown || deps.loop.state().type !== "running") return
 
+    // Defensive reservation: if the slot is somehow already live (e.g. a
+    // future refactor adds an await between the slot release and this retry,
+    // or a scheduling path races), do NOT overwrite its registration — the
+    // displaced worker would keep running with no record to integrate it.
+    // Instead abort the stale occupant's session and take over the slot.
+    const occupant = slots.get(slotId)
+    if (occupant) {
+      if (occupant.taskId === task.id && occupant.status !== "integrating") {
+        // Same task already launched in this slot — a duplicate launch call.
+        return
+      }
+      log.warn("parallel", "Slot reservation conflict; aborting stale occupant before takeover", {
+        slotId,
+        staleTaskId: occupant.taskId,
+        newTaskId: task.id,
+      })
+      stopSlotStream(occupant)
+      if (occupant.sessionId) sessionToSlot.delete(occupant.sessionId)
+      if (occupant.sessionId && occupant.client) {
+        abortSession(occupant.client, occupant.sessionId).catch(() => {})
+      }
+      slots.delete(slotId)
+    }
+
     // Reserve the slot synchronously BEFORE the first `await` so concurrent
     // launches in `scheduleAvailableSlots` pick distinct slot IDs (single DRY reservation).
     const placeholderSlot: ActiveSlotInternal = {
@@ -497,6 +521,24 @@ export function createParallelCoordinator(
         detectors.delete(slot.taskDescription)
         await deps.refreshPlan()
         shouldScheduleNext = true
+      } else if (outcome.status === "plan_write_deferred") {
+        // The worker's commit is safe (promoted or worktree-preserved), but the
+        // root PLAN.md mark did not land (file changed underfoot / task missing).
+        // Halting recoverably is the only safe policy: reporting success would
+        // let the scheduler relaunch an unmarked task over its own promoted
+        // commit, and retrying silently could livelock on eval blocks.
+        log.warn("integration", "PLAN.md CAS write deferred after worker integration", {
+          slotId: slot.slotId,
+          taskId: slot.taskId,
+          deferred: outcome.deferred,
+          reason: outcome.reason,
+        })
+        deps.loop.dispatch({
+          type: "error",
+          source: "plan",
+          message: outcome.reason,
+          recoverable: true,
+        })
       } else if (outcome.status === "error") {
         deps.loop.dispatch({
           type: "error",
