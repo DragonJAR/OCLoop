@@ -1,4 +1,4 @@
-import type { PlanProgress } from "../types"
+import type { PlanProgress, PlanTaskNode } from "../types"
 import { splitLines, normalizeLineEndings } from "./text"
 
 export type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
@@ -237,9 +237,6 @@ function forEachTaskLine(
  * @returns PlanProgress object with task counts and percentages
  */
 export function parsePlan(content: string): PlanProgress {
-  // Walks lines outside fenced code blocks so documented examples (e.g. ```markdown
-  // blocks with `- [ ] example`) are NOT counted as real tasks — otherwise total/
-  // completed/percentComplete are inflated and isStructurallyComplete can misfire.
   let total = 0
   let completed = 0
   let manual = 0
@@ -257,20 +254,12 @@ export function parsePlan(content: string): PlanProgress {
       case "blocked":
         blocked++
         break
-      // pending counts towards total but not specific buckets here
     }
   })
 
   const pending = total - completed - manual - blocked
   const automatable = pending
-  // Blocked tasks are terminal (the loop treats [x] OR [BLOCKED] as done), so
-  // they must leave the denominator — otherwise a fully-resolved plan with
-  // blocked items never reaches 100%.
   const denominator = total - manual - blocked
-  // When denominator is 0 and total > 0 (all tasks are MANUAL or BLOCKED), there are no
-  // automatable tasks for the loop to run — it has nothing to do, so 100% is
-  // the correct semantic: the plan is complete from the loop's perspective.
-  // When total is 0 (empty plan / no tasks), percentComplete is 0 (W2-04).
   const percentComplete =
     total === 0
       ? 0
@@ -315,32 +304,15 @@ export function buildCompletionSummary(p: PlanProgress): string {
  * @returns The summary content between tags or null if not found
  */
 export function parsePlanComplete(content: string): string | null {
-  // Use matchAll to find all occurrences
-  // Regex explanation:
-  // ^ {0,3}<plan-complete> : Match a top-level start tag with Markdown-safe indentation
-  // ([\s\S]*?)       : Capture content non-greedily
-  // <\/plan-complete>: Match end tag
-  // m                : Multiline flag to allow ^ to match start of lines
-  // g                : Global flag for matchAll
-  //
-  // Strip fenced code blocks first: a ```fence``` documenting the mechanism can
-  // put <plan-complete> at column 0, which ^ would otherwise match and trigger a
-  // premature completion. Real completion tags live at the document's top level.
   const withoutFences = stripInlineCodeFences(content)
   const matches = [
     ...withoutFences.matchAll(
-      // Opening anchored to line start (0-3 spaces) so mid-line / 4+-indented / fenced
-      // examples never match. The closing tag may sit ANYWHERE after it: on the same
-      // line, at the start of its own line, OR glued to the end of the last content
-      // line (`...done.</plan-complete>`) — the form models actually emit, which the
-      // old two-branch regex rejected, leaving the loop spinning at 100%.
       /^ {0,3}<plan-complete>([\s\S]*?)<\/plan-complete>/gm,
     ),
   ]
 
   if (matches.length === 0) return null
 
-  // Return the last match found
   const last = matches[matches.length - 1]
   return (last[1] ?? "").trim()
 }
@@ -379,13 +351,6 @@ async function readPlanFileSafe<T>(
 
 /**
  * Gets the completion summary from a plan file.
- *
- * TOCTOU-safe: wraps the read in a single try/catch and returns null on any
- * I/O failure (missing file, EISDIR, EACCES), so the caller never has to wrap
- * this in a try/catch for the read itself.
- *
- * @param planPath - Path to the PLAN.md file
- * @returns The summary text or null if not complete / unreadable
  */
 export async function getPlanCompleteSummary(planPath: string): Promise<string | null> {
   return readPlanFileSafe(planPath, (content) => parsePlanComplete(content), null)
@@ -393,26 +358,12 @@ export async function getPlanCompleteSummary(planPath: string): Promise<string |
 
 /**
  * Reads and parses a PLAN.md file from disk.
- *
- * @param planPath - Path to the PLAN.md file
- * @returns PlanProgress object with task counts and percentages
- * @throws Error if the file cannot be read
  */
 export async function parsePlanFile(planPath: string): Promise<PlanProgress> {
   const file = Bun.file(planPath)
   const content = await file.text()
   return parsePlan(content)
 }
-
-/**
- * Extracts the current task text from plan content.
- *
- * Finds the first unchecked task (- [ ]) that isn't MANUAL or BLOCKED
- * and returns its description.
- *
- * @param content - The content of the PLAN.md file
- * @returns The task description or null if no unchecked tasks found
- */
 
 /**
  * All pending task descriptions in document order (outside code fences).
@@ -446,8 +397,7 @@ export function findTaskStatusByDescription(
  * Line index of the first task matching `description` whose status passes
  * `accepts`, or -1. Scans outside code fences only (same grammar as task
  * selection) and normalizes line endings first so the index aligns with
- * `splitLines(normalizeLineEndings(content))`. Shared core of the pending-only
- * and status-tolerant finders so the two grammars cannot drift apart.
+ * `splitLines(normalizeLineEndings(content))`.
  */
 function findTaskLineIndexWhere(
   content: string,
@@ -466,7 +416,6 @@ function findTaskLineIndexWhere(
 
 /**
  * Line index of the first pending task matching `description`, or -1.
- * Scans outside code fences only (same grammar as task selection).
  */
 export function findPendingLineIndex(content: string, description: string): number {
   return findTaskLineIndexWhere(content, description, (type) => type === "pending")
@@ -474,10 +423,7 @@ export function findPendingLineIndex(content: string, description: string): numb
 
 /**
  * Line index of the first task matching `description` regardless of status
- * (pending/completed/manual/blocked), or -1. Same status-tolerant grammar as
- * the eval rubric reader (`getEvalRubricForTask`, C2-10): at eval time the
- * agent has usually already marked the just-finished task `[x]`, so the eval
- * WRITE surfaces must locate completed tasks too — not just the reads.
+ * (pending/completed/manual/blocked), or -1.
  */
 export function findTaskLineIndex(content: string, description: string): number {
   return findTaskLineIndexWhere(content, description, (type) => type !== "not-a-task")
@@ -490,10 +436,6 @@ export function getCurrentTaskFromContent(content: string): string | null {
 
 /**
  * Reads a PLAN.md file and returns the current (first unchecked) task.
- *
- * @param planPath - Path to the PLAN.md file
- * @returns The task description or null if no unchecked tasks found
- * @throws Error if the file cannot be read
  */
 export async function getCurrentTask(planPath: string): Promise<string | null> {
   const file = Bun.file(planPath)
@@ -503,26 +445,13 @@ export async function getCurrentTask(planPath: string): Promise<string | null> {
 
 /**
  * Extracts subtask descriptions from an agent reply.
- *
- * The split agent is asked for `- [ ]` checkbox lines, but models routinely
- * reply with plain bullets (`-`, `*`, `+`) or numbered items (`1.`, `2)`), and
- * may wrap the list in a ``` fence or pad it with prose. To be robust we accept
- * any of those list shapes: strip the leading marker (and any leftover
- * `[ ]`/`[x]` checkbox) and take the remainder as the description. Blank lines,
- * markdown headings (`#`), fence delimiters, prose without a list marker, and
- * already-`[x]`/`[MANUAL]`/`[BLOCKED]` checkboxes are skipped. Returns [] when
- * no list items are found.
  */
 export function parseSubtasksFromReply(text: string): string[] {
   const out: string[] = []
   for (const raw of splitLines(text)) {
     const line = raw.trim()
-    // Skip blank lines, markdown headings, and fence delimiters themselves —
-    // but DO parse content "inside" a fence: agents often wrap the whole list
-    // in a ```markdown block, so the subtasks live between the delimiters.
     if (!line || line.startsWith("#") || line.startsWith("```") || line.startsWith("~~~")) continue
 
-    // Normalize alternate bullet styles (*, +, 1., 1)) into standard "- [" so parseTaskLine can inspect them (W2-02)
     const normalizedMarker = raw.replace(/^(\s*)(?:[-*+]|\d+[.)])\s*\[/, "$1- [")
     const task = parseTaskLine(normalizedMarker)
     if (task.type === "pending" && task.description) {
@@ -530,15 +459,11 @@ export function parseSubtasksFromReply(text: string): string[] {
       if (cleanDesc) out.push(cleanDesc)
       continue
     }
-    // A completed/manual/blocked checkbox is not a fresh subtask — skip it.
     if (task.type !== "not-a-task") continue
 
-    // Lenient: a bullet (-, *, +) or numbered (`1.` / `1)`) list item.
     const m = line.match(/^(?:[-*+]|\d+[.)])\s+(.*)$/)
     if (!m) continue
-    // If the bullet carried an explicit manual/blocked/done tag that wasn't standard, skip it
     if (/^\[(?:[xX]\s*\]|MANUAL(?=[:\s\]])|BLOCKED(?=[:\s\]]))/i.test(m[1])) continue
-    // Strip a leftover empty checkbox if the bullet still carried one (e.g. `* [ ] x`).
     const desc = m[1].replace(/^\[\s*\]\s*/, "").replace(/[\r\n]+/g, " ").trim()
     if (desc) out.push(desc)
   }
@@ -548,13 +473,6 @@ export function parseSubtasksFromReply(text: string): string[] {
 /**
  * Replaces the FIRST pending task (`- [ ]`) or a target task matching `targetTaskDescription`
  * with `subtasks` rendered as pending lines, preserving the original line's leading indentation.
- *
- * Returns the new content, or `null` when there is no pending task to replace
- * or `subtasks` is empty — so the caller can surface a real failure instead of
- * silently writing an unchanged file.
- *
- * Pure string transform (mirrors withPlanCompleteTag); the caller persists the
- * result with Bun.write.
  */
 export function replaceFirstPendingTaskWithSubtasks(
   content: string,
@@ -566,15 +484,11 @@ export function replaceFirstPendingTaskWithSubtasks(
     .filter(Boolean)
   if (cleanSubtasks.length === 0) return null
 
-  // Normalize endings up front: we rebuild the file with `join("\n")` below,
-  // so leaving a `\r` on original lines (CRLF file) would mix `\r\n` and `\n`.
-  // Normalizing first guarantees the written file is consistently `\n`.
   const normalized = normalizeLineEndings(content)
   const lines = splitLines(normalized)
   for (const entry of planLinesOutsideCodeFences(normalized)) {
     const task = parseTaskLine(entry.line)
     if (task.type === "pending") {
-      // If a target task description is specified, ensure we match it (C2-11)
       if (targetTaskDescription && task.description !== targetTaskDescription) {
         continue
       }
@@ -588,23 +502,38 @@ export function replaceFirstPendingTaskWithSubtasks(
 }
 
 /**
+ * Shared scanner for indented metadata sub-bullets (`- eval:`, `- depends:`, `- files:`)
+ * immediately following a task line at `taskLineIdx`. Stops at the next task line
+ * (`- [`), fence delimiter, or non-indented non-empty line (DRY).
+ */
+function scanTaskSubBullets(
+  lineStates: PlanLineState[],
+  taskLineIdx: number,
+): { lines: string[]; endLineIdx: number } {
+  const subLines: string[] = []
+  let endLineIdx = taskLineIdx
+  for (let i = taskLineIdx + 1; i < lineStates.length; i++) {
+    const state = lineStates[i]
+    if (state.isFenceDelimiter) break
+    if (state.isFenced) continue
+    const line = state.line
+    if (line.trim() === "") continue
+    if (/^\s*-\s*\[/.test(line)) break
+    if (!/^\s/.test(line)) break
+    subLines.push(line)
+    endLineIdx = state.index
+  }
+  return { lines: subLines, endLineIdx }
+}
+
+/**
  * Extract the eval rubric declared under a pending or completed task, if any.
- *
- * The rubric is a single sub-bullet of the form `  - eval: <rubric prose>`
- * placed immediately after the `- [ ] <task>` or `- [x] <task>` line (and before the next task).
- * That syntax is NOT counted as a task by `parseTaskLine` (it lacks the `- [`
- * checkbox prefix), so it is safe to use as metadata — the plan's task counts
- * are unaffected.
- *
- * Returns the trimmed rubric text, or `null` when the task has no `eval:`
- * sub-bullet (the caller skips the eval in that case).
  */
 export function getEvalRubricForTask(
   content: string,
   taskDescription: string,
 ): string | null {
   const lineStates = splitPlanLinesWithFenceState(content)
-  // Find the task matching the description (pending or completed: C2-10).
   let taskLineIdx = -1
   for (const entry of lineStates) {
     if (entry.isFenced) continue
@@ -616,42 +545,223 @@ export function getEvalRubricForTask(
   }
   if (taskLineIdx === -1) return null
 
-  // Scan the indented sub-bullets immediately following the task line. Stop at
-  // the next top-level task (a `- [` line) or a non-indented, non-empty line.
   const evalRe = /^\s*-\s*eval:\s*(.+?)\s*$/i
-  for (let i = taskLineIdx + 1; i < lineStates.length; i++) {
-    const state = lineStates[i]
-    if (state.isFenceDelimiter) break
-    if (state.isFenced) continue
-    const line = state.line
-    if (line.trim() === "") continue // blank lines between a task and its notes are tolerated
-    // A new task line ends the rubric window.
-    if (/^\s*-\s*\[/.test(line)) break
+  const { lines } = scanTaskSubBullets(lineStates, taskLineIdx)
+  for (const line of lines) {
     const m = line.match(evalRe)
     if (m) return m[1]
-    // Any other non-indented content also closes the window.
-    if (!/^\s/.test(line)) break
   }
   return null
 }
 
 /**
+ * Extract indented prose memory notes under `taskDescription` (excluding
+ * structured metadata directives `- eval:`, `- depends:`, `- files:`).
+ * Shared by `extractWorkerPlanEdits` and plan inspection (DRY).
+ */
+export function getTaskSubNotes(
+  content: string,
+  taskDescription: string,
+): string[] {
+  const normalized = normalizeLineEndings(content)
+  const lineStates = splitPlanLinesWithFenceState(normalized)
+  const taskLineIdx = findTaskLineIndex(normalized, taskDescription)
+  if (taskLineIdx === -1) return []
+
+  const { lines } = scanTaskSubBullets(lineStates, taskLineIdx)
+  const out: string[] = []
+  for (const line of lines) {
+    if (/^\s*-\s*(?:eval|depends|deps|files|scope):/i.test(line)) continue
+    const cleaned = line.trim().replace(/^[-*+]\s+/, "")
+    if (cleaned) out.push(cleaned)
+  }
+  return out
+}
+
+function splitCommaList(raw: string): string[] {
+  return raw
+    .split(/[,;]+/)
+    .map((item) => item.trim().replace(/^`|`$/g, ""))
+    .filter(Boolean)
+}
+
+function extractTaskIdFromDescription(description: string): string | null {
+  // Matches "**1.1** ...", "**1.1a** ...", "**F-01** ...", "[1.1] ...", or "1.1: ..."
+  const boldMatch = description.match(/^\*\*([A-Za-z0-9._-]+)\*\*(?:\s+|:\s*|$)/)
+  if (boldMatch) return boldMatch[1]
+  const bracketMatch = description.match(/^\[([A-Za-z0-9._-]+)\](?:\s+|:\s*|$)/)
+  if (bracketMatch && !/^(?:MANUAL|BLOCKED|RECON)$/i.test(bracketMatch[1])) {
+    return bracketMatch[1]
+  }
+  const numPrefix = description.match(/^(\d+\.\d+[a-z]?)(?:\s+|:\s+)/i)
+  if (numPrefix) return numPrefix[1]
+  return null
+}
+
+function extractInlineMetadata(description: string): {
+  cleanDescription: string
+  dependsOn: string[]
+  files: string[]
+} {
+  const dependsOn: string[] = []
+  const files: string[] = []
+  let clean = description
+
+  const metaPattern = /(?:\(|\b)\s*(depends|deps|files|scope)\s*:\s*([^)\]]+?)\s*(?:\)|(?=\s*(?:\(|\[|$)))/gi
+  clean = clean.replace(metaPattern, (_full, keyRaw: string, valRaw: string) => {
+    const key = keyRaw.toLowerCase()
+    const items = splitCommaList(valRaw)
+    if (key === "depends" || key === "deps") {
+      dependsOn.push(...items)
+    } else if (key === "files" || key === "scope") {
+      files.push(...items)
+    }
+    return ""
+  })
+
+  clean = clean.replace(/\s{2,}/g, " ").trim()
+  return { cleanDescription: clean || description, dependsOn, files }
+}
+
+/**
+ * Parse all tasks in `content` (outside code fences) into structured `PlanTaskNode`
+ * entries with phase boundaries, explicit or generated IDs, DAG dependencies,
+ * file scopes, and `(recon)` detection.
+ */
+export function parsePlanTasks(content: string): PlanTaskNode[] {
+  const normalized = normalizeLineEndings(content)
+  const lineStates = splitPlanLinesWithFenceState(normalized)
+  const nodes: PlanTaskNode[] = []
+
+  let currentPhase = 0
+  let hasSeenTasksInPhase = false
+  let indexInPhase = 0
+
+  const dependsRe = /^\s*-\s*(?:depends|deps):\s*(.+?)\s*$/i
+  const filesRe = /^\s*-\s*(?:files|scope):\s*(.+?)\s*$/i
+
+  for (const entry of lineStates) {
+    if (entry.isFenced) continue
+    const trimmed = entry.line.trim()
+
+    // Markdown heading starts a new phase barrier if we already saw tasks in the current phase
+    if (/^#{1,6}\s+\S/.test(trimmed)) {
+      if (hasSeenTasksInPhase) {
+        currentPhase++
+        hasSeenTasksInPhase = false
+        indexInPhase = 0
+      }
+      continue
+    }
+
+    const parsed = parseTaskLine(entry.line)
+    if (parsed.type === "not-a-task") continue
+
+    hasSeenTasksInPhase = true
+    indexInPhase++
+
+    const explicitId = extractTaskIdFromDescription(parsed.description)
+    const id = explicitId ?? `${currentPhase + 1}.${indexInPhase}`
+    const inlineMeta = extractInlineMetadata(parsed.description)
+    const { lines: subLines } = scanTaskSubBullets(lineStates, entry.index)
+
+    const dependsSet = new Set<string>(inlineMeta.dependsOn)
+    const filesSet = new Set<string>(inlineMeta.files)
+
+    for (const sub of subLines) {
+      const depMatch = sub.match(dependsRe)
+      if (depMatch) {
+        for (const item of splitCommaList(depMatch[1])) dependsSet.add(item)
+      }
+      const fileMatch = sub.match(filesRe)
+      if (fileMatch) {
+        for (const item of splitCommaList(fileMatch[1])) filesSet.add(item)
+      }
+    }
+
+    const isRecon = /\(\s*recon\s*\)|\[\s*recon\s*\]/i.test(parsed.description)
+
+    nodes.push({
+      id,
+      phaseIndex: currentPhase,
+      lineIndex: entry.index,
+      type: parsed.type,
+      description: parsed.description,
+      cleanDescription: inlineMeta.cleanDescription,
+      dependsOn: [...dependsSet],
+      files: [...filesSet],
+      isRecon,
+      ...(parsed.blockedReason !== undefined ? { blockedReason: parsed.blockedReason } : {}),
+    })
+  }
+
+  return nodes
+}
+
+/**
+ * Mark a specific task `- [x]` by description (for orchestrator-owned PLAN.md
+ * updates in parallel mode), optionally inserting indented memory notes and/or
+ * discovered `(recon)` tasks immediately after the task and its existing sub-bullets.
+ */
+export function markTaskCompleted(
+  content: string,
+  taskDescription: string,
+  options: { notes?: string[]; reconTasks?: string[] } = {},
+): string | null {
+  const normalized = normalizeLineEndings(content)
+  const lineStates = splitPlanLinesWithFenceState(normalized)
+  const lines = splitLines(normalized)
+  const idx = findTaskLineIndexWhere(
+    normalized,
+    taskDescription,
+    (type) => type === "pending" || type === "completed",
+  )
+  if (idx === -1) return null
+
+  const indent = lines[idx].match(/^(\s*)/)?.[1] ?? ""
+  const parsed = parseTaskLine(lines[idx])
+  if (parsed.type === "pending") {
+    lines[idx] = `${indent}- [x] ${parsed.description}`
+  }
+
+  const { endLineIdx } = scanTaskSubBullets(lineStates, idx)
+  const insertions: string[] = []
+
+  if (options.notes) {
+    for (const rawNote of options.notes) {
+      const clean = rawNote.replace(/[\r\n]+/g, " ").trim()
+      if (!clean) continue
+      // Ensure note is never formatted as a checkbox task
+      const safeNote = clean.replace(/^[-*+]\s*\[[^\]]*\]\s*/, "")
+      if (safeNote) {
+        insertions.push(`${indent}  - ${safeNote}`)
+      }
+    }
+  }
+
+  if (options.reconTasks) {
+    for (const rawRecon of options.reconTasks) {
+      const clean = rawRecon
+        .replace(/[\r\n]+/g, " ")
+        .replace(/^\s*[-*+]\s*\[\s*[xX ]?\s*\]\s*/, "")
+        .trim()
+      if (clean) {
+        insertions.push(`${indent}- [ ] ${clean}`)
+      }
+    }
+  }
+
+  if (insertions.length > 0) {
+    lines.splice(endLineIdx + 1, 0, ...insertions)
+  }
+
+  return lines.join("\n")
+}
+
+/**
  * Prepare an eval-driven retry in PLAN.md: insert the judge's feedback note
  * right under the task line, and flip a completed task (`[x]`) back to pending
- * (`[ ]`) so the retry genuinely re-runs the SAME task — a `[x]` task is
- * never first-pending again, so without the flip the loop would silently
- * advance to the next task instead of retrying this one.
- *
- * The task is located regardless of status (the agent has usually already
- * marked it `[x]` at eval time — same grammar as `getEvalRubricForTask`,
- * C2-10). A task still pending is left as-is apart from the note; a
- * manual/blocked task keeps its marking (the agent's explicit choice is never
- * overwritten — the note is still written as feedback documentation).
- *
- * `note` is inserted verbatim as its own line (the caller passes a prose
- * sub-bullet like `  - eval feedback: …` — never a `- [ ]` line, so task
- * counting is unaffected). Returns the new content, or `null` when the task
- * is not found (the caller's compare-and-swap defers instead of writing).
+ * (`[ ]`) so the retry genuinely re-runs the SAME task.
  */
 export function reopenTaskForEvalRetry(
   content: string,
@@ -664,8 +774,6 @@ export function reopenTaskForEvalRetry(
   if (idx === -1) return null
   const task = parseTaskLine(lines[idx])
   if (task.type === "completed") {
-    // Flip only the checkbox (`[x]`/`[X]`, inner spaces tolerated), preserving
-    // the leading indentation and the description.
     lines[idx] = lines[idx].replace(/^(\s*)-\s*\[\s*[xX]\s*\]/, "$1- [ ]")
   }
   lines.splice(idx + 1, 0, note)
@@ -675,17 +783,6 @@ export function reopenTaskForEvalRetry(
 /**
  * Mark the FIRST pending task (`- [ ]`) as `- [BLOCKED: <reason>]`, preserving
  * the original line's leading indentation and the rest of the description.
- *
- * The eval layer calls this when an eval has failed and the retry budget is
- * exhausted — the task is halted rather than looped forever. Mirrors the
- * pattern of `replaceFirstPendingTaskWithSubtasks` (splice the first pending
- * line, keep everything else byte-identical).
- *
- * Returns the new content, or `null` when there is no pending task to block —
- * so the caller can surface a real failure instead of writing an unchanged
- * file. The caller MUST persist with a compare-and-swap (re-read + byte
- * compare before `Bun.write`) to avoid clobbering a concurrent agent edit of
- * PLAN.md — see `checkPlanComplete` in App.tsx for the established pattern.
  */
 export function replaceFirstPendingTaskWithBlocked(
   content: string,
@@ -715,11 +812,7 @@ export function replacePendingTaskWithBlocked(
 
 /**
  * Mark a specific task `- [BLOCKED: <reason>]` by description, pending OR
- * completed. The eval layer calls this when the judge fails a task the agent
- * already marked `[x]` — the common case at eval time (see
- * `getEvalRubricForTask` C2-10) — or one still pending after a retry. A
- * manual/blocked target returns null: the agent's explicit marking is never
- * overwritten with ours.
+ * completed.
  */
 export function replaceTaskWithBlocked(
   content: string,
@@ -735,10 +828,7 @@ export function replaceTaskWithBlocked(
 }
 
 /**
- * Shared splice core of the blocked-replacement variants: find the task line
- * by description + status predicate, then rewrite it in place preserving the
- * leading indentation (mirrors replaceFirstPendingTaskWithSubtasks'
- * normalize-first pattern so the written file is consistently `\n`).
+ * Shared splice core of the blocked-replacement variants.
  */
 function replaceTaskLineWithBlocked(
   content: string,

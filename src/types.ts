@@ -4,6 +4,46 @@ export interface CompletionSummary {
 
 export type ErrorSource = "server" | "sse" | "pty" | "api" | "plan"
 
+/** Bounded worker slot identifier (1..4). */
+export type WorkerSlotId = 1 | 2 | 3 | 4
+
+export type WorkerSlotStatus = "starting" | "running" | "integrating" | "error"
+
+/** Live state of an active parallel worker slot for orchestration and TUI display. */
+export interface WorkerSlotInfo {
+  slotId: WorkerSlotId
+  taskId: string
+  taskDescription: string
+  sessionId: string
+  worktreePath: string
+  status: WorkerSlotStatus
+  startedAt: number
+}
+
+/** Parsed task node from PLAN.md with phase, DAG dependencies, and file scope metadata. */
+export interface PlanTaskNode {
+  /** Explicit ID (e.g. "1.1" from `**1.1**`) or deterministic fallback `P<phase>.<idx>`. */
+  id: string
+  /** 0-based index of the markdown heading phase (`#` / `##` / `###`) containing this task. */
+  phaseIndex: number
+  /** 0-based line index in normalized PLAN.md content. */
+  lineIndex: number
+  /** Task status (`completed` | `pending` | `manual` | `blocked`). */
+  type: "completed" | "pending" | "manual" | "blocked"
+  /** Raw task description after the checkbox/tag (preserves original text for CAS matching). */
+  description: string
+  /** Description with inline `(depends: ...)` / `(files: ...)` metadata stripped for display. */
+  cleanDescription: string
+  /** Task IDs that must be `[x]` before this task is eligible. */
+  dependsOn: string[]
+  /** Declared file paths or glob prefixes this task touches (for conflict-free scheduling). */
+  files: string[]
+  /** True when the task is a reconnaissance fan-out task (`(recon)` or `[RECON]`). */
+  isRecon: boolean
+  /** Reason string when `type === "blocked"`. */
+  blockedReason?: string
+}
+
 /**
  * State machine type for the OCLoop harness
  */
