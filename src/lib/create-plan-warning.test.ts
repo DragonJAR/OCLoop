@@ -12,7 +12,7 @@ describe("getIgnoredCreatePlanFlags (Finding 1.7.A)", () => {
     ).toEqual([])
   })
 
-  it("flags --run, --debug, --verbose when set", () => {
+  it("flags --run, --debug, --verbose, --jobs when set", () => {
     expect(
       getIgnoredCreatePlanFlags({
         promptFile: DEFAULTS.PROMPT_FILE,
@@ -20,8 +20,9 @@ describe("getIgnoredCreatePlanFlags (Finding 1.7.A)", () => {
         run: true,
         debug: true,
         verbose: true,
+        jobs: 3,
       }),
-    ).toEqual(["--run", "--debug", "--verbose"])
+    ).toEqual(["--run", "--debug", "--verbose", "--jobs"])
   })
 
   it("flags --resume, --chaos, --no-caffeinate from the resilience partial", () => {

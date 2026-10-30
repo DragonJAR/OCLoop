@@ -31,13 +31,6 @@ export interface ActivityLogProps {
  * - file_edit: normal text with edit icon
  * - error: error color with warning icon
  * - dimmed events (messages, reasoning): muted text
- *
- * @example
- * ```tsx
- * const activity = useActivityLog()
- *
- * <ActivityLog events={activity.events()} />
- * ```
  */
 export function ActivityLog(props: ActivityLogProps) {
   const { theme, unicode } = useTheme();
@@ -62,11 +55,6 @@ export function ActivityLog(props: ActivityLogProps) {
     }
   };
 
-  // Scrollbar auto-hide: OpenTUI shows the vertical bar only when the log
-  // overflows (built-in recalculateVisibility). We must NOT force `visible` —
-  // that pins the bar on and reserves an empty right column. The user's toggle
-  // still hard-hides it: resetVisibilityControl() re-enables auto, visible=false
-  // forces it off. (verticalScrollBar is public; see @opentui/core ScrollBox.)
   let sb: ScrollBoxRenderable | undefined;
   createEffect(() => {
     if (dialog.hasDialogs()) sb?.blur();
@@ -93,14 +81,7 @@ export function ActivityLog(props: ActivityLogProps) {
         ref={(r) => (sb = r)}
         stickyScroll={true}
         stickyStart="bottom"
-        // Bottom-anchor: content node fills the viewport and pushes rows to the
-        // bottom, so few logs hug the panel below (empty space above, terminal-style).
-        // Many logs scroll + sticky-to-bottom as before (scroll logic is separate).
         contentOptions={{ flexGrow: 1, justifyContent: "flex-end" }}
-        // No `visible` here: OpenTUI auto-hides the bar unless the log overflows,
-        // so it never reserves an empty column. Force-hide (toggle) is done via the
-        // ref effect above. No viewportOptions.paddingRight — that reserved a column
-        // even when the bar was hidden; the bar's own column separates when shown.
         verticalScrollbarOptions={{
           trackOptions: {
             foregroundColor: theme().border,
@@ -108,9 +89,6 @@ export function ActivityLog(props: ActivityLogProps) {
           },
         }}
         flexGrow={1}
-        // NO flexDirection here: the scrollbox root is `row` ([ content | scrollbar ]).
-        // Overriding it to "column" stacked the scrollbar BELOW the logs (the split-screen
-        // bug). Log lines still stack vertically — the inner content node is a column.
         style={{
           paddingLeft: 2,
           paddingBottom: 2,
@@ -127,6 +105,7 @@ export function ActivityLog(props: ActivityLogProps) {
                 level: event.level,
                 count: event.count,
                 progress: event.progress,
+                slotId: event.slotId,
               },
               contentWidth(),
               unicode(),

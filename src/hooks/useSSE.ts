@@ -437,21 +437,21 @@ export interface SSEEventHandlers {
   /** Called when todos are updated */
   onTodoUpdated?: (sessionId: string, todos: Todo[]) => void
   /** Called when a file is edited */
-  onFileEdited?: (file: string) => void
+  onFileEdited?: (file: string, sessionId?: string) => void
   /** Called when a session error occurs */
   onSessionError?: (sessionId: string | undefined, error: SessionError) => void
   /** Called for any event (useful for debugging) */
   onAnyEvent?: (event: BackendEvent) => void
   /** Called when a tool is used */
-  onToolUse?: (part: ToolPart) => void
+  onToolUse?: (part: ToolPart, sessionId?: string) => void
   /** Called when a message part (text) is received */
-  onMessageText?: (part: TextPart, role: "user" | "assistant") => void
+  onMessageText?: (part: TextPart, role: "user" | "assistant", sessionId?: string) => void
   /** Called when reasoning is received */
-  onReasoning?: (part: ReasoningPart) => void
+  onReasoning?: (part: ReasoningPart, sessionId?: string) => void
   /** Called when a step finishes */
-  onStepFinish?: (part: StepFinishPart) => void
+  onStepFinish?: (part: StepFinishPart, sessionId?: string) => void
   /** Called on any streaming progress/alive activity from the active session */
-  onHeartbeat?: () => void
+  onHeartbeat?: (sessionId?: string) => void
 }
 
 /**
@@ -466,6 +466,8 @@ export interface UseSSEOptions {
   handlers: SSEEventHandlers
   /** Session ID to filter events (optional) */
   sessionId?: Accessor<string | undefined>
+  /** Set of active session IDs to filter events in parallel mode (optional) */
+  sessionIds?: Accessor<ReadonlySet<string> | undefined>
   /** Whether to auto-connect on mount (default: true) */
   autoConnect?: boolean
   /** Called when an error occurs */
@@ -488,80 +490,64 @@ export interface UseSSEReturn {
   disconnect: () => void
 }
 
+function getScopedKey(sessionId: string | undefined, id: string): string {
+  return sessionId ? `${sessionId}:${id}` : id
+}
+
+function clearSessionScopedEntries(
+  seenPartIds: Set<string>,
+  messageRoles: Map<string, "user" | "assistant">,
+  sessionId: string,
+): void {
+  const prefix = `${sessionId}:`
+  for (const key of seenPartIds) {
+    if (key.startsWith(prefix) || !key.includes(":")) {
+      seenPartIds.delete(key)
+    }
+  }
+  for (const key of messageRoles.keys()) {
+    if (key.startsWith(prefix) || !key.includes(":")) {
+      messageRoles.delete(key)
+    }
+  }
+}
+
 /**
- * Hook to subscribe to OpenCode SSE events.
- *
- * Connects to the `/event` endpoint and provides event filtering by session.
- * Automatically handles reconnection on connection loss.
- *
- * @example
- * ```tsx
- * const sse = useSSE({
- *   url: "http://127.0.0.1:4096",
- *   sessionId: () => currentSessionId(),
- *   handlers: {
- *     onSessionIdle: (sessionId) => {
- *       console.log("Session idle:", sessionId)
- *       dispatch({ type: "session_idle" })
- *     },
- *     onTodoUpdated: (sessionId, todos) => {
- *       console.log("Todos updated:", todos)
- *     },
- *   },
- * })
- *
- * createEffect(() => {
- *   if (sse.status() === "connected") {
- *     console.log("SSE connected")
- *   }
- * })
- * ```
+ * Pure, reusable SSE event processor shared by `useSSE` and per-worktree v1
+ * stream subscriptions in parallel mode (DRY).
  */
-export function useSSE(options: UseSSEOptions): UseSSEReturn {
-  const {
-    info,
-    directory,
-    handlers,
-    sessionId,
-    autoConnect = true,
-    onError,
-  } = options
-
-  const [status, setStatus] = createSignal<SSEStatus>("disconnected")
-  const [error, setError] = createSignal<Error | undefined>(undefined)
-  const [reconnectAttempts, setReconnectAttempts] = createSignal(0)
-
-  let abortController: AbortController | null = null
-  let shouldReconnect = true
-
+export function createSSEEventProcessor(
+  handlers: SSEEventHandlers,
+  acceptSession?: (eventSessionId: string | undefined) => boolean,
+  getDebugSessionId?: () => string | undefined,
+): (event: BackendEvent) => void {
   const messageRoles = new Map<string, "user" | "assistant">()
   const seenPartIds = new Set<string>()
+  const isAccepted = (eventSessionId: string | undefined): boolean =>
+    acceptSession ? acceptSession(eventSessionId) : true
 
-  /**
-   * Process an incoming SSE event and call appropriate handlers
-   */
-  function processEvent(event: BackendEvent): void {
-    log.debug("sse", "Event received", { type: event.type, sessionId: sessionId?.(), data: truncateForLog(event.properties) })
+  return function processEvent(event: BackendEvent): void {
+    log.debug("sse", "Event received", {
+      type: event.type,
+      sessionId: getDebugSessionId?.(),
+      data: truncateForLog(event.properties),
+    })
 
     if (handlers.onAnyEvent) {
       handlers.onAnyEvent(event)
     }
-
-    const filterSessionId = sessionId?.()
 
     switch (event.type) {
       case "session.created": {
         const eventSessionId = (event.properties as { info?: { id?: string } })
           .info?.id
         if (eventSessionId) {
-          if (filterSessionId && eventSessionId !== filterSessionId) {
+          if (!isAccepted(eventSessionId)) {
             return
           }
-          // Part/message ids are unique per session and never need cross-session
-          // dedup, so reset the dedup maps here. Without this they grow unbounded
-          // over a long multi-iteration run (the loop's whole use case).
-          seenPartIds.clear()
-          messageRoles.clear()
+          // Prune only entries scoped to this session (or unscoped legacy entries)
+          // so concurrent parallel sessions keep their dedup state intact.
+          clearSessionScopedEntries(seenPartIds, messageRoles, eventSessionId)
           handlers.onSessionCreated?.(eventSessionId)
         }
         break
@@ -575,10 +561,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
       // sessionID, so this path is dormant in practice.
       case "session.idle": {
         const eventSessionId = propString(event.properties, "sessionID")
-        // Session-scoped event without a sessionID: dropped at the hook layer
-        // (per-session filter policy — see the comment above).
         if (eventSessionId === undefined) break
-        if (filterSessionId && eventSessionId !== filterSessionId) {
+        if (!isAccepted(eventSessionId)) {
           return
         }
         handlers.onSessionIdle?.(eventSessionId)
@@ -587,11 +571,10 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
       case "session.error": {
         const eventSessionId = propString(event.properties, "sessionID")
-
         const rawError = event.properties.error
         const sessionError = classifySessionError(rawError)
 
-        if (filterSessionId && eventSessionId !== filterSessionId) {
+        if (!isAccepted(eventSessionId)) {
           return
         }
         handlers.onSessionError?.(eventSessionId, sessionError)
@@ -600,10 +583,8 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
       case "todo.updated": {
         const eventSessionId = propString(event.properties, "sessionID")
-        // Session-scoped event without a sessionID: dropped at the hook layer
-        // (per-session filter policy — see the comment above).
         if (eventSessionId === undefined) break
-        if (filterSessionId && eventSessionId !== filterSessionId) {
+        if (!isAccepted(eventSessionId)) {
           return
         }
         const rawTodos = event.properties.todos
@@ -614,8 +595,9 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
 
       case "file.edited": {
         const file = propString(event.properties, "file")
+        const eventSessionId = propString(event.properties, "sessionID")
         if (file !== undefined) {
-          handlers.onFileEdited?.(file)
+          handlers.onFileEdited?.(file, eventSessionId)
         }
         break
       }
@@ -625,7 +607,7 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const message = props.info || props.message
         const messageSessionId =
           props.sessionID ?? props.sessionId ?? message?.sessionID ?? message?.sessionId
-        if (filterSessionId && messageSessionId !== filterSessionId) {
+        if (!isAccepted(messageSessionId)) {
           return
         }
         if (message?.id && message?.role) {
@@ -646,50 +628,87 @@ export function useSSE(options: UseSSEOptions): UseSSEReturn {
         const messageId = part && "messageID" in part ? part.messageID : undefined
         const eventSessionId = part && "sessionID" in part ? part.sessionID : undefined
 
-        if (filterSessionId && eventSessionId !== filterSessionId) {
+        if (!isAccepted(eventSessionId)) {
           return
         }
 
         if (!part || !part.id) return
 
-        handlers.onHeartbeat?.()
+        handlers.onHeartbeat?.(eventSessionId)
+        const partKey = getScopedKey(eventSessionId, part.id)
 
         if (part.type === "tool-use" || part.type === "tool") {
-          // Only emit when we have input data (running) and haven't seen this tool call yet
           const status = (part as ToolPart).state?.status
-          if (status === "running" && !seenPartIds.has(part.id)) {
-            seenPartIds.add(part.id)
-            handlers.onToolUse?.(part as ToolPart)
+          if (status === "running" && !seenPartIds.has(partKey)) {
+            seenPartIds.add(partKey)
+            handlers.onToolUse?.(part as ToolPart, eventSessionId)
           }
         } else if (part.type === "text") {
-          if (!seenPartIds.has(part.id)) {
-            seenPartIds.add(part.id)
-            // Without an `as any` escape hatch, `messageId` is properly
-            // `string | undefined`. When the SDK omits `messageID` on a text
-            // part, fall back to "assistant" — we never want to crash the SSE
-            // consumer over a missing field.
+          if (!seenPartIds.has(partKey)) {
+            seenPartIds.add(partKey)
             const role = messageId
               ? messageRoles.get(getMessageRoleKey(eventSessionId, messageId)) ||
                 messageRoles.get(messageId) ||
                 "assistant"
               : "assistant"
-            handlers.onMessageText?.(part as TextPart, role)
+            handlers.onMessageText?.(part as TextPart, role, eventSessionId)
           }
         } else if (part.type === "reasoning") {
-          if (!seenPartIds.has(part.id)) {
-            seenPartIds.add(part.id)
-            handlers.onReasoning?.(part as ReasoningPart)
+          if (!seenPartIds.has(partKey)) {
+            seenPartIds.add(partKey)
+            handlers.onReasoning?.(part as ReasoningPart, eventSessionId)
           }
         } else if (part.type === "step-finish") {
-          if (!seenPartIds.has(part.id)) {
-            seenPartIds.add(part.id)
-            handlers.onStepFinish?.(part as StepFinishPart)
+          if (!seenPartIds.has(partKey)) {
+            seenPartIds.add(partKey)
+            handlers.onStepFinish?.(part as StepFinishPart, eventSessionId)
           }
         }
         break
       }
     }
   }
+}
+
+/**
+ * Hook to subscribe to OpenCode SSE events.
+ *
+ * Connects to the `/event` endpoint and provides event filtering by session.
+ * Automatically handles reconnection on connection loss.
+ */
+export function useSSE(options: UseSSEOptions): UseSSEReturn {
+  const {
+    info,
+    directory,
+    handlers,
+    sessionId,
+    sessionIds,
+    autoConnect = true,
+    onError,
+  } = options
+
+  const [status, setStatus] = createSignal<SSEStatus>("disconnected")
+  const [error, setError] = createSignal<Error | undefined>(undefined)
+  const [reconnectAttempts, setReconnectAttempts] = createSignal(0)
+
+  let abortController: AbortController | null = null
+  let shouldReconnect = true
+
+  const processEvent = createSSEEventProcessor(
+    handlers,
+    (eventSessionId) => {
+      const multi = sessionIds?.()
+      if (multi !== undefined) {
+        return eventSessionId !== undefined && multi.has(eventSessionId)
+      }
+      const single = sessionId?.()
+      if (single) {
+        return eventSessionId === single
+      }
+      return true
+    },
+    () => sessionId?.(),
+  )
 
   /**
    * Connect to the SSE stream

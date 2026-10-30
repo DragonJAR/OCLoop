@@ -27,38 +27,20 @@ export interface DashboardProps {
   cooldownRemainingMs?: number
   /** Current watchdog health, shown as a colored indicator while iterating. */
   watchdogHealth?: WatchdogHealth
+  /** Configured parallel worker cap (1..4). */
+  maxJobs?: number
+  /** Number of currently active parallel workers (0..4). */
+  activeWorkerCount?: number
 }
 
 /**
  * Dashboard component
- *
- * Header that displays:
- * - Row 1 (live state): State badge + Tasks progress + Iteration + Health
- * - Row 2 (details): Model + Agent + Task time + Avg + Remaining
- * - Row 3 (conditional): cooldown countdown when rate-limited / debug
- * - Row 4: Keybind hints
- * (the full current task lives in the BottomPanel, not here)
- *
- * Uses theme colors and indicates active/inactive state via border styling.
- *
- * @example
- * ```tsx
- * <Dashboard
- *   isActive={true}
- *   state={loop.state()}
- *   progress={planProgress()}
- *   stats={stats}
- *   currentTask={currentTask()}
- * />
- * ```
  */
 export function Dashboard(props: DashboardProps) {
   const { theme, unicode } = useTheme()
   const dimensions = useTerminalDimensions()
-  // Responsive layout, recomputed on every resize.
   const layout = createMemo(() => getLayout(dimensions().width, dimensions().height))
 
-  // Get iteration number
   const iteration = createMemo(() => {
     const state = props.state
     if (state.type === "running") return state.iteration
@@ -70,7 +52,6 @@ export function Dashboard(props: DashboardProps) {
     return 0
   })
 
-  // Watchdog health indicator (only meaningful while iterating).
   const watchdogIndicator = createMemo(() => {
     const h = props.watchdogHealth
     const s = props.state
@@ -91,9 +72,6 @@ export function Dashboard(props: DashboardProps) {
     }
   })
 
-  // Cooldown countdown line shown on Row 3 during a rate limit or a transient
-  // connection blip. The wording is driven by state.kind so a flaky network is
-  // never mislabelled "Rate limited".
   const cooldownText = createMemo(() => {
     const state = props.state
     if (state.type !== "cooldown") return null
@@ -102,44 +80,36 @@ export function Dashboard(props: DashboardProps) {
     return t(key, { secs, attempt: state.attempt })
   })
 
-  // Calculate remaining tasks for ETA
   const remainingTasks = createMemo(() => {
     const progress = props.progress
     if (!progress) return 0
     return progress.automatable
   })
 
-  // Format average time or return N/A
   const averageDisplay = createMemo(() => {
     const avg = props.stats.averageTime()
     return avg !== null ? formatDuration(avg).trim() : "N/A"
   })
 
-  // Format estimated total time or return N/A
   const estimatedDisplay = createMemo(() => {
     const remaining = remainingTasks()
     const estimate = props.stats.estimatedTotal(remaining)
     return estimate !== null ? formatDuration(estimate).trim() : "N/A"
   })
 
-  // Progress text: [4/12]
   const progressText = createMemo(() => {
     const progress = props.progress
     if (!progress) return null
     return `[${progress.completed}/${progress.total - progress.manual}]`
   })
 
-  // Keybinding hints based on state
   const keybindHints = createMemo(() => {
     const state = props.state
-    // ponytail: command-palette + quit hints recur in almost every branch.
     const cmdHint = { key: "Ctrl+P", desc: t("hintCommands") }
     const quitHint = { key: "Q", desc: t("hintQuit") }
 
     switch (state.type) {
       case "starting":
-        // The OpenCode server is booting (can take a few seconds). The footer
-        // was previously empty here, which read as "frozen, what do I do?".
         return [{ key: "", desc: t("hintStartingMsg") }]
       case "ready":
         return [
@@ -189,7 +159,6 @@ export function Dashboard(props: DashboardProps) {
         }
         return [quitHint]
       case "debug":
-        // Detached in debug mode
         if (state.sessionId) {
           return [
             { key: "P", desc: t("hintPrompt") },
@@ -200,7 +169,6 @@ export function Dashboard(props: DashboardProps) {
             quitHint,
           ]
         }
-        // No active session
         return [
           { key: "N", desc: t("hintNewSession") },
           { key: "I", desc: t("hintSampleActivity") },
@@ -212,18 +180,13 @@ export function Dashboard(props: DashboardProps) {
     }
   })
 
-  // Truncate current task if needed (rough estimate for terminal width)
   const truncatedTask = createMemo(() => {
     const state = props.state
 
-    // In debug mode, show session ID if available
     if (state.type === "debug") {
       if (state.sessionId) {
         const maxLen = 20
         const sessionId = state.sessionId
-        // The prefix ("Session: ") is i18n'd via lblSessionPrefix so the debug
-        // dashboard stays localized; the truncation math reserves 3 cols for the
-        // ellipsis when the id overflows maxLen.
         const prefix = t("lblSessionPrefix")
         if (sessionId.length <= maxLen) return `${prefix}${sessionId}`
         return `${prefix}${sessionId.substring(0, maxLen - 3)}...`
@@ -234,19 +197,14 @@ export function Dashboard(props: DashboardProps) {
     const task = props.currentTask
     if (!task) return null
     const cleanedTask = stripMarkdown(task)
-    // Fit to the responsive task budget minus the "Task: " prefix. Re-runs on
-    // resize via layout(); floored so a very narrow terminal still shows text.
     const maxLen = Math.max(16, layout().taskWidth - t("lblTaskPrefix").length)
     return truncate(cleanedTask, maxLen)
   })
 
-  // Border color based on active state
   const borderColor = createMemo(() =>
     props.isActive ? theme().primary : theme().borderSubtle
   )
 
-  // Reserve both borders and horizontal padding. On small terminals keep
-  // each metric intact instead of letting Yoga squeeze words into columns.
   const textWidth = () => Math.max(1, dimensions().width - 4)
   const compactProgress = () => {
     const p = props.progress
@@ -256,11 +214,10 @@ export function Dashboard(props: DashboardProps) {
     return fitSegments([
       `${t("lblTasks")} ${progressText()} ${percent}%`,
       iteration() > 0 ? `${t("lblIter")} ${iteration()}` : "",
+      (props.maxJobs ?? 1) > 1 ? `${t("lblWorkers")} ${props.activeWorkerCount ?? 0}/${props.maxJobs}` : "",
     ], textWidth())
   }
   const compactHints = createMemo(() => {
-    // Keep the primary action and the palette/quit escape routes. The palette
-    // exposes the secondary actions that cannot all fit on this small footer.
     const hints = keybindHints().filter(h => !["C", "T", "↑/↓", "I"].includes(h.key))
     const rows: string[] = []
     for (const hint of hints) {
@@ -288,13 +245,9 @@ export function Dashboard(props: DashboardProps) {
     >
       <Show when={dimensions().width <= 40} fallback={
         <>
-          {/* Row 1 — live run state (badge · progress · iter · health). Items spread to
-              fill the width (responsive: more room ⇒ more spacing, no trailing gap). */}
           <box style={{ ...FILL_ROW }}>
             <StatusBadge state={props.state} />
 
-            {/* Plan progress (key journey signal) — hidden in debug mode. Label + bar
-                grouped so space-between never splits them. */}
             <Show when={props.progress && props.state.type !== "debug"}>
               <box style={{ flexDirection: "row" }}>
                 <LabelValue label={t("lblTasks")} value={progressText() ?? ""} valueColor={theme().primary} marginRight={1} />
@@ -306,12 +259,18 @@ export function Dashboard(props: DashboardProps) {
               </box>
             </Show>
 
-            {/* Iteration counter */}
             <Show when={iteration() > 0}>
               <LabelValue label={t("lblIter")} value={iteration()} />
             </Show>
 
-            {/* Watchdog health indicator — dropped on narrow terminals */}
+            <Show when={(props.maxJobs ?? 1) > 1}>
+              <LabelValue
+                label={t("lblWorkers")}
+                value={`${props.activeWorkerCount ?? 0}/${props.maxJobs}`}
+                valueColor={theme().primary}
+              />
+            </Show>
+
             <Show when={watchdogIndicator() && !layout().compact}>
               <text>
                 <span style={{ fg: theme().textMuted }}>{t("lblGuard")}</span>
@@ -321,8 +280,6 @@ export function Dashboard(props: DashboardProps) {
             </Show>
           </box>
 
-          {/* Row 2 — details: static config (model/agent) + current-task timing. marginTop
-              gives a blank line of breathing; model/agent dropped on narrow terminals. */}
           <box style={{ ...FILL_ROW, marginTop: 1 }}>
             <Show when={props.model && !layout().compact}>
               <LabelValue label={t("lblModel")} value={props.model!} />
@@ -331,7 +288,6 @@ export function Dashboard(props: DashboardProps) {
               <LabelValue label={t("lblAgent")} value={props.agent!} />
             </Show>
             <LabelValue label={t("lblTime")} value={formatDuration(props.stats.elapsedTime()).trim()} />
-            {/* Avg/ETA only once they're meaningful (≥2 iterations) — no "N/A" noise. */}
             <Show when={props.stats.averageTime() !== null}>
               <LabelValue label={t("lblAvg")} value={averageDisplay()} />
             </Show>
@@ -339,8 +295,6 @@ export function Dashboard(props: DashboardProps) {
               <LabelValue label={t("lblEta")} value={estimatedDisplay()} />
             </Show>
           </box>
-          {/* Row 3 — cooldown countdown (only when rate-limited / debug session), so no
-              empty row is reserved when idle. The task lives only in the bottom panel. */}
           <Show when={cooldownText() || (props.state.type === "debug" && truncatedTask())}>
             <box style={{ flexDirection: "row", marginTop: 1 }}>
               <Show
@@ -352,7 +306,6 @@ export function Dashboard(props: DashboardProps) {
             </box>
           </Show>
 
-          {/* Row 4 — keybind hints, spread across the width like a footer bar. */}
           <box style={{ ...FILL_ROW, marginTop: 1 }}>
             {keybindHints().map((hint) => (
               <text>

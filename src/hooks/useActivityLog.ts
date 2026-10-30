@@ -45,6 +45,10 @@ export interface ActivityEvent {
   count?: number;
   /** Long-operation progress (X/Y, phase). */
   progress?: ActivityProgress;
+  /** Session ID that emitted this event (for per-session eval evidence). */
+  sessionId?: string;
+  /** Worker slot (1..4) in parallel mode for [W1..W4] tagging. */
+  slotId?: number;
 }
 
 export interface AddEventOptions {
@@ -52,6 +56,8 @@ export interface AddEventOptions {
   detail?: string;
   level?: Level;
   progress?: ActivityProgress;
+  sessionId?: string;
+  slotId?: number;
 }
 
 /**
@@ -81,25 +87,6 @@ export interface UseActivityLogReturn {
  * Tracks events like session starts, file edits, task updates, and errors.
  * Automatically generates unique IDs and timestamps for each event.
  * Caps the log at 100 entries (oldest events are removed first).
- *
- * @example
- * ```tsx
- * const activity = useActivityLog()
- *
- * // Add events
- * activity.addEvent("session_start", "Session started")
- * activity.addEvent("file_edit", "src/App.tsx")
- * activity.addEvent("task", "Implement new feature")
- * activity.addEvent("error", "Build failed")
- *
- * // Access events in a component
- * <For each={activity.events()}>
- *   {(event) => <Text>{event.message}</Text>}
- * </For>
- *
- * // Clear the log
- * activity.clear()
- * ```
  */
 export function useActivityLog(): UseActivityLogReturn {
   const [events, setEvents] = createSignal<ActivityEvent[]>([]);
@@ -117,14 +104,16 @@ export function useActivityLog(): UseActivityLogReturn {
     options?: AddEventOptions
   ): void {
     setEvents((prev) => {
-      // Collapse repetition: an identical consecutive event (same type, message
-      // and detail) bumps a counter on the last line instead of flooding.
+      // Collapse repetition: an identical consecutive event (same type, message,
+      // detail, sessionId, and slotId) bumps a counter on the last line instead of flooding.
       const last = prev[prev.length - 1];
       if (
         last &&
         last.type === type &&
         last.message === message &&
-        last.detail === options?.detail
+        last.detail === options?.detail &&
+        last.sessionId === options?.sessionId &&
+        last.slotId === options?.slotId
       ) {
         const merged: ActivityEvent = {
           ...last,
@@ -143,6 +132,8 @@ export function useActivityLog(): UseActivityLogReturn {
         detail: options?.detail,
         level: options?.level,
         progress: options?.progress,
+        sessionId: options?.sessionId,
+        slotId: options?.slotId,
         count: 1,
       };
       const updated = [...prev, event];

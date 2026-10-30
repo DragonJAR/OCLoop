@@ -1,6 +1,7 @@
 import { createMemo, For, Show } from "solid-js"
 import { useTerminalDimensions } from "@opentui/solid"
 import { useTheme } from "../context/ThemeContext"
+import type { WorkerSlotInfo } from "../types"
 import type { UseLoopStatsReturn } from "../hooks/useLoopStats"
 import { totalDisplayTokens, type SessionTokens } from "../hooks/useSessionStats"
 import {
@@ -8,6 +9,7 @@ import {
   formatTokenCount,
   stripMarkdown,
   tokensPerMin,
+  truncate,
   wrapText,
   clampLines,
 } from "../lib/format"
@@ -29,6 +31,8 @@ export interface BottomPanelProps {
   taskTokens: SessionTokens
   /** Estimated USD cost for the whole run (shown with ~). */
   cost: number
+  /** Active parallel worker slots (when running with --jobs > 1). */
+  activeWorkers?: WorkerSlotInfo[]
 }
 
 export function BottomPanel(props: BottomPanelProps) {
@@ -49,22 +53,18 @@ export function BottomPanel(props: BottomPanelProps) {
   const tokenBreakdown = () =>
     `${formatTokenCount(totalTokens())} (${t("logTokenIn")}${formatTokenCount(props.tokens.input)} ${t("logTokenOut")}${formatTokenCount(props.tokens.output)})`
 
-  // Text width inside the border (1) + padding (1) on each side: inner - 2.
   const textWidth = () => Math.max(8, layout().inner - 2)
 
-  // Wrap only the task CONTENT (deterministic, never cut, reflows on resize).
-  // The muted "Task:" prefix is rendered separately on line 1, so line 1's
-  // budget excludes the prefix width; one <text> per line, the box grows.
   const taskLines = createMemo(() =>
     wrapText(task() ?? "", Math.max(8, textWidth() - t("lblTaskPrefix").length)),
   )
 
-  // Cap the wrapped task to the responsive budget so a long task can't starve the
-  // activity log — the freed gap goes to the log via its existing flexGrow. DRY:
-  // the cap lives only in getLayout().maxTaskLines.
   const clampedTask = createMemo(() => clampLines(taskLines(), layout().maxTaskLines))
 
-  // Single fitted line for short (few-row) terminals — fitSegments never overflows.
+  const hasParallelWorkers = createMemo(
+    () => Boolean(props.activeWorkers && props.activeWorkers.length > 0),
+  )
+
   const compactLine = () =>
     fitSegments(
       [
@@ -80,7 +80,6 @@ export function BottomPanel(props: BottomPanelProps) {
     <box
       border={true}
       borderStyle="single"
-      // Same border color as the top Dashboard (always-active => primary).
       borderColor={theme().primary}
       style={{
         flexShrink: 0,
@@ -97,51 +96,61 @@ export function BottomPanel(props: BottomPanelProps) {
           </text>
         }
       >
-        {/* Full task — wrapped to N lines, never cut. Only the "Task:" prefix is
-            muted (gray); the task text itself is white, to keep the hierarchy. */}
         <Show
-          when={task()}
+          when={!hasParallelWorkers()}
           fallback={
-            <text>
-              <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
-              <span style={{ fg: theme().textMuted, italic: true }}>{t("lblWaiting")}</span>
-            </text>
+            <box style={{ flexDirection: "column" }}>
+              <For each={props.activeWorkers}>
+                {(w) => (
+                  <text>
+                    <span style={{ fg: theme().primary }}>[W{w.slotId}] </span>
+                    <span style={{ fg: theme().text }}>
+                      {truncate(stripMarkdown(w.taskDescription), Math.max(12, textWidth() - 6))}
+                    </span>
+                  </text>
+                )}
+              </For>
+            </box>
           }
         >
-          <box style={{ flexDirection: "column" }}>
-            <For each={clampedTask().shown}>
-              {(line, i) => (
-                <text>
-                  <Show when={i() === 0}>
-                    <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
-                  </Show>
-                  <span style={{ fg: theme().text }}>{line}</span>
-                </text>
-              )}
-            </For>
-            {/* Overflow indicator — keeps the bottom box within maxTaskLines so the log keeps the rest. */}
-            <Show when={clampedTask().hidden > 0}>
+          <Show
+            when={task()}
+            fallback={
               <text>
-                <span style={{ fg: theme().textMuted, italic: true }}>
-                  {t("lblTaskMore", { n: clampedTask().hidden })}
-                </span>
+                <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
+                <span style={{ fg: theme().textMuted, italic: true }}>{t("lblWaiting")}</span>
               </text>
-            </Show>
-          </box>
+            }
+          >
+            <box style={{ flexDirection: "column" }}>
+              <For each={clampedTask().shown}>
+                {(line, i) => (
+                  <text>
+                    <Show when={i() === 0}>
+                      <span style={{ fg: theme().textMuted }}>{t("lblTaskPrefix")}</span>
+                    </Show>
+                    <span style={{ fg: theme().text }}>{line}</span>
+                  </text>
+                )}
+              </For>
+              <Show when={clampedTask().hidden > 0}>
+                <text>
+                  <span style={{ fg: theme().textMuted, italic: true }}>
+                    {t("lblTaskMore", { n: clampedTask().hidden })}
+                  </span>
+                </text>
+              </Show>
+            </box>
+          </Show>
         </Show>
 
-        {/* Global run metrics — none of these appear in the top bar. */}
-        {/* Same "fill the row" rule as the dashboard (space-between), responsive. */}
         <box style={{ ...FILL_ROW, flexWrap: "wrap", marginTop: 1 }}>
           <LabelValue label={t("lblTotal")} value={formatDuration(props.stats.globalElapsedTime()).trim()} />
-          {/* Global tokens: total always; full in/out/rsn breakdown only when wide. */}
           <LabelValue
             label={t("logTokens").replace(/:\s*$/, "")}
             value={layout().breakpoint === "wide" ? tokenBreakdown() : formatTokenCount(totalTokens())}
-                     />
-          {/* Estimated USD cost for the whole run (always shown with ~). */}
+          />
           <LabelValue label={t("lblCost")} value={formatCost(props.cost)} />
-          {/* Per-task tokens (current iteration). */}
           <LabelValue label={t("lblTaskTokens")} value={formatTokenCount(taskTotal())} />
           <LabelValue label={t("lblRate")} value={formatTokenCount(Math.round(rate()))} />
         </box>

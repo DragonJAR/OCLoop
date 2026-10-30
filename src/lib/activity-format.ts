@@ -81,6 +81,8 @@ export interface FormatInput {
   count?: number
   /** Long-operation progress. */
   progress?: { current?: number; total?: number; phase?: string }
+  /** Optional parallel worker slot ID (1..4) prefixed as [W1]..[W4]. */
+  slotId?: number
 }
 
 export interface FormattedLine {
@@ -121,7 +123,12 @@ export function formatActivityLine(e: FormatInput, contentWidth: number, unicode
   const meta = META[e.type] ?? DEFAULT_META
   const level = e.level ?? meta.level
   // Tool calls read better as "preview: message"; everything else is the message.
-  const base = e.type === "tool_use" && e.detail ? `${e.detail}: ${e.message}` : e.message
+  const rawBase = e.type === "tool_use" && e.detail ? `${e.detail}: ${e.message}` : e.message
+  const slotPrefix =
+    typeof e.slotId === "number" && Number.isInteger(e.slotId) && e.slotId > 0
+      ? `[W${e.slotId}] `
+      : ""
+  const base = `${slotPrefix}${rawBase}`
   const count = e.count && e.count > 1 ? `  (${glyph("times", unicode)}${e.count})` : ""
   const safeWidth = Number.isFinite(contentWidth) ? Math.max(8, contentWidth) : 8
   const text = truncateText(base + progressSuffix(e.progress) + count, safeWidth)

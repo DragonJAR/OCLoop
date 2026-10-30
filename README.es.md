@@ -193,6 +193,7 @@ Uso: ocloop [opciones]
 | `-d, --debug` | Modo debug/sandbox (sin validación del plan, sesiones manuales) |
 | `--verbose` | Activa el registro detallado (eventos de teclado, etc.) |
 | `--routing` | Muestra el panel de routing de modelos al arranque (asigna modelos a los roles heavy/judge/cheap desde el catálogo en vivo de opencode) |
+| `-j, --jobs <1..4>` | Ejecuta hasta N tareas en paralelo en git worktrees aislados (por defecto: `1`, máx: `4`) |
 | `--prompt <ruta>` | Ruta del archivo de prompt de bucle (por defecto: `.loop-prompt.md`) |
 | `--plan <ruta>` | Ruta del archivo de plan (por defecto: `PLAN.md`) |
 | `--lang <en\|es>` | Idioma de la interfaz (por defecto: `en`; también en `Ctrl+P`; `--language` es un alias) |

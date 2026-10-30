@@ -12,7 +12,12 @@ import {
 } from "@opentui/solid"
 
 import { useServer } from "./hooks/useServer"
-import { useSSE, classifySessionError } from "./hooks/useSSE"
+import {
+  useSSE,
+  classifySessionError,
+  createSSEEventProcessor,
+  type SSEEventHandlers,
+} from "./hooks/useSSE"
 import {
   useLoopState,
   getActiveSessionId,
@@ -35,6 +40,8 @@ import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
+import { clampParallelJobs } from "./lib/task-scheduler"
+import { createParallelCoordinator } from "./lib/parallel-run"
 import { resolveTierMapping } from "./lib/resolve-tier-mapping"
 import { resolveActiveSessionId } from "./lib/active-session-id"
 import { getToolPreview, toErrorMessage } from "./lib/format"
@@ -59,6 +66,7 @@ import {
   type PermissionTool,
 } from "./lib/config"
 import {
+  createClient,
   createSession,
   sendPromptAsync,
   abortSession,
@@ -100,7 +108,7 @@ import {
   DialogInvalidAgent,
   DialogTerminalError,
 } from "./components"
-import type { CLIArgs, PlanProgress, LoopState } from "./types"
+import type { CLIArgs, PlanProgress, LoopState, WorkerSlotId, WorkerSlotInfo } from "./types"
 
 export interface AppProps extends CLIArgs {}
 
@@ -181,6 +189,9 @@ function AppContent(props: AppProps) {
   const [ocloopConfig, setOcloopConfig] = createSignal<OcloopConfig>({})
   const [availableTerminals, setAvailableTerminals] = createSignal<KnownTerminal[]>([])
   const [lastSessionId, setLastSessionId] = createSignal<string | undefined>(undefined)
+  const [activeWorkers, setActiveWorkers] = createSignal<WorkerSlotInfo[]>([])
+  const maxJobs = createMemo(() => clampParallelJobs(props.jobs ?? ocloopConfig().jobs ?? 1))
+  const isParallelMode = createMemo(() => !props.debug && maxJobs() > 1)
 
   // Resolved resilience thresholds (DEFAULT_RESILIENCE < config file < CLI flags).
   // Seeded with defaults so api.ts timeouts are sane before onMount resolves them.
@@ -325,10 +336,16 @@ function AppContent(props: AppProps) {
     },
     probes: {
       // Reuse getActiveSessionId so a future extension auto-extends the watchdog.
-      isActive: () => getActiveSessionId(loop.state()) !== "",
+      isActive: () =>
+        isParallelMode()
+          ? activeWorkers().some((w) => w.sessionId !== "")
+          : getActiveSessionId(loop.state()) !== "",
       pingServer: () => chaos.ping(() => server.ping()),
       reconcile: () =>
         chaos.reconcile(async () => {
+          if (isParallelMode()) {
+            return parallelCoordinator.reconcileAllSlots()
+          }
           const sid = getActiveSessionId(loop.state())
           const client = tryGetClient(launchInfo)
           if (!client || !sid) return "unknown"
@@ -604,21 +621,21 @@ function AppContent(props: AppProps) {
       log.debug("state", "Iteration ended", { iteration: state.iteration })
       const durationMs = stats.endIteration()
       // Durable per-iteration record (append-only JSONL) for post-run reports and
-      // cost attribution. Best-effort: appendManifest never throws. Reuses the
-      // dashboard's own token + pricing accounting (taskTokens + estimateCost) so
-      // the numbers match. taskTokens() still holds THIS iteration's tokens here —
-      // it is zeroed at the next iteration_started, not now.
-      const taskTokens = sessionStats.taskTokens()
-      const manifestModel = activeModel()
-      appendManifest({
-        ts: new Date().toISOString(),
-        iteration: state.iteration,
-        task: pendingManifestTask,
-        model: manifestModel ?? null,
-        durationMs,
-        tokens: taskTokens,
-        costUsd: estimateCost(taskTokens, lookupCost(manifestModel)),
-      })
+      // cost attribution. In parallel mode, `onWorkerIntegrated` writes per-worker
+      // manifest entries directly, so we skip this sequential-only write here.
+      if (!isParallelMode()) {
+        const taskTokens = sessionStats.taskTokens()
+        const manifestModel = activeModel()
+        appendManifest({
+          ts: new Date().toISOString(),
+          iteration: state.iteration,
+          task: pendingManifestTask,
+          model: manifestModel ?? null,
+          durationMs,
+          tokens: taskTokens,
+          costUsd: estimateCost(taskTokens, lookupCost(manifestModel)),
+        })
+      }
       pendingManifestTask = null
     }
 
@@ -655,9 +672,13 @@ function AppContent(props: AppProps) {
     undefined,
   )
 
-  // Current session ID (for SSE filtering)
+  // Current session ID (for SSE filtering and terminal attach)
   const sessionId = createMemo(() => {
     const state = loop.state()
+    if (isParallelMode()) {
+      const active = activeWorkers().find((w) => w.sessionId !== "")
+      if (active) return active.sessionId
+    }
     if (state.type === "running" && state.sessionId) {
       return state.sessionId
     }
@@ -738,158 +759,236 @@ function AppContent(props: AppProps) {
     setResilienceReady(true)
   })
 
-  // SSE subscription (only when server is ready)
-  const sse = useSSE({
-    info: launchInfo,
-    sessionId: sessionId,
-    autoConnect: false, // We'll connect when server is ready
-    handlers: {
-      onSessionCreated: (id) => {
-        activityLog.addEvent("session_start", t("actSessionStarted", { id: id.substring(0, 8) }))
-        setLastSessionId(id)
-      },
-      onSessionError: (eventSessionId, error) => {
-        const state = loop.state()
-        // Ignore errors for a session that is no longer the active one. A stale
-        // aborted error from a just-replaced session (arriving in the brief
-        // running("") window) would otherwise toggle_pause and wedge the loop in
-        // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
-        //
-        // Policy: the `eventSessionId &&` truthy guard is defense-in-depth
-        // here — the hook layer already drops un-attributed events uniformly
-        // (see the per-session filter policy at useSSE.ts:359, Finding 7.3.A),
-        // so this branch is unreachable in practice. It is kept because the
-        // sessionID comparison is what protects against stale-session errors
-        // for events that DO carry a sessionID, and the truthy guard makes the
-        // policy explicit at the consumer. The state-aware branches below
-        // (running/pausing/debug) are the authoritative arbiter of which
-        // states accept errors and already drop errors in other states.
-        const debugSid = state.type === "debug" ? state.sessionId : undefined
-        if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
-          return
-        }
+  const activeWorkerSessionIds = createMemo<ReadonlySet<string> | undefined>(() => {
+    if (!isParallelMode()) return undefined
+    return new Set(activeWorkers().map((w) => w.sessionId).filter((sid) => sid !== ""))
+  })
+
+  const slotIdForSession = (sid: string | undefined): WorkerSlotId | undefined =>
+    sid ? parallelCoordinator.getSlotBySessionId(sid)?.slotId : undefined
+
+  const sseHandlers: SSEEventHandlers = {
+    onSessionCreated: (id) => {
+      // In parallel mode, `onWorkerSessionCreated` logs each worker's session_start
+      // deterministically with its exact slotId (avoiding the SSE-vs-HTTP race).
+      if (isParallelMode()) return
+      activityLog.addEvent("session_start", t("actSessionStarted", { id: id.substring(0, 8) }), {
+        sessionId: id,
+      })
+      setLastSessionId(id)
+    },
+    onSessionError: (eventSessionId, error) => {
+      const state = loop.state()
+      if (isParallelMode() && eventSessionId) {
+        const slotId = parallelCoordinator.handleSessionError(eventSessionId)
+        if (!slotId) return
         const st = state.type
         if (error.isAborted) {
-          // Abort is call-site specific: SSE toggles pause, the API path does not
-          // abort through here. routeSessionError returns null for isAborted so the
-          // abort policy stays here.
-          activityLog.addEvent("task", t("actSessionAborted"))
-          if (st === "running") {
-            loop.dispatch({ type: "toggle_pause" })
-          }
+          activityLog.addEvent("task", t("actSessionAborted"), {
+            sessionId: eventSessionId,
+            slotId,
+          })
           return
         }
-        // The kind→action policy lives in routeSessionError; this handler owns
-        // the activity-log write and the i18n message key, which differ per source.
         const action = routeSessionError(error, st, "sse")
         if (!action) return
         if (action.type === "cooldown") {
-          // Per-kind copy: rate_limit uses `actRateLimit` (warn), transient
-          // uses `actSessionError` (warn). Both are recoverable, so a
-          // `level: "warn"` is correct.
           const logKey = action.kind === "rate_limit" ? "actRateLimit" : "actSessionError"
-          activityLog.addEvent("error", t(logKey, { message: action.message }), { level: "warn" })
+          activityLog.addEvent("error", t(logKey, { message: action.message }), {
+            level: "warn",
+            sessionId: eventSessionId,
+            slotId,
+          })
           cooldown.enterCooldown(action.message, action.retryAfter, action.kind)
           return
         }
-        if (action.type !== "error") return
-        // action.type === "error" — auth/fatal surfaced mid-iteration.
-        activityLog.addEvent("error", t("actSessionError", { message: action.errorMessage }))
-        loop.dispatch({
-          type: "error",
-          source: "sse",
-          message: t("actSessionError", { message: action.errorMessage }),
-          recoverable: action.recoverable,
+        if (action.type === "error") {
+          activityLog.addEvent("error", t("actSessionError", { message: action.errorMessage }), {
+            sessionId: eventSessionId,
+            slotId,
+          })
+          loop.dispatch({
+            type: "error",
+            source: "sse",
+            message: t("actSessionError", { message: action.errorMessage }),
+            recoverable: action.recoverable,
+          })
+        }
+        return
+      }
+      // Ignore errors for a session that is no longer the active one. A stale
+      // aborted error from a just-replaced session (arriving in the brief
+      // running("") window) would otherwise toggle_pause and wedge the loop in
+      // pausing(""). Mirrors the session-id guard onSessionIdle already applies.
+      const debugSid = state.type === "debug" ? state.sessionId : undefined
+      if (eventSessionId && eventSessionId !== getActiveSessionId(state) && eventSessionId !== debugSid) {
+        return
+      }
+      const st = state.type
+      if (error.isAborted) {
+        // Abort is call-site specific: SSE toggles pause, the API path does not
+        // abort through here. routeSessionError returns null for isAborted so the
+        // abort policy stays here.
+        activityLog.addEvent("task", t("actSessionAborted"))
+        if (st === "running") {
+          loop.dispatch({ type: "toggle_pause" })
+        }
+        return
+      }
+      // The kind→action policy lives in routeSessionError; this handler owns
+      // the activity-log write and the i18n message key, which differ per source.
+      const action = routeSessionError(error, st, "sse")
+      if (!action) return
+      if (action.type === "cooldown") {
+        // Per-kind copy: rate_limit uses `actRateLimit` (warn), transient
+        // uses `actSessionError` (warn). Both are recoverable, so a
+        // `level: "warn"` is correct.
+        const logKey = action.kind === "rate_limit" ? "actRateLimit" : "actSessionError"
+        activityLog.addEvent("error", t(logKey, { message: action.message }), { level: "warn" })
+        cooldown.enterCooldown(action.message, action.retryAfter, action.kind)
+        return
+      }
+      if (action.type !== "error") return
+      // action.type === "error" — auth/fatal surfaced mid-iteration.
+      activityLog.addEvent("error", t("actSessionError", { message: action.errorMessage }))
+      loop.dispatch({
+        type: "error",
+        source: "sse",
+        message: t("actSessionError", { message: action.errorMessage }),
+        recoverable: action.recoverable,
+      })
+    },
+    onSessionIdle: (eventSessionId) => {
+      if (isParallelMode()) {
+        const slotId = slotIdForSession(eventSessionId)
+        cooldown.resetAttempts()
+        watchdog.notifyIdle()
+        activityLog.addEvent("session_idle", t("actSessionIdle"), {
+          sessionId: eventSessionId,
+          slotId,
         })
-      },
-      onSessionIdle: (eventSessionId) => {
-        // Only handle if it's our current session
-        const currentSession = sessionId()
-        const state = loop.state()
-        // Also check debug state's sessionId
-        const debugSessionId = state.type === "debug" ? state.sessionId : undefined
-        
-        if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
-          // A clean idle means the iteration succeeded: clear the rate-limit
-          // streak so a past cooldown doesn't penalize future iterations, and
-          // reset the watchdog for the next iteration.
-          cooldown.resetAttempts()
-          watchdog.notifyIdle()
-          loop.dispatch({ type: "session_idle" })
-          activityLog.addEvent("session_idle", t("actSessionIdle"))
-        }
-      },
-      onTodoUpdated: (_eventSessionId, todos) => {
-        heartbeat()
-        // Don't override the dashboard task mid-session — OpenCode todos may
-        // not match PLAN.md's first pending (plan-transition fix).
-        if (getActiveSessionId(loop.state()) !== "") return
-        const inProgress = todos.find((todo) => todo.status === "in_progress")
-        if (inProgress) {
-          setCurrentTask(inProgress.content)
-          activityLog.addEvent("task", inProgress.content)
-        }
-      },
-      onFileEdited: (file) => {
-        heartbeat()
-        activityLog.addEvent("file_edit", file)
-        // Re-parse plan if PLAN.md was edited. The activity log entry
-        // stays real-time (so the user sees the edit happen as it
-        // occurs); only the file read + parse + setPlanProgress is
-        // trailing-debounced to coalesce rapid-fire edits from a
-        // single multi-edit tool call. Source: MEJORAS.md
-        // Finding 15.5.A.
-        const planFile = resolvePlanFile(props.planFile)
-        const absolutePlanPath = path.resolve(planFile)
-        const absoluteFilePath = path.resolve(file)
+        void parallelCoordinator.handleSessionIdle(eventSessionId)
+        return
+      }
+      // Only handle if it's our current session
+      const currentSession = sessionId()
+      const state = loop.state()
+      // Also check debug state's sessionId
+      const debugSessionId = state.type === "debug" ? state.sessionId : undefined
+      
+      if (eventSessionId === currentSession || eventSessionId === debugSessionId) {
+        // A clean idle means the iteration succeeded: clear the rate-limit
+        // streak so a past cooldown doesn't penalize future iterations, and
+        // reset the watchdog for the next iteration.
+        cooldown.resetAttempts()
+        watchdog.notifyIdle()
+        loop.dispatch({ type: "session_idle" })
+        activityLog.addEvent("session_idle", t("actSessionIdle"))
+      }
+    },
+    onTodoUpdated: (eventSessionId, todos) => {
+      heartbeat()
+      // Don't override the dashboard task mid-session — OpenCode todos may
+      // not match PLAN.md's first pending (plan-transition fix).
+      if (isParallelMode() || getActiveSessionId(loop.state()) !== "") return
+      const inProgress = todos.find((todo) => todo.status === "in_progress")
+      if (inProgress) {
+        setCurrentTask(inProgress.content)
+        activityLog.addEvent("task", inProgress.content, {
+          sessionId: eventSessionId,
+          slotId: slotIdForSession(eventSessionId),
+        })
+      }
+    },
+    onFileEdited: (file, sid) => {
+      heartbeat()
+      activityLog.addEvent("file_edit", file, {
+        sessionId: sid,
+        slotId: slotIdForSession(sid),
+      })
+      // Re-parse plan if PLAN.md was edited. The activity log entry
+      // stays real-time (so the user sees the edit happen as it
+      // occurs); only the file read + parse + setPlanProgress is
+      // trailing-debounced to coalesce rapid-fire edits from a
+      // single multi-edit tool call. Source: MEJORAS.md
+      // Finding 15.5.A.
+      const planFile = resolvePlanFile(props.planFile)
+      const absolutePlanPath = path.resolve(planFile)
+      const absoluteFilePath = path.resolve(file)
 
-        if (absoluteFilePath === absolutePlanPath) {
-          if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
-          refreshPlanTimer = setTimeout(() => {
-            refreshPlanTimer = null
-            refreshPlan()
-            // Refresh task display only between iterations — mid-session
-            // updates made the dashboard show a different task than the one
-            // this iteration was started with.
-            if (getActiveSessionId(loop.state()) === "") {
-              refreshCurrentTask()
-            }
-          }, 150)
-        }
-      },
-      onStepFinish: (part) => {
-        heartbeat()
-        // Map the nested cache shape to the flat SessionTokens fields — passing
-        // part.tokens directly left cacheRead/cacheWrite undefined (always 0).
-        sessionStats.addTokens({
+      if (absoluteFilePath === absolutePlanPath) {
+        if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
+        refreshPlanTimer = setTimeout(() => {
+          refreshPlanTimer = null
+          refreshPlan()
+          // Refresh task display only between iterations — mid-session
+          // updates made the dashboard show a different task than the one
+          // this iteration was started with.
+          if (getActiveSessionId(loop.state()) === "") {
+            refreshCurrentTask()
+          }
+        }, 150)
+      }
+    },
+    onStepFinish: (part, sid) => {
+      heartbeat()
+      // Map the nested cache shape to the flat SessionTokens fields — passing
+      // part.tokens directly left cacheRead/cacheWrite undefined (always 0).
+      sessionStats.addTokens(
+        {
           input: part.tokens.input,
           output: part.tokens.output,
           cacheRead: part.tokens.cache.read,
           cacheWrite: part.tokens.cache.write,
-        })
-      },
-      onToolUse: (part) => {
-        heartbeat()
-        const toolName = part.tool || part.state.tool || "unknown"
-        const input = part.state.input as Record<string, unknown>
-        const preview = getToolPreview(toolName, input)
-        
-        if (toolName === "read") {
-          activityLog.addEvent("file_read", preview)
-        } else {
-          activityLog.addEvent("tool_use", `${toolName}: ${preview}`)
-        }
-      },
-      onMessageText: (part, role) => {
-        heartbeat()
-        const type = role === "user" ? "user_message" : "assistant_message"
-        activityLog.addEvent(type, part.text, { dimmed: true })
-      },
-      onReasoning: (part) => {
-        heartbeat()
-        activityLog.addEvent("reasoning", part.text, { dimmed: true })
-      },
+        },
+        sid,
+      )
     },
+    onToolUse: (part, sid) => {
+      heartbeat()
+      const slotId = slotIdForSession(sid)
+      const toolName = part.tool || part.state.tool || "unknown"
+      const input = part.state.input as Record<string, unknown>
+      const preview = getToolPreview(toolName, input)
+      
+      if (toolName === "read") {
+        activityLog.addEvent("file_read", preview, { sessionId: sid, slotId })
+      } else {
+        activityLog.addEvent("tool_use", `${toolName}: ${preview}`, { sessionId: sid, slotId })
+      }
+    },
+    onMessageText: (part, role, sid) => {
+      heartbeat()
+      const type = role === "user" ? "user_message" : "assistant_message"
+      activityLog.addEvent(type, part.text, {
+        dimmed: true,
+        sessionId: sid,
+        slotId: slotIdForSession(sid),
+      })
+    },
+    onReasoning: (part, sid) => {
+      heartbeat()
+      activityLog.addEvent("reasoning", part.text, {
+        dimmed: true,
+        sessionId: sid,
+        slotId: slotIdForSession(sid),
+      })
+    },
+  }
+
+  // Per-worktree event processor for OpenCode v1 (reusing the exact same handlers — DRY)
+  const worktreeEventProcessor = createSSEEventProcessor(
+    sseHandlers,
+    (sid) => !!sid && (activeWorkerSessionIds()?.has(sid) ?? false),
+  )
+
+  // SSE subscription (only when server is ready)
+  const sse = useSSE({
+    info: launchInfo,
+    sessionId: sessionId,
+    sessionIds: activeWorkerSessionIds,
+    autoConnect: false, // We'll connect when server is ready
+    handlers: sseHandlers,
   })
 
   async function refreshPlan(): Promise<void> {
@@ -911,6 +1010,10 @@ function AppContent(props: AppProps) {
   async function refreshCurrentTask(): Promise<void> {
     // Skip in debug mode - no plan file required
     if (props.debug) {
+      return
+    }
+    if (isParallelMode() && activeWorkers().length > 0) {
+      setCurrentTask(activeWorkers()[0]?.taskDescription)
       return
     }
     try {
@@ -975,6 +1078,9 @@ function AppContent(props: AppProps) {
    * event (SSE dropped during sleep/disconnect) — so we synthesize it here.
    */
   async function reconcileAndAdvance(): Promise<ReconcileResult> {
+    if (isParallelMode()) {
+      return parallelCoordinator.reconcileAllSlots()
+    }
     const sid = getActiveSessionId(loop.state())
     const client = tryGetClient(launchInfo)
     if (!client || !sid) return "unknown"
@@ -1061,11 +1167,14 @@ function AppContent(props: AppProps) {
    * instead of appending a new entry), so we locate the LAST entry whose type
    * is `session_start` regardless of count, then slice from there.
    */
-  function sliceIterationEvidence(): string {
+  function sliceIterationEvidence(targetSessionId?: string): string {
     const events = activityLog.events()
     let startIdx = -1
     for (let i = events.length - 1; i >= 0; i--) {
-      if (events[i].type === "session_start") {
+      if (
+        events[i].type === "session_start" &&
+        (!targetSessionId || events[i].sessionId === targetSessionId)
+      ) {
         startIdx = i
         break
       }
@@ -1073,6 +1182,7 @@ function AppContent(props: AppProps) {
     if (startIdx === -1) return ""
     return events
       .slice(startIdx)
+      .filter((e) => !targetSessionId || !e.sessionId || e.sessionId === targetSessionId)
       .map((e) => {
         const detail = e.detail ? ` (${e.detail})` : ""
         return `${e.type}:${e.message}${detail}`
@@ -1266,6 +1376,128 @@ function AppContent(props: AppProps) {
       log.warn("eval", "Failed to mark task [BLOCKED] from eval", err)
     }
   }
+
+  // Per-task eval retry counters for parallel worker slots
+  const parallelEvalAttempts = new Map<string, number>()
+
+  const parallelCoordinator = createParallelCoordinator({
+    maxJobs,
+    planPath: resolvePlanFile(props.planFile),
+    promptPath: resolvePromptFile(props.promptFile),
+    loop: { state: loop.state, dispatch: loop.dispatch },
+    resolveClient: (directory) => tryGetClient(launchInfo, directory),
+    activeAgent: () => activeAgent() ?? "",
+    activeModel,
+    tierMapping,
+    resilience,
+    monotonicNow,
+    t,
+    fallbackSummary: () => t("dlgPlanCompleteFallback"),
+    readPlanContent: (p) => Bun.file(p).text(),
+    checkPlanComplete,
+    getPlanCompleteSummary,
+    refreshPlan,
+    onSlotsChange: (slots) => {
+      setActiveWorkers(slots)
+      setCurrentTask(slots[0]?.taskDescription ?? undefined)
+    },
+    onWorkerSessionCreated: (id, slotId) => {
+      activityLog.addEvent(
+        "session_start",
+        t("actSessionStarted", { id: id.substring(0, 8) }),
+        { sessionId: id, slotId },
+      )
+      setLastSessionId(id)
+    },
+    onWorkerEvent: (event) => {
+      worktreeEventProcessor(event)
+    },
+    onWorkerIntegrated: ({ slot, durationMs }) => {
+      stats.endIteration()
+      if (loop.state().type === "running") {
+        stats.startIteration()
+      }
+      activityLog.addEvent(
+        "task",
+        t("actWorkerIntegrated", {
+          slot: slot.slotId,
+          task: slot.taskDescription.slice(0, 60),
+        }),
+        { sessionId: slot.sessionId, slotId: slot.slotId },
+      )
+      const workerTokens = sessionStats.takeSessionTokens(slot.sessionId)
+      const manifestModel = activeModel()
+      appendManifest({
+        ts: new Date().toISOString(),
+        iteration: loop.iteration(),
+        task: slot.taskDescription,
+        model: manifestModel ?? null,
+        durationMs,
+        tokens: workerTokens,
+        costUsd: estimateCost(workerTokens, lookupCost(manifestModel)),
+      })
+    },
+    onIterationError: (err) => {
+      handleIterationError(err)
+    },
+    evalGate: async (job) => {
+      const cfg = evalsConfig()
+      if (!cfg.enabled) return { pass: true }
+      let rubric: string | null = null
+      try {
+        const content = await Bun.file(job.planPath).text()
+        rubric = getEvalRubricForTask(content, job.taskDescription)
+      } catch {
+        return { pass: true }
+      }
+      if (!rubric) return { pass: true }
+      const evidence = sliceIterationEvidence(job.sessionId)
+      if (!evidence) return { pass: true }
+      const client = tryGetClient(launchInfo)
+      if (!client) return { pass: true }
+      try {
+        const result = await runEval({
+          client,
+          rubric,
+          evidence,
+          model: tierMapping()?.judge ?? cfg.judgeModel,
+          timeoutMs: cfg.judgeTimeoutMs,
+        })
+        if (result.pass) {
+          parallelEvalAttempts.delete(job.taskDescription)
+          return { pass: true }
+        }
+        const used = parallelEvalAttempts.get(job.taskDescription) ?? 0
+        if (used < cfg.maxEvalRetries) {
+          parallelEvalAttempts.set(job.taskDescription, used + 1)
+          activityLog.addEvent(
+            "error",
+            t("actEvalRetry", { task: job.taskDescription.slice(0, 40) }),
+            {
+              level: "warn",
+              detail: result.reasoning,
+              sessionId: job.sessionId,
+              slotId: job.slotId,
+            },
+          )
+          return { pass: false, retry: true, feedback: result.reasoning }
+        }
+        parallelEvalAttempts.delete(job.taskDescription)
+        activityLog.addEvent(
+          "error",
+          t("actEvalBlocked", { task: job.taskDescription.slice(0, 40) }),
+          {
+            level: "warn",
+            sessionId: job.sessionId,
+            slotId: job.slotId,
+          },
+        )
+        return { pass: false, retry: false, reason: `eval failed — ${result.reasoning}` }
+      } catch {
+        return { pass: true }
+      }
+    },
+  })
 
   async function startIteration(): Promise<void> {
     // In-flight guard: the iteration driver re-runs whenever state becomes
@@ -1489,6 +1721,11 @@ function AppContent(props: AppProps) {
       await clearLoopState()
     }
 
+    // Abort active parallel worker slots and clean up isolated git worktrees
+    if (isParallelMode() || activeWorkers().length > 0) {
+      await parallelCoordinator.abortAllAndCleanup()
+    }
+
     // Abort current session if running
     const currentSessionId = sessionId()
     if (currentSessionId) {
@@ -1701,7 +1938,11 @@ function AppContent(props: AppProps) {
   createEffect(() => {
     const state = loop.state()
     if (shouldDriveIteration(state)) {
-      startIteration()
+      if (isParallelMode()) {
+        void parallelCoordinator.scheduleAvailableSlots()
+      } else {
+        startIteration()
+      }
     }
   })
 
@@ -1772,6 +2013,15 @@ function AppContent(props: AppProps) {
         // PLAN.md edit (insert/reorder/complete/remove) and warn that the saved
         // task is no longer first. currentTask() is refreshed after every plan read.
         currentTask: currentTask() ?? null,
+        activeWorkers: isParallelMode()
+          ? activeWorkers().map((w) => ({
+              slotId: w.slotId,
+              taskId: w.taskId,
+              taskDescription: w.taskDescription,
+              sessionId: w.sessionId,
+              worktreePath: w.worktreePath,
+            }))
+          : undefined,
       }
       void saveLoopState(snapshot)
     } else if (s.type === "complete") {
@@ -1825,6 +2075,7 @@ function AppContent(props: AppProps) {
             // Reset the no-progress streak so the next run gets a fresh
             // threshold window. The user explicitly chose to resume.
             noProgressDetector?.reset()
+            parallelCoordinator.resetDetectors()
             loop.dispatch({ type: "retry" })
             // A server-source error leaves useServer in `error`, and nothing
             // else relaunches it from there: startServer's guard rejects
@@ -2204,6 +2455,8 @@ function AppContent(props: AppProps) {
         agent={activeAgent()}
         cooldownRemainingMs={cooldown.remainingMs()}
         watchdogHealth={watchdog.health()}
+        maxJobs={maxJobs()}
+        activeWorkerCount={activeWorkers().length}
       />
 
       {/* Activity Log takes remaining space */}
@@ -2219,6 +2472,7 @@ function AppContent(props: AppProps) {
         tokens={sessionStats.tokens()}
         taskTokens={sessionStats.taskTokens()}
         cost={costEstimate()}
+        activeWorkers={activeWorkers()}
       />
 
     </box>

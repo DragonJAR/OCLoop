@@ -469,6 +469,7 @@ Examples:
   lblModel: "Model",
   lblAgent: "Agent",
   lblIter: "Iteration",
+  lblWorkers: "Workers",
   lblTasks: "Tasks",
   lblTime: "Task Time",
   lblAvg: "Avg/task",
@@ -519,6 +520,7 @@ Examples:
   actSessionError: (p: Params) => `Session error: ${p.message}`,
   actSessionIdle: "Session idle",
   actSessionStarted: (p: Params) => `Session started: ${p.id}`,
+  actWorkerIntegrated: (p: Params) => `W${p.slot} integrated: ${p.task}`,
   actDebugSession: (p: Params) => `Debug session: ${p.id}`,
   actUserMessage: (p: Params) => `User: ${p.text}`,
   cpIgnoredFlags: (p: Params) =>
@@ -1154,6 +1156,7 @@ Ejemplos:
   lblModel: "Modelo",
   lblAgent: "Agente",
   lblIter: "Iteración",
+  lblWorkers: "Agentes",
   lblTasks: "Tareas",
   lblTime: "Tiempo de Tarea",
   lblAvg: "Prom/tarea",
@@ -1198,6 +1201,7 @@ Ejemplos:
   actSessionError: (p) => `Error de sesión: ${p.message}`,
   actSessionIdle: "Sesión inactiva",
   actSessionStarted: (p) => `Sesión iniciada: ${p.id}`,
+  actWorkerIntegrated: (p) => `W${p.slot} integrado: ${p.task}`,
   actDebugSession: (p) => `Sesión de depuración: ${p.id}`,
   actUserMessage: (p) => `Usuario: ${p.text}`,
   cpIgnoredFlags: (p) =>

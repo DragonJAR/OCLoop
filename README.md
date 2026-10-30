@@ -193,6 +193,7 @@ Usage: ocloop [options]
 | `-d, --debug` | Debug/sandbox mode (no plan-file validation, manual sessions) |
 | `--verbose` | Enable verbose logging (keyboard events, etc.) |
 | `--routing` | Show the model-routing panel at startup (assign models to heavy/judge/cheap roles from the live opencode catalog) |
+| `-j, --jobs <1..4>` | Run up to N tasks in parallel across isolated git worktrees (default: `1`, max: `4`) |
 | `--prompt <path>` | Path to the loop prompt file (default: `.loop-prompt.md`) |
 | `--plan <path>` | Path to the plan file (default: `PLAN.md`) |
 | `--lang <en\|es>` | UI language (default: `en`; also settable in `Ctrl+P`; `--language` is an alias) |
