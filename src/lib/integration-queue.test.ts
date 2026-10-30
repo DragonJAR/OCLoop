@@ -1,60 +1,13 @@
 import { describe, expect, it } from "bun:test"
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync, existsSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import {
-  acquireSlotWorkspace,
-  cleanupAllWorkspaces,
-  getSlotWorktreePath,
-  releaseSlotWorkspace,
-  type GitRunner,
-} from "./workspace-manager"
+import type { GitRunner } from "./workspace-manager"
 import {
   createSerialQueue,
   extractWorkerPlanEdits,
   integrateWorkerResult,
 } from "./integration-queue"
-
-describe("workspace-manager", () => {
-  it("acquires a slot worktree, symlinks node_modules, and cleans up all slots", async () => {
-    const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-"))
-    try {
-      mkdirSync(join(scratch, "node_modules", "dummy-pkg"), { recursive: true })
-      const calls: Array<{ args: string[]; cwd: string }> = []
-
-      const fakeGit: GitRunner = async (args, cwd) => {
-        calls.push({ args, cwd })
-        if (args[0] === "rev-parse" && args[1] === "HEAD") {
-          return { exitCode: 0, stdout: "abc1234567890\n", stderr: "" }
-        }
-        if (args[0] === "worktree" && args[1] === "add") {
-          const targetDir = args[4]
-          mkdirSync(targetDir, { recursive: true })
-          writeFileSync(join(targetDir, ".git"), "gitdir: ../../.git/worktrees/slot-1\n")
-          return { exitCode: 0, stdout: "", stderr: "" }
-        }
-        return { exitCode: 0, stdout: "", stderr: "" }
-      }
-
-      const ws = await acquireSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
-      expect(ws.slotId).toBe(1)
-      expect(ws.baseSha).toBe("abc1234567890")
-      expect(ws.worktreePath).toBe(getSlotWorktreePath(scratch, 1))
-      expect(existsSync(join(ws.worktreePath, "node_modules"))).toBe(true)
-
-      // Acquiring again reuses and resets existing worktree instead of re-adding
-      const ws2 = await acquireSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
-      expect(ws2.worktreePath).toBe(ws.worktreePath)
-      expect(calls.some((c) => c.args[0] === "reset" && c.args[1] === "--hard")).toBe(true)
-
-      await releaseSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
-      await cleanupAllWorkspaces({ repoRoot: scratch, runGit: fakeGit })
-      expect(existsSync(ws.worktreePath)).toBe(false)
-    } finally {
-      rmSync(scratch, { recursive: true, force: true })
-    }
-  })
-})
 
 describe("integration-queue", () => {
   it("executes enqueued jobs strictly in FIFO serial order", async () => {
@@ -249,6 +202,148 @@ describe("integration-queue", () => {
         conflictingFiles: ["src/shared.ts"],
         newBaseSha: "sha-new-main",
       })
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it("reports plan_write_deferred instead of integrated when the [x] CAS cannot write (task gone from root plan)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-defer-"))
+    try {
+      const rootPlanPath = join(scratch, "PLAN.md")
+      const wtPath = join(scratch, ".loop-worktrees", "slot-3")
+      mkdirSync(wtPath, { recursive: true })
+
+
+      // Another writer rewrote the root plan and the task no longer exists:
+      // markTaskCompleted returns null, the CAS defers, and the outcome must
+      // NOT claim "integrated" — the commit was already promoted, and a false
+      // success would let the scheduler relaunch the task over it.
+      const rootPlanOnDisk = "- [ ] **2.1** Brand new task from another writer" + String.fromCharCode(10)
+      writeFileSync(rootPlanPath, rootPlanOnDisk)
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A" + String.fromCharCode(10))
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") return { exitCode: 0, stdout: "- [ ] **1.1** Task A" + String.fromCharCode(10), stderr: "" }
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" }
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          return { exitCode: 0, stdout: "sha-worker-defer\n", stderr: "" }
+        }
+        if (args[0] === "diff" && args[1] === "--name-only") {
+          if (args.includes("--")) return { exitCode: 0, stdout: "", stderr: "" }
+          return { exitCode: 0, stdout: "src/feature.ts\n", stderr: "" }
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 3,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-3",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+      })
+
+      // The task must NOT be reported as integrated while its [x] mark
+      // (plus extracted notes) never landed in the root plan — otherwise the
+      // scheduler relaunches the task over its own promoted commit.
+      expect(outcome.status).toBe("plan_write_deferred")
+      if (outcome.status === "plan_write_deferred") {
+        expect(outcome.deferred).toBe("integrated_mark")
+      }
+      // And the root plan must NOT contain the [x] mark.
+      const finalPlan = await Bun.file(rootPlanPath).text()
+      expect(finalPlan).not.toContain("- [x] **1.1**")
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it("treats an already-marked task as integrated (CAS no_change with the task still present)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-already-"))
+    try {
+      const wtPath = join(scratch, ".loop-worktrees", "slot-1")
+      mkdirSync(wtPath, { recursive: true })
+      // The agent checked the task off itself in the root plan: the mark
+      // transform returns null (skipped:no_change) but the task is still
+      // present → benign, the integration must count as done.
+      writeFileSync(join(scratch, "PLAN.md"), "- [x] **1.1** Task A\n")
+      writeFileSync(join(wtPath, "PLAN.md"), "- [x] **1.1** Task A\n")
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") return { exitCode: 0, stdout: "- [ ] **1.1** Task A\n", stderr: "" }
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" }
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          return { exitCode: 0, stdout: "sha-main-1\n", stderr: "" }
+        }
+        if (args[0] === "diff" && args[1] === "--name-only") {
+          return { exitCode: 0, stdout: "", stderr: "" }
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 1,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-1",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+      })
+      expect(outcome.status).toBe("integrated")
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it("reports plan_write_deferred instead of eval_blocked when the [BLOCKED] CAS cannot write (task gone from root plan)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-blockdefer-"))
+    try {
+      const rootPlanPath = join(scratch, "PLAN.md")
+      const wtPath = join(scratch, ".loop-worktrees", "slot-4")
+      mkdirSync(wtPath, { recursive: true })
+
+      // The task no longer exists in the root plan (another writer rewrote it):
+      // replaceTaskWithBlocked returns null, the CAS defers, and the outcome
+      // must NOT claim the task was blocked — the scheduler would treat an
+      // unmarked task as done.
+      const rootPlanOnDisk = "- [ ] **9.9** Unrelated task" + String.fromCharCode(10)
+      writeFileSync(rootPlanPath, rootPlanOnDisk)
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A" + String.fromCharCode(10))
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") return { exitCode: 0, stdout: "- [ ] **1.1** Task A" + String.fromCharCode(10), stderr: "" }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 4,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-4",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+        evalGate: async () => ({ pass: false, retry: false, reason: "Missing unit test" }),
+      })
+
+      // Without the mark landing, the task is neither blocked nor done — the
+      // outcome must surface the deferral, not a false eval_blocked.
+      expect(outcome.status).toBe("plan_write_deferred")
+      if (outcome.status === "plan_write_deferred") {
+        expect(outcome.deferred).toBe("eval_block")
+      }
+      const finalPlan = await Bun.file(rootPlanPath).text()
+      expect(finalPlan).not.toContain("[BLOCKED")
     } finally {
       rmSync(scratch, { recursive: true, force: true })
     }

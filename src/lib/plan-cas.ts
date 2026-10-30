@@ -45,6 +45,14 @@ export interface CasResult {
   wrote: boolean
   /** The new content on success, else `null`. */
   result: string | null
+  /**
+   * Why nothing was written, when `wrote` is false. `no_change` means the
+   * transform produced no change (task already in the desired state — benign);
+   * `deferred` means another writer beat us; `io_error` means the file could
+   * not be read/written. Callers that must distinguish "already done" from
+   * "write did not happen" branch on this, not on `wrote` alone.
+   */
+  skipped?: "no_change" | "deferred" | "io_error"
 }
 
 /**
@@ -66,14 +74,14 @@ export async function compareAndSwapPlan(
       updated = transform(before)
     } catch (transformErr) {
       log.warn(caller, "compareAndSwapPlan transform threw", transformErr)
-      return { wrote: false, result: null }
+      return { wrote: false, result: null, skipped: "no_change" }
     }
-    if (updated === null) return { wrote: false, result: null }
+    if (updated === null) return { wrote: false, result: null, skipped: "no_change" }
 
     const current = await Bun.file(planPath).text()
     if (current !== before) {
       log.debug(caller, "PLAN.md changed during write; deferring", {})
-      return { wrote: false, result: null }
+      return { wrote: false, result: null, skipped: "deferred" }
     }
     await atomicWriteText(planPath, updated)
     return { wrote: true, result: updated }
@@ -81,6 +89,6 @@ export async function compareAndSwapPlan(
     // Read or write failed (file missing, EACCES, …). Best-effort: surface in
     // the log and let the caller decide. Persistence I/O never crashes the app.
     log.warn(caller, "compareAndSwapPlan I/O failed", err)
-    return { wrote: false, result: null }
+    return { wrote: false, result: null, skipped: "io_error" }
   }
 }

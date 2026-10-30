@@ -125,6 +125,12 @@ export type IntegrationOutcome =
       reason: string
     }
   | {
+      status: "plan_write_deferred"
+      /** Which root PLAN.md CAS write was deferred (integration mark or eval block). */
+      deferred: "integrated_mark" | "eval_block"
+      reason: string
+    }
+  | {
       status: "conflict_retry"
       conflictingFiles: string[]
       newBaseSha: string
@@ -200,11 +206,31 @@ export async function integrateWorkerResult(
       if (verdict.retry) {
         return { status: "eval_retry", feedback: verdict.feedback }
       }
-      await compareAndSwapPlan(
+      // Honor the CAS result: `no_change` means the task is already [BLOCKED]
+      // (benign — treat as blocked); `deferred`/`io_error` mean the mark never
+      // landed, and reporting eval_blocked would treat an unmarked task as done.
+      const cas = await compareAndSwapPlan(
         absPlanPath,
         (c) => replaceTaskWithBlocked(c, job.taskDescription, verdict.reason),
         "eval",
       )
+      if (!cas.wrote) {
+        if (cas.skipped === "no_change") {
+          // Already [BLOCKED] (benign) vs task gone from the root plan (the
+          // block will never be recorded): distinguish via presence, mirroring
+          // the integrated-mark branch.
+          const planText = await Bun.file(absPlanPath).text().catch(() => null)
+          if (planText !== null && planText.includes(job.taskDescription)) {
+            return { status: "eval_blocked", reason: verdict.reason }
+          }
+          return {
+            status: "plan_write_deferred",
+            deferred: "eval_block",
+            reason: `Task ${job.taskId} no longer present in root PLAN.md for eval block`,
+          }
+        }
+        return { status: "plan_write_deferred", deferred: "eval_block", reason: verdict.reason }
+      }
       return { status: "eval_blocked", reason: verdict.reason }
     }
   }
@@ -265,7 +291,7 @@ export async function integrateWorkerResult(
   }
 
   // 7. Mark the task [x] (and append extracted notes/recon tasks) in root PLAN.md via CAS
-  await compareAndSwapPlan(
+  const markCas = await compareAndSwapPlan(
     absPlanPath,
     (content) =>
       markTaskCompleted(content, job.taskDescription, {
@@ -274,6 +300,41 @@ export async function integrateWorkerResult(
       }),
     "integration",
   )
+  // Honor the CAS result: main was already fast-forwarded, but the [x] mark
+  // must have landed for the task to count as done.
+  if (!markCas.wrote) {
+    if (markCas.skipped === "no_change") {
+      // The transform found nothing to mark. Two very different causes:
+      // (a) the task is already [x] in the root plan (the agent checked it
+      //     off itself) — benign, nothing left to do;
+      // (b) the task description is gone entirely (another writer rewrote
+      //     the plan) — the plan will never record this integration, and a
+      //     false "integrated" would hide it. Distinguish via presence.
+      const planText = await Bun.file(absPlanPath).text().catch(() => null)
+      if (planText !== null && planText.includes(job.taskDescription)) {
+        return {
+          status: "integrated",
+          commitSha: workerHead,
+          changedFiles,
+          extractedNotes,
+          extractedReconTasks,
+        }
+      }
+      return {
+        status: "plan_write_deferred",
+        deferred: "integrated_mark",
+        reason: `Task ${job.taskId} no longer present in root PLAN.md after integration`,
+      }
+    }
+    // deferred (root PLAN.md changed underfoot) or io_error: reporting
+    // "integrated" would leave the task unchecked and the scheduler could
+    // relaunch it over the promoted commit. Surface the deferral.
+    return {
+      status: "plan_write_deferred",
+      deferred: "integrated_mark",
+      reason: `Root PLAN.md mark skipped (${markCas.skipped ?? "unknown"}) for task ${job.taskId}`,
+    }
+  }
 
   return {
     status: "integrated",
