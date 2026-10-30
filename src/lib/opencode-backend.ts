@@ -9,7 +9,8 @@ import { DEFAULT_RESILIENCE } from "./config"
 import type { ModelCatalogEntry } from "./fetch-models"
 import type { OcAgent, OcConfig } from "./resolve-agent-model"
 import type { OpencodeMajor } from "./opencode-version"
-import { withTimeout } from "./with-timeout"
+import { MAX_TIMEOUT_MS } from "./constants"
+import { TimeoutError, withTimeout } from "./with-timeout"
 
 export type BackendEvent = { type: string; properties: Record<string, unknown> }
 
@@ -821,45 +822,93 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
    * so a consumer can report "connected" only after the stream is live — a
    * failed handshake rejects before any event is expected.
    */
-  async function subscribeV1(opts: { directory?: string; signal: AbortSignal; timeoutMs?: number }): Promise<{ stream: AsyncIterable<BackendEvent> }> {
-    const directory = opts.directory ?? init.directory
-    const query = directory === undefined ? "" : `?${new URLSearchParams({ directory }).toString()}`
-    const timeoutMs = opts.timeoutMs ?? DEFAULT_RESILIENCE.pingTimeoutMs
-    await verifyEventHandshake(`/event${query}`, "subscribe to v1 events", timeoutMs, opts.signal)
-    const result = await withTimeout(
-      (signal) => client.event.subscribe({ directory: opts.directory ?? init.directory }, { signal }),
-      timeoutMs,
-      "event.subscribe",
-      opts.signal,
-    )
-    if (!result.stream) throw new Error("Failed to subscribe to events: no stream returned")
+  async function createStreamSubscription<TRaw>(
+    subscribe: (signal: AbortSignal) => Promise<{ stream: AsyncIterable<TRaw> }>,
+    mapChunk: (raw: TRaw) => BackendEvent | BackendEvent[] | undefined,
+    timeoutMs: number,
+    label: string,
+    callerSignal: AbortSignal,
+  ): Promise<{ stream: AsyncIterable<BackendEvent> }> {
+    const streamController = new AbortController()
+    const onCallerAbort = () => {
+      streamController.abort(callerSignal.reason)
+    }
+
+    if (callerSignal.aborted) {
+      streamController.abort(callerSignal.reason)
+    } else {
+      callerSignal.addEventListener("abort", onCallerAbort, { once: true })
+    }
+
+    let handshakeTimer: ReturnType<typeof setTimeout> | undefined
+    if (Number.isFinite(timeoutMs) && timeoutMs > 0) {
+      const delayMs = Math.min(timeoutMs, MAX_TIMEOUT_MS)
+      handshakeTimer = setTimeout(() => {
+        streamController.abort(new TimeoutError(label, timeoutMs))
+      }, delayMs)
+    }
+
+    let result: { stream: AsyncIterable<TRaw> }
+    try {
+      result = await subscribe(streamController.signal)
+    } catch (err) {
+      callerSignal.removeEventListener("abort", onCallerAbort)
+      throw err
+    } finally {
+      if (handshakeTimer) clearTimeout(handshakeTimer)
+    }
+
+    if (!result.stream) {
+      callerSignal.removeEventListener("abort", onCallerAbort)
+      throw new Error(`Failed to ${label}: no stream returned`)
+    }
+
     return {
       stream: (async function* (): AsyncGenerator<BackendEvent> {
-        for await (const raw of result.stream) {
-          const event = parseV1Event(raw)
-          if (event) yield event
+        try {
+          for await (const raw of result.stream) {
+            if (callerSignal.aborted || streamController.signal.aborted) break
+            const mapped = mapChunk(raw)
+            if (Array.isArray(mapped)) {
+              for (const event of mapped) yield event
+            } else if (mapped) {
+              yield mapped
+            }
+          }
+        } finally {
+          callerSignal.removeEventListener("abort", onCallerAbort)
+          if (!streamController.signal.aborted) {
+            streamController.abort()
+          }
         }
       })(),
     }
   }
 
+  async function subscribeV1(opts: { directory?: string; signal: AbortSignal; timeoutMs?: number }): Promise<{ stream: AsyncIterable<BackendEvent> }> {
+    const directory = opts.directory ?? init.directory
+    const query = directory === undefined ? "" : `?${new URLSearchParams({ directory }).toString()}`
+    const timeoutMs = opts.timeoutMs ?? DEFAULT_RESILIENCE.pingTimeoutMs
+    await verifyEventHandshake(`/event${query}`, "subscribe to v1 events", timeoutMs, opts.signal)
+    return createStreamSubscription(
+      (signal) => client.event.subscribe({ directory: opts.directory ?? init.directory }, { signal }),
+      parseV1Event,
+      timeoutMs,
+      "event.subscribe",
+      opts.signal,
+    )
+  }
+
   async function subscribeV2(opts: { signal: AbortSignal; timeoutMs?: number }): Promise<{ stream: AsyncIterable<BackendEvent> }> {
     const timeoutMs = opts.timeoutMs ?? DEFAULT_RESILIENCE.pingTimeoutMs
     await verifyEventHandshake("/api/event", "subscribe to v2 events", timeoutMs, opts.signal)
-    const result = await withTimeout(
+    return createStreamSubscription(
       (signal) => client.v2.event.subscribe({ signal }),
+      mapV2EnvelopeToV1,
       timeoutMs,
       "v2 event.subscribe",
       opts.signal,
     )
-    if (!result.stream) throw new Error("Failed to subscribe to v2 events: no stream returned")
-    return {
-      stream: (async function* (): AsyncGenerator<BackendEvent> {
-        for await (const raw of result.stream) {
-          for (const event of mapV2EnvelopeToV1(raw)) yield event
-        }
-      })(),
-    }
   }
 
   return {

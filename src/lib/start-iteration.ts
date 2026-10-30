@@ -5,25 +5,11 @@
  * holds the procedural body; the App.tsx wrapper owns the in-flight guard
  * (`startingIteration`) and the mutable bookkeeping fields, passing them in.
  *
- * Behavior is byte-identical to the former inline `startIteration` closure
- * (verified against the original lines 1090-1276 before extraction). The
- * order of steps and every guard condition are preserved exactly:
- *
- *   1. eval gate (runEvalIfPending → false aborts for an eval retry)
- *   2. plan-completion check (dispatches plan_complete, stops the chain)
- *   3. no-progress halt (dispatches recoverable error with the stuck task)
- *   4. minIterationGapMs spacing
- *   5. createSession → dispatch iteration_started
- *   6. RACE GUARD: if the user paused/quit during createSession, the reducer
- *      no-op'd iteration_started so the session is orphaned — abort + bail
- *   7. watchdog.notifyIterationStart
- *   8. read prompt, substitute {{PLAN_FILE}}, guard against empty prompt
- *   9. sendPromptAsync (heavy tier model if routed, else activeModel)
- *  10. refreshPlan
- *
- * `runIteration` does NOT catch: it lets errors propagate so the App.tsx
- * wrapper's single catch stays the error funnel — identical to the original,
- * where the wrapper aborts the half-created session and routes the error.
+ * Also supports parallel worker slots (`assignedTask` + `parallelWorker`):
+ * when invoked by `parallel-run.ts`, the scheduler has already selected the
+ * task and checked plan completion, so `runIteration` reuses the exact same
+ * spacing, session creation, race guards, prompt loading, placeholder
+ * replacement, tier routing, and `sendPromptAsync` pipeline (DRY).
  */
 
 import type { OpencodeBackend } from "./api"
@@ -115,6 +101,14 @@ export interface IterationDeps {
   getPlanCompleteSummary: (planPath: string) => Promise<string | null>
   /** Optional callback or scheduler when an eval requires a retry. */
   scheduleRetry?: () => void
+
+  // --- Optional parallel-worker extensions ---
+  /** Pre-assigned task description selected by the DAG scheduler. */
+  assignedTask?: string
+  /** Extra instructions appended to the prompt for an isolated worktree slot. */
+  parallelPromptSuffix?: string
+  /** When true, multiple sessions may run concurrently; skip single-session ID equality guard. */
+  parallelWorker?: boolean
 }
 
 /** Why `runIteration` returned, for assertion. */
@@ -131,50 +125,53 @@ export type IterationResult =
  * handles them via handleIterationError, exactly as the inline version did).
  */
 export async function runIteration(deps: IterationDeps): Promise<IterationResult> {
-  // --- 1. Eval gate ---
-  if (!(await deps.runEvalIfPending())) {
-    if (deps.scheduleRetry) {
-      deps.scheduleRetry()
-    } else {
-      setTimeout(() => {
-        const state = deps.loop.state()
-        if (state.type === "running" && state.sessionId === "") {
-          void runIteration(deps)
-        }
-      }, 0)
-    }
-    return "eval_retry"
-  }
-
-  // --- 2. Single PLAN.md read (drift check + task for this iteration) ---
   let currentTask: string | null = null
-  if (deps.preparePlanForIteration) {
-    const prep = await deps.preparePlanForIteration(deps.planPath)
-    if (!prep.proceed) return "plan_drift_halt"
-    currentTask = prep.currentTask
-  } else {
-    try {
-      currentTask = await deps.getCurrentTask(deps.planPath)
-    } catch {
-      currentTask = null
-    }
-  }
 
-  // --- 3. Plan completion ---
-  if (await deps.checkPlanComplete()) {
-    // Best-effort summary read; a FS error must not misclassify completion
-    // (the plan IS complete, only the human-readable summary is best-effort).
-    let summaryContent: string | null = null
-    try {
-      summaryContent = await deps.getPlanCompleteSummary(deps.planPath)
-    } catch {
-      // Mirrors the original: swallow, completion still holds.
+  if (deps.assignedTask !== undefined) {
+    currentTask = deps.assignedTask
+  } else {
+    // --- 1. Eval gate ---
+    if (!(await deps.runEvalIfPending())) {
+      if (deps.scheduleRetry) {
+        deps.scheduleRetry()
+      } else {
+        setTimeout(() => {
+          const state = deps.loop.state()
+          if (state.type === "running" && state.sessionId === "") {
+            void runIteration(deps)
+          }
+        }, 0)
+      }
+      return "eval_retry"
     }
-    deps.loop.dispatch({
-      type: "plan_complete",
-      summary: { summary: summaryContent ?? deps.fallbackSummary() },
-    })
-    return "plan_complete"
+
+    // --- 2. Single PLAN.md read (drift check + task for this iteration) ---
+    if (deps.preparePlanForIteration) {
+      const prep = await deps.preparePlanForIteration(deps.planPath)
+      if (!prep.proceed) return "plan_drift_halt"
+      currentTask = prep.currentTask
+    } else {
+      try {
+        currentTask = await deps.getCurrentTask(deps.planPath)
+      } catch {
+        currentTask = null
+      }
+    }
+
+    // --- 3. Plan completion ---
+    if (await deps.checkPlanComplete()) {
+      let summaryContent: string | null = null
+      try {
+        summaryContent = await deps.getPlanCompleteSummary(deps.planPath)
+      } catch {
+        // Mirrors the original: swallow, completion still holds.
+      }
+      deps.loop.dispatch({
+        type: "plan_complete",
+        summary: { summary: summaryContent ?? deps.fallbackSummary() },
+      })
+      return "plan_complete"
+    }
   }
 
   // --- 4. No-progress halt ---
@@ -204,19 +201,15 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   // --- 6. Create session + dispatch iteration_started ---
   const session = await createSession(deps.client)
   const newSessionId = session.id
-  // Report to the wrapper now (before dispatch) so its catch can abort this
-  // session if any later step throws — identical to the original hoist of
-  // `newSessionId` above the try in App.tsx::startIteration.
   deps.onSessionCreated(newSessionId)
   deps.loop.dispatch({ type: "iteration_started", sessionId: newSessionId })
 
   // --- 7. RACE GUARD: orphan if the user paused/quit during createSession ---
-  // createSession is async. If the user paused (Space) or quit (Q) DURING the
-  // await above, the reducer no-op'd `iteration_started` (state is no longer
-  // running/paused), so this session is untracked — nothing would ever abort
-  // it and it'd keep running on the server burning tokens. Abort it now and
-  // bail before sending the prompt.
-  if (getActiveSessionId(deps.loop.state()) !== newSessionId) {
+  if (deps.parallelWorker) {
+    if (deps.loop.state().type !== "running") {
+      return abortOrphanSession(deps.client, newSessionId, deps.loop)
+    }
+  } else if (getActiveSessionId(deps.loop.state()) !== newSessionId) {
     return abortOrphanSession(deps.client, newSessionId, deps.loop)
   }
 
@@ -233,8 +226,6 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
   try {
     promptContent = await promptFile.text()
   } catch (err) {
-    // Both template params are required (en/es): without `message` the error
-    // surfaces with a literal "undefined" where the cause should be.
     throw new Error(
       deps.t("errCannotReadFile", {
         path: deps.promptPath,
@@ -243,17 +234,22 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
     )
   }
   const taskLabel = currentTask ?? ""
-  const prompt = promptContent
+  const basePrompt = promptContent
     .replaceAll("{{PLAN_FILE}}", deps.planPath)
     .replaceAll("{{CURRENT_TASK}}", taskLabel)
-  if (prompt.trim() === "") {
+  if (basePrompt.trim() === "") {
     throw new Error(deps.t("errPromptEmpty", { path: deps.promptPath }))
   }
+  const prompt = deps.parallelPromptSuffix
+    ? `${basePrompt}\n\n${deps.parallelPromptSuffix}`
+    : basePrompt
 
   // --- 10. Send the prompt (heavy tier overrides activeModel when routed) ---
-  // Re-check after prompt I/O: the user may have paused while we read the file.
   const st = deps.loop.state()
-  if (st.type !== "running" || st.sessionId !== newSessionId) {
+  if (
+    st.type !== "running" ||
+    (!deps.parallelWorker && st.sessionId !== newSessionId)
+  ) {
     return abortOrphanSession(deps.client, newSessionId, deps.loop)
   }
   await sendPromptAsync(deps.client, {

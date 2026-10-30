@@ -1,25 +1,6 @@
 /**
  * Crash-resilient persistence of the loop's minimal progress to
  * `.loop-state.json` (next to `.loop.log`).
- *
- * The point is to survive the OCLoop *process itself* dying — not just OpenCode.
- * On every meaningful transition we write a tiny snapshot atomically (write to a
- * temp file, then rename — rename is atomic on the same filesystem, so a reader
- * never sees a half-written file). On startup we can read it back and decide
- * whether to reconcile/continue.
- *
- * `.loop-state.json` (and its `.tmp`) match the existing `.loop*` gitignore rule,
- * so they are never committed.
- *
- * Writes are SERIALIZED through a single promise chain (`persistChain`). This is
- * not for atomicity (tmp+rename already gives that) — it's for ORDERING: the
- * completion effect dispatches both `saveLoopState` (running) and `clearLoopState`
- * (complete) as un-awaited `void` calls with no enforced order, and Node does not
- * guarantee resolve order across independent promises. A `saveLoopState` in flight
- * at the moment of completion could resolve AFTER the clear, re-creating the file
- * and making the next launch offer a spurious resume. Serializing means the clear
- * is queued strictly after any save dispatched before it, and a generation guard
- * makes any save enqueued BEFORE the clear a no-op once the clear has run.
  */
 
 import { readFile, unlink } from "node:fs/promises"
@@ -29,6 +10,14 @@ import { log } from "./debug-logger"
 import { isNonNegativeInteger } from "./config"
 
 const STATE_FILE = ".loop-state.json"
+
+/** Snapshot of an in-flight parallel worker slot for crash recovery. */
+export interface PersistedWorkerSlot {
+  slotId: 1 | 2 | 3 | 4
+  sessionId: string
+  taskDescription: string
+  worktreePath: string
+}
 
 /** Persisted snapshot. `version` guards against future format changes. */
 export interface PersistedLoopState {
@@ -45,32 +34,20 @@ export interface PersistedLoopState {
   updatedAt: string
   /**
    * Description of the PLAN.md task this iteration was working on (or null when
-   * the plan had no pending task at save time). Used at resume to detect a
-   * misalignment: if PLAN.md was edited between crash and resume, the saved task
-   * may no longer be the first pending task.
-   *
-   * Optional for backward compat with state files written before this field was
-   * added — loadLoopState accepts files without it and the resume flow treats
-   * the missing field as "no alignment check".
+   * the plan had no pending task at save time).
    */
   currentTask?: string | null
+  /**
+   * Optional list of active parallel worker slots in flight when the snapshot
+   * was written (when running with `--jobs > 1`).
+   */
+  activeWorkers?: PersistedWorkerSlot[]
 }
 
 function statePath(): string {
   return join(process.cwd(), STATE_FILE)
 }
 
-// --- Serialized write queue + generation guard ---
-//
-// persistChain: a tail of resolved promises; each write `.then()`s onto it so
-// writes execute strictly in dispatch order (save ... save ... clear all run
-// sequentially, not concurrently).
-//
-// clearedGeneration: bumped by clearLoopState. A save captures the generation at
-// enqueue time and, before writing, checks it is still >= the cleared
-// generation — if a clear has since run, the save is dropped. Belt-and-suspenders
-// with the chain ordering (which already runs the clear last): protects against
-// any future caller that awaits a save out-of-band.
 let persistChain: Promise<void> = Promise.resolve()
 let clearedGeneration = 0
 
@@ -80,8 +57,6 @@ let clearedGeneration = 0
  * pending write/clear so order matches dispatch order.
  */
 export function saveLoopState(state: PersistedLoopState): Promise<void> {
-  // Capture the generation NOW (at dispatch time). If clearLoopState runs before
-  // this save's turn comes, the generation check inside will drop it.
   const myGeneration = clearedGeneration
   persistChain = persistChain
     .catch(() => {})
@@ -93,8 +68,6 @@ async function writeStateIfNotCleared(
   state: PersistedLoopState,
   myGeneration: number,
 ): Promise<void> {
-  // A clear dispatched after this save (but before its turn) raised the
-  // generation: writing now would resurrect a completed run's state file.
   if (myGeneration < clearedGeneration) return
   try {
     const json = JSON.stringify(state, null, 2)
@@ -104,24 +77,31 @@ async function writeStateIfNotCleared(
   }
 }
 
+function isPersistedWorkerSlot(v: unknown): v is PersistedWorkerSlot {
+  if (!v || typeof v !== "object") return false
+  const w = v as Record<string, unknown>
+  return (
+    (w.slotId === 1 || w.slotId === 2 || w.slotId === 3 || w.slotId === 4) &&
+    typeof w.sessionId === "string" &&
+    w.sessionId.length > 0 &&
+    typeof w.taskDescription === "string" &&
+    typeof w.worktreePath === "string"
+  )
+}
+
 /**
- * Per-field type guard for PersistedLoopState. Validates every field so a
- * hand-edited or partially-written file with a wrong-typed sessionId/stateType/
- * rateLimitAttempts/updatedAt is rejected at the trust boundary, rather than
- * slipping through and being serialized into a server URL by the consumer.
+ * Per-field type guard for PersistedLoopState.
  */
 function isPersistedLoopState(p: unknown): p is PersistedLoopState {
   if (!p || typeof p !== "object") return false
   const s = p as Record<string, unknown>
-  // `currentTask` is optional for backward compat with pre-#4 state files:
-  // older snapshots were saved without it, and `loadLoopState` must keep
-  // returning them. When present, validate the type so a hand-edited file
-  // with a wrong-typed value (e.g. an array) is rejected at the trust
-  // boundary — same defense-in-depth pattern as the other fields.
   const currentTaskOk =
     s.currentTask === undefined ||
     s.currentTask === null ||
     typeof s.currentTask === "string"
+  const activeWorkersOk =
+    s.activeWorkers === undefined ||
+    (Array.isArray(s.activeWorkers) && s.activeWorkers.every(isPersistedWorkerSlot))
   return (
     s.version === 1 &&
     isNonNegativeInteger(s.iteration) &&
@@ -129,7 +109,8 @@ function isPersistedLoopState(p: unknown): p is PersistedLoopState {
     typeof s.stateType === "string" &&
     isNonNegativeInteger(s.rateLimitAttempts) &&
     typeof s.updatedAt === "string" &&
-    currentTaskOk
+    currentTaskOk &&
+    activeWorkersOk
   )
 }
 
@@ -151,10 +132,7 @@ export async function loadLoopState(): Promise<PersistedLoopState | null> {
 
 /**
  * Remove the persisted state (clean shutdown, or after a successful resume
- * decision). Never throws. Bumps the generation so any save enqueued BEFORE
- * this clear (and still in flight on the chain) is dropped instead of
- * resurrecting the file. Serialized onto the same chain as saves so the clear
- * runs strictly after all writes dispatched before it.
+ * decision). Never throws.
  */
 export function clearLoopState(): Promise<void> {
   clearedGeneration++

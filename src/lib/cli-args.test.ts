@@ -154,6 +154,8 @@ describe("parseArgs — defaults & single flags", () => {
     expect(runParse(["--plan", "x.md"]).args?.planFile).toBe("x.md")
     expect(runParse(["--lang", "es"]).args?.lang).toBe("es")
     expect(runParse(["--language", "en"]).args?.lang).toBe("en")
+    expect(runParse(["-j", "2"]).args?.jobs).toBe(2)
+    expect(runParse(["--jobs", "4"]).args?.jobs).toBe(4)
   })
 
   it("resilience flags collect into args.resilience", () => {
@@ -273,6 +275,10 @@ describe("parseArgs — invalid input exits 1", () => {
     ["--prompt missing arg", ["--prompt"]],
     ["--plan missing arg", ["--plan"]],
     ["--lang invalid", ["--lang", "fr"]],
+    ["--jobs zero", ["--jobs", "0"]],
+    ["--jobs above 4", ["--jobs", "5"]],
+    ["--jobs non-numeric", ["--jobs", "abc"]],
+    ["--jobs missing arg", ["--jobs"]],
     ["--resilience no equals", ["--resilience", "foo"]],
     ["--resilience empty value", ["--resilience", "backoffBaseMs="]],
     ["--resilience unknown key", ["--resilience", "bogus=1"]],

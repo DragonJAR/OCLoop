@@ -183,6 +183,10 @@ export interface CLIArgs {
    */
   agent?: string
   /**
+   * Number of concurrent agent workers (1..4). Defaults to 1 (sequential).
+   */
+  jobs?: number
+  /**
    * Resilience overrides parsed from CLI flags (--resume, --no-caffeinate,
    * --chaos, --resilience key=value). Merged over the config file, which is
    * merged over DEFAULT_RESILIENCE.

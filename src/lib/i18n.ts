@@ -130,6 +130,8 @@ const en = {
   errArgLang: "Error: --lang requires 'en' or 'es'",
   errArgPortInteger: "Error: --port requires a full integer argument",
   errArgPortRange: "Error: --port must be in TCP range 0..65535",
+  errArgJobsInteger: "Error: --jobs requires an integer argument",
+  errArgJobsRange: "Error: --jobs must be between 1 and 4",
   errArgModelArg: "Error: --model requires an argument",
   errArgModelFormat: (p: Params) =>
     `Error: --model expects provider/model (for example openai/gpt-5), got "${p.model}"`,
@@ -151,6 +153,7 @@ Getting started:
 
 Options:
   -p, --port <number>      OpenCode server port (if omitted, opencode picks 4096 or a random free port)
+  -j, --jobs <1..4>        Concurrent parallel agent workers in isolated worktrees (default: 1)
   -m, --model <provider/model> Model to use (for example openai/gpt-5)
   -a, --agent <string>     Agent to use (passed to opencode)
   -r, --run                Start iterations immediately (default: wait for [S])
@@ -867,6 +870,8 @@ const es: Record<MessageKey, Msg> = {
   errArgLang: "Error: --lang requiere 'en' o 'es'",
   errArgPortInteger: "Error: --port requiere un argumento entero",
   errArgPortRange: "Error: --port debe estar en el rango TCP 0..65535",
+  errArgJobsInteger: "Error: --jobs requiere un argumento entero",
+  errArgJobsRange: "Error: --jobs debe estar entre 1 y 4",
   errArgModelArg: "Error: --model requiere un argumento",
   errArgModelFormat: (p) =>
     `Error: --model espera proveedor/modelo (por ejemplo openai/gpt-5), se obtuvo "${p.model}"`,
@@ -886,6 +891,7 @@ Primeros pasos:
 
 Opciones:
   -p, --port <número>       Puerto del servidor OpenCode (por defecto: automático)
+  -j, --jobs <1..4>         Agentes en paralelo en worktrees aislados (por defecto: 1)
   -m, --model <proveedor/modelo> Modelo que se utilizará
   -a, --agent <texto>       Agente enviado a opencode
   -r, --run                 Iniciar las iteraciones de inmediato

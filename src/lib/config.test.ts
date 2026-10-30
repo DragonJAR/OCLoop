@@ -177,6 +177,19 @@ describe("loadConfig — per-field type validation (Finding 12.1.A)", () => {
     expect(config.scrollbar_visible).toBe(false)
   })
 
+  it("keeps a valid jobs count (1..4) and drops invalid jobs values", () => {
+    writeConfig("ocloop.json", JSON.stringify({ jobs: 4 }))
+    expect(loadConfig().jobs).toBe(4)
+
+    __resetConfigCacheForTests()
+    writeConfig("ocloop.json", JSON.stringify({ jobs: 5 }))
+    expect(loadConfig().jobs).toBeUndefined()
+
+    __resetConfigCacheForTests()
+    writeConfig("ocloop.json", JSON.stringify({ jobs: 0 }))
+    expect(loadConfig().jobs).toBeUndefined()
+  })
+
   it("drops a malformed resilience field (string) — the audit's silent-corruption case", () => {
     writeConfig("ocloop.json", JSON.stringify({ resilience: "fast" }))
     const config = loadConfig()

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "bun:test"
 import { createOpencodeClient } from "@opencode-ai/sdk/v2"
 import {
+  type BackendEvent,
   createBackend,
   mapV2EnvelopeToV1,
   normalizeV2Envelope,
@@ -403,6 +404,52 @@ describe("OpenCode backend v2 normalization", () => {
       expect(backend.url).toBe("http://127.0.0.1:4096")
       await backend.fetchConfig({ timeoutMs: 100 })
       expect(capturedUrl).toBe("http://127.0.0.1:4096/config")
+    })
+  })
+
+  it("forwards caller cancellation to the SSE stream and stops iteration", async () => {
+    let handshakeDone = false
+    let fetchSignal: AbortSignal | undefined
+    const streamBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(
+          new TextEncoder().encode(
+            'data: {"type":"session.idle","properties":{"sessionID":"s1"}}\n\n',
+          ),
+        )
+      },
+    })
+
+    const mockedFetch = makeFetchMock(async (input, init) => {
+      const url = input instanceof Request ? input.url : String(input)
+      if (url.includes("/event")) {
+        if (!handshakeDone) {
+          handshakeDone = true
+          return new Response("", { status: 200, headers: { "Content-Type": "text/event-stream" } })
+        }
+        fetchSignal = (init?.signal ?? (input instanceof Request ? input.signal : undefined)) as AbortSignal | undefined
+        return new Response(streamBody, { status: 200, headers: { "Content-Type": "text/event-stream" } })
+      }
+      return new Response("", { status: 404 })
+    })
+
+    await withMockFetch(mockedFetch, async () => {
+      const backend = createBackend({ url: "http://127.0.0.1:4096", version: 1 })
+      const callerController = new AbortController()
+      const { stream } = await backend.subscribeEvents({
+        signal: callerController.signal,
+        timeoutMs: 1_000,
+      })
+
+      const events: BackendEvent[] = []
+      for await (const event of stream) {
+        events.push(event)
+        callerController.abort(new Error("caller stopped"))
+      }
+
+      expect(events.length).toBe(1)
+      expect(events[0].type).toBe("session.idle")
+      expect(fetchSignal?.aborted).toBe(true)
     })
   })
 })
