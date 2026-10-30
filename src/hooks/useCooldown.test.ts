@@ -129,6 +129,36 @@ describe("useCooldown (W3-07)", () => {
     })
   })
 
+  it("absorbs a duplicate rate-limit report for the same incident but counts a different reason", () => {
+    createRoot((dispose) => {
+      const h = makeTestDeps()
+      h.resilience.maxRateLimitRetries = 5
+      const cd = useCooldown(h.deps)
+
+      // First report arms the cooldown: attempts 1, one dispatch.
+      cd.enterCooldown("429 Too Many Requests")
+      expect(cd.getAttempts()).toBe(1)
+      expect(h.dispatched).toHaveLength(1)
+
+      // The same incident arrives again via the second channel (SSE after API)
+      // while the cooldown timer is still armed → absorbed, not double-counted.
+      cd.enterCooldown("429 Too Many Requests")
+      expect(cd.getAttempts()).toBe(1)
+      expect(h.dispatched).toHaveLength(1)
+
+      // A different reason is a genuinely new incident → counted and armed.
+      cd.enterCooldown("network timeout")
+      expect(cd.getAttempts()).toBe(2)
+      expect(h.dispatched).toHaveLength(2)
+      if (h.dispatched[1].type === "rate_limited") {
+        expect(h.dispatched[1].attempt).toBe(2)
+      }
+
+      cd.clearTimers()
+      dispose()
+    })
+  })
+
   it("previewRemaining updates remainingMs without timers or dispatch", () => {
     createRoot((dispose) => {
       const h = makeTestDeps()

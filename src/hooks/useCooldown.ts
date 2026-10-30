@@ -81,6 +81,7 @@ export interface CooldownApi {
 export function useCooldown(deps: CooldownDeps): CooldownApi {
   let rateLimitAttempts = 0
   let wallClockResumeAt = 0
+  let lastCooldownReason: string | null = null
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
   const [cooldownRemainingMs, setCooldownRemainingMs] = createSignal(0)
@@ -96,6 +97,7 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     }
     setCooldownRemainingMs(0)
     wallClockResumeAt = 0
+    lastCooldownReason = null
   }
 
   onCleanup(clearTimers)
@@ -105,6 +107,17 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     retryAfterSeconds?: number,
     kind: "rate_limit" | "transient" = "rate_limit",
   ): void {
+    // Re-entrance guard: the same incident can reach us through two channels
+    // (the API call failing AND the subsequent SSE session.error event), and
+    // each unguarded entry double-counts `rateLimitAttempts`, falsely
+    // accelerating the escalation to errRatePersistent. While a cooldown for
+    // the same reason is armed, a duplicate report is absorbed: the cooldown
+    // in flight already owns the timer, the countdown, and the attempt count.
+    // A different reason still counts, preserving escalation semantics.
+    if (cooldownTimer && reason === lastCooldownReason) {
+      log.health("ratelimit", "duplicate rate-limit report absorbed", { reason, kind })
+      return
+    }
     const r = deps.resilience()
     rateLimitAttempts++
 
@@ -130,6 +143,7 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
         recoverable: true,
       })
       rateLimitAttempts = 0
+      lastCooldownReason = null
       clearTimers()
       return
     }
@@ -160,6 +174,9 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     // Clear stale timers before dispatching so no Solid effect can observe a
     // window where stale timers are still alive after the reducer moved to cooldown.
     clearTimers()
+    // Record AFTER clearTimers (which resets the guard state) so the duplicate-
+    // report guard sees this reason for as long as the cooldown timer is armed.
+    lastCooldownReason = reason
     wallClockResumeAt = Date.now() + delayMs
 
     deps.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
