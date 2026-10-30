@@ -5,6 +5,15 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+## [0.9.0] — 2026-10-30
+
+### Added
+- **Parallel worker pool (1–4 agents)** — `--jobs`/`-j` (or `ocloop.json` `jobs`) runs up to 4 concurrent OpenCode sessions in isolated git worktrees. A DAG scheduler enforces phase, `(recon)` and `dependsOn` barriers plus conflict-free `files:` scopes; a serial integration queue rebases each worker with a PLAN.md double barrier, an optional eval gate, and CAS `[x]` marking. Full parallel UI in the TUI: per-slot `[W1]..[W4]` activity prefixes, Workers panel, per-worker token/cost accounting, and crash-recovery of in-flight slots.
+- **OpenCode 2 compatibility** — complete server dialect support for OpenCode 2.x alongside 1.x: a-priori detection via `opencode --version` with a lazy `/api/info` vs `/config` capability probe as fallback, HTTP Basic auth (`OPENCODE_SERVER_PASSWORD`), directory-scoped SDK clients, v2 session create/prompt/interrupt/status/messages/agents/config/provider+model catalog endpoints, SSE `/api/event` envelope mapping, and cursor-paginated message history. Every v2 surface normalizes to the v1 shape the rest of the app consumes.
+
+### Changed
+- Backend stream subscriptions share unified caller-abort wiring with clamped handshake timeouts, shared by the main session and per-worktree worker streams.
+
 ## [0.8.0] — 2026-09-30
 
 ### Added
