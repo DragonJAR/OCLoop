@@ -28,7 +28,16 @@ interface SpawnTarget {
   shell: boolean
 }
 
-async function getSpawnTarget(): Promise<SpawnTarget | null> {
+/**
+ * Resolve how to spawn the `opencode` binary on this platform.
+ *
+ * Single source of truth shared with `opencode-server.ts` (server launcher):
+ * POSIX spawns the bare name on PATH; Windows resolves the shim path and
+ * quotes it when the shim needs a shell. Returns `null` on Windows when the
+ * binary cannot be resolved — the version detector surfaces that as "not
+ * found"; the server launcher falls back to the bare name.
+ */
+export async function getOpencodeSpawnTarget(): Promise<SpawnTarget | null> {
   if (process.platform !== "win32") {
     return { command: "opencode", shell: false }
   }
@@ -41,6 +50,8 @@ async function getSpawnTarget(): Promise<SpawnTarget | null> {
     shell,
   }
 }
+
+const getSpawnTarget = getOpencodeSpawnTarget
 
 /**
  * Best-effort version detection. A missing binary, unexpected output, spawn

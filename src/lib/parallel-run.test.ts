@@ -53,6 +53,7 @@ describe("createParallelCoordinator", () => {
 
     const coordinator = createParallelCoordinator({
       maxJobs: () => 4,
+      repoRoot: scratchDir,
       planPath: "PLAN.md",
       promptPath,
       loop,
@@ -170,6 +171,7 @@ describe("createParallelCoordinator", () => {
 
     const coordinator = createParallelCoordinator({
       maxJobs: () => 2,
+      repoRoot: scratchDir,
       planPath: "PLAN.md",
       promptPath,
       loop,

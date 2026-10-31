@@ -452,43 +452,51 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
   let resolvedVersion = init.version
   let versionProbe: Promise<OpencodeMajor> | undefined
 
-  async function request(path: string, label: string, options: RequestInit = {}, timeoutMs = DEFAULT_RESILIENCE.statusTimeoutMs, callerSignal?: AbortSignal): Promise<Response> {
-    const response = await withTimeout(
-      (signal) => fetch(endpoint(path), {
-        ...options,
-        signal,
-        headers: {
-          Authorization: authorization,
-          ...(options.body ? { "Content-Type": "application/json" } : {}),
-          ...options.headers,
-        },
-      }),
+  /**
+   * Single fetch + header builder for every raw HTTP probe in this backend.
+   * `request`, `requestJson`, `verifyEventHandshake` and `probeVersion` used
+   * to hand-roll the same Authorization/Content-Type merge, and
+   * `verifyEventHandshake` had already diverged (dropping the merge pattern).
+   * All call sites now share this one builder.
+   */
+  function fetchAuthorized(
+    path: string,
+    label: string,
+    timeoutMs: number,
+    callerSignal: AbortSignal | undefined,
+    options: RequestInit = {},
+  ): Promise<Response> {
+    return withTimeout(
+      (signal) =>
+        fetch(endpoint(path), {
+          ...options,
+          signal,
+          headers: {
+            Authorization: authorization,
+            ...(options.body ? { "Content-Type": "application/json" } : {}),
+            ...options.headers,
+          },
+        }),
       timeoutMs,
       label,
       callerSignal,
     )
+  }
+
+  async function request(path: string, label: string, options: RequestInit = {}, timeoutMs = DEFAULT_RESILIENCE.statusTimeoutMs, callerSignal?: AbortSignal): Promise<Response> {
+    const response = await fetchAuthorized(path, label, timeoutMs, callerSignal, options)
     assertResponse({ response }, label)
     return response
   }
 
   async function requestJson(path: string, label: string, options: RequestInit = {}, timeoutMs?: number, callerSignal?: AbortSignal): Promise<unknown> {
-    return withTimeout(async (signal) => {
-      const response = await fetch(endpoint(path), {
-        ...options,
-        signal,
-        headers: {
-          Authorization: authorization,
-          ...(options.body ? { "Content-Type": "application/json" } : {}),
-          ...options.headers,
-        },
-      })
-      assertResponse({ response }, label)
-      try {
-        return await response.json() as unknown
-      } catch {
-        throw new Error(`Failed to ${label}: response was not valid JSON`)
-      }
-    }, timeoutMs ?? DEFAULT_RESILIENCE.statusTimeoutMs, label, callerSignal)
+    const response = await fetchAuthorized(path, label, timeoutMs ?? DEFAULT_RESILIENCE.statusTimeoutMs, callerSignal, options)
+    assertResponse({ response }, label)
+    try {
+      return await response.json() as unknown
+    } catch {
+      throw new Error(`Failed to ${label}: response was not valid JSON`)
+    }
   }
 
   async function verifyEventHandshake(
@@ -497,25 +505,29 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
     timeoutMs: number,
     callerSignal: AbortSignal,
   ): Promise<void> {
-    await withTimeout(async (signal) => {
-      const response = await fetch(endpoint(path), {
-        headers: {
-          Authorization: authorization,
-          Accept: "text/event-stream",
-        },
-        signal,
-      })
+    const response = await fetchAuthorized(path, label, timeoutMs, callerSignal, {
+      headers: { Accept: "text/event-stream" },
+    })
+    try {
+      assertResponse({ response }, label)
+    } finally {
       try {
-        assertResponse({ response }, label)
-      } finally {
-        try {
-          await response.body?.cancel()
-        } catch {
-          // Cancelling the short-lived probe is best-effort; preserve the
-          // handshake status or transport error for the caller.
-        }
+        await response.body?.cancel()
+      } catch {
+        // Cancelling the short-lived probe is best-effort; preserve the
+        // handshake status or transport error for the caller.
       }
-    }, timeoutMs, label, callerSignal)
+    }
+  }
+
+  /** Probe JSON reader: absent/unparseable responses resolve to `undefined`. */
+  async function probeJsonLenient(response: Response): Promise<unknown> {
+    if (!response.ok) return undefined
+    try {
+      return await response.json() as unknown
+    } catch {
+      return undefined
+    }
   }
 
   async function probeVersion(opts?: BackendCallOptions): Promise<OpencodeMajor> {
@@ -525,15 +537,8 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
     const perProbeTimeoutMs = probeBudgetMs / 2
     let apiInfo: unknown
     try {
-      apiInfo = await withTimeout(
-        async (signal) => {
-          const response = await fetch(endpoint("/api/info"), { signal, headers: { Authorization: authorization } })
-          if (!response.ok) return undefined
-          try { return await response.json() as unknown } catch { return undefined }
-        },
-        perProbeTimeoutMs,
-        "probe OpenCode /api/info",
-        opts?.signal,
+      apiInfo = await probeJsonLenient(
+        await fetchAuthorized("/api/info", "probe OpenCode /api/info", perProbeTimeoutMs, opts?.signal),
       )
     } catch (error) {
       if (opts?.signal?.aborted) throw error
@@ -544,15 +549,8 @@ export function createBackend(init: CreateBackendOptions): OpencodeBackend {
 
     let legacyConfig: unknown
     try {
-      legacyConfig = await withTimeout(
-        async (signal) => {
-          const response = await fetch(endpoint("/config"), { signal, headers: { Authorization: authorization } })
-          if (!response.ok) return undefined
-          try { return await response.json() as unknown } catch { return undefined }
-        },
-        perProbeTimeoutMs,
-        "probe OpenCode /config",
-        opts?.signal,
+      legacyConfig = await probeJsonLenient(
+        await fetchAuthorized("/config", "probe OpenCode /config", perProbeTimeoutMs, opts?.signal),
       )
     } catch (error) {
       if (opts?.signal?.aborted) throw error

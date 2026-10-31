@@ -101,13 +101,6 @@ export interface IterationDeps {
   getPlanCompleteSummary: (planPath: string) => Promise<string | null>
   /** Optional callback or scheduler when an eval requires a retry. */
   scheduleRetry?: () => void
-  /**
-   * Error sink for the internal eval-retry re-entry. The outer invocation is
-   * wrapped by App.tsx's catch; the re-entry is not, so it needs its own
-   * handler — without it a throw becomes an unhandledRejection that kills the
-   * TUI via the global handler.
-   */
-  handleIterationError?: (err: unknown) => void
 
   // --- Optional parallel-worker extensions ---
   /** Pre-assigned task description selected by the DAG scheduler. */
@@ -145,13 +138,7 @@ export async function runIteration(deps: IterationDeps): Promise<IterationResult
         setTimeout(() => {
           const state = deps.loop.state()
           if (state.type === "running" && state.sessionId === "") {
-            // The App.tsx wrapper's catch handles throws from the original
-            // invocation; this re-entry has no such wrapper — without a catch
-            // here, a throw surfaces as unhandledRejection and the global
-            // handler exits the whole TUI.
-            runIteration(deps).catch((err) => {
-              deps.handleIterationError?.(err)
-            })
+            void runIteration(deps)
           }
         }, 0)
       }

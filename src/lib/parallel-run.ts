@@ -52,7 +52,8 @@ interface ActiveSlotInternal extends WorkerSlotInfo {
 
 export interface ParallelCoordinatorDeps {
   maxJobs: () => number
-  repoRoot?: string
+  /** Absolute repo root for worktrees, rebases, and root PLAN.md CAS writes. */
+  repoRoot: string
   planPath: string
   promptPath: string
   loop: {
@@ -215,20 +216,46 @@ export function createParallelCoordinator(
     slot.streamController = controller
 
     void (async () => {
-      try {
-        const sub = await client.subscribeEvents({
-          directory: slot.worktreePath,
-          signal: controller.signal,
-          timeoutMs: deps.resilience().pingTimeoutMs,
-        })
-        for await (const ev of sub.stream) {
-          if (controller.signal.aborted) break
-          deps.onWorkerEvent?.(ev, slot.slotId)
+      // A stream that dies without abort (timeout, connection cut) must be
+      // re-established: a silent permanent loss starves heartbeats and makes
+      // the watchdog abort a healthy worker as "wedged". Bounded backoff,
+      // exiting on abort or once the slot is no longer registered.
+      let attempt = 0
+      while (!controller.signal.aborted && slots.get(slot.slotId) === slot) {
+        let delivered = false
+        try {
+          const sub = await client.subscribeEvents({
+            directory: slot.worktreePath,
+            signal: controller.signal,
+            timeoutMs: deps.resilience().pingTimeoutMs,
+          })
+          for await (const ev of sub.stream) {
+            if (controller.signal.aborted) break
+            delivered = true
+            deps.onWorkerEvent?.(ev, slot.slotId)
+          }
+        } catch {
+          // Stream terminated; the loop below retries with backoff.
         }
-      } catch {
-        // Ignore stream termination when slot closes or aborts
+        if (controller.signal.aborted || slots.get(slot.slotId) !== slot) break
+        if (delivered) attempt = 0
+        attempt += 1
+        const delayMs = Math.min(1000 * 2 ** (attempt - 1), 15_000)
+        await new Promise<void>((resolve) => {
+          const timer = setTimeout(resolve, delayMs)
+          controller.signal.addEventListener(
+            "abort",
+            () => {
+              clearTimeout(timer)
+              resolve()
+            },
+            { once: true },
+          )
+        })
       }
-    })()
+    })().catch(() => {
+      // Never let stream supervision surface as an unhandled rejection.
+    })
   }
 
   async function launchTaskInSlot(
@@ -297,7 +324,19 @@ export function createParallelCoordinator(
       if (shuttingDown || deps.loop.state().type !== "running") return
 
       const client = deps.resolveClient(workspace.worktreePath)
-      if (!client) return
+      if (!client) {
+        // tryGetClient returns null while the server URL is unset (restart in
+        // flight). Dropping the task silently here could leave the loop
+        // "running" with zero workers forever — surface it like any other
+        // iteration failure instead.
+        deps.onIterationError(
+          new Error(
+            `opencode server unavailable while launching worker W${slotId} (restart in flight?)`,
+          ),
+          slotId,
+        )
+        return
+      }
 
       placeholderSlot.worktreePath = workspace.worktreePath
       placeholderSlot.baseSha = workspace.baseSha
@@ -441,10 +480,27 @@ export function createParallelCoordinator(
 
   async function handleSessionIdle(sessionId: string): Promise<boolean> {
     const slotId = sessionToSlot.get(sessionId)
-    if (!slotId) return false
+    if (!slotId) {
+      // Claimed by an earlier call (the map is deleted synchronously below):
+      // the integration is queued or in flight — report ownership, do not
+      // enqueue a second integration of the same worker.
+      for (const s of slots.values()) {
+        if (s.sessionId === sessionId) return true
+      }
+      return false
+    }
     const slot = slots.get(slotId)
-    if (!slot) return false
+    if (!slot) {
+      sessionToSlot.delete(sessionId)
+      return false
+    }
 
+    // Claim synchronously BEFORE the first await: the same session's idle can
+    // arrive from both SSE and a watchdog reconcile; both used to pass this
+    // guard (the map was only cleared inside the enqueued closure) and the
+    // second pass re-integrated the worker (duplicate manifest append, and a
+    // possible conflict_retry relaunch of an already-promoted task).
+    sessionToSlot.delete(sessionId)
     slot.status = "integrating"
     notifySlotsChanged()
 
@@ -473,7 +529,6 @@ export function createParallelCoordinator(
         : await integrateWorkerResult(job)
 
       stopSlotStream(slot)
-      sessionToSlot.delete(sessionId)
       slots.delete(slotId)
       notifySlotsChanged()
 
@@ -561,8 +616,8 @@ export function createParallelCoordinator(
       return true
     }
 
-    if (currentState.type === "pausing" && slots.size === 0 && integrationQueue.pendingCount() === 0) {
-      deps.loop.dispatch({ type: "session_idle" })
+    if (currentState.type === "pausing") {
+      maybeDrainPausing()
       return true
     }
 
@@ -571,6 +626,18 @@ export function createParallelCoordinator(
     }
 
     return true
+  }
+
+  /**
+   * Complete a user pause once every worker has been released. In parallel
+   * mode nothing else dispatches `session_idle` for the pausing state: the
+   * watchdog only runs with active sessions, and the single-session driver
+   * effect does not fire while paused. Called after each release path.
+   */
+  function maybeDrainPausing(): void {
+    if (deps.loop.state().type !== "pausing") return
+    if (slots.size > 0 || integrationQueue.pendingCount() > 0) return
+    deps.loop.dispatch({ type: "session_idle" })
   }
 
   function handleSessionError(sessionId: string | undefined): WorkerSlotId | undefined {
@@ -583,6 +650,7 @@ export function createParallelCoordinator(
       sessionToSlot.delete(sessionId)
       slots.delete(slotId)
       notifySlotsChanged()
+      maybeDrainPausing()
     }
     return slotId
   }
@@ -609,15 +677,21 @@ export function createParallelCoordinator(
     let anyWorking = false
     let anyUnknown = false
 
+    const idleReconciles: Promise<boolean>[] = []
     for (const { slot, verdict } of verdicts) {
       if (verdict === "idle" || verdict === "missing") {
-        await handleSessionIdle(slot.sessionId)
+        // Integrate concurrently: the serial integration queue already
+        // serializes the git operations; awaiting each verdict's full
+        // integration + next-wave launch before processing the next verdict
+        // serialized the whole recovery behind the slowest worker.
+        idleReconciles.push(handleSessionIdle(slot.sessionId))
       } else if (verdict === "working") {
         anyWorking = true
       } else {
         anyUnknown = true
       }
     }
+    await Promise.all(idleReconciles)
 
     if (anyWorking) return "working"
     if (anyUnknown) return "unknown"

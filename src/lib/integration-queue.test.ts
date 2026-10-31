@@ -350,4 +350,108 @@ describe("integration-queue", () => {
       rmSync(scratch, { recursive: true, force: true })
     }
   })
+
+  it("does not count a task description quoted inside a code fence as present (parser-aware presence)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-fence-"))
+    try {
+      const rootPlanPath = join(scratch, "PLAN.md")
+      const wtPath = join(scratch, ".loop-worktrees", "slot-5")
+      mkdirSync(wtPath, { recursive: true })
+
+      // The root plan mentions the task description ONLY inside a fenced code
+      // block (e.g. a quoted snippet), so the task is NOT actually present.
+      // A raw substring check (`planText.includes(taskDescription)`) would
+      // report "present" and wrongly claim the integration landed; the
+      // parser-aware check must report the deferral instead.
+      const rootPlanOnDisk = [
+        "# Plan",
+        "",
+        "```md",
+        "- [ ] **1.1** Task A",
+        "```",
+        "",
+      ].join(String.fromCharCode(10))
+      writeFileSync(rootPlanPath, rootPlanOnDisk)
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A" + String.fromCharCode(10))
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") {
+          return { exitCode: 0, stdout: "- [ ] **1.1** Task A" + String.fromCharCode(10), stderr: "" }
+        }
+        if (args[0] === "status") return { exitCode: 0, stdout: "", stderr: "" }
+        if (args[0] === "rev-parse" && args[1] === "HEAD") {
+          return { exitCode: 0, stdout: "sha-main-1" + String.fromCharCode(10), stderr: "" }
+        }
+        if (args[0] === "diff" && args[1] === "--name-only") {
+          return { exitCode: 0, stdout: "", stderr: "" }
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 4,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-fence",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+      })
+
+      // The task is absent from the plan proper → the [x] mark never landed →
+      // reporting "integrated" would hide an unchecked task.
+      expect(outcome.status).toBe("plan_write_deferred")
+      if (outcome.status === "plan_write_deferred") {
+        expect(outcome.deferred).toBe("integrated_mark")
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
+  it("reports eval_blocked (benign) when the task is already [BLOCKED] and parser-visible", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-alreadyblocked-"))
+    try {
+      const rootPlanPath = join(scratch, "PLAN.md")
+      const wtPath = join(scratch, ".loop-worktrees", "slot-3")
+      mkdirSync(wtPath, { recursive: true })
+
+      // A prior block pass already marked the task: the transform finds
+      // nothing to block (no pending/completed line) → skipped:no_change,
+      // and the parser still sees the [BLOCKED] task line → benign
+      // eval_blocked, not a deferral.
+      const rootPlanOnDisk = "- [BLOCKED: stale eval] **1.1** Task A" + String.fromCharCode(10)
+      writeFileSync(rootPlanPath, rootPlanOnDisk)
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A" + String.fromCharCode(10))
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") {
+          return { exitCode: 0, stdout: "- [ ] **1.1** Task A" + String.fromCharCode(10), stderr: "" }
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 3,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-blocked",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+        evalGate: async () => ({ pass: false, retry: false, reason: "Missing unit test" }),
+      })
+
+      expect(outcome.status).toBe("eval_blocked")
+      if (outcome.status === "eval_blocked") {
+        expect(outcome.reason).toBe("Missing unit test")
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
 })

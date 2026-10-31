@@ -527,6 +527,27 @@ function scanTaskSubBullets(
 }
 
 /**
+ * Structured sub-bullet directives a task may carry. Single source of truth:
+ * `getEvalRubricForTask` matches the `eval` directive, `parsePlanTasks` the
+ * `depends`/`files` pair, and `getTaskSubNotes` must exclude ALL of them —
+ * adding a directive to any consumer without extending this list would leak
+ * the directive line into worker memory notes (extractWorkerPlanEdits →
+ * root PLAN.md).
+ */
+const TASK_DIRECTIVES = ["eval", "depends", "deps", "files", "scope"] as const
+
+const directiveValueRe = (names: readonly string[]): RegExp =>
+  new RegExp(`^\\s*-\\s*(?:${names.join("|")}):\\s*(.+?)\\s*$`, "i")
+
+const EVAL_DIRECTIVE_RE = directiveValueRe(["eval"])
+const DEPENDS_DIRECTIVE_RE = directiveValueRe(["depends", "deps"])
+const FILES_DIRECTIVE_RE = directiveValueRe(["files", "scope"])
+const ANY_DIRECTIVE_RE = new RegExp(
+  `^\\s*-\\s*(?:${TASK_DIRECTIVES.join("|")}):`,
+  "i",
+)
+
+/**
  * Extract the eval rubric declared under a pending or completed task, if any.
  */
 export function getEvalRubricForTask(
@@ -545,10 +566,9 @@ export function getEvalRubricForTask(
   }
   if (taskLineIdx === -1) return null
 
-  const evalRe = /^\s*-\s*eval:\s*(.+?)\s*$/i
   const { lines } = scanTaskSubBullets(lineStates, taskLineIdx)
   for (const line of lines) {
-    const m = line.match(evalRe)
+    const m = line.match(EVAL_DIRECTIVE_RE)
     if (m) return m[1]
   }
   return null
@@ -571,7 +591,7 @@ export function getTaskSubNotes(
   const { lines } = scanTaskSubBullets(lineStates, taskLineIdx)
   const out: string[] = []
   for (const line of lines) {
-    if (/^\s*-\s*(?:eval|depends|deps|files|scope):/i.test(line)) continue
+    if (ANY_DIRECTIVE_RE.test(line)) continue
     const cleaned = line.trim().replace(/^[-*+]\s+/, "")
     if (cleaned) out.push(cleaned)
   }
@@ -637,8 +657,8 @@ export function parsePlanTasks(content: string): PlanTaskNode[] {
   let hasSeenTasksInPhase = false
   let indexInPhase = 0
 
-  const dependsRe = /^\s*-\s*(?:depends|deps):\s*(.+?)\s*$/i
-  const filesRe = /^\s*-\s*(?:files|scope):\s*(.+?)\s*$/i
+  const dependsRe = DEPENDS_DIRECTIVE_RE
+  const filesRe = FILES_DIRECTIVE_RE
 
   for (const entry of lineStates) {
     if (entry.isFenced) continue

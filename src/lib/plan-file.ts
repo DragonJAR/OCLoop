@@ -11,6 +11,7 @@
  */
 
 import { DEFAULTS } from "./constants"
+import { resolve } from "node:path"
 
 export function resolvePlanFile(planFile: string | undefined): string {
   if (!planFile || !planFile.trim()) {
@@ -24,5 +25,17 @@ export function resolvePromptFile(promptFile: string | undefined): string {
     return DEFAULTS.PROMPT_FILE
   }
   return promptFile.trim()
+}
+
+/**
+ * Absolute repository root the parallel workers and the integration queue
+ * operate against. `process.cwd()` is the launch directory (boot pre-flight
+ * already guarantees it is the writable project dir); resolving it here —
+ * instead of leaving every consumer a `?? process.cwd()` fallback — keeps one
+ * canonical root so a OCLoop launched from a subdirectory still rebases and
+ * CAS-writes against the real repo root.
+ */
+export function resolveRepoRoot(): string {
+  return resolve(process.cwd())
 }
 

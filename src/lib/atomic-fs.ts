@@ -35,15 +35,72 @@ export function atomicWriteTextSync(path: string, content: string): void {
 
 /**
  * Test whether a filename matches the deterministic temporary file pattern for
- * a target base file and process ID.
+ * a target base file.
  *
  * Matches both randomized-suffix temporary files (`${base}.${pid}.*.tmp`) and
- * legacy non-randomized files (`${base}.${pid}.tmp`).
+ * legacy non-randomized files (`${base}.${pid}.tmp`). When `pid` is given the
+ * match is scoped to that PID; without it, any PID matches — the sweep
+ * cleanup uses that mode so a tmp orphaned by a crashed previous OCLoop
+ * process (its PID is gone, nothing else will ever claim it) is still
+ * reclaimed instead of accumulating forever next to the target file.
  */
-export function isDeterministicTmpFile(file: string, base: string, pid = process.pid): boolean {
-  if (!file || !base || !Number.isSafeInteger(pid) || pid <= 0) return false
-  const prefix = `${base}.${pid}.`
-  return (file.startsWith(prefix) && file.endsWith(".tmp")) || file === `${base}.${pid}.tmp`
+export function isDeterministicTmpFile(file: string, base: string, pid?: number): boolean {
+  if (!file || !base) return false
+  if (pid !== undefined) {
+    if (!Number.isSafeInteger(pid) || pid <= 0) return false
+    const prefix = `${base}.${pid}.`
+    return (file.startsWith(prefix) && file.endsWith(".tmp")) || file === `${base}.${pid}.tmp`
+  }
+  const tmp = file.slice(0, -4)
+  if (!file.endsWith(".tmp") || !tmp.startsWith(`${base}.`)) return false
+  const tail = tmp.slice(base.length + 1)
+  return /^\d+(\..*)?$/.test(tail)
+}
+
+/** Extract the owning PID from a deterministic tmp filename, or `null`. */
+export function tmpFilePid(file: string): number | null {
+  const match = file.match(/\.(\d+)(?:\.[^.]*)?\.tmp$/)
+  if (!match) return null
+  const pid = Number(match[1])
+  return Number.isSafeInteger(pid) && pid > 0 ? pid : null
+}
+
+/**
+ * Whether a PID still belongs to a live process. A tmp whose owner is gone is
+ * an orphan from a crashed write and can be reclaimed; a tmp owned by a live
+ * process (possibly another OCLoop instance) must be left alone — deleting it
+ * would break that process's pending rename.
+ */
+export function isProcessAlive(pid: number): boolean {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return false
+  if (pid === process.pid) return true
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (err) {
+    // EPERM means the process exists but is owned by another user.
+    return (err as NodeJS.ErrnoException)?.code === "EPERM"
+  }
+}
+
+/** True when the deterministic tmp file is a reclaimable orphan. */
+export function isOrphanTmpFile(file: string): boolean {
+  const pid = tmpFilePid(file)
+  if (pid === null) return false
+  return !isProcessAlive(pid)
+}
+
+/**
+ * Whether a deterministic tmp may be reclaimed by THIS process's sweep:
+ * its own PID's tmps (historical semantics — the error path sweeps the
+ * failed write it just made) plus any-PID tmps whose owner is dead (crash
+ * orphans). A tmp owned by another LIVE process is left untouched.
+ */
+function isReclaimableTmp(file: string, base: string): boolean {
+  if (!isDeterministicTmpFile(file, base)) return false
+  const pid = tmpFilePid(file)
+  if (pid === null) return false
+  return pid === process.pid || !isProcessAlive(pid)
 }
 
 /** Best-effort cleanup of a deterministic tmp left by a failed sync write. */
@@ -53,7 +110,9 @@ export function cleanupDeterministicTmp(path: string): void {
     const base = basename(path)
     if (!existsSync(dir)) return
     for (const file of readdirSync(dir)) {
-      if (isDeterministicTmpFile(file, base)) {
+      // Own-pid tmps (error path) + dead-pid crash orphans; a live sibling
+      // OCLoop's in-flight tmp must survive this sweep.
+      if (isReclaimableTmp(file, base)) {
         try {
           unlinkSync(join(dir, file))
         } catch {
@@ -73,7 +132,8 @@ export async function cleanupDeterministicTmpAsync(path: string): Promise<void> 
     const base = basename(path)
     const entries = await readdir(dir).catch(() => [] as string[])
     for (const file of entries) {
-      if (isDeterministicTmpFile(file, base)) {
+      // Same reclaim policy as the sync sweep.
+      if (isReclaimableTmp(file, base)) {
         await rm(join(dir, file), { force: true }).catch(() => {})
       }
     }

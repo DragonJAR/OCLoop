@@ -18,6 +18,7 @@
 import { join, relative, resolve } from "node:path"
 import { compareAndSwapPlan } from "./plan-cas"
 import {
+  findTaskLineIndex,
   getTaskSubNotes,
   listPendingTaskDescriptions,
   markTaskCompleted,
@@ -101,7 +102,8 @@ export interface IntegrationJob {
   sessionId: string
   worktreePath: string
   baseSha: string
-  repoRoot?: string
+  /** Absolute repository root — required so integration never silently runs git against the cwd. */
+  repoRoot: string
   planPath: string
   runGit?: GitRunner
   readFile?: (path: string) => Promise<string | null>
@@ -154,7 +156,7 @@ async function defaultReadFile(path: string): Promise<string | null> {
 export async function integrateWorkerResult(
   job: IntegrationJob,
 ): Promise<IntegrationOutcome> {
-  const repoRoot = resolve(job.repoRoot ?? process.cwd())
+  const repoRoot = resolve(job.repoRoot)
   const runGit = job.runGit ?? defaultGitRunner
   const readFile = job.readFile ?? defaultReadFile
   const absPlanPath = resolve(repoRoot, job.planPath)
@@ -217,10 +219,12 @@ export async function integrateWorkerResult(
       if (!cas.wrote) {
         if (cas.skipped === "no_change") {
           // Already [BLOCKED] (benign) vs task gone from the root plan (the
-          // block will never be recorded): distinguish via presence, mirroring
-          // the integrated-mark branch.
+          // block will never be recorded): distinguish via parser-aware
+          // presence (task-line matching outside code fences), mirroring the
+          // integrated-mark branch. A raw substring hit inside a note or
+          // fence would falsely report "task present".
           const planText = await Bun.file(absPlanPath).text().catch(() => null)
-          if (planText !== null && planText.includes(job.taskDescription)) {
+          if (planText !== null && findTaskLineIndex(planText, job.taskDescription) !== -1) {
             return { status: "eval_blocked", reason: verdict.reason }
           }
           return {
@@ -309,9 +313,11 @@ export async function integrateWorkerResult(
       //     off itself) — benign, nothing left to do;
       // (b) the task description is gone entirely (another writer rewrote
       //     the plan) — the plan will never record this integration, and a
-      //     false "integrated" would hide it. Distinguish via presence.
+      //     false "integrated" would hide it. Distinguish via parser-aware
+      //     presence (task-line matching outside code fences): a raw
+      //     substring hit inside a note or fence must not count.
       const planText = await Bun.file(absPlanPath).text().catch(() => null)
-      if (planText !== null && planText.includes(job.taskDescription)) {
+      if (planText !== null && findTaskLineIndex(planText, job.taskDescription) !== -1) {
         return {
           status: "integrated",
           commitSha: workerHead,

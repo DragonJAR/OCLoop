@@ -155,6 +155,10 @@ let apiTimeouts = {
   abort: DEFAULT_RESILIENCE.abortTimeoutMs,
   status: DEFAULT_RESILIENCE.statusTimeoutMs,
   ping: DEFAULT_RESILIENCE.pingTimeoutMs,
+  healthProbe: Math.min(
+    DEFAULT_RESILIENCE.pingTimeoutMs,
+    Math.max(DEFAULT_RESILIENCE.watchdogTickMs * 2, 30_000),
+  ),
 }
 
 /**
@@ -168,6 +172,7 @@ export function configureApiTimeouts(
     | "abortTimeoutMs"
     | "statusTimeoutMs"
     | "pingTimeoutMs"
+    | "watchdogTickMs"
   >,
 ): void {
   apiTimeouts = {
@@ -176,6 +181,12 @@ export function configureApiTimeouts(
     abort: r.abortTimeoutMs,
     status: r.statusTimeoutMs,
     ping: r.pingTimeoutMs,
+    // A health probe is awaited inside a watchdog tick guarded by `ticking`,
+    // so an unresponsive server would otherwise blind the watchdog for the
+    // full ping budget (default 10 min). The probe must answer within the
+    // watchdog's own cadence; `pingTimeoutMs` remains the budget for SSE
+    // stream setup.
+    healthProbe: Math.min(r.pingTimeoutMs, Math.max(r.watchdogTickMs * 2, 30_000)),
   }
 }
 

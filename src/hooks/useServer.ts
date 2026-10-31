@@ -218,7 +218,12 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         version: serverVersion(),
         authorization: serverAuthorization(),
       })
-      await backend.fetchAgents({ timeoutMs: getApiTimeouts().ping })
+      // A health probe must answer within the watchdog's detection window:
+      // the probe is awaited inside a watchdog tick guarded by `ticking`, so
+      // an unresponsive server would otherwise blind the watchdog for the
+      // full ping budget (default 10 min) instead of the configured suspect
+      // threshold. `pingTimeoutMs` remains the budget for SSE stream setup.
+      await backend.fetchAgents({ timeoutMs: getApiTimeouts().healthProbe })
       setLastHealthyAt(monotonicNow())
       if (status() === "unhealthy") {
         setStatus("ready")

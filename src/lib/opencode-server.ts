@@ -4,8 +4,7 @@ import { randomBytes } from "node:crypto"
 import { spawn } from "node:child_process"
 import type { Config } from "@opencode-ai/sdk"
 import type { ServerOptions } from "@opencode-ai/sdk/server"
-import { resolveSpawnable, isWindowsShellShim } from "./command-exists"
-import { detectOpencodeVersion, type OpencodeMajor } from "./opencode-version"
+import { detectOpencodeVersion, getOpencodeSpawnTarget, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 
 export interface OpencodeServer {
@@ -93,15 +92,12 @@ function killServerProcess(proc: ServerProcess, killTree = true): void {
 }
 
 async function getServerSpawnTarget(): Promise<{ command: string; shell: boolean }> {
-  if (process.platform !== "win32") return { command: "opencode", shell: false }
-
-  const resolved = await resolveSpawnable("opencode")
-  const binary = resolved ?? "opencode"
-  const shell = isWindowsShellShim(binary)
-  return {
-    command: shell ? `"${binary}"` : binary,
-    shell,
-  }
+  // Shared resolution with the version detector (DRY): POSIX bare name,
+  // Windows resolved+quoted shim. Falls back to the bare name when the
+  // Windows lookup fails — the launcher must still try PATH.
+  const target = await getOpencodeSpawnTarget()
+  if (target) return target
+  return { command: "opencode", shell: false }
 }
 
 type StartOpencodeServerFunction = {

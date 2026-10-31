@@ -120,7 +120,7 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
   let lastHeartbeatAt = clock.monotonicNow()
   let recoveryAttempts = 0
   let ticking = false
-  let timer: ReturnType<typeof setInterval> | null = null
+  let timer: ReturnType<typeof setTimeout> | null = null
 
   function setHealth(next: WatchdogHealth): void {
     if (next !== health) {
@@ -325,18 +325,28 @@ export function createWatchdog(options: WatchdogCoreOptions): Watchdog {
     tick,
     start() {
       if (timer) return
-      timer = setInterval(() => {
-        // Never let a recovery action's rejection become an unhandled rejection.
-        tick().catch((err) => {
-          log("tick_error", {
-            message: toErrorMessage(err),
-          })
-        })
-      }, Math.min(options.config().tickMs, MAX_TIMEOUT_MS))
+      // Reactive cadence (same contract as suspectMs/confirmMs): each
+      // re-scheduling reads config() fresh, so a mid-session tickMs change
+      // applies on the very next tick without requiring stop/start.
+      const schedule = () => {
+        timer = setTimeout(() => {
+          if (timer === null) return // stopped while a tick was pending
+          timer = null
+          // Never let a recovery action's rejection become an unhandled rejection.
+          void tick()
+            .catch((err) => {
+              log("tick_error", {
+                message: toErrorMessage(err),
+              })
+            })
+            .finally(schedule)
+        }, Math.min(options.config().tickMs, MAX_TIMEOUT_MS))
+      }
+      schedule()
     },
     stop() {
       if (timer) {
-        clearInterval(timer)
+        clearTimeout(timer)
         timer = null
       }
     },

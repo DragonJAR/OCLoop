@@ -34,10 +34,10 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findTaskLineIndex } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
-import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
+import { resolvePlanFile, resolvePromptFile, resolveRepoRoot } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { clampParallelJobs } from "./lib/task-scheduler"
@@ -1359,6 +1359,16 @@ function AppContent(props: AppProps) {
    * compare before Bun.write, mirroring checkPlanComplete. If the plan
    * changed underfoot, defer (the next check re-evaluates against fresh
    * content) rather than clobbering the agent's edit.
+   *
+   * The CAS result is never ignored: `no_change` is benign only when the
+   * parser still finds the task line (already [BLOCKED] — a prior pass won
+   * the race); otherwise the plan will never record the block. A write that
+   * did not happen (`deferred`/`io_error`/`transform_error`), or a `no_change`
+   * with the task line gone, dispatches a recoverable `plan`-source error so
+   * the loop halts instead of re-selecting the unmarked task with a fresh
+   * eval budget (livelock). Mirrors the parallel coordinator's
+   * plan_write_deferred policy. The caller still resets its eval counter and
+   * advances: the recovered-from-error dialog owns what happens next.
    */
   async function blockTaskWithCompareAndSwap(task: string, reason: string): Promise<void> {
     try {
@@ -1368,12 +1378,51 @@ function AppContent(props: AppProps) {
         (c) => replaceTaskWithBlocked(c, task, reason),
         "eval",
       )
-      if (!cas.wrote) return // no pending task, or PLAN.md changed underfoot
-      activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
-        level: "warn",
+      if (cas.wrote) {
+        activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
+          level: "warn",
+        })
+        return
+      }
+      if (cas.skipped === "no_change") {
+        // Two very different causes, like the integrated-mark branch: a prior
+        // mark pass already [BLOCKED]ed the line (benign) vs the task line
+        // vanished (the block can never be recorded). Distinguish via the
+        // parser — a raw substring hit inside a note or fence must not count.
+        const planText = await Bun.file(planPath).text().catch(() => null)
+        if (planText !== null && findTaskLineIndex(planText, task) !== -1) {
+          activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
+            level: "warn",
+          })
+          return
+        }
+      }
+      const deferred =
+        cas.skipped === "deferred"
+          ? "plan changed underfoot"
+          : cas.skipped === "transform_error"
+            ? "mark transform threw"
+            : cas.skipped === "io_error"
+              ? "PLAN.md I/O failed"
+              : "task line no longer present"
+      log.warn("eval", "PLAN.md [BLOCKED] mark did not land", { skipped: cas.skipped })
+      loop.dispatch({
+        type: "error",
+        source: "plan",
+        message: t("errBlockMarkDeferred", { task: task.slice(0, 40), cause: deferred }),
+        recoverable: true,
       })
     } catch (err) {
       log.warn("eval", "Failed to mark task [BLOCKED] from eval", err)
+      loop.dispatch({
+        type: "error",
+        source: "plan",
+        message: t("errBlockMarkDeferred", {
+          task: task.slice(0, 40),
+          cause: toErrorMessage(err),
+        }),
+        recoverable: true,
+      })
     }
   }
 
@@ -1382,6 +1431,7 @@ function AppContent(props: AppProps) {
 
   const parallelCoordinator = createParallelCoordinator({
     maxJobs,
+    repoRoot: resolveRepoRoot(),
     planPath: resolvePlanFile(props.planFile),
     promptPath: resolvePromptFile(props.promptFile),
     loop: { state: loop.state, dispatch: loop.dispatch },

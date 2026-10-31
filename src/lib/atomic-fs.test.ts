@@ -9,6 +9,8 @@ import {
   cleanupDeterministicTmpAsync,
   deterministicTmpPath,
   isDeterministicTmpFile,
+  isOrphanTmpFile,
+  tmpFilePid,
 } from "./atomic-fs"
 
 let dir = ""
@@ -85,6 +87,55 @@ describe("atomic-fs", () => {
     expect(existsSync(tmp)).toBe(true)
     cleanupDeterministicTmp(path)
     expect(existsSync(tmp)).toBe(false)
+  })
+
+  it("cleanupDeterministicTmp reclaims a tmp orphaned by a dead process", () => {
+    dir = mkdtempSync(join(tmpdir(), "atomic-fs-"))
+    const path = join(dir, "PLAN.md")
+    // PID 2^22 is above the default pid_max on macOS/Linux and is never alive.
+    const deadPid = 4194303
+    const orphan = `${path}.${deadPid}.1700000000-abcdef12.tmp`
+    writeFileSync(orphan, "stale")
+    cleanupDeterministicTmp(path)
+    expect(existsSync(orphan)).toBe(false)
+  })
+
+  it("cleanupDeterministicTmp keeps a tmp owned by another live process", () => {
+    dir = mkdtempSync(join(tmpdir(), "atomic-fs-"))
+    const path = join(dir, "PLAN.md")
+    // A pid that is guaranteed alive but is not this test process: spawn a
+    // real child and use its pid. The sweep must not touch its in-flight tmp.
+    const child = Bun.spawn(["sleep", "10"])
+    try {
+      const foreign = `${path}.${child.pid}.1700000000-abcdef12.tmp`
+      writeFileSync(foreign, "in-flight")
+      cleanupDeterministicTmp(path)
+      expect(existsSync(foreign)).toBe(true)
+    } finally {
+      child.kill()
+    }
+  })
+
+  describe("orphan detection", () => {
+    it("extracts the owning pid from both tmp shapes", () => {
+      expect(tmpFilePid("PLAN.md.1234.1700000000-abcdef12.tmp")).toBe(1234)
+      expect(tmpFilePid("PLAN.md.1234.tmp")).toBe(1234)
+      expect(tmpFilePid("PLAN.md.tmp")).toBeNull()
+      expect(tmpFilePid("other.txt")).toBeNull()
+    })
+
+    it("treats a dead owner as an orphan and a live owner as not", () => {
+      expect(isOrphanTmpFile(`PLAN.md.${process.pid}.1700000000-abcdef12.tmp`)).toBe(false)
+      expect(isOrphanTmpFile("PLAN.md.4194303.1700000000-abcdef12.tmp")).toBe(true)
+      expect(isOrphanTmpFile("PLAN.md.tmp")).toBe(false)
+    })
+
+    it("matches any-pid tmp files only when the pid is given", () => {
+      expect(isDeterministicTmpFile("PLAN.md.1234.1700000000-abcdef12.tmp", "PLAN.md")).toBe(true)
+      expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md")).toBe(true)
+      expect(isDeterministicTmpFile("PLAN.md.notapid.tmp", "PLAN.md")).toBe(false)
+      expect(isDeterministicTmpFile("other.md.1234.tmp", "PLAN.md")).toBe(false)
+    })
   })
 
   describe("isDeterministicTmpFile", () => {
