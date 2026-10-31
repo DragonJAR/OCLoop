@@ -58,7 +58,7 @@ describe("compareAndSwapPlan", () => {
     expect(await Bun.file(planPath).text()).toBe("- [ ] one\n- [ ] two\n")
   })
 
-  it("does not throw when the transform throws; leaves the file intact", async () => {
+  it("does not throw when the transform throws; classifies skipped as transform_error", async () => {
     const original = "- [ ] one\n"
     writeFileSync(planPath, original, "utf-8")
     const res = await compareAndSwapPlan(planPath, () => {
@@ -66,6 +66,20 @@ describe("compareAndSwapPlan", () => {
     })
     expect(res.wrote).toBe(false)
     expect(res.result).toBeNull()
+    // A throwing transform is NOT "already in the desired state": the skipped
+    // reason must distinguish it from no_change so callers' presence checks
+    // don't take the benign branch on a failed mark.
+    expect(res.skipped).toBe("transform_error")
+    expect(await Bun.file(planPath).text()).toBe(original)
+  })
+
+  it("reports skipped no_change when the transform returns null (benign)", async () => {
+    const original = "- [ ] one\n"
+    writeFileSync(planPath, original, "utf-8")
+    const res = await compareAndSwapPlan(planPath, () => null)
+    expect(res.wrote).toBe(false)
+    expect(res.result).toBeNull()
+    expect(res.skipped).toBe("no_change")
     expect(await Bun.file(planPath).text()).toBe(original)
   })
 

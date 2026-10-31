@@ -597,8 +597,7 @@ describe("loopReducer", () => {
       )
       expect(result.type).toBe("cooldown")
       if (result.type === "cooldown") {
-        expect(result.kind).toBe("rate_limit")
-      }
+        expect(result.kind).toBe("rate_limit")      }
     })
 
     it("does not enter cooldown from ready/paused", () => {
@@ -618,6 +617,41 @@ describe("loopReducer", () => {
           attempt: 1,
         }).type,
       ).toBe("paused")
+    })
+
+    it("extends an armed cooldown's deadline without counting a new attempt, never shortening it", () => {
+      const base = loopReducer(
+        { type: "running", iteration: 3, sessionId: "s" },
+        { type: "rate_limited", reason: "429", resumeAt: 1_000, attempt: 1 },
+      )
+      expect(base.type).toBe("cooldown")
+
+      // A duplicate report's server Retry-After outlives the armed backoff.
+      const extended = loopReducer(base, {
+        type: "extend_cooldown",
+        resumeAt: 2_000,
+        reason: "429 (retry after 60s)",
+      })
+      expect(extended.type).toBe("cooldown")
+      if (extended.type === "cooldown") {
+        expect(extended.resumeAt).toBe(2_000)
+        expect(extended.attempt).toBe(1) // same incident, no new attempt
+        expect(extended.reason).toBe("429 (retry after 60s)")
+      }
+
+      // An earlier Retry-After must not shorten the extended deadline.
+      const shorter = loopReducer(extended, {
+        type: "extend_cooldown",
+        resumeAt: 1_500,
+        reason: "429",
+      })
+      expect(shorter.type).toBe("cooldown")
+      if (shorter.type === "cooldown") {
+        expect(shorter.resumeAt).toBe(2_000)
+      }
+
+      // From non-cooldown states the action is a no-op.
+      expect(loopReducer({ type: "ready" }, { type: "extend_cooldown", resumeAt: 9_999, reason: "x" }).type).toBe("ready")
     })
 
     it("preserves a pause across a cooldown: pausing → rate_limited → resume_cooldown ⇒ paused (Bug #4)", () => {

@@ -222,6 +222,19 @@ export function loopReducer(state: LoopState, action: LoopAction): LoopState {
       return state
     }
 
+    case "extend_cooldown": {
+      // A duplicate incident report carried a server Retry-After longer than
+      // the armed backoff: push the deadline out (never shorten — the hook
+      // only dispatches when the new deadline is later). No new attempt: the
+      // incident is the same one already counted. The reason is preserved so
+      // wake reconciliation (which reads state.resumeAt) and the dashboard
+      // still describe the same incident.
+      if (state.type === "cooldown" && action.resumeAt > state.resumeAt) {
+        return { ...state, resumeAt: action.resumeAt, reason: action.reason }
+      }
+      return state
+    }
+
     case "resume_cooldown": {
       // Cooldown elapsed: back to running with an empty session so the next
       // iteration is re-created and the prompt re-sent (same plan progress).

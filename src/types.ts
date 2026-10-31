@@ -127,6 +127,10 @@ export type LoopAction =
       attempt: number
       kind?: "rate_limit" | "transient"
     }
+  // A duplicate incident report arrived with a server Retry-After that
+  // outlives the armed cooldown: push the deadline out without counting a
+  // new attempt. Only valid from cooldown; other states ignore it.
+  | { type: "extend_cooldown"; resumeAt: number; reason: string }
   // Cooldown elapsed: go back to running and retry the same plan task. The plan
   // progress is preserved; a new session (and thus a new attempt) is created.
   | { type: "resume_cooldown" }

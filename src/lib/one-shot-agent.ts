@@ -56,7 +56,14 @@ export async function runOneShotAgent(
   const timeoutMs = opts.timeoutMs ?? 60_000
   const pollMs = opts.pollMs ?? 1500
   const now = opts.now ?? monotonicNow
-  const session = await createSession(client, { timeoutMs })
+  // `timeoutMs` is the OVERALL budget for the call (create + send + poll), as
+  // documented on OneShotOptions: the deadline is captured up front and every
+  // phase spends within it. Applying the full budget per phase (create, send,
+  // AND the poll loop starting only afterwards) tripled the worst-case
+  // wall-clock to 3x timeoutMs.
+  const deadline = now() + timeoutMs
+  const remaining = () => Math.max(deadline - now(), 1)
+  const session = await createSession(client, { timeoutMs: remaining() })
   const sessionID = session.id
   try {
     const assistantCountBefore = countAssistantMessages(
@@ -65,10 +72,9 @@ export async function runOneShotAgent(
     await sendPromptAsync(
       client,
       { sessionID, agent: opts.agent, model: opts.model, parts: [{ type: "text", text: promptText }] },
-      { timeoutMs },
+      { timeoutMs: remaining() },
     )
 
-    const deadline = now() + timeoutMs
     let messages: SessionMessage[] = []
     for (;;) {
       await Bun.sleep(pollMs)

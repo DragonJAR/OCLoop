@@ -17,8 +17,8 @@
  *   mirrors `loop-state-store.ts`).
  * - Calls `transform(content)`. If it returns `null`, there is nothing to
  *   write (e.g. the task to block no longer exists) → `{ wrote: false }`. If
- *   it throws, the error is logged and we return `{ wrote: false }` without
- *   touching the file.
+ *   it throws, the error is logged and we return
+ *   `{ wrote: false, skipped: "transform_error" }` without touching the file.
  * - Re-reads `planPath`. If it changed since the first read, another writer
  *   (typically the agent) beat us → defer: `{ wrote: false }`, file untouched.
  * - Otherwise writes the transformed content through a unique sibling temp file
@@ -49,10 +49,16 @@ export interface CasResult {
    * Why nothing was written, when `wrote` is false. `no_change` means the
    * transform produced no change (task already in the desired state — benign);
    * `deferred` means another writer beat us; `io_error` means the file could
-   * not be read/written. Callers that must distinguish "already done" from
-   * "write did not happen" branch on this, not on `wrote` alone.
+   * not be read/written; `transform_error` means the transform itself threw.
+   * Callers that must distinguish "already done" from "write did not happen"
+   * branch on this, not on `wrote` alone.
+   *
+   * `transform_error` is deliberately distinct from `no_change`: a throwing
+   * transform is a bug or an unexpected input, not evidence that the desired
+   * state is already in place. Folding it into `no_change` would let a
+   * presence check mistake a failed mark for a benign one.
    */
-  skipped?: "no_change" | "deferred" | "io_error"
+  skipped?: "no_change" | "deferred" | "io_error" | "transform_error"
 }
 
 /**
@@ -74,7 +80,7 @@ export async function compareAndSwapPlan(
       updated = transform(before)
     } catch (transformErr) {
       log.warn(caller, "compareAndSwapPlan transform threw", transformErr)
-      return { wrote: false, result: null, skipped: "no_change" }
+      return { wrote: false, result: null, skipped: "transform_error" }
     }
     if (updated === null) return { wrote: false, result: null, skipped: "no_change" }
 

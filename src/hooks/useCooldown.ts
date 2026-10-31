@@ -15,6 +15,7 @@ import { createSignal, onCleanup } from "solid-js"
 import { computeBackoff } from "../lib/backoff"
 import { monotonicNow } from "../lib/clock"
 import { log } from "../lib/debug-logger"
+import { MAX_TIMEOUT_MS } from "../lib/constants"
 import type { t as Tfn } from "../lib/i18n"
 import type { ResilienceConfig } from "../lib/config"
 import type {
@@ -43,6 +44,12 @@ export type CooldownDispatchAction =
       attempt: number
       kind: "rate_limit" | "transient"
     }
+  | {
+      /** Extend the armed cooldown to a later monotonic deadline (Retry-After). */
+      type: "extend_cooldown"
+      resumeAt: number
+      reason: string
+    }
   | { type: "resume_cooldown" }
   | {
       type: "error"
@@ -60,7 +67,19 @@ export interface CooldownApi {
   setAttempts: (n: number) => void
   /** Reset the counter (clean idle / reconcile / completion). */
   resetAttempts: () => void
-  /** Enter a cooldown wait, or escalate to an error after maxRateLimitRetries. */
+  /**
+   * Enter a cooldown wait, or escalate to an error after maxRateLimitRetries.
+   *
+   * Duplicate-report absorption: while a cooldown is armed, ANY report is
+   * absorbed regardless of its wording — the same incident reaches the loop
+   * through two channels (the API call failing AND the backend's session.error
+   * event), and classifySessionError can word them differently for the same
+   * HTTP response. The armed cooldown already owns the timer, the countdown,
+   * and the attempt count; only a genuinely later incident (armed cooldown
+   * fired → timer null again) counts a fresh attempt. A duplicate carrying a
+   * server Retry-After extends the armed deadline instead of being dropped
+   * with its (shorter) formula delay — see applyRetryAfterExtension.
+   */
   enterCooldown: (
     reason: string,
     retryAfterSeconds?: number,
@@ -81,6 +100,8 @@ export interface CooldownApi {
 export function useCooldown(deps: CooldownDeps): CooldownApi {
   let rateLimitAttempts = 0
   let wallClockResumeAt = 0
+  /** Monotonic deadline of the armed cooldown (for Retry-After comparisons). */
+  let armedResumeAt = 0
   let lastCooldownReason: string | null = null
   let cooldownTimer: ReturnType<typeof setTimeout> | null = null
   let cooldownTicker: ReturnType<typeof setInterval> | null = null
@@ -97,10 +118,65 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     }
     setCooldownRemainingMs(0)
     wallClockResumeAt = 0
+    armedResumeAt = 0
     lastCooldownReason = null
   }
 
   onCleanup(clearTimers)
+
+  /**
+   * A duplicate report carrying a server Retry-After must not be dropped
+   * alongside its formula delay: the server's window is authoritative
+   * (computeBackoff honors it for fresh entries). Extend the armed cooldown
+   * only when the new deadline is LATER — an earlier Retry-After must not
+   * shorten a backoff already armed. Re-arms timers/countdown/reducer deadline
+   * without touching the attempt counter.
+   */
+  function applyRetryAfterExtension(
+    retryAfterSeconds: number,
+    reason: string,
+    kind: "rate_limit" | "transient",
+  ): void {
+    const extensionMs = Math.min(MAX_TIMEOUT_MS, Math.max(0, Math.round(retryAfterSeconds * 1000)))
+    const newResumeAt = monotonicNow() + extensionMs
+    if (newResumeAt <= armedResumeAt) return
+    log.health("ratelimit", "cooldown extended by duplicate Retry-After", {
+      reason,
+      kind,
+      retryAfterSeconds,
+    })
+    rearmCooldownTimers(newResumeAt)
+    deps.dispatch({ type: "extend_cooldown", resumeAt: newResumeAt, reason })
+  }
+
+  /** Swap the countdown ticker and resume timer to a new deadline, in place. */
+  function rearmCooldownTimers(resumeAt: number): void {
+    if (cooldownTimer) clearTimeout(cooldownTimer)
+    if (cooldownTicker) clearInterval(cooldownTicker)
+    armedResumeAt = resumeAt
+    wallClockResumeAt = Date.now() + Math.max(0, resumeAt - monotonicNow())
+    setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
+    const tickerId = setInterval(() => {
+      const remaining = Math.max(0, resumeAt - monotonicNow())
+      setCooldownRemainingMs(remaining)
+      if (remaining <= 0) {
+        clearInterval(tickerId)
+        if (cooldownTicker === tickerId) {
+          cooldownTicker = null
+        }
+      }
+    }, 250)
+    cooldownTicker = tickerId
+    cooldownTimer = setTimeout(() => {
+      cooldownTimer = null
+      // Invariant: all cooldown timers are cleared before leaving cooldown —
+      // holds for every dispatch path, not just the externally-driven one.
+      clearTimers()
+      if (deps.stateType() === "cooldown") {
+        deps.dispatch({ type: "resume_cooldown" })
+      }
+    }, Math.max(0, resumeAt - monotonicNow()))
+  }
 
   function enterCooldown(
     reason: string,
@@ -110,14 +186,30 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     // Re-entrance guard: the same incident can reach us through two channels
     // (the API call failing AND the subsequent SSE session.error event), and
     // each unguarded entry double-counts `rateLimitAttempts`, falsely
-    // accelerating the escalation to errRatePersistent. While a cooldown for
-    // the same reason is armed, a duplicate report is absorbed: the cooldown
-    // in flight already owns the timer, the countdown, and the attempt count.
-    // A different reason still counts, preserving escalation semantics.
-    if (cooldownTimer && reason === lastCooldownReason) {
-      log.health("ratelimit", "duplicate rate-limit report absorbed", { reason, kind })
+    // accelerating the escalation to errRatePersistent. While a cooldown is
+    // armed, ANY duplicate report is absorbed regardless of wording: the
+    // cooldown in flight already owns the timer, the countdown, and the
+    // attempt count. classifySessionError can word the same HTTP 429
+    // differently per channel (raw API error vs session.error payload), so an
+    // exact reason comparison would miss the duplicate. Only a genuinely
+    // later incident re-arms — after the armed cooldown fired, cooldownTimer
+    // is null again and the next enterCooldown counts a fresh attempt.
+    if (cooldownTimer) {
+      if (reason === lastCooldownReason) {
+        log.health("ratelimit", "duplicate rate-limit report absorbed", { reason, kind })
+      } else {
+        log.health("ratelimit", "duplicate rate-limit report absorbed (incident match)", {
+          reason,
+          lastCooldownReason,
+          kind,
+        })
+      }
+      if (retryAfterSeconds !== undefined) {
+        applyRetryAfterExtension(retryAfterSeconds, reason, kind)
+      }
       return
     }
+    lastCooldownReason = reason
     const r = deps.resilience()
     rateLimitAttempts++
 
@@ -177,38 +269,17 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
     // Record AFTER clearTimers (which resets the guard state) so the duplicate-
     // report guard sees this reason for as long as the cooldown timer is armed.
     lastCooldownReason = reason
+    armedResumeAt = resumeAt
     wallClockResumeAt = Date.now() + delayMs
 
     deps.dispatch({ type: "rate_limited", reason, resumeAt, attempt: rateLimitAttempts, kind })
 
-    // Seed the countdown with the same formula the ticker uses so the dashboard
-    // doesn't briefly show the full delayMs if the renderer stalls before the first tick.
-    setCooldownRemainingMs(Math.max(0, resumeAt - monotonicNow()))
+    // Arm the countdown ticker and the resume timer. The countdown is seeded
+    // with the same formula the ticker uses so the dashboard doesn't briefly
+    // show the full delayMs if the renderer stalls before the first tick.
     // Capture the interval ID locally so the self-stop branch clears the exact
     // timer it was scheduled by, independent of any concurrent clearTimers.
-    const tickerId = setInterval(() => {
-      const remaining = Math.max(0, resumeAt - monotonicNow())
-      setCooldownRemainingMs(remaining)
-      if (remaining <= 0) {
-        clearInterval(tickerId)
-        if (cooldownTicker === tickerId) {
-          cooldownTicker = null
-        }
-      }
-    }, 250)
-    cooldownTicker = tickerId
-
-    // Resume after the backoff. The idle effect (running + empty session) then
-    // re-creates the session and re-sends the prompt for the same iteration.
-    cooldownTimer = setTimeout(() => {
-      cooldownTimer = null
-      // Invariant: all cooldown timers are cleared before leaving cooldown —
-      // holds for every dispatch path, not just the externally-driven one.
-      clearTimers()
-      if (deps.stateType() === "cooldown") {
-        deps.dispatch({ type: "resume_cooldown" })
-      }
-    }, delayMs)
+    rearmCooldownTimers(resumeAt)
   }
 
   function reconcileWake(gapMs = 0): boolean {

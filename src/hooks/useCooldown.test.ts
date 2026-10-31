@@ -90,10 +90,15 @@ describe("useCooldown (W3-07)", () => {
       h.resilience.maxRateLimitRetries = 2
       const cd = useCooldown(h.deps)
 
+      // Each clearTimers() ends the previous incident's armed window so the
+      // next enterCooldown counts a fresh attempt (the duplicate-report guard
+      // is scoped to the armed cooldown; see the absorption tests).
       cd.enterCooldown("err1")
       expect(h.dispatched[0].type).toBe("rate_limited")
+      cd.clearTimers()
       cd.enterCooldown("err2")
       expect(h.dispatched[1].type).toBe("rate_limited")
+      cd.clearTimers()
 
       // 3rd attempt exceeds max 2
       cd.enterCooldown("err3")
@@ -129,10 +134,11 @@ describe("useCooldown (W3-07)", () => {
     })
   })
 
-  it("absorbs a duplicate rate-limit report for the same incident but counts a different reason", () => {
-    createRoot((dispose) => {
+  it("absorbs a duplicate rate-limit report for the same incident and counts a new incident after the cooldown fires", () => {
+    createRoot(async (dispose) => {
       const h = makeTestDeps()
       h.resilience.maxRateLimitRetries = 5
+      h.resilience.backoffBaseMs = 20
       const cd = useCooldown(h.deps)
 
       // First report arms the cooldown: attempts 1, one dispatch.
@@ -146,13 +152,71 @@ describe("useCooldown (W3-07)", () => {
       expect(cd.getAttempts()).toBe(1)
       expect(h.dispatched).toHaveLength(1)
 
-      // A different reason is a genuinely new incident → counted and armed.
+      // Once the armed cooldown fires, the next report is a NEW incident and
+      // counts a fresh attempt (the guard is scoped to the armed window).
+      await new Promise((resolve) => setTimeout(resolve, 60))
       cd.enterCooldown("network timeout")
       expect(cd.getAttempts()).toBe(2)
       expect(h.dispatched).toHaveLength(2)
       if (h.dispatched[1].type === "rate_limited") {
         expect(h.dispatched[1].attempt).toBe(2)
       }
+
+      cd.clearTimers()
+      dispose()
+    })
+  })
+
+  it("absorbs a re-worded duplicate report of the same incident (API vs SSE wording)", () => {
+    createRoot((dispose) => {
+      const h = makeTestDeps()
+      h.resilience.maxRateLimitRetries = 5
+      const cd = useCooldown(h.deps)
+
+      // Channel 1 (API path): the raw API error text.
+      cd.enterCooldown("Error: 429 Too Many Requests")
+      expect(cd.getAttempts()).toBe(1)
+      expect(h.dispatched).toHaveLength(1)
+
+      // Channel 2 (SSE path): the session.error payload words the SAME HTTP
+      // 429 differently. The armed cooldown owns the incident, so this is a
+      // duplicate and must be absorbed — not counted as a second attempt.
+      cd.enterCooldown("session error: rate limit exceeded (retry after 60s)")
+      expect(cd.getAttempts()).toBe(1)
+      expect(h.dispatched).toHaveLength(1)
+
+      cd.clearTimers()
+      dispose()
+    })
+  })
+
+  it("extends the armed cooldown when a duplicate carries a longer server Retry-After", () => {
+    createRoot((dispose) => {
+      const h = makeTestDeps()
+      h.resilience.maxRateLimitRetries = 5
+      const cd = useCooldown(h.deps)
+
+      // First report: formula backoff only (no Retry-After) → attempt 1.
+      cd.enterCooldown("429 Too Many Requests")
+      expect(cd.getAttempts()).toBe(1)
+      const armed = h.dispatched[0]
+      if (armed.type !== "rate_limited") throw new Error("expected rate_limited")
+      const armedResumeAt = armed.resumeAt
+
+      // The duplicate (second channel) carries the server's Retry-After: the
+      // authoritative window must extend the armed deadline — not be dropped
+      // alongside its (shorter) formula delay.
+      cd.enterCooldown("429 Too Many Requests", 60)
+      expect(cd.getAttempts()).toBe(1) // still the same incident
+      const ext = h.dispatched[h.dispatched.length - 1]
+      if (ext.type !== "extend_cooldown") throw new Error("expected extend_cooldown")
+      expect(ext.resumeAt).toBeGreaterThan(armedResumeAt)
+
+      // A shorter Retry-After must NOT shorten the extended deadline: the
+      // extension guard rejects it, so no new dispatch is emitted at all.
+      const dispatchedBefore = h.dispatched.length
+      cd.enterCooldown("429 Too Many Requests", 1)
+      expect(h.dispatched.length).toBe(dispatchedBefore)
 
       cd.clearTimers()
       dispose()

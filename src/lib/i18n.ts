@@ -543,6 +543,8 @@ Examples:
       "",
     ].join("\n"),
   errIterationStart: (p: Params) => `Failed to start iteration: ${p.message}`,
+  errBlockMarkDeferred: (p: Params) =>
+    `Could not mark "${p.task}" [BLOCKED] in PLAN.md (${p.cause}) — the plan must be checked before the loop continues.`,
   errCreateDebugSession: (p: Params) => `Failed to create debug session: ${p.message}`,
   errNoProgress: (p: Params) =>
     [
@@ -1224,6 +1226,8 @@ Ejemplos:
       "",
     ].join("\n"),
   errIterationStart: (p) => `Fallo al iniciar la iteración: ${p.message}`,
+  errBlockMarkDeferred: (p) =>
+    `No se pudo marcar "${p.task}" como [BLOCKED] en PLAN.md (${p.cause}) — revisa el plan antes de continuar el bucle.`,
   errCreateDebugSession: (p) => `Fallo al crear la sesión de depuración: ${p.message}`,
   errNoProgress: (p) =>
     [
