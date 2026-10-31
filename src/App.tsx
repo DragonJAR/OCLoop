@@ -463,7 +463,10 @@ function AppContent(props: AppProps) {
       return
     }
     if (transition.kind === "completed") return
-    const level = transition.kind === "reordered" ? "warn" : "warn"
+    // Both drift kinds are warnings: "reordered" (the plan changed between
+    // iterations) and "removed" (the saved task is gone) are recoverable
+    // drift, not hard errors.
+    const level = "warn"
     activityLog.addEvent(
       "error",
       transition.kind === "removed"
