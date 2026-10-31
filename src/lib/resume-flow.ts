@@ -24,6 +24,7 @@ import type { ReconcileResult, OpencodeBackend } from "./api"
 import type { LoopAction } from "../types"
 import type { UseActivityLogReturn } from "../hooks/useActivityLog"
 import { log } from "./debug-logger"
+import { toErrorMessage } from "./format"
 
 /**
  * Minimal collaborator surface for the resume flow. Each member is exactly
@@ -63,6 +64,13 @@ export interface ResumeFlowDeps<C = OpencodeBackend> {
   clearLoopState: () => Promise<void>
   /** Called only on the re-attach (working) branch to advance the loop. */
   reconcileAndAdvance: () => Promise<ReconcileResult>
+  /**
+   * Abort a persisted parallel worker session (best-effort; never throws).
+   * Used on the fresh-iteration branches when the snapshot carried in-flight
+   * `activeWorkers`: those sessions belong to the crashed run and keep burning
+   * tokens on the server if left alive, and their worktrees must be released.
+   */
+  abortOrphanWorker?: (client: C | null, sessionId: string) => Promise<void>
 }
 
 /** What `doResumeFlow` did, for assertion. `action` is the dispatched type. */
@@ -117,6 +125,10 @@ export async function doResumeFlow<C = OpencodeBackend>(
   // idle / missing / unknown: start a fresh iteration. The persisted snapshot
   // is cleared (the just-finished-or-dead session should not be resumed again).
   activityLog.addEvent("task", t("actContinuing", { verdict }))
+  // Parallel workers from the crashed run are orphans now: their sessions keep
+  // running (and burning tokens) on the server, and their worktrees hold
+  // uncommitted work nobody will integrate. Abort them before continuing.
+  await abortOrphanWorkers(deps, client, p)
   await clearLoopState()
   // When verdict === "idle", the in-flight session already finished its work
   // in a previous run (the process crashed between the session idling and
@@ -134,4 +146,37 @@ export async function doResumeFlow<C = OpencodeBackend>(
     sessionId: "",
   })
   return { verdict, action: isIdleResume ? "iteration_resumed" : "resume_session", iteration: p.iteration, sessionId: "" }
+}
+
+/**
+ * Abort the parallel worker sessions recorded in the crashed run's snapshot.
+ *
+ * The snapshot's `activeWorkers` were the ONLY record of the in-flight worker
+ * sessions: in parallel mode the loop state's own `sessionId` is empty (the
+ * session ids live in the slots), so without this the resume path would skip
+ * the reconcile entirely and leave both the server sessions and the isolated
+ * worktrees orphaned — the loop would continue as "running" with zero tracked
+ * workers while the old sessions keep burning tokens.
+ */
+async function abortOrphanWorkers<C = OpencodeBackend>(
+  deps: ResumeFlowDeps<C>,
+  client: C | null,
+  p: PersistedLoopState,
+): Promise<void> {
+  const workers = p.activeWorkers ?? []
+  if (workers.length === 0) return
+  for (const worker of workers) {
+    try {
+      await deps.abortOrphanWorker?.(client, worker.sessionId)
+    } catch (err) {
+      log.warn("resume", "Failed to abort orphaned worker session", {
+        slotId: worker.slotId,
+        message: toErrorMessage(err),
+      })
+    }
+  }
+  log.warn("resume", "Aborted orphaned parallel workers from crashed run", {
+    count: workers.length,
+    slots: workers.map((w) => w.slotId),
+  })
 }

@@ -29,8 +29,10 @@ import { describeResumeAttempt } from "../lib/resume-decision"
 import { describeResumeAlignment } from "../lib/resume-alignment"
 import { resolvePlanFile } from "../lib/plan-file"
 import { ensureGitignore } from "../lib/project"
-import { tryGetClient, reconcileSession, type LaunchInfo } from "../lib/api"
+import { tryGetClient, reconcileSession, abortSession, type LaunchInfo } from "../lib/api"
 import { doResumeFlow } from "../lib/resume-flow"
+import { cleanupAllWorkspaces } from "../lib/workspace-manager"
+import { resolveRepoRoot } from "../lib/plan-file"
 import { log } from "../lib/debug-logger"
 
 export interface ResumeDeps {
@@ -85,6 +87,24 @@ export function useResume(deps: ResumeDeps): ResumeApi {
         reconcile: (client, sessionId) => reconcileSession(client, sessionId),
         clearLoopState,
         reconcileAndAdvance: deps.reconcileAndAdvance,
+        abortOrphanWorker: async (client, sessionId) => {
+          // Best-effort: abort the orphaned session, then release its slot's
+          // worktree. The worktree path is resolved deterministically from the
+          // slot id recorded in the snapshot, mirroring the quit path's
+          // abortAllAndCleanup.
+          if (client) {
+            try {
+              await abortSession(client, sessionId)
+            } catch {
+              // Session may already be gone with the crashed run.
+            }
+          }
+          try {
+            await cleanupAllWorkspaces({ repoRoot: resolveRepoRoot() })
+          } catch (err) {
+            log.warn("resume", "Failed to clean up orphaned worktrees", err)
+          }
+        },
       },
       p,
     )

@@ -226,6 +226,71 @@ describe("doResumeFlow", () => {
     })
   })
 
+  describe("orphaned parallel workers from the crashed run", () => {
+    it("aborts every persisted activeWorker on the fresh-iteration path", async () => {
+      const { deps, state } = makeDeps({ verdictToReturn: "missing" })
+      const aborted: string[] = []
+      deps.abortOrphanWorker = async (_client, sessionId) => {
+        aborted.push(sessionId)
+      }
+      const p = snapshot()
+      p.activeWorkers = [
+        { slotId: 1, sessionId: "sess-w1", taskDescription: "T1", worktreePath: "/tmp/w1" },
+        { slotId: 2, sessionId: "sess-w2", taskDescription: "T2", worktreePath: "/tmp/w2" },
+      ]
+      await doResumeFlow(deps, p)
+      expect(aborted).toEqual(["sess-w1", "sess-w2"])
+      expect(state.clearLoopStateCalls).toBe(1)
+    })
+
+    it("still aborts workers when the client is gone (abort is best-effort)", async () => {
+      const { deps } = makeDeps({ clientAvailable: false, verdictToReturn: "missing" })
+      const aborted: Array<string | null> = []
+      deps.abortOrphanWorker = async (client, sessionId) => {
+        aborted.push(client === null ? null : sessionId)
+      }
+      const p = snapshot()
+      p.activeWorkers = [
+        { slotId: 3, sessionId: "sess-w3", taskDescription: "T3", worktreePath: "/tmp/w3" },
+      ]
+      await doResumeFlow(deps, p)
+      expect(aborted).toEqual([null])
+    })
+
+    it("does not abort workers on the re-attach (working) path", async () => {
+      const { deps, state } = makeDeps({ verdictToReturn: "working" })
+      let abortCalls = 0
+      deps.abortOrphanWorker = async () => {
+        abortCalls++
+      }
+      const p = snapshot()
+      p.activeWorkers = [
+        { slotId: 1, sessionId: "sess-w1", taskDescription: "T1", worktreePath: "/tmp/w1" },
+      ]
+      await doResumeFlow(deps, p)
+      expect(abortCalls).toBe(0)
+      expect(state.notifyIterationStartCalls).toBe(1)
+    })
+
+    it("continues the resume even when one worker abort throws", async () => {
+      const { deps, state } = makeDeps({ verdictToReturn: "idle" })
+      const aborted: string[] = []
+      deps.abortOrphanWorker = async (_client, sessionId) => {
+        if (sessionId === "sess-w1") throw new Error("boom")
+        aborted.push(sessionId)
+      }
+      const p = snapshot()
+      p.activeWorkers = [
+        { slotId: 1, sessionId: "sess-w1", taskDescription: "T1", worktreePath: "/tmp/w1" },
+        { slotId: 4, sessionId: "sess-w4", taskDescription: "T4", worktreePath: "/tmp/w4" },
+      ]
+      const outcome = await doResumeFlow(deps, p)
+      expect(aborted).toEqual(["sess-w4"])
+      expect(outcome.action).toBe("iteration_resumed")
+      expect(state.clearLoopStateCalls).toBe(1)
+    })
+  })
+
   describe("no client available (server gone)", () => {
     it("defaults the verdict to missing without attempting reconcile", async () => {
       const { deps, state } = makeDeps({ clientAvailable: false, verdictToReturn: "working" })
