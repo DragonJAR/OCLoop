@@ -250,4 +250,163 @@ describe("createParallelCoordinator", () => {
     await coordinator.handleSessionIdle("ses-attempt-2")
     expect(loop.state().type).toBe("complete")
   })
+
+  it("claims a session synchronously: a duplicate session.idle cannot enqueue a second integration (re-entrancy guard)", async () => {
+    let loop!: ReturnType<typeof useLoopState>
+    createRoot((dispose) => {
+      loop = useLoopState()
+      loop.dispatch({ type: "server_ready" })
+      loop.dispatch({ type: "start" })
+      dispose()
+    })
+
+    let sessionSeq = 0
+    let integrateCalls = 0
+    let releaseIntegration: (() => void) | null = null
+    let integratedOrder: string[] = []
+
+    const coordinator = createParallelCoordinator({
+      maxJobs: () => 2,
+      repoRoot: scratchDir,
+      planPath: "PLAN.md",
+      promptPath,
+      loop,
+      resolveClient: () =>
+        ({
+          version: 2,
+          url: "http://test",
+          createSession: async () => ({ id: `ses-${++sessionSeq}`, title: "" }),
+          sendPrompt: async () => {},
+          abortSession: async () => true,
+          getSessionStatus: async () => ({ type: "idle" }),
+          fetchMessages: async () => [],
+          fetchAgents: async () => [],
+          fetchConfig: async () => ({}),
+          fetchProviderCatalog: async () => [],
+          subscribeEvents: async () => ({ stream: (async function* () {})() }),
+        }) as unknown as OpencodeBackend,
+      activeAgent: () => "build",
+      activeModel: () => undefined,
+      tierMapping: () => null,
+      resilience: () => ({ ...DEFAULT_RESILIENCE }),
+      monotonicNow: () => Date.now(),
+      t: (k) => k,
+      fallbackSummary: () => "done",
+      readPlanContent: async () => "- [ ] **1.1** Only Task",
+      checkPlanComplete: async () => true,
+      getPlanCompleteSummary: async () => null,
+      refreshPlan: async () => {},
+      onIterationError: () => {},
+      acquireWorkspace: async (slotId) => ({
+        slotId,
+        worktreePath: `/tmp/wt-${slotId}`,
+        baseSha: "sha-1",
+      }),
+      cleanupWorkspaces: async () => {},
+      integrateWorker: async (job) => {
+        integrateCalls++
+        integratedOrder.push(job.taskDescription)
+        if (releaseIntegration) {
+          await new Promise<void>((resolve) => {
+            releaseIntegration = resolve
+          })
+        }
+        releaseIntegration = null
+        return {
+          status: "integrated",
+          commitSha: "sha-9",
+          changedFiles: [],
+          extractedNotes: [],
+          extractedReconTasks: [],
+        }
+      },
+    })
+
+    await coordinator.scheduleAvailableSlots()
+    expect(coordinator.getActiveSlots()).toHaveLength(1)
+    const sid = coordinator.getActiveSessionIds().values().next().value as string
+
+    // Arm the gate: the first integration blocks inside integrateWorker.
+    releaseIntegration = () => {}
+    // First idle claims the session and enters the (blocked) integration.
+    const first = coordinator.handleSessionIdle(sid)
+    // Give the claim a chance to run, then fire the duplicate BEFORE resolving.
+    await Bun.sleep(5)
+    expect(integrateCalls).toBe(1)
+    const secondResult = await coordinator.handleSessionIdle(sid)
+    // The duplicate must be absorbed as owned-without-enqueueing.
+    expect(secondResult).toBe(true)
+    releaseIntegration?.()
+    expect(await first).toBe(true)
+    expect(integrateCalls).toBe(1)
+    expect(integratedOrder).toEqual(["**1.1** Only Task"])
+  })
+
+  it("drains a user pause when the last worker is released via session.error", async () => {
+    let loop!: ReturnType<typeof useLoopState>
+    createRoot((dispose) => {
+      loop = useLoopState()
+      loop.dispatch({ type: "server_ready" })
+      loop.dispatch({ type: "start" })
+      dispose()
+    })
+
+    let sessionSeq = 0
+    const coordinator = createParallelCoordinator({
+      maxJobs: () => 1,
+      repoRoot: scratchDir,
+      planPath: "PLAN.md",
+      promptPath,
+      loop,
+      resolveClient: () =>
+        ({
+          version: 2,
+          url: "http://test",
+          createSession: async () => ({ id: `ses-${++sessionSeq}`, title: "" }),
+          sendPrompt: async () => {},
+          abortSession: async () => true,
+          getSessionStatus: async () => ({ type: "busy" }),
+          fetchMessages: async () => [],
+          fetchAgents: async () => [],
+          fetchConfig: async () => ({}),
+          fetchProviderCatalog: async () => [],
+          subscribeEvents: async () => ({ stream: (async function* () {})() }),
+        }) as unknown as OpencodeBackend,
+      activeAgent: () => "build",
+      activeModel: () => undefined,
+      tierMapping: () => null,
+      resilience: () => ({ ...DEFAULT_RESILIENCE }),
+      monotonicNow: () => Date.now(),
+      t: (k) => k,
+      fallbackSummary: () => "done",
+      readPlanContent: async () => "- [ ] **1.1** Pausing Task",
+      checkPlanComplete: async () => false,
+      getPlanCompleteSummary: async () => null,
+      refreshPlan: async () => {},
+      onIterationError: () => {},
+      acquireWorkspace: async (slotId) => ({
+        slotId,
+        worktreePath: `/tmp/wt-${slotId}`,
+        baseSha: "sha-1",
+      }),
+      cleanupWorkspaces: async () => {},
+      integrateWorker: async () => ({
+        status: "error",
+        message: "worker failed",
+      }),
+    })
+
+    await coordinator.scheduleAvailableSlots()
+    const sid = coordinator.getActiveSessionIds().values().next().value as string
+    expect(sid).toBeTruthy()
+
+    // User pauses while the worker runs.
+    loop.dispatch({ type: "toggle_pause" })
+    expect(loop.state().type).toBe("pausing")
+
+    // The worker dies while paused: the drain must complete the pause.
+    const releasedSlot = coordinator.handleSessionError(sid)
+    expect(releasedSlot).toBeTruthy()
+    expect(loop.state().type).toBe("paused")
+  })
 })
