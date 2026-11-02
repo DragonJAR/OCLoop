@@ -2086,6 +2086,12 @@ function AppContent(props: AppProps) {
   createEffect(() => {
     const state = loop.state()
     if (state.type === "complete") {
+      // The final [x] mark may have been written via shell (no file-edited SSE
+      // event), and no further iteration start will re-parse the plan — refresh
+      // so the dashboard's Tasks [x/y] reflects the completed plan, not the
+      // snapshot from the last iteration start.
+      void refreshPlan()
+
       // totalActiveTime subscribes transitively to the per-second tick signal;
       // untrack for a one-shot snapshot, else the effect re-fires every second
       // and dialog.show piles a new entry onto the stack, resetting focus.
