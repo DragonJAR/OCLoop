@@ -919,7 +919,16 @@ function AppContent(props: AppProps) {
       const absolutePlanPath = path.resolve(planFile)
       const absoluteFilePath = path.resolve(file)
 
-      if (absoluteFilePath === absolutePlanPath) {
+      // Windows filesystems are case-insensitive, so `C:\repo\plan.md` and
+      // `C:\repo\PLAN.md` are the same file. Comparing the raw strings there
+      // misses the edit and the dashboard keeps showing a stale plan. POSIX
+      // filesystems are case-sensitive, so the comparison stays exact.
+      const samePath =
+        process.platform === "win32"
+          ? absoluteFilePath.toLowerCase() === absolutePlanPath.toLowerCase()
+          : absoluteFilePath === absolutePlanPath
+
+      if (samePath) {
         if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
         refreshPlanTimer = setTimeout(() => {
           refreshPlanTimer = null
