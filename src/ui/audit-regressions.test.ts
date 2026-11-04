@@ -1,5 +1,14 @@
 /** Run JSX through the project's Bun preload; bun:test itself skips that transform. */
 import { fileURLToPath } from "node:url"
+import { discardingStdout } from "../lib/test-stdout"
+
+/**
+ * Bun cannot open /dev/null for a child's stdin on Windows and falls back to
+ * stdout, printing a warning that lands in the captured output. It is
+ * platform noise, not the child's behaviour, so it is filtered out before
+ * the "no output at all" assertion.
+ */
+const PLATFORM_NOISE = /Failed to open \/dev\/null[^\n]*\n?/g
 import type { PermissionsConfig } from "../lib/config"
 
 if (process.env.OCLOOP_UI_SCENARIO !== "1") {
@@ -13,7 +22,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const [code, stdout, stderr] = await Promise.all([
         child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
       ])
-      expect({ code, output: stdout + stderr }).toEqual({ code: 0, output: "" })
+      expect({ code, output: (stdout + stderr).replace(PLATFORM_NOISE, "") }).toEqual({ code: 0, output: "" })
     }, 15000)
   }
 } else {
@@ -66,7 +75,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       let selected = ""
       const r = await testRender(() => createComponent(DialogSelect, {
         title: "Models", onClose: () => {}, options, current: "model-24", onSelect: o => { selected = o.value },
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       await tick(r)
       assert.match(r.captureCharFrame(), /Model 24/)
       r.mockInput.pressEnter()
@@ -87,7 +96,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const r = await testRender(() => createComponent(DialogTierPicker, {
         tiers: [{ id: "heavy", label: "Heavy" }, { id: "judge", label: "Judge", defaultModel: "model-24" }],
         options, onDone: mapping => { result = mapping },
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       await tick(r)
       await r.mockInput.typeText("no-match")
       r.mockInput.pressTab()
@@ -113,7 +122,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
           dialog = useDialog()
           return createComponent(DialogStack, {})
         },
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       const result = DialogTierPicker.show(dialog, [{ id: "heavy", label: "Heavy", defaultModel: "model-24" }], options)
       let settled = false
       void result.then(() => { settled = true })
@@ -145,7 +154,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
         isActive: true, state: { type: "running", iteration: 4, sessionId: "session" },
         progress: { total: 12, completed: 4, manual: 0, blocked: 0, percentComplete: 33, pending: 8, automatable: 8 },
         currentTask: "Tarea", stats: useLoopStats(),
-      }), { width: 40, height: 24 })
+      }), { stdout: discardingStdout(), width: 40, height: 24 })
       await tick(r)
       const frame = r.captureCharFrame()
       assert.match(frame, /EJECUTANDO/)
@@ -170,7 +179,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
             id: i, type: "assistant_message" as const, timestamp: new Date(), message: "A".repeat(65) + "TAIL", 
           })) })
         },
-      }), { width: 80, height: 15 })
+      }), { stdout: discardingStdout(), width: 80, height: 15 })
       await tick(r)
       function find(node: import("@opentui/core").Renderable): import("@opentui/core").ScrollBoxRenderable | undefined {
         if (node instanceof ScrollBoxRenderable) return node
@@ -205,7 +214,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const thirteen = Array.from({ length: 13 }, (_, i) => ({ title: `Command ${i}`, value: `c${i}` }))
       const r = await testRender(() => createComponent(DialogSelect, {
         title: "Palette", onClose: () => {}, options: thirteen,
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       await tick(r)
       assert.equal(visibleCount(r.captureCharFrame(), thirteen.map(o => o.title)), 13)
       r.renderer.destroy()
@@ -213,7 +222,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const two = [{ title: "Terminal", value: "t" }, { title: "Custom...", value: "c" }]
       const r2 = await testRender(() => createComponent(DialogSelect, {
         title: "Terminal", onClose: () => {}, options: two,
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       await tick(r2)
       assert.equal(visibleCount(r2.captureCharFrame(), two.map(o => o.title)), 2)
       r2.renderer.destroy()
@@ -223,7 +232,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const many = Array.from({ length: 30 }, (_, i) => ({ title: `Model ${i}`, value: `m${i}` }))
       const r3 = await testRender(() => createComponent(DialogSelect, {
         title: "Models", onClose: () => {}, options: many,
-      }), { width: 80, height: 35 })
+      }), { stdout: discardingStdout(), width: 80, height: 35 })
       await tick(r3)
       const manyFrame = r3.captureCharFrame()
       assert.equal(visibleCount(manyFrame, many.map(o => o.title)), 14)
@@ -240,14 +249,14 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       ) as PermissionsConfig
       const r4 = await testRender(() => createComponent(DialogPermissions, {
         permissions: () => perms, onToggle: () => {}, onClose: () => {},
-      }), { width: 80, height: 40 })
+      }), { stdout: discardingStdout(), width: 80, height: 40 })
       await tick(r4)
       assert.match(r4.captureCharFrame(), /External directories/)
       r4.renderer.destroy()
 
       // The help overlay's last shortcut row must not be below the fold.
       const { DialogHelp } = await import("../components/DialogHelp")
-      const r5 = await testRender(() => createComponent(DialogHelp, { onClose: () => {} }), { width: 90, height: 40 })
+      const r5 = await testRender(() => createComponent(DialogHelp, { onClose: () => {} }), { stdout: discardingStdout(), width: 90, height: 40 })
       await tick(r5)
       assert.match(r5.captureCharFrame(), /sample activity/)
       r5.renderer.destroy()
@@ -265,7 +274,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
         attachCommand: command,
         onCopy: () => {},
         onClose: () => {},
-      }), { width: 120, height: 45 })
+      }), { stdout: discardingStdout(), width: 120, height: 45 })
       await tick(r6)
       const frame6 = r6.captureCharFrame()
       assert.ok(
@@ -286,7 +295,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const r = await testRender(() => createComponent(BottomPanel, {
         currentTask: "Task", stats: useLoopStats(), get tokens() { return stats.tokens() },
         get taskTokens() { return stats.taskTokens() }, cost: 0,
-      }), { width: 100, height: 24 })
+      }), { stdout: discardingStdout(), width: 100, height: 24 })
       await tick(r)
       assert.match(r.captureCharFrame(), /1,000/)
       stats.resetTaskTokens()

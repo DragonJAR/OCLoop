@@ -1,4 +1,13 @@
 import { fileURLToPath } from "node:url"
+import { discardingStdout } from "../lib/test-stdout"
+
+/**
+ * Bun cannot open /dev/null for a child's stdin on Windows and falls back to
+ * stdout, printing a warning that lands in the captured output. It is
+ * platform noise, not the child's behaviour, so it is filtered out before
+ * the "no output at all" assertion.
+ */
+const PLATFORM_NOISE = /Failed to open \/dev\/null[^\n]*\n?/g
 import type { LoopState } from "../types"
 
 // Child process uses the real OpenTUI renderer and the application's JSX preload.
@@ -12,7 +21,7 @@ if (process.env.OCLOOP_KEY_TEST !== "1") {
     const [code, stdout, stderr] = await Promise.all([
       child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
     ])
-    expect({ code, output: stdout + stderr }).toEqual({ code: 0, output: "" })
+    expect({ code, output: (stdout + stderr).replace(PLATFORM_NOISE, "") }).toEqual({ code: 0, output: "" })
   }, 15000)
 } else {
   try {
@@ -40,7 +49,7 @@ if (process.env.OCLOOP_KEY_TEST !== "1") {
         copyAttachCommand: async () => { copies++ }, launchConfiguredTerminal: async () => {},
       })
       return null
-    }, { width: 80, height: 24, exitOnCtrlC: false })
+    }, { width: 80, height: 24, exitOnCtrlC: false, stdout: discardingStdout() })
     const states: LoopState[] = [
       { type: "starting" }, { type: "ready" }, { type: "running", iteration: 1, sessionId: "session" },
       { type: "paused", iteration: 1 }, { type: "pausing", iteration: 1, sessionId: "session" },
