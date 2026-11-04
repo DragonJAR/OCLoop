@@ -1,1 +1,4 @@
-preload = ["@opentui/solid/preload"]
+# Our plugin goes FIRST: it matches the Solid server-build path on every OS
+# (opentui's own filter only matches POSIX separators, which left Windows
+# running Solid's SSR build). See src/lib/solid-client-plugin.ts.
+preload = ["./preload.ts", "@opentui/solid/preload"]

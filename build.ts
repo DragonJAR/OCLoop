@@ -1,10 +1,14 @@
 import solidTransformPlugin from "@opentui/solid/bun-plugin";
+import { solidClientPlugin } from "./src/lib/solid-client-plugin";
 
+// Our plugin goes first: it swaps Solid's SSR build for the client build on
+// every OS (opentui's own path filter only matches POSIX separators, so
+// Windows used to bundle the SSR build). See src/lib/solid-client-plugin.ts.
 const result = await Bun.build({
   entrypoints: ["./src/index.tsx"],
   outdir: "./dist",
   target: "bun",
-  plugins: [solidTransformPlugin],
+  plugins: [solidClientPlugin, solidTransformPlugin],
 });
 
 if (!result.success) {
