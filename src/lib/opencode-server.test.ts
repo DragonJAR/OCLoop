@@ -253,7 +253,11 @@ describe("opencode-server — startOpencodeServer carries permissions into confi
       config: { logLevel: "DEBUG" },
     })
     const call = serverSpawnCall()
-    expect(call.command).toBe("opencode")
+    // On Windows the launcher spawns the resolved path (a bare name does not
+    // resolve through PATHEXT); elsewhere it spawns the bare name.
+    expect(call.command).toBe(
+      process.platform === "win32" ? '"C:\\bin\\opencode.cmd"' : "opencode",
+    )
     expect(call.args).toEqual([
       "serve",
       "--hostname=0.0.0.0",
