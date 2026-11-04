@@ -7,7 +7,20 @@
  * left orphaned — when OCLoop is terminated.
  */
 
-export type ShutdownHandler = () => Promise<void> | void
+export type ShutdownHandler = (exitCode?: number) => Promise<void> | void
+
+/**
+ * Conventional `128 + n` exit codes for the terminating signals.
+ *
+ * A process killed by SIGTERM is expected by shells and CI to report 143, not
+ * 0 — the exit code is part of the contract with whatever launched us.
+ */
+const SIGNAL_EXIT_CODES: Record<string, number> = {
+  SIGHUP: 129,
+  SIGINT: 130,
+  SIGBREAK: 131,
+  SIGTERM: 143,
+}
 
 /**
  * Global shutdown manager instance
@@ -58,6 +71,10 @@ class ShutdownManager {
     }
     this.isShuttingDown = true
 
+    // The exit code the process reports: the conventional 128+n for a signal,
+    // 0 for a programmatic shutdown.
+    const exitCode = signal === "programmatic" ? 0 : (SIGNAL_EXIT_CODES[signal] ?? 1)
+
     // Failsafe: if cleanup stalls (e.g. a wedged server.close or a hung abort),
     // force the process to exit so the user is never stuck on Ctrl+C.
     const failsafe = setTimeout(() => {
@@ -71,7 +88,9 @@ class ShutdownManager {
 
     if (this.handler) {
       try {
-        await this.handler()
+        // The handler owns the teardown (state file, session abort, embedded
+        // server) and exits with this code once it is done.
+        await this.handler(exitCode)
       } catch (error) {
         // Log error but still exit
         console.error(`Error during shutdown (${signal}):`, error)
@@ -85,11 +104,11 @@ class ShutdownManager {
       }
       // Handler finished without exiting (e.g. programmatic shutdown): make sure
       // we terminate rather than hang now that the failsafe is cleared.
-      process.exit(0)
+      process.exit(exitCode)
     } else {
       // No handler registered, exit immediately
       clearTimeout(failsafe)
-      process.exit(0)
+      process.exit(exitCode)
     }
   }
 

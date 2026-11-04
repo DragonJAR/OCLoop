@@ -405,32 +405,25 @@ process.on("unhandledRejection", (reason) => {
 })
 
 /**
- * Terminating signals, paired with their POSIX number for the conventional
- * `128 + n` exit code.
+ * Terminating signals are owned by the shutdown manager (`src/lib/shutdown.ts`),
+ * which runs the real teardown — clear the persisted state, abort the session,
+ * stop the embedded OpenCode server — and then exits with the conventional
+ * `128 + n` code.
  *
- * Terminating while OpenTUI's renderer still holds its native (FFI) state
- * crashes Bun instead of exiting — `panic(main thread): Segmentation fault`
- * plus a crash report, reproducible with any `kill` of a running TUI. Exiting
- * from a signal listener keeps teardown on the JS path (terminal restored,
- * normal exit) and never reaches that state.
+ * This used to be handled here as well, with a direct `process.exit(128 + n)`.
+ * Two owners for the same signal is a race: Node/Bun invoke every listener
+ * synchronously, so this one fired while the manager's asynchronous cleanup
+ * was still in flight and killed the process before it could finish. The
+ * leftovers were real: `.loop-state.json` survived (so the next start offered
+ * to resume a run that never ended), the git worktrees leaked, and on Windows
+ * the `taskkill` that reaps the server is itself asynchronous — it never ran,
+ * leaving an orphaned `opencode serve` behind.
  *
- * Interactive Ctrl+C is untouched: the TUI owns stdin in raw mode (ISIG off),
- * so the keypress is read as a key and never becomes a SIGINT — only an
- * external `kill -INT` lands here.
+ * Exiting from the signal path still keeps teardown on the JS path: the
+ * shutdown handler restores the terminal, destroys the renderer (releasing
+ * OpenTUI's native FFI state, which is what used to segfault Bun when the
+ * process died with the renderer still holding it) and only then exits.
  */
-const TERMINATION_SIGNALS = [
-  ["SIGTERM", 15],
-  ["SIGINT", 2],
-  ["SIGHUP", 1],
-] as const
-
-for (const [signal, signo] of TERMINATION_SIGNALS) {
-  process.on(signal, () => {
-    restoreTerminal()
-    process.exit(128 + signo)
-  })
-}
-
 async function main(): Promise<void> {
   // Pre-scan --lang/--language so argparse errors localize correctly. Without
   // this, a user passing `--lang es` still gets every parseArgs error

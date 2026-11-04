@@ -207,4 +207,38 @@ describe("shutdownManager (Finding 18.2.B)", () => {
     expect(handlerCalls).toBe(0)
     expect(exitCalls).toEqual([0])
   })
+
+  // A process killed by a signal reports 128+n, and the cleanup handler needs
+  // that code to report it too. The signal path used to exit from a second,
+  // competing listener that killed the process while the asynchronous cleanup
+  // was still running.
+  it("passes the conventional 128+n exit code to the handler on a signal", async () => {
+    const seen: Array<number | undefined> = []
+    shutdownManager.register((code) => {
+      seen.push(code)
+    })
+
+    process.emit("SIGTERM")
+
+    // The handler is invoked asynchronously; let the microtask queue drain.
+    await new Promise((r) => setTimeout(r, 10))
+
+    expect(seen).toEqual([143])
+    expect(exitCalls).toEqual([143])
+  })
+
+  it("exits with 130 on SIGINT and 129 on SIGHUP", async () => {
+    for (const [signal, expected] of [
+      ["SIGINT", 130],
+      ["SIGHUP", 129],
+    ] as const) {
+      resetSingleton()
+      exitCalls = []
+      shutdownManager.register(() => {})
+      process.emit(signal)
+      await new Promise((r) => setTimeout(r, 10))
+      expect(exitCalls).toEqual([expected])
+      shutdownManager.unregister()
+    }
+  })
 })
