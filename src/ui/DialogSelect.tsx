@@ -11,10 +11,30 @@ import { truncate } from "../lib/format"
 import { t } from "../lib/i18n"
 import { scrollTopToRevealIndex } from "../lib/scroll-into-view"
 
-/** Max list rows before scrolling; 14 fits the full command palette. */
+/**
+ * Max list rows before scrolling; 14 fits the full command palette.
+ *
+ * The palette registers 13 commands (more with --chaos / --debug), so at this
+ * cap every command is visible without scrolling.
+ */
 const MAX_LIST_ROWS = 14
-/** Header + search + footer lines outside the scrollbox. */
-const DIALOG_CHROME_ROWS = 7
+
+/**
+ * Rows the surrounding chrome can occupy outside the scrollbox: the dialog's
+ * own vertical padding, the header (title + gap), the search block (input +
+ * its paddings + gap) and the footer (gap + its hint rows).
+ *
+ * This is the WORST CASE, not the typical one: the footer grows when the
+ * selected option's hint wraps, so the chrome is one row taller in some
+ * dialogs than in others. The list itself does not depend on it — the
+ * scrollbox below is given an explicit height — so the dialog only has to
+ * leave room for the tallest chrome, and any row left over is slack.
+ *
+ * Getting this wrong is what silently clipped list entries: the command
+ * palette hid "About" and "Quit OCLoop", and the terminal dialog hid its
+ * "Custom…" option — the only route to a custom terminal command.
+ */
+const DIALOG_CHROME_ROWS = 10
 
 export interface DialogSelectOption {
   title: string
@@ -60,14 +80,38 @@ export function DialogSelect(props: DialogSelectProps) {
   })
   const needsScroll = createMemo(() => filteredOptions().length > MAX_LIST_ROWS)
   let scroll: ScrollBoxRenderable | undefined
-  let pendingReveal = true
 
   let input: InputRenderable | undefined
+
+  /**
+   * Scroll the selected option into view.
+   *
+   * The scrollbox has no laid-out viewport until the renderer's first layout
+   * pass, and a scroll issued before that is dropped (its bounds are still
+   * zero) — so the selection silently stays off-screen. The routing picker
+   * opened on a catalog of dozens of models with the current one nowhere in
+   * sight. Wait for the layout instead of guessing with a fixed delay.
+   */
+  let revealTimer: ReturnType<typeof setTimeout> | undefined
+  const scheduleReveal = (index: number) => {
+    if (revealTimer) clearTimeout(revealTimer)
+    let attempts = 0
+    const attempt = () => {
+      if (!scroll || scroll.scrollHeight <= 0 || scroll.viewport.height <= 0) {
+        if (attempts++ < 40) revealTimer = setTimeout(attempt, 16)
+        return
+      }
+      reveal(index)
+    }
+    attempt()
+  }
+  onCleanup(() => {
+    if (revealTimer) clearTimeout(revealTimer)
+  })
 
   onMount(() => {
     const timer = setTimeout(() => {
       input?.focus()
-      reveal(selectedIndex())
     }, 10)
     onCleanup(() => clearTimeout(timer))
   })
@@ -88,9 +132,8 @@ export function DialogSelect(props: DialogSelectProps) {
     const currentIndex = query ? -1 : filtered.findIndex(o => o.value === props.current)
     const index = Math.max(0, currentIndex)
     setSelectedIndex(index)
-    pendingReveal = true
     scroll?.scrollTo({ x: 0, y: 0 })
-    reveal(index)
+    scheduleReveal(index)
   })
 
   const reveal = (index: number) => {
@@ -238,17 +281,17 @@ export function DialogSelect(props: DialogSelectProps) {
           </text>
         </box>
       }>
+        {/*
+         * The list gets an EXPLICIT height instead of growing into whatever
+         * space the chrome leaves: that way every entry stays visible no
+         * matter how tall the footer turns out to be, and the list scrolls
+         * only when it holds more entries than the cap.
+         */}
         <scrollbox
           ref={(r) => scroll = r}
+          height={listRows()}
+          flexShrink={0}
           maxHeight={listRows()}
-          renderAfter={() => {
-            // Initial layout must finish before scrollbar bounds can accept a
-            // nonzero offset. Timers alone race the renderer's first frame.
-            if (pendingReveal && scroll && scroll.scrollHeight >= filteredOptions().length) {
-              reveal(selectedIndex())
-              pendingReveal = false
-            }
-          }}
           verticalScrollbarOptions={dialogScrollbarOptions(theme(), {
             autoHide: !needsScroll(),
           })}
@@ -326,7 +369,10 @@ export function DialogSelect(props: DialogSelectProps) {
       </Show>
 
       {/* Footer / Keybinds */}
-      <box style={{ width: "100%", marginTop: 1, gap: 2, flexDirection: "row" }}>
+      {/* minHeight pins the footer to one row so the chrome costs the same
+          whether or not this caller renders hints — otherwise the list's
+          viewport changed by a row depending on the caller and clipped. */}
+      <box style={{ width: "100%", marginTop: 1, gap: 2, flexDirection: "row", minHeight: 1 }}>
         <For each={props.keybinds || []}>
           {(kb) => (
             <text>

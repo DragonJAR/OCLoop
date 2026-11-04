@@ -10,6 +10,26 @@ import type { PermissionsConfig } from "../lib/config"
 import { createPermissionsState } from "../lib/permissions-state"
 
 /**
+ * Rows the tool list needs: two rows per tool (its label and its one-line
+ * description) plus one separating row between consecutive tools. The last
+ * tool adds no trailing row — a trailing blank would read as overflow.
+ */
+const ROWS_PER_TOOL = 2
+const ROWS_PER_GAP = 1
+
+/**
+ * Rows the surrounding chrome occupies outside the tool list: the dialog's
+ * own vertical padding, the header (title + gap), the hint line (its text
+ * wraps to two rows at this width, plus its gap) and the footer (gap + row).
+ *
+ * Measured against the renderer. The hint's wrap count depends on the
+ * locale, so the budget covers its longest form — a dialog one row taller
+ * than needed only leaves one blank row, while a row too short hides a tool
+ * the user cannot toggle.
+ */
+const DIALOG_CHROME_ROWS = 10
+
+/**
  * Per-tool label + one-line description, keyed by {@link PermissionTool}. The
  * label tells the user WHAT the tool does so they can decide which autonomous
  * approvals to turn off. Derived once from the single source of truth
@@ -44,6 +64,11 @@ export function DialogPermissions(props: DialogPermissionsProps) {
   const state = createPermissionsState(props.permissions, props.onToggle)
   const tools = PERMISSION_TOOLS
 
+  // Rows the tool list needs. Every tool must be reachable: a tool clipped
+  // below the fold cannot be toggled at all.
+  const listRows = createMemo(
+    () => tools.length * ROWS_PER_TOOL + (tools.length - 1) * ROWS_PER_GAP,
+  )
   const move = (delta: number) => {
     const n = tools.length
     state.setActiveIndex((prev) => (prev + delta + n) % n)
@@ -80,7 +105,7 @@ export function DialogPermissions(props: DialogPermissionsProps) {
   )
 
   return (
-    <Dialog onClose={props.onClose} width={68} height={20}>
+    <Dialog onClose={props.onClose} width={68} height={DIALOG_CHROME_ROWS + listRows()}>
       <box style={{ flexDirection: "column" }}>
         <DialogHeader title={t("dlgPermissionsTitle")} />
 
@@ -90,18 +115,23 @@ export function DialogPermissions(props: DialogPermissionsProps) {
         </text>
 
         {/*
-         * Tool rows in a scrollbox: 5 tools × 2 lines + gaps can exceed a fixed
-         * dialog height, so (like DialogHelp) we cap the inner area with
-         * maxHeight and let it scroll on short terminals. Each row carries its
-         * own marginBottom so they don't read as one cramped block.
+         * Tool rows in a scrollbox: the list is sized to its content and the
+         * dialog grows to fit it, so every tool is visible without scrolling.
+         * The rows are separated by `gap` rather than a per-row bottom margin:
+         * a margin on the LAST row is a trailing blank row, which the
+         * scrollbox then reports as overflow and paints a scrollbar for.
          */}
+        {/* Explicit height: the list does not depend on how many rows the
+            chrome around it takes, so no tool can fall below the fold. */}
         <scrollbox
-          maxHeight={13}
+          height={listRows()}
+          flexShrink={0}
+          maxHeight={listRows()}
           verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
-          <For each={rows()}>
-            {(row) => (
-              <box style={{ marginBottom: 1 }}>
+          <box style={{ flexDirection: "column", gap: 1 }}>
+            <For each={rows()}>
+              {(row) => (
                 <DialogToggleRow
                   label={row.meta.label}
                   description={row.meta.description}
@@ -109,9 +139,9 @@ export function DialogPermissions(props: DialogPermissionsProps) {
                   active={row.active}
                   onToggle={() => state.toggle(row.tool)}
                 />
-              </box>
-            )}
-          </For>
+              )}
+            </For>
+          </box>
         </scrollbox>
 
         {/* Footer keybind hints */}

@@ -71,7 +71,10 @@ export function Dialog(props: DialogProps) {
 
   // Dialog dimensions with defaults
   const dialogWidth = () => props.width ?? 50
-  const dialogHeight = () => props.height ?? 10
+  // Clamp the height to the terminal: a dialog taller than the screen pushes
+  // its own footer (and the keys that dismiss it) off the bottom edge, which
+  // is strictly worse than letting the scrollable area inside it shrink.
+  const dialogHeight = () => Math.min(props.height ?? 10, dimensions().height)
 
   // Calculate centered position. Clamp to >= 0 so a dialog wider/taller than
   // the terminal (a narrow tmux split, a small terminal) doesn't render at a

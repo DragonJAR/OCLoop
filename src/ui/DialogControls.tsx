@@ -34,11 +34,13 @@ export function dialogScrollbarOptions(
     foregroundColor: theme.borderSubtle,
   }
   // Omit `visible` so OpenTUI auto-hides the bar unless content overflows
-  // (same pattern as ActivityLog — avoids reserving an empty column).
-  if (options?.autoHide) {
-    return { trackOptions }
+  // (same pattern as ActivityLog — avoids reserving an empty column). A dialog
+  // whose list is known to overflow asks for the bar explicitly with
+  // `autoHide: false`; everything else lets the renderer decide.
+  if (options?.autoHide === false) {
+    return { visible: true, trackOptions }
   }
-  return { visible: true, trackOptions }
+  return { trackOptions }
 }
 
 /**

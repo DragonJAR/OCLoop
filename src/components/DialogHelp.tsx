@@ -1,4 +1,4 @@
-import { For } from "solid-js"
+import { For, createMemo } from "solid-js"
 import { useKeyboard } from "@opentui/solid"
 import { Dialog } from "../ui/Dialog"
 import { DialogHeader, dialogScrollbarOptions } from "../ui/DialogControls"
@@ -34,6 +34,13 @@ interface HelpRow {
  * Any key closes it (in addition to the Dialog backdrop/Escape), so there's
  * no "how do I dismiss this" confusion.
  */
+/**
+ * Rows the surrounding chrome occupies outside the scrollable sections: the
+ * dialog's own vertical padding, the header (title + gap) and the intro line
+ * (its text + its gap). Measured against the renderer.
+ */
+const HELP_CHROME_ROWS = 9
+
 export function DialogHelp(props: DialogHelpProps) {
   const { theme } = useTheme()
 
@@ -86,8 +93,20 @@ export function DialogHelp(props: DialogHelpProps) {
     </box>
   )
 
+  /**
+   * Rows one section occupies: its title, the gap below it and its key rows.
+   * Derived from the row lists so adding a shortcut cannot silently push the
+   * last row of the help below the fold.
+   */
+  const sectionRows = (rows: HelpRow[]) => 2 + rows.length
+
+  const contentRows = createMemo(
+    () =>
+      sectionRows(loopKeys) + sectionRows(sessionKeys) + sectionRows(debugKeys),
+  )
+
   return (
-    <Dialog onClose={props.onClose} width={72} height={24}>
+    <Dialog onClose={props.onClose} width={72} height={HELP_CHROME_ROWS + contentRows()}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
         <DialogHeader title={t("helpTitle")} accent={theme().accent} hint={t("helpDismissHint")} />
@@ -98,8 +117,13 @@ export function DialogHelp(props: DialogHelpProps) {
         </text>
 
         {/* Sections in a scrollbox so they fit any terminal height */}
+        {/* Explicit height: the sections do not depend on how many rows the
+            chrome around them takes, so the last shortcut cannot fall below
+            the fold. */}
         <scrollbox
-          maxHeight={17}
+          height={contentRows()}
+          flexShrink={0}
+          maxHeight={contentRows()}
           verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <Section title={t("helpSectionLoop")} rows={loopKeys} />

@@ -43,18 +43,34 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
     }
   })
 
-  // Fixed dialog height: header + terminal badge + a capped error area +
-  // config hint + command + footer + padding. The error message lives in a
-  // scrollbox (below) that wraps and scrolls, so the height no longer depends
-  // on guessing wrap-line counts from message length — that guess previously
-  // inflated the box while the error rendered as a single unwrapped line that
-  // overflowed horizontally. Shares the error-family height with DialogError.
-  const dialogHeight = 14
-
   const configPath = getConfigPath()
 
+  // Rows the dialog needs. The height is DERIVED from the content instead of
+  // guessed: a dialog shorter than its content makes the layout engine
+  // compress its children and stack them on the same row, and two texts
+  // sharing a row corrupt each other — opentui does not paint the blank
+  // cells of an overlapping text, so the command rendered as
+  // "opencodedattachxhttp://…" with the neighbouring row's glyphs in its
+  // spaces. (This dialog was 14 rows tall while its content needed 19.)
+  //
+  //   header (title + gap)                    2
+  //   terminal badge (gap + row)              2
+  //   error message (gap + capped area)       5
+  //   config hint (gap + wrapped rows)        1 + configRows
+  //   attach label (gap + row)                2
+  //   attach command (wrapped rows)           commandRows
+  //   footer (gap + row)                      2
+  //   the dialog's own vertical padding       2
+  const DIALOG_WIDTH = 60
+  const CONTENT_WIDTH = DIALOG_WIDTH - 2
+  const rowsFor = (text: string) => Math.max(1, Math.ceil(text.length / CONTENT_WIDTH))
+  const configRows = rowsFor(`${t("dlgEditConfig")}${configPath}`)
+  const commandRows = rowsFor(props.attachCommand)
+  const dialogHeight =
+    2 + 2 + 5 + (1 + configRows) + 2 + commandRows + 2 + 2
+
   return (
-    <Dialog onClose={props.onClose} width={60} height={dialogHeight}>
+    <Dialog onClose={props.onClose} width={DIALOG_WIDTH} height={dialogHeight}>
       <box style={{ flexDirection: "column" }}>
         {/* Header */}
         <DialogHeader title={t("dlgTerminalFailed")} accent={theme().error} hint={t("dlgEscToQuit")} />
@@ -86,9 +102,7 @@ export function DialogTerminalError(props: DialogTerminalErrorProps) {
         <text style={{ marginTop: 1 }}>
           <span style={{ fg: theme().textMuted }}>{t("dlgAttachCommand")}</span>
         </text>
-        <text>
-          <span style={{ fg: theme().text }}>{props.attachCommand}</span>
-        </text>
+        <text style={{ fg: theme().text }}>{props.attachCommand}</text>
 
         {/* Footer — a flex row so the chips space via `gap` instead of literal
             "  " spacer spans. */}
