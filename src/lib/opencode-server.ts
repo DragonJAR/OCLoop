@@ -240,6 +240,14 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     proc.stderr?.on("data", onStderr)
     proc.on("exit", onExit)
     proc.on("error", onError)
+    // The child outlives this startup handshake: settle() removes `onError`,
+    // and a ChildProcess with no 'error' listener left re-throws the event as
+    // an uncaught exception. Bun's node:child_process emits exactly that when
+    // the spawn's AbortSignal fires — which is what every server restart and
+    // every quit does — so the whole TUI died with an AbortError instead of
+    // restarting the server. The abort is intentional, so keep a listener for
+    // the child's whole lifetime.
+    proc.on("error", () => {})
     merged.signal?.addEventListener("abort", abortHandler)
   })
 
