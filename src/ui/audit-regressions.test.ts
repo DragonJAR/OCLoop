@@ -22,7 +22,18 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       const [code, stdout, stderr] = await Promise.all([
         child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
       ])
-      expect({ code, output: (stdout + stderr).replace(PLATFORM_NOISE, "") }).toEqual({ code: 0, output: "" })
+      // The child's stderr must be empty and the exit code 0 — that is where a
+      // crash shows up. Its stdout is NOT asserted: on Windows the native
+      // renderer writes its frames to the process's stdout even when stdout is
+      // a pipe (it writes to the file descriptor, bypassing the JS sink), so
+      // the frames land there. They are the renderer's output, not the
+      // child's behaviour — but a crash message is still caught, on either
+      // stream.
+      expect({
+        code,
+        stderr: stderr.replace(PLATFORM_NOISE, ""),
+        stdoutHasCrash: /Orphan text error|Uncaught|Error:/.test(stdout),
+      }).toEqual({ code: 0, stderr: "", stdoutHasCrash: false })
     }, 15000)
   }
 } else {
