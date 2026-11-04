@@ -1,0 +1,52 @@
+name: CI
+
+# OCLoop runs where OpenCode runs: macOS, Windows and Linux. The three gates
+# below are the ones AGENTS.md defines for a change to be considered done
+# (typecheck, tests, production build) — and they are exactly the three that
+# caught the Windows-only breakage found during the cross-platform audit
+# (URL-based paths, POSIX-only test binaries).
+#
+# The build runs BEFORE the tests on purpose: the CLI test suite spawns the
+# compiled entrypoint (dist/index.js), so a test run without a build would
+# fail for the wrong reason.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  gates:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bunx tsc --noEmit
+
+      - name: Build
+        run: bun run build
+
+      - name: Test
+        run: bun test
