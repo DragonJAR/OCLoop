@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url"
 import type { LoopState } from "../types"
 
 // Child process uses the real OpenTUI renderer and the application's JSX preload.
@@ -5,7 +6,7 @@ if (process.env.OCLOOP_KEY_TEST !== "1") {
   const { test, expect } = await import("bun:test")
   test("Ctrl+C exits every loop state and modal without invoking plain c", async () => {
     const child = Bun.spawn([process.execPath, "run", import.meta.path], {
-      cwd: new URL("../..", import.meta.url).pathname,
+      cwd: fileURLToPath(new URL("../..", import.meta.url)),
       env: { ...process.env, OCLOOP_KEY_TEST: "1" }, stdout: "pipe", stderr: "pipe",
     })
     const [code, stdout, stderr] = await Promise.all([

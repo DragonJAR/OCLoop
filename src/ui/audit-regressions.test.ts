@@ -1,4 +1,5 @@
 /** Run JSX through the project's Bun preload; bun:test itself skips that transform. */
+import { fileURLToPath } from "node:url"
 import type { PermissionsConfig } from "../lib/config"
 
 if (process.env.OCLOOP_UI_SCENARIO !== "1") {
@@ -6,7 +7,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
   for (const scenario of ["selection", "routing", "lifetime", "layout", "activity", "tokens", "fit"]) {
     test(`audit TUI regression: ${scenario}`, async () => {
       const child = Bun.spawn([process.execPath, "run", import.meta.path, scenario], {
-        cwd: new URL("../..", import.meta.url).pathname,
+        cwd: fileURLToPath(new URL("../..", import.meta.url)),
         stdout: "pipe", stderr: "pipe", env: { ...process.env, OCLOOP_UI_SCENARIO: "1" },
       })
       const [code, stdout, stderr] = await Promise.all([

@@ -15,8 +15,9 @@
  */
 
 import { plugin } from "bun"
+import { fileURLToPath } from "node:url"
 import solidTransformPlugin from "@opentui/solid/bun-plugin"
 
 plugin(solidTransformPlugin)
 
-await import(new URL("../src/index.tsx", import.meta.url).pathname)
+await import(fileURLToPath(new URL("../src/index.tsx", import.meta.url)))

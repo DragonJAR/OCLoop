@@ -5,6 +5,7 @@
  * bun:test's JSX runtime limitations with @opentui/solid.
  */
 
+import { fileURLToPath } from "node:url"
 import type { ResumeDeps } from "./useResume"
 import type { PersistedLoopState } from "../lib/loop-state-store"
 
@@ -24,7 +25,7 @@ if (process.env.OCLOOP_RESUME_TEST !== "1") {
   for (const scenario of scenarios) {
     test(`useResume scenario: ${scenario}`, async () => {
       const child = Bun.spawn([process.execPath, "run", import.meta.path, scenario], {
-        cwd: new URL("../..", import.meta.url).pathname,
+        cwd: fileURLToPath(new URL("../..", import.meta.url)),
         stdout: "pipe",
         stderr: "pipe",
         env: { ...process.env, OCLOOP_RESUME_TEST: "1" },

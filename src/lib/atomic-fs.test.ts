@@ -100,7 +100,10 @@ describe("atomic-fs", () => {
     expect(existsSync(orphan)).toBe(false)
   })
 
-  it("cleanupDeterministicTmp keeps a tmp owned by another live process", () => {
+  // `sleep` is a coreutils binary; Windows has no `sleep.exe` and Bun.spawn
+  // throws ENOENT synchronously for a missing binary, which would take the
+  // whole file down instead of skipping this case.
+  it.skipIf(process.platform === "win32")("cleanupDeterministicTmp keeps a tmp owned by another live process", () => {
     dir = mkdtempSync(join(tmpdir(), "atomic-fs-"))
     const path = join(dir, "PLAN.md")
     // A pid that is guaranteed alive but is not this test process: spawn a

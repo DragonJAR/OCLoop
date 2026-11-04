@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
@@ -143,8 +143,10 @@ describe("compareAndSwapPlan", () => {
       writeFileSync(path, "x\n", "utf-8")
       try {
         mkdirSync(readOnly, { recursive: true })
-        Bun.spawn(["chmod", "000", readOnly])
-        // Give chmod a beat; skip if the platform ignores it.
+        // chmodSync, not a spawned `chmod`: there is no chmod binary on
+        // Windows and Bun.spawn throws ENOENT synchronously for it, which
+        // would skip the cleanup below and leak the temp dir on every run.
+        chmodSync(readOnly, 0o000)
       } catch {
         return
       }
@@ -154,11 +156,11 @@ describe("compareAndSwapPlan", () => {
       expect(res.wrote).toBe(false)
     } finally {
       try {
-        Bun.spawn(["chmod", "755", readOnly])
-        rmSync(readOnly, { recursive: true, force: true })
+        chmodSync(readOnly, 0o755)
       } catch {
-        // best-effort cleanup
+        // best-effort: the dir may be gone already
       }
+      rmSync(readOnly, { recursive: true, force: true })
     }
   })
 })
