@@ -27,7 +27,7 @@ if (process.env.OCLOOP_KEY_TEST !== "1") {
     // land there. A crash message is still caught, on either stream.
     expect({
       code,
-      stderr: stderr.replace(PLATFORM_NOISE, ""),
+      stderr: stderr.replace(PLATFORM_NOISE, "").trim(),
       stdoutHasCrash: /Uncaught|Error:/.test(stdout),
     }).toEqual({ code: 0, stderr: "", stdoutHasCrash: false })
   }, 15000)

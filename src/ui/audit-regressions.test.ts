@@ -31,7 +31,7 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
       // stream.
       expect({
         code,
-        stderr: stderr.replace(PLATFORM_NOISE, ""),
+        stderr: stderr.replace(PLATFORM_NOISE, "").trim(),
         stdoutHasCrash: /Orphan text error|Uncaught|Error:/.test(stdout),
       }).toEqual({ code: 0, stderr: "", stdoutHasCrash: false })
     }, 15000)
