@@ -98,8 +98,21 @@ const {
   startOpencodeServer,
 } = await import("./opencode-server")
 
+/**
+ * A resolvable `opencode` path for the current platform.
+ *
+ * On Windows the launcher resolves the binary to a full path before spawning
+ * it (a bare name does not resolve through PATHEXT). With no resolvable path
+ * the version probe never runs, so the server reports no version and the
+ * ready-marker tests fail for a reason that has nothing to do with the
+ * marker.
+ */
+function resolvableOpencode(): string | null {
+  return process.platform === "win32" ? "C:\\bin\\opencode.cmd" : null
+}
+
 beforeEach(() => {
-  resolveSpawnableImpl = async () => null
+  resolveSpawnableImpl = async () => resolvableOpencode()
   versionOutput = "opencode v1.18.33\n"
   versionExitCode = 0
   autoServeOutput = "opencode server listening on http://127.0.0.1:4096\n"
@@ -110,7 +123,7 @@ beforeEach(() => {
 })
 
 afterEach(() => {
-  resolveSpawnableImpl = async () => null
+  resolveSpawnableImpl = async () => resolvableOpencode()
 })
 
 function serverSpawnCall(): SpawnCall {

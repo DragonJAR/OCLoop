@@ -12,7 +12,9 @@ describe("ensureWindowsConsoleReady", () => {
     __resetWindowsConsoleCacheForTests()
   })
 
-  it("is a no-op success on POSIX", () => {
+  // On Windows the function actually enables the virtual terminal on the
+  // console handles, so "no-op" is only true off Windows.
+  it.skipIf(process.platform === "win32")("is a no-op success on POSIX", () => {
     expect(ensureWindowsConsoleReady()).toBe(true)
     expect(ensureWindowsConsoleReady()).toBe(true)
   })
