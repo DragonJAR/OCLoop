@@ -1,9 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { deterministicTmpPath } from "./atomic-fs"
-import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, isValidResilienceValue, loadConfig, resolveResilience, saveConfig, getConfigPath, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, isValidResilienceValue, loadConfig, resolveResilience, saveConfig, getConfigPath, getConfigDir, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -561,6 +561,45 @@ describe("getConfigPath", () => {
     // so getConfigPath should resolve under it.
     const path = getConfigPath()
     expect(path).toBe(join(dir, "ocloop", "ocloop.json"))
+  })
+})
+
+describe("getConfigDir — per-platform location", () => {
+  const savedEnv = { ...process.env }
+
+  afterEach(() => {
+    process.env = { ...savedEnv }
+  })
+
+  it("uses %APPDATA% on Windows", () => {
+    delete process.env.XDG_CONFIG_HOME
+    process.env.APPDATA = join(dir, "AppData", "Roaming")
+    expect(getConfigDir("win32")).toBe(join(dir, "AppData", "Roaming", "ocloop"))
+  })
+
+  it("lets XDG_CONFIG_HOME override the Windows location (explicit override wins)", () => {
+    process.env.APPDATA = join(dir, "AppData", "Roaming")
+    process.env.XDG_CONFIG_HOME = join(dir, "xdg")
+    expect(getConfigDir("win32")).toBe(join(dir, "xdg", "ocloop"))
+  })
+
+  it("falls back to ~/.config on Windows when %APPDATA% is unset", () => {
+    delete process.env.APPDATA
+    delete process.env.XDG_CONFIG_HOME
+    expect(getConfigDir("win32")).toBe(join(homedir(), ".config", "ocloop"))
+  })
+
+  it("uses XDG_CONFIG_HOME on Linux and macOS", () => {
+    process.env.XDG_CONFIG_HOME = join(dir, "xdg")
+    expect(getConfigDir("linux")).toBe(join(dir, "xdg", "ocloop"))
+    expect(getConfigDir("darwin")).toBe(join(dir, "xdg", "ocloop"))
+  })
+
+  it("falls back to ~/.config when XDG_CONFIG_HOME is unset", () => {
+    delete process.env.XDG_CONFIG_HOME
+    delete process.env.APPDATA
+    expect(getConfigDir("linux")).toBe(join(homedir(), ".config", "ocloop"))
+    expect(getConfigDir("darwin")).toBe(join(homedir(), ".config", "ocloop"))
   })
 })
 

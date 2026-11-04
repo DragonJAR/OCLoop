@@ -191,26 +191,26 @@ export function resolveResilience(
 /**
  * Directory holding the user-level config file.
  *
- * - Windows: `%APPDATA%\ocloop` (`C:\Users\<u>\AppData\Roaming\ocloop`) is
- *   where Windows applications are expected to keep per-user settings.
- *   `XDG_CONFIG_HOME` still wins when it is set: it is an explicit override
- *   (WSL, Git Bash, scoop), not a guess.
- * - Everything else: `$XDG_CONFIG_HOME/ocloop`, falling back to
- *   `~/.config/ocloop`.
+ * - `XDG_CONFIG_HOME` wins everywhere: it is an explicit override, and it is
+ *   what a Linux user (or a WSL / Git Bash environment) sets on purpose.
+ * - Windows otherwise uses `%APPDATA%\ocloop`
+ *   (`C:\Users\<u>\AppData\Roaming\ocloop`), where Windows applications are
+ *   expected to keep per-user settings.
+ * - Everything else falls back to `~/.config/ocloop`.
  *
  * The platform is injectable so the Windows branch can be tested from any
  * host.
  */
 export function getConfigDir(platform: NodeJS.Platform = process.platform): string {
+  const xdgConfigHome = process.env.XDG_CONFIG_HOME
+  if (xdgConfigHome) {
+    return join(xdgConfigHome, "ocloop")
+  }
   if (platform === "win32") {
     const appData = process.env.APPDATA
     if (appData) {
       return join(appData, "ocloop")
     }
-  }
-  const xdgConfigHome = process.env.XDG_CONFIG_HOME
-  if (xdgConfigHome) {
-    return join(xdgConfigHome, "ocloop")
   }
   return join(homedir(), ".config", "ocloop")
 }
