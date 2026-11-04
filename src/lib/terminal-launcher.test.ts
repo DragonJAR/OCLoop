@@ -83,14 +83,17 @@ describe("getKnownTerminalByName (Finding 18.2.D)", () => {
     expect(getKnownTerminalByName("nope-not-a-terminal")).toBeUndefined()
   })
 
-  it("KNOWN_TERMINALS is the curated per-OS list (Terminal, cmd, xterm, x-terminal-emulator)", () => {
+  it("KNOWN_TERMINALS is the curated per-OS list (Terminal, cmd, Windows Terminal, xterm, x-terminal-emulator, gnome-terminal, konsole)", () => {
     // Pin the size + names: one guaranteed/standard terminal per OS
-    // (macOS Terminal.app via osascript, Windows cmd.exe, Linux xterm +
-    // the Debian default-terminal alias). Any future add/remove is
-    // intentional and updates this test.
+    // (macOS Terminal.app via osascript, Windows cmd.exe + Windows Terminal,
+    // Linux xterm + the Debian default-terminal alias + the GNOME and KDE
+    // ones). Any future add/remove is intentional and updates this test.
     expect(KNOWN_TERMINALS.map((t) => t.name).sort()).toEqual([
       "Terminal",
+      "Windows Terminal",
       "cmd",
+      "gnome-terminal",
+      "konsole",
       "x-terminal-emulator",
       "xterm",
     ])

@@ -66,15 +66,26 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
   // new console window that runs the attach command and stays open. Surfaces
   // only on Windows (`cmd` isn't on a POSIX PATH).
   { name: "cmd", command: "cmd", args: ["/c", "start", "", "cmd", "/k", "{cmd}"] },
-  // Linux — no terminal is guaranteed on every system, so list the two most
-  // standard: `xterm` (classic X terminal) and `x-terminal-emulator`
-  // (Debian/Ubuntu default-terminal alias). Each shows only if installed.
+  // Windows — Windows Terminal is the modern default on Windows 11 and on
+  // every machine that has it installed (it is not, so it surfaces only when
+  // `wt` is on PATH). `cmd /k` keeps the tab open after the attach command
+  // ends, like the plain cmd entry above.
+  { name: "Windows Terminal", command: "wt", args: ["cmd", "/k", "{cmd}"] },
+  // Linux — no terminal is guaranteed on every system, so list the most
+  // standard ones: `xterm` (classic X terminal), `x-terminal-emulator`
+  // (Debian/Ubuntu default-terminal alias), `gnome-terminal` (GNOME) and
+  // `konsole` (KDE). Each shows only if installed, so the chooser offers what
+  // the machine actually has instead of a single "Custom…" escape hatch.
   { name: "xterm", command: "xterm", args: ["-e", "{cmd}"] },
   {
     name: "x-terminal-emulator",
     command: "x-terminal-emulator",
     args: ["-e", "{cmd}"],
   },
+  // `--` keeps the attach command from being parsed as a gnome-terminal
+  // option (it starts with "opencode", but a custom command may not).
+  { name: "gnome-terminal", command: "gnome-terminal", args: ["--", "{cmd}"] },
+  { name: "konsole", command: "konsole", args: ["-e", "{cmd}"] },
 ]
 
 /**
