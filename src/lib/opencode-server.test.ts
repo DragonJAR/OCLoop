@@ -61,6 +61,15 @@ function createFakeProcess(pid: number): FakeChildProcess {
 
 const spawnImpl = mock((command: string, args: string[], opts: unknown) => {
   const proc = args[0] === "serve" && nextProc ? nextProc : createFakeProcess(1234)
+  // Bun's node:child_process emits an 'error' event with an AbortError on the
+  // child when the spawn's AbortSignal fires. Reproduce it: the server is
+  // aborted on every restart and on every quit.
+  const spawnSignal = (opts as { signal?: AbortSignal }).signal
+  spawnSignal?.addEventListener("abort", () => {
+    const error = new Error("The operation was aborted.")
+    error.name = "AbortError"
+    proc.emit("error", error)
+  })
   if (args[0] === "serve") nextProc = null
   spawnCalls.push({ command, args, opts, proc })
   if (args[0] === "--version") {
@@ -432,6 +441,46 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(proc.kill).not.toHaveBeenCalled()
   })
 
+  // Restarting the server (palette command, permission toggle) and quitting
+  // both abort the spawn's AbortSignal. Bun reacts by emitting an 'error'
+  // event with an AbortError on the child; with no 'error' listener left,
+  // Node re-throws it as an uncaught exception and the whole TUI dies.
+  it("does not let the abort error escape once the server is listening", async () => {
+    const controller = new AbortController()
+    const proc = createFakeProcess(9999)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000, signal: controller.signal })
+    await waitForSpawnCalls(1)
+
+    proc.stdout.emit(
+      "data",
+      Buffer.from("opencode server listening on http://127.0.0.1:4096\n"),
+    )
+    await serverPromise
+
+    // The abort must not throw out of the signal: that is what killed the TUI.
+    expect(() => controller.abort()).not.toThrow()
+  })
+
+  it("keeps an 'error' listener on the child after the startup handshake", async () => {
+    const controller = new AbortController()
+    const proc = createFakeProcess(9998)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000, signal: controller.signal })
+    await waitForSpawnCalls(1)
+    proc.stdout.emit(
+      "data",
+      Buffer.from("opencode server listening on http://127.0.0.1:4096\n"),
+    )
+    await serverPromise
+
+    expect(proc.listenerCount("error")).toBe(1)
+  })
+
   it("detaches startup stdout/stderr listeners and clears memory once server is listening", async () => {
     const proc = createFakeProcess(7777)
     nextProc = proc
@@ -443,7 +492,8 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(proc.stdout.listenerCount("data")).toBe(1)
     expect(proc.stderr.listenerCount("data")).toBe(1)
     expect(proc.listenerCount("exit")).toBe(1)
-    expect(proc.listenerCount("error")).toBe(1)
+    // The startup's own 'error' listener plus the permanent abort guard.
+    expect(proc.listenerCount("error")).toBe(2)
 
     proc.stdout.emit(
       "data",
@@ -454,7 +504,9 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(proc.stdout.listenerCount("data")).toBe(0)
     expect(proc.stderr.listenerCount("data")).toBe(0)
     expect(proc.listenerCount("exit")).toBe(0)
-    expect(proc.listenerCount("error")).toBe(0)
+    // The startup listener is detached; the permanent abort guard stays, so an
+    // AbortError after startup cannot escape as an uncaught exception.
+    expect(proc.listenerCount("error")).toBe(1)
 
     server.close()
   })
