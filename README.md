@@ -524,6 +524,20 @@ bun test         # run the test suite
 bun run build    # production build
 ```
 
+### Running from source in another project
+
+`bun run dev` has to run from the repository root: Bun only reads `bunfig.toml`
+from the current directory, and that file is what registers the Solid JSX
+transform the `.tsx` files need. From anywhere else, use the launcher, which
+resolves the transform relative to itself:
+
+```bash
+bun run /path/to/OCLoop/bin/ocloop-dev.ts --help
+```
+
+Without it, Bun falls back to React's automatic JSX runtime and fails with
+`Cannot find module 'react/jsx-dev-runtime'`.
+
 ## License
 
 MIT

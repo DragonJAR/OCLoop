@@ -524,6 +524,21 @@ bun test         # ejecutar la batería de tests
 bun run build    # build de producción
 ```
 
+### Ejecutar desde el código en otro proyecto
+
+`bun run dev` debe ejecutarse desde la raíz del repositorio: Bun solo lee el
+`bunfig.toml` del directorio actual, y ese archivo es lo que registra la
+transformación JSX de Solid que necesitan los `.tsx`. Desde cualquier otro
+directorio, usa el launcher, que resuelve la transformación respecto a sí
+mismo:
+
+```bash
+bun run /ruta/a/OCLoop/bin/ocloop-dev.ts --help
+```
+
+Sin él, Bun cae al runtime JSX automático de React y falla con
+`Cannot find module 'react/jsx-dev-runtime'`.
+
 ## Licencia
 
 MIT
