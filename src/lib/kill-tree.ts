@@ -28,6 +28,8 @@ export interface KillableProcess {
   /** When set, the child has already exited and its pid may be reused. */
   exitCode?: number | null
   signalCode?: NodeJS.Signals | null
+  /** ChildProcess-style exit subscription; lets tracking follow the real exit. */
+  once?: (event: "exit", listener: () => void) => unknown
 }
 
 const hasExited = (proc: KillableProcess): boolean =>
@@ -35,10 +37,19 @@ const hasExited = (proc: KillableProcess): boolean =>
 
 /** Long-lived children (the OpenCode server) a crash handler must be able to reap. */
 const tracked = new Set<KillableProcess>()
+/** Children killTree already signalled, so a repeated close() does not re-signal. */
+const signalled = new WeakSet<KillableProcess>()
 
-/** Register a child for {@link killAllTrackedSync}; killTree/killTreeSync unregister it. */
+/**
+ * Register a child for {@link killAllTrackedSync}. It stays tracked until it
+ * actually EXITS (or killTreeSync reaps it), not merely until it is signalled:
+ * a child that ignores or is slow on SIGTERM must still be escalated by the
+ * exit hook when the app calls process.exit right after killTree().
+ */
 export function trackProcess(proc: KillableProcess): void {
+  if (hasExited(proc) || tracked.has(proc)) return
   tracked.add(proc)
+  proc.once?.("exit", () => tracked.delete(proc))
 }
 
 export const isTracked = (proc: KillableProcess): boolean => tracked.has(proc)
@@ -91,9 +102,16 @@ function signalGroup(
 
 /** Fire-and-forget tree kill. Never throws. */
 export function killTree(proc: KillableProcess, options: KillTreeOptions = {}): void {
-  tracked.delete(proc)
+  // Without an exit subscription there is no way to learn when it dies, so
+  // untrack now (previous behavior); otherwise the 'exit' listener untracks.
+  if (!proc.once) tracked.delete(proc)
   // Never signal an exited child: its pid/group may belong to someone else now.
-  if (hasExited(proc)) return
+  if (hasExited(proc)) {
+    tracked.delete(proc)
+    return
+  }
+  if (signalled.has(proc)) return
+  signalled.add(proc)
   const platform = options.platform ?? process.platform
   const pid = proc.pid
 
@@ -129,7 +147,9 @@ export function killTree(proc: KillableProcess, options: KillTreeOptions = {}): 
 /**
  * Synchronous best-effort tree kill for crash/exit handlers, where no timer or
  * child-process event can run afterwards. POSIX skips the grace period and
- * sends SIGKILL to the group directly. Never throws.
+ * sends SIGKILL to the group — which only lands while the group still exists
+ * (a dead group answers ESRCH, and an exited child is never signalled). Never
+ * throws.
  */
 export function killTreeSync(proc: KillableProcess, options: KillTreeOptions = {}): void {
   tracked.delete(proc)

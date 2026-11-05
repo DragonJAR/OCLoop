@@ -567,7 +567,8 @@ describe("opencode-server — Windows process cleanup", () => {
 
     expect(proc.stdout.listenerCount("data")).toBe(1)
     expect(proc.stderr.listenerCount("data")).toBe(1)
-    expect(proc.listenerCount("exit")).toBe(1)
+    // The startup's own 'exit' listener plus the tracker's (untracks on exit).
+    expect(proc.listenerCount("exit")).toBe(2)
     // The startup's own 'error' listener plus the permanent abort guard.
     expect(proc.listenerCount("error")).toBe(2)
 
@@ -579,7 +580,8 @@ describe("opencode-server — Windows process cleanup", () => {
 
     expect(proc.stdout.listenerCount("data")).toBe(0)
     expect(proc.stderr.listenerCount("data")).toBe(0)
-    expect(proc.listenerCount("exit")).toBe(0)
+    // Only the tracker's one-shot 'exit' listener remains.
+    expect(proc.listenerCount("exit")).toBe(1)
     // The startup listener is detached; the permanent abort guard stays, so an
     // AbortError after startup cannot escape as an uncaught exception.
     expect(proc.listenerCount("error")).toBe(1)
