@@ -6,6 +6,10 @@ All notable changes to OCLoop are documented here. Format based on
 ## [Unreleased]
 
 ### Fixed
+- **`jobs` and `permissions` are documented as config keys** — both were
+  accepted in `ocloop.json` and used, but neither appeared in the README's
+  config example, so there was no way to learn they could be set there at
+  all. A new guard holds the READMEs to the keys the config accepts.
 - **Aborting the OpenCode server no longer takes the whole TUI down** — the
   spawn's permanent `error` listener was unhandled and killed the process. The
   failure is now surfaced and the loop keeps running.
