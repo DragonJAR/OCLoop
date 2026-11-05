@@ -462,9 +462,48 @@ describe("opencode-server — Windows process cleanup", () => {
   })
 
   // Restarting the server (palette command, permission toggle) and quitting
-  // both abort the spawn's AbortSignal. Bun reacts by emitting an 'error'
-  // event with an AbortError on the child; with no 'error' listener left,
-  // Node re-throws it as an uncaught exception and the whole TUI dies.
+  // both abort the caller's AbortSignal right after close(). If that signal
+  // reached spawn, the runtime would kill the direct child (the cmd.exe shim
+  // on Windows) before taskkill walks the tree, orphaning the real server.
+  it("never hands the AbortSignal to spawn (teardown belongs to close())", async () => {
+    const controller = new AbortController()
+    const proc = createFakeProcess(9997)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000, signal: controller.signal })
+    await waitForSpawnCalls(1)
+    expect((serverSpawnCall().opts as { signal?: unknown }).signal).toBeUndefined()
+
+    proc.stdout.emit(
+      "data",
+      Buffer.from("opencode server listening on http://127.0.0.1:4096\n"),
+    )
+    const server = await serverPromise
+    controller.abort()
+    // After the handshake the abort is inert: it must not kill anything.
+    expect(proc.kill).not.toHaveBeenCalled()
+    expect(groupSignals.filter((s) => s.pid === -9997)).toEqual([])
+    server.closeSync()
+  })
+
+  it("abort during startup still tree-kills the child (abortHandler)", async () => {
+    const controller = new AbortController()
+    const proc = createFakeProcess(9996)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000, signal: controller.signal })
+    await waitForSpawnCalls(1)
+    controller.abort()
+    await expect(serverPromise).rejects.toThrow("Aborted")
+    const reaped =
+      groupSignals.some((s) => s.pid === -9996) ||
+      proc.kill.mock.calls.length > 0 ||
+      spawnCalls.some((c) => isTaskkill(c.command) && c.args.includes("9996"))
+    expect(reaped).toBe(true)
+  })
+
   it("does not let the abort error escape once the server is listening", async () => {
     const controller = new AbortController()
     const proc = createFakeProcess(9999)

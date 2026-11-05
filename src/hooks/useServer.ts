@@ -186,9 +186,10 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Close the current server instance (best effort, never throws).
    */
   function closeCurrent(): void {
-    // Kill the process TREE first: aborting the spawn signal only terminates
-    // the direct child (a cmd.exe shim on Windows) and would orphan the real
-    // server. abort() then just cancels any pending startup handshake.
+    // Kill the process TREE via close(). The abort below only cancels a
+    // pending startup handshake (the launcher's abortHandler tree-kills it);
+    // the signal is never handed to spawn, so it cannot kill the direct child
+    // (a cmd.exe shim on Windows) ahead of taskkill and orphan the server.
     if (serverRef) {
       try {
         serverRef.close()

@@ -127,8 +127,13 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     authorization = `Basic ${Buffer.from(`${V2_USERNAME}:${password}`, "utf8").toString("base64")}`
   }
 
+  // No `signal` here on purpose: Node/Bun react to an aborted spawn signal by
+  // killing ONLY the direct child. On Windows that is the cmd.exe shim, and
+  // killing it before taskkill runs makes `/t` miss the real server tree
+  // (orphaned node.exe/opencode.exe holding the port). The startup is
+  // cancelled by `abortHandler` (killTree) and, after the handshake, teardown
+  // belongs to close()/closeSync() alone.
   const spawnOptions: Parameters<typeof spawn>[2] = {
-    signal: merged.signal,
     env,
     // POSIX: own process group so killTree can signal the whole tree. Windows
     // uses taskkill /t instead (detached there would open a console window).
@@ -235,11 +240,8 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     proc.on("error", onError)
     // The child outlives this startup handshake: settle() removes `onError`,
     // and a ChildProcess with no 'error' listener left re-throws the event as
-    // an uncaught exception. Bun's node:child_process emits exactly that when
-    // the spawn's AbortSignal fires — which is what every server restart and
-    // every quit does — so the whole TUI died with an AbortError instead of
-    // restarting the server. The abort is intentional, so keep a listener for
-    // the child's whole lifetime.
+    // an uncaught exception that would kill the whole TUI. Keep a listener for
+    // the child's whole lifetime (late errors are irrelevant once listening).
     proc.on("error", () => {})
     merged.signal?.addEventListener("abort", abortHandler)
   })
