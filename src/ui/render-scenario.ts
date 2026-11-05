@@ -23,6 +23,8 @@ export interface RenderScenarioResult {
   stderr: string
   /** stdout + stderr, for a single assertion. */
   output: string
+  /** The parsed contents of the file the child was asked to write, if any. */
+  data?: unknown
 }
 
 /** Environment flag that tells the scenario host it runs as a scenario. */
@@ -43,6 +45,13 @@ export async function runRenderScenario(opts: {
   env?: Record<string, string>
   cwd?: string
   timeoutMs?: number
+  /**
+   * File the child should write its result to. Preferred over stdout for
+   * structured data: on Windows the native renderer writes its frames to the
+   * child's stdout (it writes to the file descriptor, bypassing the JS
+   * sink), so anything parsed out of stdout has to survive the frames.
+   */
+  resultFile?: string
 }): Promise<RenderScenarioResult> {
   const child = Bun.spawn([process.execPath, "run", opts.file, opts.scenario], {
     cwd: opts.cwd ?? fileURLToPath(new URL("../..", import.meta.url)),
@@ -66,7 +75,18 @@ export async function runRenderScenario(opts: {
       new Response(child.stdout).text(),
       new Response(child.stderr).text(),
     ])
-    return { code, stdout, stderr, output: stdout + stderr }
+    let data: unknown
+    if (opts.resultFile) {
+      const text = await Bun.file(opts.resultFile).text().catch(() => "")
+      if (text.trim()) {
+        try {
+          data = JSON.parse(text.trim())
+        } catch {
+          data = undefined
+        }
+      }
+    }
+    return { code, stdout, stderr, output: stdout + stderr, data }
   } finally {
     clearTimeout(killer)
   }

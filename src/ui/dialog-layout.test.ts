@@ -16,7 +16,18 @@
  * component in-process fails to compile. This host is a plain .ts module with
  * no JSX, exactly like the TUI regression suite.
  */
+import { rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
 import { runRenderScenario } from "./render-scenario"
+
+/**
+ * Where the child writes its measurement. A file, not stdout: on Windows the
+ * native renderer writes its frames to the child's stdout (it writes to the
+ * file descriptor, bypassing the JS sink), so structured data has to travel
+ * somewhere the frames cannot touch.
+ */
+const RESULT_FILE = "OCLOOP_LAYOUT_RESULT"
 
 /** The dialogs measured. */
 const SCENARIOS = [
@@ -36,19 +47,23 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
   describe("dialog layout — no clipped content", () => {
     for (const scenario of SCENARIOS) {
       it(`the ${scenario} dialog shows its content`, async () => {
-        const { code, stdout } = await runRenderScenario({
+        const resultFile = join(tmpdir(), `ocloop-layout-${scenario}-${process.pid}.json`)
+        const { code, data } = await runRenderScenario({
           file: import.meta.path,
           scenario,
-          env: { OCLOOP_LAYOUT_SCENARIO: scenario },
+          env: { OCLOOP_LAYOUT_SCENARIO: scenario, OCLOOP_LAYOUT_RESULT: resultFile },
+          resultFile,
         })
         expect(code).toBe(0)
 
-        const measurement = JSON.parse(stdout.trim()) as {
+        const measurement = data as {
           viewport: number
           content: number
           mustFit: boolean
           buttonsVisible: boolean
         }
+        expect(measurement).toBeDefined()
+        rmSync(resultFile, { force: true })
         expect(measurement.viewport).toBeGreaterThan(0)
         if (measurement.mustFit) {
           expect(measurement.content).toBeLessThanOrEqual(measurement.viewport)
@@ -195,13 +210,13 @@ if (process.env.OCLOOP_UI_SCENARIO !== "1") {
   }
 
   const result = worst()
-  console.log(
-    JSON.stringify({
-      viewport: Number.isFinite(result.viewport) ? result.viewport : 0,
-      content: result.content,
-      mustFit,
-      buttonsVisible,
-    }),
-  )
+  const payload = JSON.stringify({
+    viewport: Number.isFinite(result.viewport) ? result.viewport : 0,
+    content: result.content,
+    mustFit,
+    buttonsVisible,
+  })
+  const outFile = process.env.OCLOOP_LAYOUT_RESULT
+  if (outFile) await Bun.write(outFile, payload)
   process.exit(0)
 }
