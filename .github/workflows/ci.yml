@@ -33,7 +33,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -57,7 +57,7 @@ jobs:
   # path in the project (PATHEXT on Windows, the .cmd shell shim, the ready
   # marker, the teardown). This job runs the actual binary everywhere.
   server-smoke:
-    name: server smoke (${{ matrix.os }})
+    name: server smoke (${{ matrix.os }}, ${{ matrix.opencode }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
@@ -65,10 +65,12 @@ jobs:
       matrix:
         # Pinned image: macos-latest runners died at 15m in consecutive runs.
         os: [macos-15, windows-latest, ubuntu-latest]
+        # v1 has no server password (v1 ready-marker path); latest is v2 (Basic auth).
+        opencode: ["opencode-ai@^1", "opencode-ai@latest"]
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
@@ -76,7 +78,10 @@ jobs:
           bun-version: latest
 
       - name: Install the real OpenCode binary
-        run: npm install -g opencode-ai
+        shell: bash
+        env:
+          OCOPENCODE_PKG: ${{ matrix.opencode }}
+        run: npm install -g "$OCOPENCODE_PKG"
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
