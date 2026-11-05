@@ -13,9 +13,22 @@ export interface DialogInvalidAgentProps {
   onQuit: () => void
 }
 
+/**
+ * Rows the chrome around the agent roster occupies: the dialog's own
+ * vertical padding, the header, the message, the "available agents" label and
+ * the button row.
+ */
+const CHROME_ROWS = 9
+
+/** The roster is a list of CHOICES: every one of them has to be reachable. */
+const MAX_LIST_ROWS = 12
+
 export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
   const { theme } = useTheme()
   const [activeButton, setActiveButton] = createSignal<"default" | "quit">("default")
+
+  /** Rows the roster needs; the dialog grows with it instead of clipping. */
+  const listRows = () => Math.min(props.availableAgents.length, MAX_LIST_ROWS)
 
   useKeyboard((key) => {
     if (key.name === "escape") {
@@ -41,7 +54,7 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
     <Dialog 
       onClose={() => props.onQuit()} 
       width={60} 
-      height={14}
+      height={CHROME_ROWS + listRows()}
     >
       <DialogHeader title={t("dlgInvalidAgent")} hint={t("dlgEscToQuit")} />
 
@@ -55,11 +68,15 @@ export function DialogInvalidAgent(props: DialogInvalidAgentProps) {
           <text>
             <span style={{ fg: theme().textMuted }}>{t("dlgAvailableAgents")}</span>
           </text>
-          {/* Scrollbox so a long agent roster (8+) scrolls instead of pushing
-              the buttons off the fixed-height dialog. Mirrors DialogError's
-              scrollbar styling. */}
+          {/* The roster gets an explicit height so it shows every agent: with
+              a fixed dialog height the last row of a long roster fell under
+              the fold and the agent the user actually wanted was the hidden
+              one. A roster longer than the cap still scrolls — the dialog is
+              clamped to the terminal, so the buttons stay reachable. */}
           <scrollbox
-            maxHeight={5}
+            height={listRows()}
+            flexShrink={0}
+            maxHeight={listRows()}
             verticalScrollbarOptions={dialogScrollbarOptions(theme())}
           >
             {props.availableAgents.map(agent => (

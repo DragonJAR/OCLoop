@@ -13,15 +13,13 @@ import type { PermissionsConfig } from "../lib/config"
 
 if (process.env.OCLOOP_UI_SCENARIO !== "1") {
   const { test, expect } = await import("bun:test")
+  const { runRenderScenario } = await import("./render-scenario")
   for (const scenario of ["selection", "routing", "lifetime", "layout", "activity", "tokens", "fit"]) {
     test(`audit TUI regression: ${scenario}`, async () => {
-      const child = Bun.spawn([process.execPath, "run", import.meta.path, scenario], {
-        cwd: fileURLToPath(new URL("../..", import.meta.url)),
-        stdout: "pipe", stderr: "pipe", env: { ...process.env, OCLOOP_UI_SCENARIO: "1" },
+      const { code, stdout, stderr } = await runRenderScenario({
+        file: import.meta.path,
+        scenario,
       })
-      const [code, stdout, stderr] = await Promise.all([
-        child.exited, new Response(child.stdout).text(), new Response(child.stderr).text(),
-      ])
       // The child's stderr must be empty and the exit code 0 — that is where a
       // crash shows up. Its stdout is NOT asserted: on Windows the native
       // renderer writes its frames to the process's stdout even when stdout is

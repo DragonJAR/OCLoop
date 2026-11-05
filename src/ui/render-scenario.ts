@@ -1,0 +1,73 @@
+/**
+ * Run a rendering scenario in a child process.
+ *
+ * bun:test does not apply the project's Solid JSX transform: a test that
+ * imports a .tsx component in-process fails to compile, because Bun falls
+ * back to its own automatic JSX runtime (`jsxDEV`) and @opentui/solid does
+ * not export it. A child `bun run` process gets the preload — and with it the
+ * transform — so the scenario host stays a plain .ts module (no JSX) and the
+ * render happens where the renderer actually works.
+ *
+ * Both UI suites use this: the TUI regression scenarios and the dialog
+ * layout measurements.
+ */
+import { fileURLToPath } from "node:url"
+
+/** Result of a scenario run in a child process. */
+export interface RenderScenarioResult {
+  /** Exit code of the child. */
+  code: number
+  /** Everything the child wrote to stdout. */
+  stdout: string
+  /** Everything the child wrote to stderr. */
+  stderr: string
+  /** stdout + stderr, for a single assertion. */
+  output: string
+}
+
+/** Environment flag that tells the scenario host it runs as a scenario. */
+export const SCENARIO_ENV = "OCLOOP_UI_SCENARIO"
+
+/**
+ * Spawn `file` as a scenario and collect its output.
+ *
+ * @param opts.file      The .ts module that hosts the scenario.
+ * @param opts.scenario  The scenario name; the host reads it from argv[2].
+ * @param opts.env       Extra environment variables for the child.
+ * @param opts.cwd       Working directory; defaults to the repository root.
+ * @param opts.timeoutMs Kill the child after this long (default 30s).
+ */
+export async function runRenderScenario(opts: {
+  file: string
+  scenario: string
+  env?: Record<string, string>
+  cwd?: string
+  timeoutMs?: number
+}): Promise<RenderScenarioResult> {
+  const child = Bun.spawn([process.execPath, "run", opts.file, opts.scenario], {
+    cwd: opts.cwd ?? fileURLToPath(new URL("../..", import.meta.url)),
+    stdout: "pipe",
+    stderr: "pipe",
+    env: { ...process.env, [SCENARIO_ENV]: "1", ...opts.env },
+  })
+
+  const timeoutMs = opts.timeoutMs ?? 30_000
+  const killer = setTimeout(() => {
+    try {
+      child.kill()
+    } catch {
+      // already gone
+    }
+  }, timeoutMs)
+
+  try {
+    const [code, stdout, stderr] = await Promise.all([
+      child.exited,
+      new Response(child.stdout).text(),
+      new Response(child.stderr).text(),
+    ])
+    return { code, stdout, stderr, output: stdout + stderr }
+  } finally {
+    clearTimeout(killer)
+  }
+}

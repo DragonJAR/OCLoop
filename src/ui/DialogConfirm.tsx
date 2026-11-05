@@ -25,9 +25,20 @@ export interface DialogConfirmProps {
   scrollableMessage?: boolean
 }
 
+/**
+ * Rows the chrome around the message occupies: the dialog's own vertical
+ * padding, the header, the scrollbox's margins and the button row. The
+ * message area gets whatever is left, and the buttons always stay visible.
+ */
+const CHROME_ROWS = 7
+
 export function DialogConfirm(props: DialogConfirmProps) {
   const { theme } = useTheme()
   const [activeButton, setActiveButton] = createSignal<"cancel" | "confirm">("confirm")
+
+  /** One source of truth for the height: the dialog and the message area
+      derive from it, so they can never disagree about the space available. */
+  const dialogHeight = () => props.height ?? 10
 
   onCleanup(() => props.onUnmount?.())
 
@@ -55,7 +66,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
     <Dialog
       onClose={() => props.onCancel && props.onCancel()}
       width={props.width ?? 60}
-      height={props.height ?? 10}
+      height={dialogHeight()}
     >
       <DialogHeader title={props.title} />
 
@@ -74,7 +85,7 @@ export function DialogConfirm(props: DialogConfirmProps) {
         <scrollbox
           marginTop={1}
           marginBottom={1}
-          maxHeight={Math.max(2, (props.height ?? 12) - 5)}
+          maxHeight={Math.max(2, dialogHeight() - CHROME_ROWS)}
           verticalScrollbarOptions={dialogScrollbarOptions(theme())}
         >
           <text>
