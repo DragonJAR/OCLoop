@@ -15,7 +15,7 @@
  */
 
 import { spawn } from "node:child_process"
-import { win32 } from "node:path"
+import { systemBinary } from "./command-exists"
 
 /** Grace period between SIGTERM and SIGKILL (matches cli-runner's KILL_GRACE_MS). */
 export const KILL_GRACE_MS = 2_000
@@ -67,7 +67,7 @@ export interface KillTreeOptions {
 
 /** Absolute path to taskkill.exe — never resolved through PATH or the cwd. */
 export function taskkillPath(): string {
-  return win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", "taskkill.exe")
+  return systemBinary("taskkill", "win32")
 }
 
 function taskkillArgs(pid: number): string[] {

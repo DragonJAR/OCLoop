@@ -51,16 +51,21 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
   )
 
   it(
-    "returns clip on win32 when clip is on PATH",
+    "returns clip.exe by absolute System32 path on win32 (no PATH lookup)",
     async () => {
       const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+      const prevRoot = process.env.SystemRoot
       Object.defineProperty(process, "platform", { value: "win32" })
+      process.env.SystemRoot = "C:\\Windows"
       try {
-        resolveSpawnableImpl = async (cmd) => cmd === "clip" ? String.raw`C:\Windows\System32\clip.exe` : null
+        // Even when the PATH lookup would drop it (cwd = System32, elevated).
+        resolveSpawnableImpl = async () => null
         expect(await detectClipboardTool()).toEqual({
           command: String.raw`C:\Windows\System32\clip.exe`,
           args: [],
         })
+        if (prevRoot === undefined) delete process.env.SystemRoot
+        else process.env.SystemRoot = prevRoot
       } finally {
         if (descriptor) Object.defineProperty(process, "platform", descriptor)
       }

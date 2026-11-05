@@ -17,7 +17,7 @@ beforeEach(() => {
   mockCommandExists({})
 })
 
-const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim } =
+const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim, systemBinary } =
   realCommandExists
 
 /** Fake `Bun.which` over a fixed name -> path table; records every probe. */
@@ -154,6 +154,37 @@ describe("resolveSpawnable — gate + spawn-form in one lookup", () => {
   it("POSIX returns null when the command is not on PATH", async () => {
     const { which } = fakeWhich({})
     expect(await resolveSpawnable("nope", "linux", which)).toBeNull()
+  })
+})
+
+describe("systemBinary — absolute paths for guaranteed OS binaries", () => {
+  const withSystemRoot = (value: string | undefined, fn: () => void) => {
+    const prev = process.env.SystemRoot
+    if (value === undefined) delete process.env.SystemRoot
+    else process.env.SystemRoot = value
+    try {
+      fn()
+    } finally {
+      if (prev === undefined) delete process.env.SystemRoot
+      else process.env.SystemRoot = prev
+    }
+  }
+
+  it("win32: %SystemRoot%\\System32\\<name>.exe, defaulting to C:\\Windows", () => {
+    withSystemRoot("D:\\Win", () => {
+      expect(systemBinary("clip", "win32")).toBe("D:\\Win\\System32\\clip.exe")
+    })
+    withSystemRoot(undefined, () => {
+      expect(systemBinary("cmd", "win32")).toBe("C:\\Windows\\System32\\cmd.exe")
+      expect(systemBinary("powershell", "win32", ["WindowsPowerShell", "v1.0"])).toBe(
+        "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
+      )
+    })
+  })
+
+  it("darwin/linux: /usr/bin/<name>", () => {
+    expect(systemBinary("caffeinate", "darwin")).toBe("/usr/bin/caffeinate")
+    expect(systemBinary("true", "linux")).toBe("/usr/bin/true")
   })
 })
 

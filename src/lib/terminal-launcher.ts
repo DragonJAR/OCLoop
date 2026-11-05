@@ -6,11 +6,10 @@
  */
 
 import type { TerminalConfig } from "./config"
-import { commandExists, resolveSpawnable, isWindowsShellShim } from "./command-exists"
+import { commandExists, resolveSpawnable, isWindowsShellShim, systemBinary } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 import { t } from "./i18n"
-import { join } from "node:path"
 
 /**
  * A known terminal emulator with its launch configuration
@@ -18,6 +17,11 @@ import { join } from "node:path"
 export interface KnownTerminal {
   name: string
   command: string
+  /**
+   * A Windows system binary (System32): detected on win32 only and spawned by
+   * absolute path via `systemBinary`, never resolved through PATH/cwd.
+   */
+  windowsSystemBinary?: boolean
   args: string[] // Args to pass when executing a command, {cmd} is replaced
 }
 
@@ -65,7 +69,14 @@ export const KNOWN_TERMINALS: KnownTerminal[] = [
   // Windows — cmd.exe ships with every Windows. `start "" cmd /k <cmd>` opens a
   // new console window that runs the attach command and stays open. Surfaces
   // only on Windows (`cmd` isn't on a POSIX PATH).
-  { name: "cmd", command: "cmd", args: ["/c", "start", "", "cmd", "/k", "{cmd}"] },
+  // Resolved by absolute path (`windowsSystemBinary`): it is a System32 binary,
+  // and the PATH lookup drops it when the cwd IS System32 (elevated terminal).
+  {
+    name: "cmd",
+    command: "cmd",
+    args: ["/c", "start", "", "cmd", "/k", "{cmd}"],
+    windowsSystemBinary: true,
+  },
   // Windows — Windows Terminal is the modern default on Windows 11 and on
   // every machine that has it installed (it is not, so it surfaces only when
   // `wt` is on PATH). `cmd /k` keeps the tab open after the attach command
@@ -103,7 +114,10 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
   const results = await Promise.all(
     KNOWN_TERMINALS.map(async (terminal) => ({
       terminal,
-      exists: await commandExists(terminal.command),
+      // A Windows system binary ships with every Windows (and nowhere else).
+      exists: terminal.windowsSystemBinary
+        ? process.platform === "win32"
+        : await commandExists(terminal.command),
     })),
   )
 
@@ -193,10 +207,7 @@ function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
 function windowsShimInvocation(command: string, args: string[]): string[] {
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
   const script = `$ErrorActionPreference = 'Stop'; & ${[command, ...args].map(literal).join(" ")}; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }`
-  const powershell = join(
-    process.env.SystemRoot ?? "C:\\Windows",
-    "System32", "WindowsPowerShell", "v1.0", "powershell.exe",
-  )
+  const powershell = systemBinary("powershell", "win32", ["WindowsPowerShell", "v1.0"])
   return [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
 }
@@ -348,7 +359,11 @@ export async function launchTerminal(
     // Resolve the terminal binary to a spawnable form (full path on Windows,
     // where a no-shell Bun.spawn of a bare name may miss PATHEXT; bare name on
     // POSIX). null = not on PATH — same "not found" outcome as the old gate.
-    const spawnCommand = await resolveSpawnable(command)
+    const known = config.type === "known" ? getKnownTerminalByName(config.name) : undefined
+    const spawnCommand =
+      known?.windowsSystemBinary && process.platform === "win32"
+        ? systemBinary(command, "win32")
+        : await resolveSpawnable(command)
     if (!spawnCommand) {
       log.warn("terminal", "Command not found", { command })
       return {

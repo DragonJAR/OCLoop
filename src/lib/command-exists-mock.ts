@@ -25,6 +25,7 @@ export const realCommandExists: CommandExistsModule = {
   resolveSpawnable: mod.resolveSpawnable,
   isWindowsShellShim: mod.isWindowsShellShim,
   WIN_SHELL_SHIM_RE: mod.WIN_SHELL_SHIM_RE,
+  systemBinary: mod.systemBinary,
 }
 
 /** Register a partial mock; unlisted exports stay real. */

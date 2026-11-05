@@ -8,6 +8,29 @@ const WIN_LOOKUP_EXTS = [".exe", ".cmd", ".bat", ".ps1"]
 
 const defaultWhich: WhichFn = (command) => Bun.which(command)
 
+/**
+ * Absolute path of a GUARANTEED operating-system binary, never resolved
+ * through PATH or the cwd (so a planted copy can't run in its place, and an
+ * elevated terminal whose cwd is `C:\Windows\System32` — where the PATH
+ * lookup's cwd filter would drop the real file — still finds it).
+ * - win32: `%SystemRoot%\System32[\<subdirs>]\<name>.exe`
+ * - darwin/linux: `/usr/bin/<name>`
+ *
+ * Only for binaries the OS always ships (taskkill, powershell, clip, cmd,
+ * caffeinate). User-installed tools (opencode, git, terminals) must keep
+ * going through {@link resolveSpawnable} / {@link resolveCommandPath}.
+ */
+export function systemBinary(
+  name: string,
+  platform: string = process.platform,
+  subdirs: string[] = [],
+): string {
+  if (platform === "win32") {
+    return win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", ...subdirs, `${name}.exe`)
+  }
+  return posix.join("/usr/bin", ...subdirs, name)
+}
+
 /** True when `file` lives directly in the current working directory. */
 function isInCwd(file: string, platform: string): boolean {
   // Platform-specific path flavor keeps this correct for an injected platform.

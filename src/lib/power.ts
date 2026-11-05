@@ -7,6 +7,7 @@
  * still runs; it just won't prevent system sleep). Disable with `--no-caffeinate`.
  */
 
+import { systemBinary } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 
@@ -43,7 +44,8 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
       // -d display, -i idle, -m disk, -s system, -u user-active assertion.
       // -w <pid>: caffeinate exits when OCLoop does, even on a hard crash
       // where stop() never runs (otherwise the Mac is kept awake forever).
-      proc = Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], {
+      // Absolute path: a bare name would honor a `.`/empty PATH entry first.
+      proc = Bun.spawn([systemBinary("caffeinate", "darwin"), "-dimsu", "-w", String(process.pid)], {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",

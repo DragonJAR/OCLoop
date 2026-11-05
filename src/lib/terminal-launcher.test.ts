@@ -74,6 +74,20 @@ async function withPlatform<T>(
   }
 }
 
+describe("detectInstalledTerminals — Windows system binaries", () => {
+  it("lists cmd on win32 even when the PATH lookup misses it (cwd = System32)", async () => {
+    commandExistsImpl = async () => false
+    const names = (await withPlatform("win32", () => detectInstalledTerminals())).map((t) => t.name)
+    expect(names).toEqual(["cmd"])
+  })
+
+  it("never lists cmd off Windows", async () => {
+    commandExistsImpl = async () => true
+    const names = (await withPlatform("linux", () => detectInstalledTerminals())).map((t) => t.name)
+    expect(names).not.toContain("cmd")
+  })
+})
+
 describe("getKnownTerminalByName (Finding 18.2.D)", () => {
   it("returns the entry for a known terminal name", () => {
     expect(getKnownTerminalByName("xterm")?.command).toBe("xterm")
@@ -376,11 +390,20 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("keeps windowsHide for the `cmd /c start` wrapper path on win32", async () => {
     // The known `cmd` entry spawns cmd.exe whose console flashes before
     // `start` opens the real window; hiding the wrapper is the anti-flash win.
-    resolveSpawnableImpl = async () => String.raw`C:\Windows\System32\cmd.exe`
-    await withPlatform("win32", () => launchTerminal(
-      { type: "known", name: "cmd" },
-      "http://127.0.0.1:4096", "ses_abc",
-    ))
+    // cmd.exe is resolved by absolute System32 path, never through PATH (the
+    // lookup drops it when the cwd is System32, as in an elevated terminal).
+    resolveSpawnableImpl = async () => null
+    const prevRoot = process.env.SystemRoot
+    process.env.SystemRoot = "C:\\Windows"
+    try {
+      await withPlatform("win32", () => launchTerminal(
+        { type: "known", name: "cmd" },
+        "http://127.0.0.1:4096", "ses_abc",
+      ))
+    } finally {
+      if (prevRoot === undefined) delete process.env.SystemRoot
+      else process.env.SystemRoot = prevRoot
+    }
     expect(spawnState.calls).toHaveLength(1)
     expect(spawnState.calls[0].cmd).toEqual([
       String.raw`C:\Windows\System32\cmd.exe`, "/c", "start", "", "cmd", "/k",

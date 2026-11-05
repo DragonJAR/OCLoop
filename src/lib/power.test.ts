@@ -46,7 +46,7 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     pm.start()
     expect(pm.isActive()).toBe(true)
     expect(spawnState.calls).toHaveLength(1)
-    expect(spawnState.calls[0].cmd).toEqual(["caffeinate", "-dimsu", "-w", String(process.pid)])
+    expect(spawnState.calls[0].cmd).toEqual(["/usr/bin/caffeinate", "-dimsu", "-w", String(process.pid)])
   })
 
   it("a second start() is a no-op while a proc is already running (line 35 guard)", () => {
