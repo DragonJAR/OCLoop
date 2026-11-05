@@ -395,13 +395,19 @@ function restoreTerminal(): void {
 
 /**
  * Best-effort synchronous reaping of long-lived children (the embedded
- * OpenCode server) from crash handlers. `process.exit()` skips the shutdown
- * manager's async teardown, which on Windows used to leave an orphaned
- * `opencode serve` holding the port. `killAllTrackedSync` (kill-tree.ts) is
- * sync, idempotent and never throws; the `typeof` guard keeps this hook safe
- * if the server/kill-tree surface ever moves again (H6).
+ * OpenCode server). Registered on `process.on("exit")` so it runs on EVERY
+ * in-process exit path, not only the clean quit: the shutdown manager's 10s
+ * failsafe, the forced exit on repeated SIGINT, a throwing shutdown handler,
+ * the crash handlers below and any error-path `process.exit()` all skip the
+ * async teardown, which used to leave a detached `opencode serve` holding the
+ * port. `killAllTrackedSync` (kill-tree.ts) is sync and idempotent — each
+ * child is untracked before it is signalled, and children already reaped by
+ * the normal teardown are no longer tracked — so running it again here after
+ * a clean quit is a no-op. The `typeof` guard keeps this hook safe if the
+ * server/kill-tree surface ever moves again (H6). SIGKILL / power loss are
+ * uncatchable; see the README for manual cleanup.
  */
-function closeTrackedServersOnCrash(): void {
+function reapTrackedServers(): void {
   try {
     if (typeof killAllTrackedSync === "function") killAllTrackedSync()
   } catch {
@@ -409,17 +415,20 @@ function closeTrackedServersOnCrash(): void {
   }
 }
 
-process.on("exit", restoreTerminal)
+process.on("exit", () => {
+  restoreTerminal()
+  reapTrackedServers()
+})
 process.on("uncaughtException", (err) => {
   restoreTerminal()
   console.error("Uncaught exception:", err)
-  closeTrackedServersOnCrash()
+  reapTrackedServers()
   process.exit(1)
 })
 process.on("unhandledRejection", (reason) => {
   restoreTerminal()
   console.error("Unhandled rejection:", reason)
-  closeTrackedServersOnCrash()
+  reapTrackedServers()
   process.exit(1)
 })
 

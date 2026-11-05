@@ -137,6 +137,16 @@ describe("tracking and exited guard", () => {
     expect(mine()).toHaveLength(2)
   })
 
+  it("killAllTrackedSync (exit hook) is a no-op for a child already reaped by killTree", () => {
+    const proc = fakeProc(4600)
+    trackProcess(proc)
+    killTree(proc, { platform: "linux", graceMs: 60_000 })
+    expect(isTracked(proc)).toBe(false)
+    killAllTrackedSync()
+    // Only the graceful SIGTERM — the exit hook must not escalate to SIGKILL.
+    expect(signals.filter((s) => s.pid === -4600)).toEqual([{ pid: -4600, signal: "SIGTERM" }])
+  })
+
   it("never signals a child that already exited (pid may be reused)", () => {
     const proc = { ...fakeProc(4500), exitCode: 0 as number | null }
     killTree(proc, { platform: "linux" })
