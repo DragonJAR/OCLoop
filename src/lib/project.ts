@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import { log } from "./debug-logger";
 import { atomicWriteText } from "./atomic-fs";
-import { splitLines, normalizeLineEndings } from "./text";
+import { splitLines, normalizeLineEndings, preserveEol } from "./text";
 
 const GITIGNORE_FILE = ".gitignore";
 
@@ -45,8 +45,11 @@ export async function ensureGitignore(baseDir: string = process.cwd()): Promise<
     // content is now `\n`-only, so `endsWith("\n")` is unambiguous. Atomic
     // write: this rewrites the user's whole .gitignore, so a crash mid-write
     // must not destroy the existing rules (same policy as PLAN.md / state).
+    // preserveEol: the work is done on the `\n`-normalized copy, but the file
+    // is written back in the user's own line endings (a CRLF .gitignore stays
+    // CRLF instead of being silently converted to LF).
     const suffix = content.endsWith("\n") ? "" : "\n";
-    await atomicWriteText(gitignorePath, `${content}${suffix}${entry}\n`);
+    await atomicWriteText(gitignorePath, preserveEol(raw, `${content}${suffix}${entry}\n`));
     log.info("git", "Updated .gitignore", { entry });
   } catch (err) {
     log.warn("git", "Failed to update .gitignore", err);

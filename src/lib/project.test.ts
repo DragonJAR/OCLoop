@@ -59,6 +59,15 @@ describe("ensureGitignore", () => {
     expect(await gitignore.text()).toBe(initialContent)
   })
 
+  it("appends to a CRLF .gitignore keeping its CRLF line endings", async () => {
+    const gitignorePath = join(tempDir, ".gitignore")
+    writeFileSync(gitignorePath, "node_modules\r\ndist/\r\n", "utf-8")
+
+    await ensureGitignore(tempDir)
+
+    expect(await Bun.file(gitignorePath).text()).toBe("node_modules\r\ndist/\r\n.loop*\r\n")
+  })
+
   it("recognizes existing .loop* with CRLF line endings without duplicating", async () => {
     const gitignorePath = join(tempDir, ".gitignore")
     const initialContent = "node_modules\r\n.loop*\r\ndist/\r\n"
