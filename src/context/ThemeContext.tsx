@@ -9,8 +9,7 @@
  */
 
 import { createContext, useContext, createSignal, onMount, type JSX } from "solid-js"
-import { join } from "node:path"
-import { homedir } from "node:os"
+import { getOpencodeKVPath } from "../lib/opencode-kv-path"
 import {
   getResolvedTheme,
   isValidTheme,
@@ -79,35 +78,13 @@ interface OpenCodeKV {
 }
 
 /**
- * Get the path to OpenCode's kv.json file
- *
- * Uses XDG_STATE_HOME if set, otherwise ~/.local/state. Built with `path.join`
- * so the separators are correct on every platform: the previous string
- * concatenation (`${home}/.local/state`) produced mixed forward+back slashes
- * on Windows (`C:\Users\foo/.local/state/...`), which Node/Bun tolerate on
- * read but which can confuse other tools and look broken in error messages.
- * `homedir()` resolves the home directory natively on every platform (same
- * pattern as `config.ts`): on Windows it consults USERPROFILE and
- * HOMEDRIVE/HOMEPATH via the Win32 API, so a POSIX-style `HOME` inherited from
- * Git Bash/MSYS2 (`/c/Users/dev`) can no longer produce a garbage path.
- * OpenCode itself uses the XDG `~/.local/state/opencode` convention on all
- * platforms, so the directory layout is kept consistent with it (we read a
- * file it writes).
- */
-function getKVPath(): string {
-  const xdgState = process.env.XDG_STATE_HOME
-  const stateDir = xdgState || join(homedir(), ".local", "state")
-  return join(stateDir, "opencode", "kv.json")
-}
-
-/**
  * Read theme preferences from OpenCode's kv.json
  *
  * Returns null if file doesn't exist or can't be parsed
  */
 async function readOpenCodePreferences(): Promise<OpenCodeKV | null> {
   try {
-    const kvPath = getKVPath()
+    const kvPath = getOpencodeKVPath()
     const file = Bun.file(kvPath)
 
     if (!(await file.exists())) {
