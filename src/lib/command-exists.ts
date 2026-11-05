@@ -31,12 +31,16 @@ export function systemBinary(
   return posix.join("/usr/bin", ...subdirs, name)
 }
 
-/** True when `file` lives directly in the current working directory. */
-function isInCwd(file: string, platform: string): boolean {
+/**
+ * True when `file` lives directly in `cwd` (default: the current working
+ * directory). Win32 compares case-insensitively. `cwd` is injectable so the
+ * win32 branch is testable with literal paths on any host.
+ */
+export function isInCwd(file: string, platform: string, cwd: string = process.cwd()): boolean {
   // Platform-specific path flavor keeps this correct for an injected platform.
   const path = platform === "win32" ? win32 : posix
   const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p)
-  return norm(path.resolve(path.dirname(file))) === norm(path.resolve(process.cwd()))
+  return norm(path.resolve(path.dirname(file))) === norm(path.resolve(cwd))
 }
 
 /**
@@ -47,7 +51,7 @@ function isInCwd(file: string, platform: string): boolean {
  * otherwise be executed. On win32 several extensions are probed because
  * `Bun.which` returns a single hit and {@link pickSpawnable} ranks them.
  */
-function lookupAll(command: string, platform: string, which: WhichFn): string[] {
+function lookupAll(command: string, platform: string, which: WhichFn, cwd?: string): string[] {
   const names =
     platform === "win32" && !/\.[a-z0-9]+$/i.test(command)
       ? [command, ...WIN_LOOKUP_EXTS.map((ext) => command + ext)]
@@ -55,7 +59,7 @@ function lookupAll(command: string, platform: string, which: WhichFn): string[] 
   const found: string[] = []
   for (const name of names) {
     const hit = which(name)
-    if (hit && !found.includes(hit) && !isInCwd(hit, platform)) found.push(hit)
+    if (hit && !found.includes(hit) && !isInCwd(hit, platform, cwd)) found.push(hit)
   }
   return found
 }
@@ -74,9 +78,10 @@ export async function commandExists(
   command: string,
   platform: string = process.platform,
   which: WhichFn = defaultWhich,
+  cwd?: string,
 ): Promise<boolean> {
   try {
-    return lookupAll(command, platform, which).length > 0
+    return lookupAll(command, platform, which, cwd).length > 0
   } catch {
     return false
   }
@@ -99,9 +104,10 @@ export async function resolveCommandPath(
   command: string,
   platform: string = process.platform,
   which: WhichFn = defaultWhich,
+  cwd?: string,
 ): Promise<string | null> {
   try {
-    return pickSpawnable(lookupAll(command, platform, which), platform)
+    return pickSpawnable(lookupAll(command, platform, which, cwd), platform)
   } catch {
     return null
   }
@@ -120,9 +126,10 @@ export async function resolveSpawnable(
   command: string,
   platform: string = process.platform,
   which: WhichFn = defaultWhich,
+  cwd?: string,
 ): Promise<string | null> {
-  if (platform === "win32") return resolveCommandPath(command, platform, which)
-  return (await commandExists(command, platform, which)) ? command : null
+  if (platform === "win32") return resolveCommandPath(command, platform, which, cwd)
+  return (await commandExists(command, platform, which, cwd)) ? command : null
 }
 
 /**

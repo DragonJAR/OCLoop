@@ -26,6 +26,7 @@ export const realCommandExists: CommandExistsModule = {
   isWindowsShellShim: mod.isWindowsShellShim,
   WIN_SHELL_SHIM_RE: mod.WIN_SHELL_SHIM_RE,
   systemBinary: mod.systemBinary,
+  isInCwd: mod.isInCwd,
 }
 
 /** Register a partial mock; unlisted exports stay real. */

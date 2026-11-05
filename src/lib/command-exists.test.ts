@@ -17,7 +17,7 @@ beforeEach(() => {
   mockCommandExists({})
 })
 
-const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim, systemBinary } =
+const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim, systemBinary, isInCwd } =
   realCommandExists
 
 /** Fake `Bun.which` over a fixed name -> path table; records every probe. */
@@ -154,6 +154,29 @@ describe("resolveSpawnable — gate + spawn-form in one lookup", () => {
   it("POSIX returns null when the command is not on PATH", async () => {
     const { which } = fakeWhich({})
     expect(await resolveSpawnable("nope", "linux", which)).toBeNull()
+  })
+})
+
+describe("isInCwd — cwd filter with an injectable cwd (any host)", () => {
+  it("win32 matches the cwd case-insensitively", () => {
+    expect(isInCwd("C:\\Proj\\opencode.cmd", "win32", "c:\\proj")).toBe(true)
+    expect(isInCwd("c:\\PROJ\\opencode.exe", "win32", "C:\\Proj\\")).toBe(true)
+    expect(isInCwd("C:\\Tools\\opencode.cmd", "win32", "c:\\proj")).toBe(false)
+  })
+
+  it("POSIX stays case-sensitive", () => {
+    expect(isInCwd("/proj/opencode", "linux", "/proj")).toBe(true)
+    expect(isInCwd("/Proj/opencode", "linux", "/proj")).toBe(false)
+  })
+
+  it("resolveSpawnable drops a planted win32 shim whose case differs from the cwd", async () => {
+    const { which } = fakeWhich({
+      "opencode.cmd": "C:\\Proj\\opencode.cmd",
+    })
+    expect(await resolveSpawnable("opencode", "win32", which, "c:\\proj")).toBeNull()
+    expect(await resolveSpawnable("opencode", "win32", which, "c:\\other")).toBe(
+      "C:\\Proj\\opencode.cmd",
+    )
   })
 })
 
