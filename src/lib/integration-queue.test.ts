@@ -214,7 +214,6 @@ describe("integration-queue", () => {
       const wtPath = join(scratch, ".loop-worktrees", "slot-3")
       mkdirSync(wtPath, { recursive: true })
 
-
       // Another writer rewrote the root plan and the task no longer exists:
       // markTaskCompleted returns null, the CAS defers, and the outcome must
       // NOT claim "integrated" — the commit was already promoted, and a false

@@ -109,8 +109,6 @@ export function normalizeV2Envelope(raw: unknown): NormalizedV2Envelope | undefi
   }
 }
 
-
-
 function makeHeartbeat(sessionID: string, id: string, messageID?: string): BackendEvent {
   const assistantID = messageID ?? `activity:${sessionID}`
   return {

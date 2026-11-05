@@ -704,7 +704,6 @@ describe("getCurrentTaskFromContent", () => {
     expect(result).toBe("first pending")
   })
 
-
   // ──────────────────────────────────────────────────────────────────────────
   // PLAN.md 2.5 — selection-level surface: headings are not selectable
   // as the current task. Even when a file is full of headings,
@@ -739,7 +738,6 @@ describe("getCurrentTaskFromContent", () => {
     })
 
   })
-
 
   // ──────────────────────────────────────────────────────────────────────────
   // PLAN.md 2.8 — look-alike but non-conforming lines (selection).

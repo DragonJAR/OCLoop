@@ -207,7 +207,6 @@ async function validatePrerequisites(args: CLIArgs): Promise<void> {
   await ensureLoopPrompt(args)
 }
 
-
 /**
  * Interactive plan generator (`--create-plan`).
  *

@@ -180,7 +180,6 @@ export function useLoopStats(): UseLoopStatsReturn {
     return activeTime;
   }
 
-
   /**
    * Current iteration elapsed time (active time only, excluding pauses)
    * Updates every second via the tick signal

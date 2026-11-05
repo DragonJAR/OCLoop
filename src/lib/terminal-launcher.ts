@@ -95,8 +95,6 @@ export function getKnownTerminalByName(name: string): KnownTerminal | undefined 
   return KNOWN_TERMINALS.find((t) => t.name === name)
 }
 
-
-
 /**
  * Detect which known terminals are installed on the system.
  * Checks each terminal's command using `which`.
