@@ -566,10 +566,22 @@ describe("getConfigPath", () => {
 })
 
 describe("getConfigDir — per-platform location", () => {
-  const savedEnv = { ...process.env }
+  // Restore PER KEY, never by replacing process.env: on Windows process.env is
+  // a case-insensitive object, and swapping it for a plain copy would drop
+  // that semantics (e.g. Path vs PATH) for every later test in the process.
+  const TOUCHED_KEYS = ["APPDATA", "XDG_CONFIG_HOME"] as const
+  let saved: Record<string, string | undefined> = {}
+
+  beforeEach(() => {
+    saved = Object.fromEntries(TOUCHED_KEYS.map((key) => [key, process.env[key]]))
+  })
 
   afterEach(() => {
-    process.env = { ...savedEnv }
+    for (const key of TOUCHED_KEYS) {
+      const value = saved[key]
+      if (value === undefined) delete process.env[key]
+      else process.env[key] = value
+    }
   })
 
   it("uses %APPDATA% on Windows", () => {
