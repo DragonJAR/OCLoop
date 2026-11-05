@@ -100,6 +100,10 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     commandExistsImpl = async () => true
     resolveSpawnableImpl = async (cmd) => cmd
     const originalSpawn = Bun.spawn
+    // stderr is only captured (hence drained) on darwin/win32; force it so the
+    // test is host-independent (on Linux the impl uses stderr:"ignore").
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+    Object.defineProperty(process, "platform", { value: "darwin" })
     let finish!: (code: number) => void
     const exited = new Promise<number>((resolve) => { finish = resolve })
     let chunks = 0
@@ -126,6 +130,7 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       expect(result.success).toBe(false)
     } finally {
       if (timeout) clearTimeout(timeout)
+      if (descriptor) Object.defineProperty(process, "platform", descriptor)
       Bun.spawn = originalSpawn
     }
   })

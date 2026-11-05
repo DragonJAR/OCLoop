@@ -568,7 +568,9 @@ describe("opencode-server — Windows process cleanup", () => {
     },
   )
 
-  it("closeSync() and killAllTrackedSync() reap a live server, then are idempotent", async () => {
+  // POSIX group-signal flow (process.kill mock). On win32 the same reap goes
+  // through taskkill.exe, covered by the "kills the process tree" tests above.
+  it.skipIf(process.platform === "win32")("closeSync() and killAllTrackedSync() reap a live server, then are idempotent", async () => {
     const proc = createFakeProcess(7778)
     nextProc = proc
     autoServeOutput = null

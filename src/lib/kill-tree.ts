@@ -44,8 +44,8 @@ export function trackProcess(proc: KillableProcess): void {
 export const isTracked = (proc: KillableProcess): boolean => tracked.has(proc)
 
 /** Best-effort synchronous tree kill of every tracked child (crash/exit handlers). */
-export function killAllTrackedSync(): void {
-  for (const proc of [...tracked]) killTreeSync(proc)
+export function killAllTrackedSync(options: KillTreeOptions = {}): void {
+  for (const proc of [...tracked]) killTreeSync(proc, options)
 }
 
 export interface KillTreeOptions {

@@ -69,8 +69,10 @@ describe("commandExists", () => {
   it("ignores a match that lives in the current working directory", async () => {
     const planted = resolve(process.cwd(), "opencode")
     const { which } = fakeWhich({ opencode: planted })
-    expect(await commandExists("opencode", "linux", which)).toBe(false)
-    expect(await resolveCommandPath("opencode", "linux", which)).toBeNull()
+    // Use the host's path flavor: a win32 path is not a valid posix path.
+    const platform = process.platform === "win32" ? "win32" : "linux"
+    expect(await commandExists("opencode", platform, which)).toBe(false)
+    expect(await resolveCommandPath("opencode", platform, which)).toBeNull()
   })
 
   it("defaults to the real Bun.which (a missing binary is simply false)", async () => {

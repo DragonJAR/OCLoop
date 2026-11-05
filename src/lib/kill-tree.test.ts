@@ -128,12 +128,12 @@ describe("tracking and exited guard", () => {
     const b = fakeProc(4401)
     trackProcess(a)
     trackProcess(b)
-    killAllTrackedSync()
+    killAllTrackedSync({ platform: "linux" })
     // Other test files in this process may have tracked children too.
     const mine = () => signals.filter((s) => s.pid === -4400 || s.pid === -4401)
     expect(mine().map((s) => s.pid)).toEqual([-4400, -4401])
     expect(isTracked(a)).toBe(false)
-    killAllTrackedSync()
+    killAllTrackedSync({ platform: "linux" })
     expect(mine()).toHaveLength(2)
   })
 
