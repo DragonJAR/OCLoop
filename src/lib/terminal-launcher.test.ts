@@ -22,6 +22,7 @@
  */
 
 import { afterEach, describe, expect, it, mock } from "bun:test"
+import { withPlatform } from "./test-helpers/with-platform"
 
 import { mockCommandExists } from "./command-exists-mock"
 import {
@@ -59,20 +60,6 @@ afterEach(() => {
   resolveSpawnableImpl = defaultResolveSpawnableImpl
 })
 
-async function withPlatform<T>(
-  platform: NodeJS.Platform,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-  Object.defineProperty(process, "platform", { value: platform })
-  try {
-    return await fn()
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(process, "platform", descriptor)
-    }
-  }
-}
 
 describe("detectInstalledTerminals — Windows system binaries", () => {
   it("lists cmd on win32 even when the PATH lookup misses it (cwd = System32)", async () => {

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from "bun:test"
 import { mockCommandExists } from "./command-exists-mock"
+import { withPlatform } from "./test-helpers/with-platform"
 
 // `mock.module` MUST be called before importing the module under test, so the
 // import is hoisted to the top of the file by Bun's bundler. The factory
@@ -36,41 +37,29 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
     resolveSpawnableImpl = defaultResolveSpawnableImpl
   })
 
-  it(
-    "returns pbcopy on darwin when pbcopy is on PATH",
-    async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-      Object.defineProperty(process, "platform", { value: "darwin" })
-      try {
-        commandExistsImpl = async (cmd) => cmd === "pbcopy"
-        expect(await detectClipboardTool()).toEqual({ command: "pbcopy", args: [] })
-      } finally {
-        if (descriptor) Object.defineProperty(process, "platform", descriptor)
-      }
-    },
-  )
+  it("returns pbcopy on darwin when pbcopy is on PATH", async () => {
+    commandExistsImpl = async (cmd) => cmd === "pbcopy"
+    expect(await withPlatform("darwin", () => detectClipboardTool())).toEqual({
+      command: "pbcopy",
+      args: [],
+    })
+  })
 
-  it(
-    "returns clip.exe by absolute System32 path on win32 (no PATH lookup)",
-    async () => {
-      const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-      const prevRoot = process.env.SystemRoot
-      Object.defineProperty(process, "platform", { value: "win32" })
-      process.env.SystemRoot = "C:\\Windows"
-      try {
-        // Even when the PATH lookup would drop it (cwd = System32, elevated).
-        resolveSpawnableImpl = async () => null
-        expect(await detectClipboardTool()).toEqual({
-          command: String.raw`C:\Windows\System32\clip.exe`,
-          args: [],
-        })
-        if (prevRoot === undefined) delete process.env.SystemRoot
-        else process.env.SystemRoot = prevRoot
-      } finally {
-        if (descriptor) Object.defineProperty(process, "platform", descriptor)
-      }
-    },
-  )
+  it("returns clip.exe by absolute System32 path on win32 (no PATH lookup)", async () => {
+    const prevRoot = process.env.SystemRoot
+    process.env.SystemRoot = "C:\\Windows"
+    try {
+      // Even when the PATH lookup would drop it (cwd = System32, elevated).
+      resolveSpawnableImpl = async () => null
+      expect(await withPlatform("win32", () => detectClipboardTool())).toEqual({
+        command: String.raw`C:\Windows\System32\clip.exe`,
+        args: [],
+      })
+    } finally {
+      if (prevRoot === undefined) delete process.env.SystemRoot
+      else process.env.SystemRoot = prevRoot
+    }
+  })
 
   it("returns null when no clipboard tool is on PATH", async () => {
     // All probes miss. Works on every platform because the platform check
@@ -107,8 +96,6 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     const originalSpawn = Bun.spawn
     // stderr is only captured (hence drained) on darwin/win32; force it so the
     // test is host-independent (on Linux the impl uses stderr:"ignore").
-    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-    Object.defineProperty(process, "platform", { value: "darwin" })
     let finish!: (code: number) => void
     const exited = new Promise<number>((resolve) => { finish = resolve })
     let chunks = 0
@@ -127,7 +114,7 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     let timeout: ReturnType<typeof setTimeout> | undefined
     try {
       const result = await Promise.race([
-        copyToClipboard("hello"),
+        withPlatform("darwin", () => copyToClipboard("hello")),
         new Promise<never>((_, reject) => {
           timeout = setTimeout(() => reject(new Error("clipboard deadlock")), 1000)
         }),
@@ -135,7 +122,6 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       expect(result.success).toBe(false)
     } finally {
       if (timeout) clearTimeout(timeout)
-      if (descriptor) Object.defineProperty(process, "platform", descriptor)
       Bun.spawn = originalSpawn
     }
   })
@@ -144,7 +130,6 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     commandExistsImpl = async () => true
     resolveSpawnableImpl = async (cmd) => cmd
     const originalSpawn = Bun.spawn
-    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
     let captured: { stderr?: unknown } | undefined
     Bun.spawn = ((_cmd: string[], opts: { stderr?: unknown }) => {
       captured = opts
@@ -156,10 +141,9 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
         kill: () => {},
       }
     }) as unknown as typeof Bun.spawn
-    Object.defineProperty(process, "platform", { value: "linux" })
     try {
       const result = await Promise.race([
-        copyToClipboard("hello"),
+        withPlatform("linux", () => copyToClipboard("hello")),
         new Promise<never>((_, reject) =>
           setTimeout(() => reject(new Error("clipboard hang")), 1000).unref?.(),
         ),
@@ -167,7 +151,6 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       expect(result.success).toBe(true)
       expect(captured?.stderr).toBe("ignore")
     } finally {
-      if (descriptor) Object.defineProperty(process, "platform", descriptor)
       Bun.spawn = originalSpawn
     }
   })

@@ -18,6 +18,7 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import { withPlatform } from "./test-helpers/with-platform"
 import { mockCommandExists } from "./command-exists-mock"
 import { killAllTrackedSync } from "./kill-tree"
 import { mockOpencodeServer } from "./opencode-server-mock"
@@ -161,20 +162,6 @@ function serverSpawnCall(): SpawnCall {
   return call
 }
 
-async function withPlatform<T>(
-  platform: NodeJS.Platform,
-  fn: () => Promise<T>,
-): Promise<T> {
-  const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
-  Object.defineProperty(process, "platform", { value: platform })
-  try {
-    return await fn()
-  } finally {
-    if (descriptor) {
-      Object.defineProperty(process, "platform", descriptor)
-    }
-  }
-}
 
 async function waitForSpawnCalls(count: number): Promise<void> {
   for (let i = 0; i < 20; i += 1) {
