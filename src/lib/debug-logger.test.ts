@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { formatLogEntry } from "./debug-logger"
+import { formatLogEntry, rotateLogFile } from "./debug-logger"
 
 describe("formatLogEntry", () => {
   it("formats entry without data as simple header and message", () => {
@@ -43,5 +43,39 @@ describe("formatLogEntry", () => {
 
     const entry = formatLogEntry("12:00:00.000", "WARN", "state", "dump", circular)
     expect(entry).toBe("[12:00:00.000] [WARN] [state] dump [Circular or Non-Serializable Data]")
+  })
+})
+
+describe("rotateLogFile (T10-A O-06)", () => {
+  const eperm = () => Object.assign(new Error("EPERM: operation not permitted"), { code: "EPERM" })
+
+  it("retries a transient Windows lock: fails twice with EPERM, then rotates", () => {
+    let calls = 0
+    const op = () => {
+      calls++
+      if (calls <= 2) throw eperm()
+    }
+    expect(rotateLogFile(".loop.log", ".loop.log.old", op, "win32")).toBe(true)
+    expect(calls).toBe(3)
+  })
+
+  it("stays best-effort: a persistent failure never throws", () => {
+    let calls = 0
+    const op = () => {
+      calls++
+      throw eperm()
+    }
+    expect(rotateLogFile(".loop.log", ".loop.log.old", op, "win32")).toBe(false)
+    expect(calls).toBeGreaterThan(1)
+  })
+
+  it("does not retry on POSIX, where EPERM is a real permission error", () => {
+    let calls = 0
+    const op = () => {
+      calls++
+      throw eperm()
+    }
+    expect(rotateLogFile(".loop.log", ".loop.log.old", op, "linux")).toBe(false)
+    expect(calls).toBe(1)
   })
 })

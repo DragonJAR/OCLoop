@@ -1,5 +1,6 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import { renameWithRetrySync } from './atomic-fs';
 
 const LOG_FILE = '.loop.log';
 const OLD_LOG_FILE = '.loop.log.old';
@@ -37,6 +38,28 @@ export function formatLogEntry(
   return line;
 }
 
+/**
+ * Rotate `logFile` to `oldLogPath`, best-effort. Goes through atomic-fs's
+ * renameWithRetrySync so a transient Windows lock (antivirus, indexer, a
+ * second handle: EPERM/EBUSY/EACCES) is retried instead of losing the
+ * rotation. A persistent failure is swallowed: the caller then overwrites the
+ * current log, which is the intended fallback (logging must never crash).
+ * Returns whether the rotation happened. `op`/`platform` are test seams.
+ */
+export function rotateLogFile(
+  logFile: string,
+  oldLogPath: string,
+  op?: (from: string, to: string) => void,
+  platform: string = process.platform,
+): boolean {
+  try {
+    renameWithRetrySync(logFile, oldLogPath, op, platform);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 class DebugLogger {
   private logFile: string;
   private enabled: boolean = true;
@@ -48,14 +71,7 @@ class DebugLogger {
   sessionStart(opts: { debug: boolean; cwd: string; model?: string }) {
     // Rotate logs
     if (fs.existsSync(this.logFile)) {
-      const oldLogPath = path.resolve(process.cwd(), OLD_LOG_FILE);
-      try {
-        fs.renameSync(this.logFile, oldLogPath);
-      } catch {
-        // Rename can fail if the file is open or the target is busy; the
-        // writeFileSync below then overwrites the current log, which is the
-        // intended fallback (rotation is best-effort, logging must not crash).
-      }
+      rotateLogFile(this.logFile, path.resolve(process.cwd(), OLD_LOG_FILE));
     }
 
     // Start fresh log file
