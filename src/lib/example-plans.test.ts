@@ -118,4 +118,14 @@ describe("the plan generator asks for the format the example plans use", () => {
     setLocale("en")
     expect(es).toBe(en)
   })
+
+  it("is the format examples/CREATE_PLAN.md asks for too", () => {
+    const template = readFileSync(
+      join(import.meta.dir, "../../examples/CREATE_PLAN.md"),
+      "utf8",
+    )
+    for (const heading of canonical) {
+      expect(template).toContain(`## ${heading}`)
+    }
+  })
 })
