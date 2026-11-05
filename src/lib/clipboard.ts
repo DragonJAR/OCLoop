@@ -4,7 +4,7 @@
  * (macOS pbcopy / Windows clip.exe / Linux wl-copy or X11).
  */
 
-import { commandExists, systemBinary } from "./command-exists"
+import { commandExists, systemBinary, systemBinaryExists } from "./command-exists"
 import { toErrorMessage } from "./format"
 import { t } from "./i18n"
 import { TimeoutError, withTimeout } from "./with-timeout"
@@ -39,10 +39,13 @@ export async function detectClipboardTool(): Promise<ClipboardTool | null> {
 
   // Windows — clip.exe is always present on stock installs
   if (process.platform === "win32") {
-    // clip.exe ships with every Windows: spawn it by absolute System32 path.
-    // A PATH lookup would miss PATHEXT on a no-shell spawn and, with the cwd
-    // in System32 (elevated terminal), its cwd filter would drop the real file.
-    return { command: systemBinary("clip", "win32"), args: [] };
+    // clip.exe ships with Windows: check and spawn it by absolute System32
+    // path. A PATH lookup would miss PATHEXT on a no-shell spawn and, with the
+    // cwd in System32 (elevated terminal), its cwd filter would drop the file.
+    if (systemBinaryExists("clip", "win32")) {
+      return { command: systemBinary("clip", "win32"), args: [] };
+    }
+    return null;
   }
 
   // Linux / BSD — prefer Wayland, fall back to X11

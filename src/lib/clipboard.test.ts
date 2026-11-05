@@ -24,9 +24,15 @@ const defaultResolveSpawnableImpl = async (cmd: string) =>
 let resolveSpawnableImpl: (cmd: string) => Promise<string | null> =
   defaultResolveSpawnableImpl
 
+// clip.exe is gated by an absolute System32 existence check, never PATH.
+// Default false so "no clipboard tool" means the same on every host (a real
+// Windows runner has C:\Windows\System32\clip.exe).
+let systemBinaryExistsImpl: (name: string) => boolean = () => false
+
 mockCommandExists({
   commandExists: (cmd: string) => commandExistsImpl(cmd),
   resolveSpawnable: (cmd: string) => resolveSpawnableImpl(cmd),
+  systemBinaryExists: (name: string) => systemBinaryExistsImpl(name),
 })
 
 const { detectClipboardTool, copyToClipboard } = await import("./clipboard")
@@ -35,6 +41,7 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
   afterEach(() => {
     commandExistsImpl = async () => false
     resolveSpawnableImpl = defaultResolveSpawnableImpl
+    systemBinaryExistsImpl = () => false
   })
 
   it("returns pbcopy on darwin when pbcopy is on PATH", async () => {
@@ -51,6 +58,7 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
     try {
       // Even when the PATH lookup would drop it (cwd = System32, elevated).
       resolveSpawnableImpl = async () => null
+      systemBinaryExistsImpl = (name) => name === "clip"
       expect(await withPlatform("win32", () => detectClipboardTool())).toEqual({
         command: String.raw`C:\Windows\System32\clip.exe`,
         args: [],
@@ -72,6 +80,7 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
   afterEach(() => {
     commandExistsImpl = async () => false
     resolveSpawnableImpl = defaultResolveSpawnableImpl
+    systemBinaryExistsImpl = () => false
   })
 
   // Closes Finding 11.4.G (the per-platform hint) as a side-effect of
@@ -83,9 +92,14 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     expect(result.error).toContain("pbcopy")
   })
 
-  it("win32: never 'not found' — spawns System32 clip.exe and reports its failure", async () => {
-    // clip.exe ships with every Windows, so there is no missing-tool hint on
-    // win32: the absolute path is always tried and a spawn failure surfaces.
+  it("win32: System32 clip.exe missing -> { success: false } naming clip.exe", async () => {
+    const result = await withPlatform("win32", () => copyToClipboard("hello"))
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("clip.exe")
+  })
+
+  it("win32: spawns System32 clip.exe by absolute path and reports its failure", async () => {
+    systemBinaryExistsImpl = (name) => name === "clip"
     const originalSpawn = Bun.spawn
     const spawned: string[][] = []
     Bun.spawn = ((cmd: string[]) => {
@@ -177,6 +191,7 @@ describe("copyToClipboard timeout (T10-B P9)", () => {
   afterEach(() => {
     commandExistsImpl = async () => false
     resolveSpawnableImpl = defaultResolveSpawnableImpl
+    systemBinaryExistsImpl = () => false
   })
 
   it("a hung tool is killed and reported instead of freezing the caller", async () => {

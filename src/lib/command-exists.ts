@@ -1,3 +1,4 @@
+import { existsSync } from "node:fs"
 import { posix, win32 } from "node:path"
 
 /** Injectable PATH lookup (default `Bun.which`) so tests need no real binaries. */
@@ -29,6 +30,25 @@ export function systemBinary(
     return win32.join(process.env.SystemRoot ?? "C:\\Windows", "System32", ...subdirs, `${name}.exe`)
   }
   return posix.join("/usr/bin", ...subdirs, name)
+}
+
+/**
+ * Whether the {@link systemBinary} file is actually there — the detection
+ * gate paired with that spawn path (an absolute-path check: no PATH, no cwd).
+ * Detection sites call THIS rather than assuming presence, so the module-level
+ * mock (`mockCommandExists`) can fake "not installed" like any other lookup.
+ */
+export function systemBinaryExists(
+  name: string,
+  platform: string = process.platform,
+  subdirs: string[] = [],
+  exists: (path: string) => boolean = existsSync,
+): boolean {
+  try {
+    return exists(systemBinary(name, platform, subdirs))
+  } catch {
+    return false
+  }
 }
 
 /**

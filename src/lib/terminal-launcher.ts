@@ -6,7 +6,7 @@
  */
 
 import type { TerminalConfig } from "./config"
-import { commandExists, resolveSpawnable, isWindowsShellShim, systemBinary } from "./command-exists"
+import { commandExists, resolveSpawnable, isWindowsShellShim, systemBinary, systemBinaryExists } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 import { t } from "./i18n"
@@ -114,9 +114,10 @@ export async function detectInstalledTerminals(): Promise<KnownTerminal[]> {
   const results = await Promise.all(
     KNOWN_TERMINALS.map(async (terminal) => ({
       terminal,
-      // A Windows system binary ships with every Windows (and nowhere else).
+      // A Windows system binary is checked by its absolute System32 path
+      // (never PATH/cwd) and only exists on Windows.
       exists: terminal.windowsSystemBinary
-        ? process.platform === "win32"
+        ? process.platform === "win32" && systemBinaryExists(terminal.command, "win32")
         : await commandExists(terminal.command),
     })),
   )
@@ -362,7 +363,7 @@ export async function launchTerminal(
     const known = config.type === "known" ? getKnownTerminalByName(config.name) : undefined
     const spawnCommand =
       known?.windowsSystemBinary && process.platform === "win32"
-        ? systemBinary(command, "win32")
+        ? systemBinaryExists(command, "win32") ? systemBinary(command, "win32") : null
         : await resolveSpawnable(command)
     if (!spawnCommand) {
       log.warn("terminal", "Command not found", { command })

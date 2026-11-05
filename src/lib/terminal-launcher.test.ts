@@ -40,9 +40,15 @@ const defaultResolveSpawnableImpl = async (cmd: string) =>
 let resolveSpawnableImpl: (cmd: string) => Promise<string | null> =
   defaultResolveSpawnableImpl
 
+// System32 binaries (cmd) are gated by an absolute-path existence check, never
+// PATH. Default false so a "nothing installed" test means the same on every
+// host (a real Windows runner has C:\Windows\System32\cmd.exe).
+let systemBinaryExistsImpl: (name: string) => boolean = () => false
+
 mockCommandExists({
   commandExists: (cmd: string) => commandExistsImpl(cmd),
   resolveSpawnable: (cmd: string) => resolveSpawnableImpl(cmd),
+  systemBinaryExists: (name: string) => systemBinaryExistsImpl(name),
 })
 
 setupBunSpawnMock()
@@ -58,14 +64,23 @@ const {
 afterEach(() => {
   commandExistsImpl = async () => true
   resolveSpawnableImpl = defaultResolveSpawnableImpl
+  systemBinaryExistsImpl = () => false
 })
 
 
 describe("detectInstalledTerminals — Windows system binaries", () => {
   it("lists cmd on win32 even when the PATH lookup misses it (cwd = System32)", async () => {
     commandExistsImpl = async () => false
+    systemBinaryExistsImpl = (name) => name === "cmd"
     const names = (await withPlatform("win32", () => detectInstalledTerminals())).map((t) => t.name)
     expect(names).toEqual(["cmd"])
+  })
+
+  it("does not list cmd on win32 when System32\\cmd.exe is missing", async () => {
+    commandExistsImpl = async () => true
+    systemBinaryExistsImpl = () => false
+    const names = (await withPlatform("win32", () => detectInstalledTerminals())).map((t) => t.name)
+    expect(names).not.toContain("cmd")
   })
 
   it("never lists cmd off Windows", async () => {
@@ -188,12 +203,12 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     ])
   })
 
-  it("spawns the Windows cmd window with the {cmd} placeholder expanded", async () => {
+  it("expands the {cmd} placeholder for the known cmd entry (POSIX bare-name path)", async () => {
+    // Pinned off Windows: there cmd is spawned by absolute System32 path, which
+    // the win32-pinned "keeps windowsHide for the `cmd /c start`" test covers.
     commandExistsImpl = async (cmd) => cmd === "cmd"
-    const result = await launchTerminal(
-      { type: "known", name: "cmd" },
-      "http://127.0.0.1:4096",
-      "ses_abc",
+    const result = await withPlatform("linux", () =>
+      launchTerminal({ type: "known", name: "cmd" }, "http://127.0.0.1:4096", "ses_abc"),
     )
     expect(result).toEqual({ success: true })
     expect(spawnState.calls[0].cmd).toEqual([
@@ -374,12 +389,22 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     expect((spawnState.calls[0].opts as { windowsHide?: boolean }).windowsHide).toBe(true)
   })
 
+  it("reports not-found for the known cmd entry when System32\\cmd.exe is missing (win32)", async () => {
+    systemBinaryExistsImpl = () => false
+    const result = await withPlatform("win32", () =>
+      launchTerminal({ type: "known", name: "cmd" }, "http://127.0.0.1:4096", "ses_abc"),
+    )
+    expect(result.success).toBe(false)
+    expect(spawnState.calls).toHaveLength(0)
+  })
+
   it("keeps windowsHide for the `cmd /c start` wrapper path on win32", async () => {
     // The known `cmd` entry spawns cmd.exe whose console flashes before
     // `start` opens the real window; hiding the wrapper is the anti-flash win.
     // cmd.exe is resolved by absolute System32 path, never through PATH (the
     // lookup drops it when the cwd is System32, as in an elevated terminal).
     resolveSpawnableImpl = async () => null
+    systemBinaryExistsImpl = (name) => name === "cmd"
     const prevRoot = process.env.SystemRoot
     process.env.SystemRoot = "C:\\Windows"
     try {

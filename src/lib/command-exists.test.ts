@@ -17,7 +17,7 @@ beforeEach(() => {
   mockCommandExists({})
 })
 
-const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim, systemBinary, isInCwd } =
+const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim, systemBinary, isInCwd, systemBinaryExists } =
   realCommandExists
 
 /** Fake `Bun.which` over a fixed name -> path table; records every probe. */
@@ -203,6 +203,21 @@ describe("systemBinary — absolute paths for guaranteed OS binaries", () => {
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",
       )
     })
+  })
+
+  it("systemBinaryExists checks exactly the absolute systemBinary path", () => {
+    const seen: string[] = []
+    const exists = (p: string) => {
+      seen.push(p)
+      return p.endsWith("caffeinate")
+    }
+    expect(systemBinaryExists("caffeinate", "darwin", [], exists)).toBe(true)
+    expect(systemBinaryExists("nope", "darwin", [], exists)).toBe(false)
+    expect(seen).toEqual(["/usr/bin/caffeinate", "/usr/bin/nope"])
+    const throws = () => {
+      throw new Error("EACCES")
+    }
+    expect(systemBinaryExists("clip", "win32", [], throws)).toBe(false)
   })
 
   it("darwin/linux: /usr/bin/<name>", () => {
