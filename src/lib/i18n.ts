@@ -646,6 +646,8 @@ Examples:
     `No clipboard tool found. ${p.hint} should be available.`,
   errClipboardFailed: (p: Params) =>
     `Clipboard command failed (exit ${p.code}${p.stderr ? ": " + p.stderr : ""})`,
+  errClipboardTimeout: (p: Params) =>
+    `Clipboard command did not finish within ${p.secs}s (clipboard busy or locked by another app?)`,
   actWake: (p: Params) => `Woke after ${p.secs}s suspended — reconnecting`,
   actReconciled: (p: Params) => `Reconciled: session ${p.result}, advancing`,
   actGuardRestart: "Guardian: server unresponsive, restarting",
@@ -1358,6 +1360,8 @@ Ejemplos:
     `No se encontró herramienta de portapapeles. ${p.hint} debería estar disponible.`,
   errClipboardFailed: (p) =>
     `El comando de portapapeles falló (salida ${p.code}${p.stderr ? ": " + p.stderr : ""})`,
+  errClipboardTimeout: (p) =>
+    `El comando de portapapeles no terminó en ${p.secs}s (¿portapapeles ocupado o bloqueado por otra app?)`,
   actWake: (p) => `Despertar tras ${p.secs}s suspendido — reconectando`,
   actReconciled: (p) => `Reconciliado: sesión ${p.result}, avanzando`,
   actGuardRestart: "Guardián: servidor sin respuesta, reiniciando",

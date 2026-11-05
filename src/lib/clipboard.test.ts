@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "bun:test"
+import { afterEach, describe, expect, it, mock } from "bun:test"
 import { mockCommandExists } from "./command-exists-mock"
 import { withPlatform } from "./test-helpers/with-platform"
 
@@ -167,6 +167,36 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       ])
       expect(result.success).toBe(true)
       expect(captured?.stderr).toBe("ignore")
+    } finally {
+      Bun.spawn = originalSpawn
+    }
+  })
+})
+
+describe("copyToClipboard timeout (T10-B P9)", () => {
+  afterEach(() => {
+    commandExistsImpl = async () => false
+    resolveSpawnableImpl = defaultResolveSpawnableImpl
+  })
+
+  it("a hung tool is killed and reported instead of freezing the caller", async () => {
+    commandExistsImpl = async () => true
+    const originalSpawn = Bun.spawn
+    const kill = mock(() => {})
+    Bun.spawn = (() => ({
+      // stdin accepts the write, but the tool never exits.
+      stdin: { write: async () => 5, end: async () => {} },
+      stderr: new ReadableStream<Uint8Array>({ start() {} }),
+      exited: new Promise<number>(() => {}),
+      kill,
+    })) as unknown as typeof Bun.spawn
+    try {
+      const started = Date.now()
+      const result = await withPlatform("darwin", () => copyToClipboard("hello", 50))
+      expect(result.success).toBe(false)
+      expect(result.error).toContain("did not finish")
+      expect(kill).toHaveBeenCalled()
+      expect(Date.now() - started).toBeLessThan(2_000)
     } finally {
       Bun.spawn = originalSpawn
     }

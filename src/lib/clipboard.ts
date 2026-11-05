@@ -7,6 +7,10 @@
 import { commandExists, systemBinary } from "./command-exists"
 import { toErrorMessage } from "./format"
 import { t } from "./i18n"
+import { TimeoutError, withTimeout } from "./with-timeout"
+
+/** Upper bound for one copy (spawn + write + exit). */
+export const CLIPBOARD_TIMEOUT_MS = 5_000
 
 type ClipboardTool = {
   command: string;
@@ -71,7 +75,10 @@ export async function detectClipboardTool(): Promise<ClipboardTool | null> {
 /**
  * Copies text to the system clipboard using the detected clipboard tool.
  */
-export async function copyToClipboard(text: string): Promise<ClipboardResult> {
+export async function copyToClipboard(
+  text: string,
+  timeoutMs: number = CLIPBOARD_TIMEOUT_MS,
+): Promise<ClipboardResult> {
   const tool = await detectClipboardTool();
 
   if (!tool) {
@@ -91,6 +98,35 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     };
   }
 
+  // The whole operation is bounded: pbcopy/clip.exe can block forever (the
+  // clipboard locked by another app, a stuck IPC), and the copy is awaited
+  // from the TUI, which would freeze with it.
+  const spawned: { proc?: ReturnType<typeof Bun.spawn> } = {};
+  try {
+    return await withTimeout(
+      () => runClipboardTool(tool, text, (proc) => { spawned.proc = proc; }),
+      timeoutMs,
+      "clipboard",
+    );
+  } catch (err) {
+    // runClipboardTool never rejects, so this is the timeout: reap the hung
+    // tool defensively and report it instead of hanging the caller.
+    try { spawned.proc?.kill(); } catch { /* already dead */ }
+    return {
+      success: false,
+      error: err instanceof TimeoutError
+        ? t("errClipboardTimeout", { secs: String(Math.round(timeoutMs / 1000)) })
+        : toErrorMessage(err),
+    };
+  }
+}
+
+/** Spawn the tool, feed it `text` and wait for it. Never rejects. */
+async function runClipboardTool(
+  tool: ClipboardTool,
+  text: string,
+  onSpawn: (proc: ReturnType<typeof Bun.spawn>) => void,
+): Promise<ClipboardResult> {
   // Hoist proc out of the try so the catch can reap it. If `stdin.write`
   // rejects (EPIPE — the child exited early and closed its stdin mid-write),
   // the child process would otherwise be orphaned: the success path reaps
@@ -109,6 +145,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
       stdout: "ignore",
       stderr: capturesStderr ? "pipe" : "ignore",
     });
+    onSpawn(proc);
     if (capturesStderr) {
       stderrRead = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
     }
