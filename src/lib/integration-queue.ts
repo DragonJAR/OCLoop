@@ -109,6 +109,45 @@ export interface IntegrationJob {
   runGit?: GitRunner
   readFile?: (path: string) => Promise<string | null>
   evalGate?: (job: IntegrationJob) => Promise<EvalGateVerdict>
+  /** Injectable for tests; defaults to `process.platform`. */
+  platform?: string
+}
+
+/** Default file systems on Windows (NTFS) and macOS (APFS) ignore case. */
+function isCaseInsensitiveFs(platform: string): boolean {
+  return platform === "win32" || platform === "darwin"
+}
+
+/**
+ * Resolve a repo-relative path to the capitalization GIT tracks it under.
+ *
+ * On a case-insensitive file system `--plan plan.md` opens the tracked
+ * `PLAN.md` just fine, but git pathspecs stay case-sensitive even with
+ * `core.ignorecase=true`: `git reset -- plan.md` does NOT unstage `PLAN.md`
+ * (so the plan leaked into the worker's commit) and `git checkout <sha> --
+ * plan.md` fails with "pathspec did not match". Resolve once, here, and use
+ * the result in every pathspec of the flow.
+ *
+ * Only runs on win32/darwin (POSIX keeps the exact path and runs no extra
+ * git command). Any failure, no match or an ambiguous match falls back to the
+ * given path, so a strange pathspec can never break the integration.
+ */
+export async function resolveGitPathCase(
+  relPath: string,
+  repoRoot: string,
+  runGit: GitRunner,
+  platform: string = process.platform,
+): Promise<string> {
+  if (!isCaseInsensitiveFs(platform)) return relPath
+  try {
+    const res = await runGit(["ls-files", "-z", "--full-name", "--", `:(icase)${relPath}`], repoRoot)
+    if (res.exitCode !== 0) return relPath
+    const matches = res.stdout.split("\0").filter((m) => m.length > 0)
+    if (matches.includes(relPath)) return relPath
+    return matches.length === 1 ? matches[0] : relPath
+  } catch {
+    return relPath
+  }
 }
 
 export type IntegrationOutcome =
@@ -160,9 +199,21 @@ export async function integrateWorkerResult(
   const repoRoot = resolve(job.repoRoot)
   const runGit = job.runGit ?? defaultGitRunner
   const readFile = job.readFile ?? defaultReadFile
+  const platform = job.platform ?? process.platform
   const absPlanPath = resolve(repoRoot, job.planPath)
-  const relPlanPath = relative(repoRoot, absPlanPath).replace(/\\/g, "/")
+  // Git's own capitalization of the plan (see resolveGitPathCase): every git
+  // pathspec below must use it, or PLAN.md leaks into the worker's commit.
+  const relPlanPath = await resolveGitPathCase(
+    relative(repoRoot, absPlanPath).replace(/\\/g, "/"),
+    repoRoot,
+    runGit,
+    platform,
+  )
   const worktreePlanPath = join(job.worktreePath, relPlanPath)
+  // Second, defensive barrier (the canonical pathspec above is the real fix):
+  // never let a casing variant of the plan count as a changed code file.
+  const foldCase = (p: string) => (isCaseInsensitiveFs(platform) ? p.toLowerCase() : p)
+  const isPlanPath = (p: string) => foldCase(p) === foldCase(relPlanPath)
 
   // 1. Read base PLAN.md vs worktree PLAN.md to extract any agent-written notes/recon tasks
   const basePlanRes = await runGit(["show", `${job.baseSha}:${relPlanPath}`], repoRoot)
@@ -260,7 +311,7 @@ export async function integrateWorkerResult(
   const changedFiles = changedRes.stdout
     .split(/\r?\n/)
     .map((s) => s.trim())
-    .filter((s) => s.length > 0 && s !== relPlanPath)
+    .filter((s) => s.length > 0 && !isPlanPath(s))
 
   if (changedFiles.length > 0 && mainHead !== job.baseSha) {
     const rebaseRes = await runGit(["rebase", mainHead], job.worktreePath)

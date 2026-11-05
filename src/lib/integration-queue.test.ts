@@ -7,6 +7,7 @@ import {
   createSerialQueue,
   extractWorkerPlanEdits,
   integrateWorkerResult,
+  resolveGitPathCase,
 } from "./integration-queue"
 
 describe("integration-queue", () => {
@@ -498,5 +499,116 @@ describe("integration-queue", () => {
     } finally {
       rmSync(scratch, { recursive: true, force: true })
     }
+  })
+})
+
+describe("plan path casing vs git pathspecs (T10-A O-05)", () => {
+  const ok = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" })
+
+  describe("resolveGitPathCase", () => {
+    it("returns git's canonical capitalization on win32/darwin", async () => {
+      const calls: string[][] = []
+      const git: GitRunner = async (args) => {
+        calls.push(args)
+        return ok("PLAN.md\0")
+      }
+      expect(await resolveGitPathCase("plan.md", "/repo", git, "darwin")).toBe("PLAN.md")
+      expect(await resolveGitPathCase("plan.md", "/repo", git, "win32")).toBe("PLAN.md")
+      expect(calls[0]).toEqual(["ls-files", "-z", "--full-name", "--", ":(icase)plan.md"])
+    })
+
+    it("falls back to the given path on failure, no match, ambiguity or a throw", async () => {
+      const failing: GitRunner = async () => ({ exitCode: 128, stdout: "", stderr: "boom" })
+      const none: GitRunner = async () => ok("")
+      const ambiguous: GitRunner = async () => ok("PLAN.md\0Plan.md\0")
+      const throwing: GitRunner = async () => {
+        throw new Error("spawn git ENOENT")
+      }
+      for (const git of [failing, none, ambiguous, throwing]) {
+        expect(await resolveGitPathCase("plan.md", "/repo", git, "darwin")).toBe("plan.md")
+      }
+      // An exact tracked match always wins over a casing variant.
+      const both: GitRunner = async () => ok("PLAN.md\0plan.md\0")
+      expect(await resolveGitPathCase("plan.md", "/repo", both, "win32")).toBe("plan.md")
+    })
+
+    it("POSIX/Linux keeps the exact path and runs no git command", async () => {
+      let called = false
+      const git: GitRunner = async () => {
+        called = true
+        return ok("PLAN.md\0")
+      }
+      expect(await resolveGitPathCase("plan.md", "/repo", git, "linux")).toBe("plan.md")
+      expect(called).toBe(false)
+    })
+  })
+
+  async function integrateWithDivergentCase(platform: string, lsFiles: { exitCode: number; stdout: string }) {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-case-"))
+    const wtPath = join(scratch, ".loop-worktrees", "slot-1")
+    mkdirSync(wtPath, { recursive: true })
+    const plan = ["## Phase 1", "- [ ] **1.1** Do A", "- [ ] **1.2** Do B"].join("\n")
+    // The user passed `--plan plan.md`; git tracks it as `PLAN.md`.
+    writeFileSync(join(scratch, "plan.md"), plan)
+    writeFileSync(join(wtPath, "PLAN.md"), plan.replace("- [ ] **1.1**", "- [x] **1.1**"))
+    writeFileSync(join(wtPath, "plan.md"), plan.replace("- [ ] **1.1**", "- [x] **1.1**"))
+    const calls: string[][] = []
+    const git: GitRunner = async (args, cwd) => {
+      calls.push(args)
+      if (args[0] === "ls-files") return { ...lsFiles, stderr: "" }
+      if (args[0] === "show") return ok(plan)
+      if (args[0] === "status") return ok(" M src/a.ts\n M PLAN.md\n")
+      if (args[0] === "rev-parse") return ok(cwd === wtPath ? "sha-worker\n" : "sha-main\n")
+      if (args[0] === "diff" && args.includes("--cached")) return ok("src/a.ts\n")
+      if (args[0] === "diff" && args[1] === "--name-only") return ok("PLAN.md\nsrc/a.ts\n")
+      return ok()
+    }
+    try {
+      const outcome = await integrateWorkerResult({
+        slotId: 1,
+        taskId: "1.1",
+        taskDescription: "**1.1** Do A",
+        sessionId: "ses-1",
+        worktreePath: wtPath,
+        baseSha: "sha-base",
+        repoRoot: scratch,
+        planPath: "plan.md",
+        runGit: git,
+        platform,
+        evalGate: async () => ({ pass: true }),
+      })
+      return { outcome, calls }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }
+
+  const pathspecs = (calls: string[][]) =>
+    calls
+      .filter((c) => c[0] !== "ls-files" && c.includes("--"))
+      .map((c) => [c[0], ...c.slice(c.indexOf("--") + 1)].join(" "))
+
+  it("uses git's casing in EVERY pathspec of the flow and keeps PLAN.md out of the commit (darwin)", async () => {
+    const { outcome, calls } = await integrateWithDivergentCase("darwin", { exitCode: 0, stdout: "PLAN.md\0" })
+    expect(calls.find((c) => c[0] === "show")).toEqual(["show", "sha-base:PLAN.md"])
+    const specs = pathspecs(calls)
+    expect(specs).toContain("reset PLAN.md")
+    expect(specs).toContain("checkout PLAN.md")
+    for (const spec of specs) expect(spec.endsWith(" PLAN.md")).toBe(true)
+    expect(outcome.status).toBe("integrated")
+    if (outcome.status === "integrated") expect(outcome.changedFiles).toEqual(["src/a.ts"])
+  })
+
+  it("defensive filter still drops a casing variant when the resolution falls back (win32)", async () => {
+    const { outcome } = await integrateWithDivergentCase("win32", { exitCode: 128, stdout: "" })
+    expect(outcome.status).toBe("integrated")
+    if (outcome.status === "integrated") expect(outcome.changedFiles).toEqual(["src/a.ts"])
+  })
+
+  it("linux stays byte-identical: exact path, no ls-files, case-sensitive filter", async () => {
+    const { outcome, calls } = await integrateWithDivergentCase("linux", { exitCode: 0, stdout: "PLAN.md\0" })
+    expect(calls.some((c) => c[0] === "ls-files")).toBe(false)
+    expect(calls.find((c) => c[0] === "show")).toEqual(["show", "sha-base:plan.md"])
+    if (outcome.status === "integrated") expect(outcome.changedFiles).toEqual(["PLAN.md", "src/a.ts"])
   })
 })
