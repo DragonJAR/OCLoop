@@ -7,22 +7,22 @@
  *
  * Tests the public value of `useDialog()` by exercising the
  * `createDialogController()` factory inside a bare `createRoot`
- * (per `docs/testing.md`, JSX render is not unit-testable without a
- * DOM). The factory is the same code path that `DialogProvider` runs
- * when it sets up the value, so these tests pin the user-visible
+ * (per AGENTS.md § Testing constraints, JSX render is not unit-testable
+ * without a DOM). The factory is the same code path that `DialogProvider`
+ * runs when it sets up the value, so these tests pin the user-visible
  * behavior of `useDialog()`.
  *
  * The factory lives in `dialog-controller.ts` (a pure `.ts` file) so
  * importing it doesn't pull in the `@opentui/solid` JSX transform
- * (see `docs/testing.md`).
+ * (see AGENTS.md § Testing constraints).
  *
  * The "top-only render contract" of `<DialogStack />` (which is
  * what `useKeyboard` sibling-listener collision is gated on) is
  * pinned at the data layer by the `top` accessor tests below. The
  * JSX render of `<Show when={top()} keyed>` itself is structural
  * and code-reviewed; rendering it would require a Solid root with
- * a DOM, which `bun:test` does not provide (per
- * `docs/solid-hook-testing.md`).
+ * a DOM, which `bun:test` does not provide (per AGENTS.md
+ * § Testing constraints).
  */
 
 import { describe, expect, it } from "bun:test"

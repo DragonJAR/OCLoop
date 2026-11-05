@@ -200,7 +200,7 @@ export function toMonochrome(t: ThemeColors): ThemeColors {
  *
  * Lives in `theme-resolver.ts` (a pure `.ts` module) so it can be
  * unit-tested without pulling in the JSX transform from `ThemeContext.tsx`
- * (see `docs/testing.md`: importing a `.tsx` file under
+ * (see AGENTS.md § Testing constraints: importing a `.tsx` file under
  * `jsxImportSource: "@opentui/solid"` fails in `bun:test` because
  * `solid-js/web`'s JSX runtime is not loadable without a DOM).
  *

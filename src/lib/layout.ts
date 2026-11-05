@@ -1,8 +1,9 @@
 /**
  * Responsive layout primitives — pure, no @opentui dependency so they can be
- * unit-tested and previewed at any width (see docs/testing.md). Every width in
- * the UI (separator bars, progress bar, column/truncation budgets, compact vs
- * full) is derived from the real terminal size through here — nothing hardcoded.
+ * unit-tested and previewed at any width (see AGENTS.md § Testing
+ * constraints). Every width in the UI (separator bars, progress bar,
+ * column/truncation budgets, compact vs full) is derived from the real
+ * terminal size through here — nothing hardcoded.
  */
 
 import { truncate } from "./format"

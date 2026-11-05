@@ -10,7 +10,7 @@
  *
  * The actual controller lives in `dialog-controller.ts` (a pure `.ts`
  * module) so it can be unit-tested without the JSX transform getting
- * in the way (see `docs/testing.md`).
+ * in the way (see AGENTS.md § Testing constraints).
  */
 
 import {

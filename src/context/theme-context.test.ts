@@ -13,7 +13,7 @@
  * The function lives in `theme-resolver.ts` (a pure `.ts` file, the
  * same module that already exposes the `ThemeColors` type) so it can
  * be unit-tested without pulling in the JSX transform from
- * `ThemeContext.tsx` (see `docs/testing.md`).
+ * `ThemeContext.tsx` (see AGENTS.md § Testing constraints).
  *
  * The function only reads `theme.primary`; the other 14 fields of
  * `ThemeColors` are unused, so a stub is sufficient.

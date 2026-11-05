@@ -20,9 +20,9 @@
  * what the hook does with the launcher seam.
  *
  * The mock pattern is safe here because:
- * 1. `useServer.ts` has no JSX (so the `docs/testing.md` `@opentui/solid`
- *    `mock.module` warning does not apply — that one is JSX-transform
- *    specific).
+ * 1. `useServer.ts` has no JSX (so the AGENTS.md § Testing constraints
+ *    `@opentui/solid` `mock.module` warning does not apply — that one is
+ *    JSX-transform specific).
  * 2. `createRoot` is the canonical harness for Solid hooks; the existing
  *    `useActivityLog.test.ts` and `useSessionStats.test.ts` already use it.
  *

@@ -10,10 +10,10 @@ import { mockCommandExists } from "./command-exists-mock"
 // Bun's `Bun.spawn` does NOT inherit test-time mutations to `process.env`
 // (verified: a child spawned in a test sees the original PATH, not the
 // one set in beforeEach). That rules out PATH manipulation as a way to
-// drive `commandExists` deterministically. The docs/testing.md warning
-// about `mock.module` is JSX-transform specific (it bites @opentui/solid);
-// clipboard.ts and command-exists.ts contain no JSX, so module-level
-// mocking is safe here.
+// drive `commandExists` deterministically. The AGENTS.md § Testing
+// constraints note about `mock.module` is JSX-transform specific (it bites
+// @opentui/solid); clipboard.ts and command-exists.ts contain no JSX, so
+// module-level mocking is safe here.
 //
 // Source: MEJORAS.md Finding 11.4.D.
 

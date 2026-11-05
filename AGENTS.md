@@ -34,7 +34,8 @@ nunca commitees si fallan.
   está type-enforced (`es: Record<MessageKey, Msg>`, `MessageKey = keyof typeof
   en`), así que `tsc` en verde garantiza que `es` no perdió ninguna clave.
 - **Tests**: `bun:test` (`describe`/`it`/`expect`), archivos `*.test.ts`
-  colocados junto al código. Sin frameworks externos.
+  colocados junto al código. Sin frameworks externos. Las restricciones que
+  impone el runner están en § Testing constraints.
 - **I/O de archivos**: prefiere `Bun.file(path).text()/.exists()` para leer. Las
   escrituras durables usan `node:fs` con un patrón best-effort — reúsalos en vez
   de escribir fs nuevo: `loop-state-store.ts` (overwrite atómico tmp+rename),
@@ -51,6 +52,23 @@ nunca commitees si fallan.
   `clipboard.ts`, `terminal-launcher.ts` y `opencode-server.ts` (lanzador
   `opencode` en win32). Todo fix de Windows va platform-gated
   (`process.platform === "win32"`) para que POSIX quede byte-identical.
+
+## Testing constraints
+
+`bun:test` no aplica el transform JSX de Solid: un test que importa un `.tsx`
+falla al compilar, porque Bun cae a su runtime JSX automático (`jsxDEV`) y
+`@opentui/solid` no lo exporta. De ahí dos reglas:
+
+- La lógica que se quiere testear unitariamente vive en un módulo puro `.ts`;
+  el `.tsx` es solo la capa de presentación.
+- Para renderizar de verdad (diálogos, layout) el render corre en un proceso
+  hijo con `src/ui/render-scenario.ts` (`runRenderScenario`); los datos
+  estructurados viajan por fichero, no por stdout.
+
+Además `bun:test` no da DOM (`globalThis.document === undefined`): `solid-js/web`'s
+`render`/`renderToString` no sirven y un `createRoot` a secas no dispara
+`onMount`, así que los hooks se manejan por su API pública (`autoConnect: false`
++ `reconnect()`, `stop()` + `restart()`).
 
 ## Research
 
