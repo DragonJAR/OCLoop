@@ -89,7 +89,7 @@ mockOpencodeServer({
   // The fake only models what the hook consumes (url/close); the wrapper
   // completes the launcher contract (version) at the seam.
   startOpencodeServer: (opts) =>
-    serverImpl(opts).then((fake) => ({ ...fake, version: 1 as const })),
+    serverImpl(opts).then((fake) => ({ ...fake, closeSync: () => {}, version: 1 as const })),
 })
 
 mock.module("@opencode-ai/sdk/v2", () => ({
@@ -454,6 +454,30 @@ describe("useServer (Finding 18.2.A)", () => {
       await server.restart()
       expect(closeCalls).toBeGreaterThan(before)
       expect(server.status()).toBe("ready")
+      dispose()
+    })
+  })
+
+  it("closeCurrent kills the server tree (close) BEFORE aborting the spawn signal", async () => {
+    // Aborting first would only terminate the direct child (a cmd.exe shim on
+    // Windows) and orphan the real server; close() must run while the signal
+    // is still live.
+    const order: string[] = []
+    serverImpl = async (opts?: FakeLaunchOptions) => {
+      opts?.signal?.addEventListener("abort", () => order.push("abort"))
+      return {
+        url: "http://127.0.0.1:4096",
+        close: () => {
+          order.push(opts?.signal?.aborted ? "close-after-abort" : "close")
+        },
+      }
+    }
+
+    await withServer({ port: 4096 }, async (server, dispose) => {
+      expect(server.status()).toBe("ready")
+      order.length = 0
+      await server.restart()
+      expect(order.slice(0, 2)).toEqual(["close", "abort"])
       dispose()
     })
   })

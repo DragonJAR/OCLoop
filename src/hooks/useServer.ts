@@ -186,10 +186,9 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
    * Close the current server instance (best effort, never throws).
    */
   function closeCurrent(): void {
-    if (abortController) {
-      abortController.abort()
-      abortController = null
-    }
+    // Kill the process TREE first: aborting the spawn signal only terminates
+    // the direct child (a cmd.exe shim on Windows) and would orphan the real
+    // server. abort() then just cancels any pending startup handshake.
     if (serverRef) {
       try {
         serverRef.close()
@@ -197,6 +196,10 @@ export function useServer(options: UseServerOptions = {}): UseServerReturn {
         // ignore — we're tearing it down
       }
       serverRef = null
+    }
+    if (abortController) {
+      abortController.abort()
+      abortController = null
     }
     // The version/auth of the dying launch no longer describe a usable server.
     setServerVersion(null)

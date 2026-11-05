@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { resolveSpawnable, isWindowsShellShim } from "./command-exists"
+import { killTree } from "./kill-tree"
 import { splitLines } from "./text"
 
 export type OpencodeMajor = 1 | 2
@@ -77,11 +78,9 @@ export async function detectOpencodeVersion(): Promise<OpencodeMajor | null> {
       }
 
       const timer = setTimeout(() => {
-        try {
-          proc.kill()
-        } catch {
-          // Best-effort cleanup of a version probe that exceeded its deadline.
-        }
+        // Tree kill: with a Windows `.cmd` shim, proc.kill() would only end
+        // the cmd.exe wrapper and orphan the real opencode process.
+        if (proc) killTree(proc)
         settle(null)
       }, VERSION_TIMEOUT_MS)
 

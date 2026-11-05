@@ -30,6 +30,7 @@ import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
 import { TERMINAL_RESTORE_SEQUENCE } from "./lib/terminal-restore"
 import { ensureWindowsConsoleReady } from "./lib/windows-console"
+import { killAllTrackedSync } from "./lib/kill-tree"
 
 // DEFAULT_PLAN_MODEL / DEFAULT_PLAN_AGENT now live in ./lib/constants (shared
 // with the stalled-task split in App.tsx). Plan-generation budget is
@@ -392,15 +393,33 @@ function restoreTerminal(): void {
   process.stdout.write(TERMINAL_RESTORE_SEQUENCE)
 }
 
+/**
+ * Best-effort synchronous reaping of long-lived children (the embedded
+ * OpenCode server) from crash handlers. `process.exit()` skips the shutdown
+ * manager's async teardown, which on Windows used to leave an orphaned
+ * `opencode serve` holding the port. `killAllTrackedSync` (kill-tree.ts) is
+ * sync, idempotent and never throws; the `typeof` guard keeps this hook safe
+ * if the server/kill-tree surface ever moves again (H6).
+ */
+function closeTrackedServersOnCrash(): void {
+  try {
+    if (typeof killAllTrackedSync === "function") killAllTrackedSync()
+  } catch {
+    // Best-effort only — the crash is still reported and the process exits.
+  }
+}
+
 process.on("exit", restoreTerminal)
 process.on("uncaughtException", (err) => {
   restoreTerminal()
   console.error("Uncaught exception:", err)
+  closeTrackedServersOnCrash()
   process.exit(1)
 })
 process.on("unhandledRejection", (reason) => {
   restoreTerminal()
   console.error("Unhandled rejection:", reason)
+  closeTrackedServersOnCrash()
   process.exit(1)
 })
 

@@ -19,6 +19,7 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { mockCommandExists } from "./command-exists-mock"
+import { killAllTrackedSync } from "./kill-tree"
 import { mockOpencodeServer } from "./opencode-server-mock"
 import { EventEmitter } from "node:events"
 import { PERMISSION_TOOLS } from "./config"
@@ -131,12 +132,31 @@ beforeEach(() => {
   spawnImpl.mockClear()
 })
 
+// POSIX tree-kill signals the process GROUP (-pid). The fake pids here must
+// never reach the real process table, so process.kill is recorded and stubbed.
+const realProcessKill = process.kill
+let groupSignals: Array<{ pid: number; signal: unknown }> = []
+
+beforeEach(() => {
+  groupSignals = []
+  process.kill = ((pid: number, signal?: unknown) => {
+    groupSignals.push({ pid, signal })
+    return true
+  }) as typeof process.kill
+})
+
 afterEach(() => {
+  process.kill = realProcessKill
   resolveSpawnableImpl = async () => resolvableOpencode()
 })
 
+/** taskkill is spawned by ABSOLUTE path (never resolved via PATH/cwd). */
+function isTaskkill(command: string): boolean {
+  return /[\\/]System32[\\/]taskkill\.exe$/i.test(command)
+}
+
 function serverSpawnCall(): SpawnCall {
-  const call = spawnCalls.find(({ args, command }) => command !== "taskkill" && args[0] === "serve")
+  const call = spawnCalls.find(({ args, command }) => !isTaskkill(command) && args[0] === "serve")
   if (!call) throw new Error("Expected opencode server process to be spawned")
   return call
 }
@@ -387,7 +407,7 @@ describe("opencode-server — Windows process cleanup", () => {
       )
     })
 
-    expect(spawnCalls.some((c) => c.command === "taskkill" && c.args.includes("4321"))).toBe(true)
+    expect(spawnCalls.some((c) => isTaskkill(c.command) && c.args.includes("4321"))).toBe(true)
   })
 
   it("closes Windows shell shims by killing the process tree", async () => {
@@ -413,7 +433,7 @@ describe("opencode-server — Windows process cleanup", () => {
       String.raw`"C:\Users\dev\AppData\Roaming\npm\opencode.cmd"`,
     )
     expect((serverSpawnCall().opts as { shell?: boolean }).shell).toBe(true)
-    const taskkill = spawnCalls.find(({ command }) => command === "taskkill")
+    const taskkill = spawnCalls.find(({ command }) => isTaskkill(command))
     expect(taskkill?.args).toEqual(["/pid", "5555", "/t", "/f"])
     expect(proc.kill).not.toHaveBeenCalled()
   })
@@ -437,7 +457,7 @@ describe("opencode-server — Windows process cleanup", () => {
       server.close()
     })
 
-    expect(spawnCalls.some((c) => c.command === "taskkill" && c.args.includes("6666"))).toBe(true)
+    expect(spawnCalls.some((c) => isTaskkill(c.command) && c.args.includes("6666"))).toBe(true)
     expect(proc.kill).not.toHaveBeenCalled()
   })
 
@@ -527,5 +547,42 @@ describe("opencode-server — Windows process cleanup", () => {
     const server = await serverPromise
     expect(server.url).toBe("http://127.0.0.1:4096")
     server.close()
+  })
+
+  it.skipIf(process.platform === "win32")(
+    "spawns detached on POSIX and close() signals the whole process group",
+    async () => {
+      const proc = createFakeProcess(7777)
+      nextProc = proc
+      autoServeOutput = null
+
+      const serverPromise = startOpencodeServer({ timeout: 1000 })
+      await waitForSpawnCalls(1)
+      proc.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"))
+      const server = await serverPromise
+
+      expect((serverSpawnCall().opts as { detached?: boolean }).detached).toBe(true)
+      server.close()
+      expect(groupSignals).toContainEqual({ pid: -7777, signal: "SIGTERM" })
+      expect(proc.kill).not.toHaveBeenCalled()
+    },
+  )
+
+  it("closeSync() and killAllTrackedSync() reap a live server, then are idempotent", async () => {
+    const proc = createFakeProcess(7778)
+    nextProc = proc
+    autoServeOutput = null
+
+    const serverPromise = startOpencodeServer({ timeout: 1000 })
+    await waitForSpawnCalls(1)
+    proc.stdout.emit("data", Buffer.from("opencode server listening on http://127.0.0.1:4096\n"))
+    const server = await serverPromise
+
+    killAllTrackedSync()
+    const afterFirst = groupSignals.length + proc.kill.mock.calls.length
+    expect(afterFirst).toBeGreaterThan(0)
+    killAllTrackedSync()
+    server.closeSync()
+    expect(groupSignals.length + proc.kill.mock.calls.length).toBe(afterFirst)
   })
 })

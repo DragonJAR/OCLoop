@@ -7,13 +7,17 @@ import type { ServerOptions } from "@opencode-ai/sdk/server"
 import { detectOpencodeVersion, getOpencodeSpawnTarget, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 import { MAX_TIMEOUT_MS } from "./constants"
+import { isTracked, killTree, killTreeSync, trackProcess } from "./kill-tree"
 
 export interface OpencodeServer {
   url: string
   version: OpencodeMajor | null
   /** Present for v2 and unknown-version launches so capability probes can authenticate. */
   authorization?: string
+  /** Kill the server's whole process tree (fire-and-forget). */
   close: () => void
+  /** Synchronous best-effort variant for crash/exit handlers. Idempotent. */
+  closeSync: () => void
 }
 
 const READY_PREFIX_RE = /^(?:opencode\s+)?server\s+listening\b/
@@ -62,33 +66,6 @@ function withAutonomousPermissions(
         ...buildPermissionConfig(enabled),
       },
     },
-  }
-}
-
-function killServerProcess(proc: ServerProcess, killTree = true): void {
-  if (killTree && process.platform === "win32" && proc.pid) {
-    try {
-      const killer = spawn("taskkill", ["/pid", String(proc.pid), "/t", "/f"], {
-        stdio: "ignore",
-        windowsHide: true,
-      })
-      killer.on("error", () => {
-        try {
-          proc.kill()
-        } catch {
-          // Best-effort cleanup only.
-        }
-      })
-      return
-    } catch {
-      // Fall through to killing the direct process handle.
-    }
-  }
-
-  try {
-    proc.kill()
-  } catch {
-    // Best-effort cleanup only.
   }
 }
 
@@ -149,6 +126,9 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   const spawnOptions: Parameters<typeof spawn>[2] = {
     signal: merged.signal,
     env,
+    // POSIX: own process group so killTree can signal the whole tree. Windows
+    // uses taskkill /t instead (detached there would open a console window).
+    detached: process.platform !== "win32",
   }
   if (target.shell) spawnOptions.shell = true
 
@@ -190,7 +170,7 @@ const startOpencodeServerImpl = async function startOpencodeServer(
 
     const rejectStartup = (error: Error, kill: boolean) => {
       if (!settle()) return
-      if (kill) killServerProcess(proc, true)
+      if (kill) killTree(proc)
       reject(error)
     }
 
@@ -260,11 +240,21 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     merged.signal?.addEventListener("abort", abortHandler)
   })
 
+  // Registered so a crash handler can reap it via `killAllTrackedSync()`.
+  // killTree/killTreeSync unregister it, which also makes close() idempotent
+  // (including after a crash-handler sweep already reaped it).
+  trackProcess(proc)
+
   return {
     url,
     version,
     ...(authorization ? { authorization } : {}),
-    close: () => killServerProcess(proc, true),
+    close: () => {
+      if (isTracked(proc)) killTree(proc)
+    },
+    closeSync: () => {
+      if (isTracked(proc)) killTreeSync(proc)
+    },
   }
 }
 
