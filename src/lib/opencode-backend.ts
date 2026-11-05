@@ -4,6 +4,7 @@
  */
 
 import { createOpencodeClient, type OpencodeClient, type TextPartInput } from "@opencode-ai/sdk/v2"
+import { numberOrZero } from "./numbers"
 import { assertResponse, toSdkModel } from "./sdk-helpers"
 import { DEFAULT_RESILIENCE } from "./config"
 import type { ModelCatalogEntry } from "./fetch-models"
@@ -108,9 +109,7 @@ export function normalizeV2Envelope(raw: unknown): NormalizedV2Envelope | undefi
   }
 }
 
-function numberValue(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0
-}
+
 
 function makeHeartbeat(sessionID: string, id: string, messageID?: string): BackendEvent {
   const assistantID = messageID ?? `activity:${sessionID}`
@@ -224,11 +223,11 @@ export function mapV2EnvelopeToV1(raw: unknown): BackendEvent[] {
             type: "step-finish",
             state: { status: "completed" },
             tokens: {
-              input: numberValue(usage.input),
-              output: numberValue(usage.output),
+              input: numberOrZero(usage.input),
+              output: numberOrZero(usage.output),
               cache: {
-                read: numberValue(isRecord(usage.cache) ? usage.cache.read : undefined),
-                write: numberValue(isRecord(usage.cache) ? usage.cache.write : undefined),
+                read: numberOrZero(isRecord(usage.cache) ? usage.cache.read : undefined),
+                write: numberOrZero(isRecord(usage.cache) ? usage.cache.write : undefined),
               },
             },
           },

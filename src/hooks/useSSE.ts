@@ -1,5 +1,6 @@
 import { createSignal, onMount, onCleanup, type Accessor } from "solid-js"
 import type { Todo } from "@opencode-ai/sdk/v2"
+import { numberOrZero } from "../lib/numbers"
 import { createClient, getApiTimeouts, type LaunchInfo, type BackendEvent } from "../lib/api"
 import { log } from "../lib/debug-logger"
 import { toError, toErrorMessage } from "../lib/format"
@@ -105,9 +106,7 @@ function dig(record: Record<string, unknown>, ...path: string[]): Record<string,
  * (string, undefined, null) or non-finite (NaN/Infinity) value becomes 0 so
  * token accumulators can never concatenate strings or poison sums.
  */
-function numOrZero(value: unknown): number {
-  return typeof value === "number" && Number.isFinite(value) ? value : 0
-}
+
 
 /**
  * Sanitize the `tokens` block of a `step-finish` part before it crosses into
@@ -133,11 +132,11 @@ function sanitizeStepFinishTokens(
   return {
     ...part,
     tokens: {
-      input: numOrZero(tokens.input),
-      output: numOrZero(tokens.output),
+      input: numberOrZero(tokens.input),
+      output: numberOrZero(tokens.output),
       cache: {
-        read: numOrZero(cache?.read),
-        write: numOrZero(cache?.write),
+        read: numberOrZero(cache?.read),
+        write: numberOrZero(cache?.write),
       },
     },
   }

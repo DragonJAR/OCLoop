@@ -25,6 +25,34 @@ describe("useSessionStats", () => {
     });
   });
 
+  it("sanitizes its own inputs: a string must not be concatenated", () => {
+    // The counters are fed by network payloads. A value that arrives as a
+    // string is truthy, so `prev.input + (value || 0)` CONCATENATED it
+    // ("100" + "1200" = "1001200") and every sum downstream became text.
+    // The accumulator sanitizes its inputs instead of trusting the caller.
+    createRoot((dispose) => {
+      const stats = useSessionStats();
+      stats.addTokens({ input: 100 });
+      stats.addTokens({ input: "1200" as unknown as number });
+      expect(stats.tokens().input).toBe(100);
+      expect(typeof stats.tokens().input).toBe("number");
+      expect(stats.totalTokens()).toBe(100);
+      dispose();
+    });
+  });
+
+  it("ignores NaN and Infinity instead of poisoning the totals", () => {
+    createRoot((dispose) => {
+      const stats = useSessionStats();
+      stats.addTokens({ input: 100 });
+      stats.addTokens({ input: NaN, output: Infinity });
+      expect(stats.tokens().input).toBe(100);
+      expect(stats.tokens().output).toBe(0);
+      expect(stats.totalTokens()).toBe(100);
+      dispose();
+    });
+  });
+
   it("totalTokens includes cacheRead and cacheWrite (C3)", () => {
     createRoot((dispose) => {
       const stats = useSessionStats();

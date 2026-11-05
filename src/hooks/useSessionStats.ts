@@ -1,3 +1,4 @@
+import { numberOrZero } from "../lib/numbers"
 import { createSignal, Accessor } from "solid-js";
 
 export interface SessionTokens {
@@ -35,10 +36,13 @@ export function totalDisplayTokens(tokens: SessionTokens): number {
 
 function mergeTokens(prev: SessionTokens, newTokens: Partial<SessionTokens>): SessionTokens {
   return {
-    input: prev.input + (newTokens.input || 0),
-    output: prev.output + (newTokens.output || 0),
-    cacheRead: prev.cacheRead + (newTokens.cacheRead || 0),
-    cacheWrite: prev.cacheWrite + (newTokens.cacheWrite || 0),
+    // Sanitize here too: the accumulator must not depend on every caller
+    // having sanitized first. A value that arrived as a string would be
+    // concatenated ("100" + "1200"), not added.
+    input: prev.input + numberOrZero(newTokens.input),
+    output: prev.output + numberOrZero(newTokens.output),
+    cacheRead: prev.cacheRead + numberOrZero(newTokens.cacheRead),
+    cacheWrite: prev.cacheWrite + numberOrZero(newTokens.cacheWrite),
   };
 }
 
