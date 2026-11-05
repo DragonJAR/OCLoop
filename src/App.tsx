@@ -34,7 +34,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findPendingLineIndex, findBlockedLineIndex } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, evalFeedbackNote, findPendingLineIndex, findBlockedLineIndex } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile, resolvePromptFile, resolveRepoRoot } from "./lib/plan-file"
@@ -1367,7 +1367,7 @@ function AppContent(props: AppProps) {
     // append a single indented prose line (never a `- [ ]`). The parser
     // transform also flips a completed task back to pending so the retry
     // genuinely re-runs the SAME task (see reopenTaskForEvalRetry).
-    const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
+    const note = evalFeedbackNote(feedback)
     await casPlanOrDispatch(
       { dispatch: loop.dispatch, t },
       {

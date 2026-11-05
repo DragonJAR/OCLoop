@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, replaceTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, findPendingLineIndex, findTaskLineIndex, reopenTaskForEvalRetry, markTaskCompleted, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, replaceTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, findPendingLineIndex, findTaskLineIndex, reopenTaskForEvalRetry, evalFeedbackNote, markTaskCompleted, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1542,3 +1542,15 @@ describe("plan mutators preserve the file's line endings (D-6: CRLF in, CRLF out
   })
 })
 
+
+describe("evalFeedbackNote", () => {
+  it("folds CRLF, LF and lone CR feedback to single spaces (no stray \\r)", () => {
+    const note = evalFeedbackNote("too short\r\nadd tests\rand docs\nplease")
+    expect(note).toBe("  - eval feedback: too short add tests and docs please")
+    expect(note).not.toContain("\r")
+  })
+
+  it("caps the feedback at 200 characters", () => {
+    expect(evalFeedbackNote("x".repeat(500))).toBe(`  - eval feedback: ${"x".repeat(200)}`)
+  })
+})

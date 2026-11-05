@@ -795,6 +795,16 @@ export function markTaskCompleted(
 }
 
 /**
+ * The single indented prose line recording an eval judge's feedback under a
+ * task (never a `- [ ]`). Every line break — `\n`, CRLF or a lone `\r` — is
+ * folded to one space, the same rule as the other PLAN.md mutators, so a CRLF
+ * feedback never leaves a stray `\r` inside the note. Capped at 200 chars.
+ */
+export function evalFeedbackNote(feedback: string): string {
+  return `  - eval feedback: ${feedback.replace(/[\r\n]+/g, " ").slice(0, 200)}`
+}
+
+/**
  * Prepare an eval-driven retry in PLAN.md: insert the judge's feedback note
  * right under the task line, and flip a completed task (`[x]`) back to pending
  * (`[ ]`) so the retry genuinely re-runs the SAME task.
