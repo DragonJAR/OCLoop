@@ -36,6 +36,12 @@ nunca commitees si fallan.
 - **Tests**: `bun:test` (`describe`/`it`/`expect`), archivos `*.test.ts`
   colocados junto al código. Sin frameworks externos. Las restricciones que
   impone el runner están en § Testing constraints.
+- **Borrar código borra también sus referencias**: al eliminar un símbolo o un
+  fichero, los comentarios que lo nombran y los punteros a documentos dejan de
+  resolver — y un comentario que nombra algo inexistente no lo rompe ningún
+  compilador. Antes de cerrar un refactor, comprueba que no queda ningún
+  comentario nombrando algo que ya no existe, y que todo puntero a `docs/`
+  (gitignored, local) tiene un hogar **versionado** al que apuntar.
 - **I/O de archivos**: prefiere `Bun.file(path).text()/.exists()` para leer. Las
   escrituras durables usan `node:fs` con un patrón best-effort — reúsalos en vez
   de escribir fs nuevo: `loop-state-store.ts` (overwrite atómico tmp+rename),
