@@ -237,7 +237,13 @@ export function getConfigPath(): string {
   return join(getConfigDir(), "ocloop.json")
 }
 
-const ALLOWED_CONFIG_KEYS = new Set([
+/**
+ * Every key OCLoop accepts at the top level of ocloop.json.
+ *
+ * Exported so a test can hold the READMEs to it: a key the config accepts
+ * but the docs do not mention is a key no user can discover.
+ */
+export const ALLOWED_CONFIG_KEYS = new Set([
   "terminal",
   "scrollbar_visible",
   "theme",

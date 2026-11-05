@@ -4,7 +4,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { deterministicTmpPath } from "./atomic-fs"
-import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, isValidResilienceValue, loadConfig, resolveResilience, saveConfig, getConfigPath, getConfigDir, hasTerminalConfig, __resetConfigCacheForTests } from "./config"
+import { DEFAULT_RESILIENCE, DEFAULT_EVALS, DEFAULT_PERMISSIONS, PERMISSION_TOOLS, RESILIENCE_MINS, isValidResilienceValue, loadConfig, resolveResilience, saveConfig, getConfigPath, getConfigDir, hasTerminalConfig, __resetConfigCacheForTests, ALLOWED_CONFIG_KEYS } from "./config"
 // These tests intentionally inject `null` (a runtime-only value hand-edited JSON can
 // produce) that the compile-time type forbids; cast at the boundary so the strict
 // production signature stays intact. Derived from the fn's own param (DRY).
@@ -962,5 +962,29 @@ describe("hasTerminalConfig (Finding 18.2.C items 12-13)", () => {
         terminal: { type: "custom", command: "wezterm", args: "   " },
       }),
     ).toBe(false)
+  })
+})
+
+describe("the config keys the code accepts are the ones the READMEs document", () => {
+  // The READMEs show the accepted shape of ocloop.json as a jsonc example.
+  // A key the config accepts but neither README shows is a key no user can
+  // discover — `jobs` and `permissions` were exactly that for a long time
+  // (both were settable and used, and only mentioned in prose elsewhere).
+  function configExample(readme: string): string {
+    const blocks = [...readme.matchAll(/```jsonc\n([\s\S]*?)```/g)].map((m) => m[1])
+    return blocks.join("\n")
+  }
+
+  it("lists every allowed key in both READMEs", async () => {
+    for (const fileName of ["README.md", "README.es.md"]) {
+      const readme = await Bun.file(
+        join(import.meta.dir, "../..", fileName),
+      ).text()
+      const example = configExample(readme)
+      const missing = [...ALLOWED_CONFIG_KEYS].filter(
+        (key) => !example.includes(`"${key}":`),
+      )
+      expect({ fileName, missing }).toEqual({ fileName, missing: [] })
+    }
   })
 })

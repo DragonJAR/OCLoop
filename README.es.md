@@ -413,6 +413,14 @@ OCLoop lee ajustes opcionales de `~/.config/ocloop/ocloop.json` (o `$XDG_CONFIG_
   "theme": "dragonjar",          // cualquier id de tema
   "scrollbar_visible": true,
   "terminal": { "type": "known", "name": "x-terminal-emulator" },
+  "jobs": 1,                     // workers en paralelo, 1..4 (igual que --jobs)
+  "permissions": {               // qué herramientas pueden correr sin supervisión (Ctrl+P → Permisos)
+    "edit": true,
+    "bash": true,
+    "webfetch": true,
+    "doom_loop": true,
+    "external_directory": true
+  },
   "resilience": {                // cualquier subconjunto de las claves de Ajustes
     "watchdogSuspectMs": 120000,
     "maxRateLimitRetries": 12
