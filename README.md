@@ -105,6 +105,11 @@
 
 ## Installation
 
+> **Never install this through npm.** The npm package named `ocloop` is the
+> original d3vr project, not this fork — `bunx ocloop` / `npx ocloop` would run
+> someone else's code. The package is marked `private` so it can never be
+> published, and the only supported install is from source below.
+
 ### From source
 
 ```bash
