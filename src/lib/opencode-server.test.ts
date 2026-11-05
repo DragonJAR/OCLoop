@@ -262,18 +262,18 @@ describe("opencode-server — startOpencodeServer carries permissions into confi
   })
 
   it("forwards hostname/port/timeout through unchanged", async () => {
-    await startOpencodeServer({
-      hostname: "0.0.0.0",
-      port: 1234,
-      timeout: 7000,
-      config: { logLevel: "DEBUG" },
-    })
-    const call = serverSpawnCall()
-    // On Windows the launcher spawns the resolved path (a bare name does not
-    // resolve through PATHEXT); elsewhere it spawns the bare name.
-    expect(call.command).toBe(
-      process.platform === "win32" ? '"C:\\bin\\opencode.cmd"' : "opencode",
+    // Pinned to POSIX (bare validated name); the win32 resolved-path form is
+    // covered by the Windows tests below on every host.
+    await withPlatform("linux", () =>
+      startOpencodeServer({
+        hostname: "0.0.0.0",
+        port: 1234,
+        timeout: 7000,
+        config: { logLevel: "DEBUG" },
+      }),
     )
+    const call = serverSpawnCall()
+    expect(call.command).toBe("opencode")
     expect(call.args).toEqual([
       "serve",
       "--hostname=0.0.0.0",

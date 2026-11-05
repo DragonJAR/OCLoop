@@ -74,20 +74,37 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
     resolveSpawnableImpl = defaultResolveSpawnableImpl
   })
 
-  it("returns { success: false } with a platform-specific hint when no tool is available", async () => {
-    // Closes Finding 11.4.G (the per-platform hint) as a side-effect of
-    // Mejora 39/40 — the error must name the platform's expected tool, not
-    // just the Linux list.
-    const result = await copyToClipboard("hello")
+  // Closes Finding 11.4.G (the per-platform hint) as a side-effect of
+  // Mejora 39/40 — the error must name the platform's expected tool, not just
+  // the Linux list. Pinned per platform so every host checks all three hints.
+  it("darwin: no tool -> { success: false } naming pbcopy", async () => {
+    const result = await withPlatform("darwin", () => copyToClipboard("hello"))
     expect(result.success).toBe(false)
-    expect(result.error).toBeDefined()
-    if (process.platform === "darwin") {
-      expect(result.error).toContain("pbcopy")
-    } else if (process.platform === "win32") {
-      expect(result.error).toContain("clip.exe")
-    } else {
-      expect(result.error).toMatch(/wl-copy|xclip|xsel/)
+    expect(result.error).toContain("pbcopy")
+  })
+
+  it("win32: never 'not found' — spawns System32 clip.exe and reports its failure", async () => {
+    // clip.exe ships with every Windows, so there is no missing-tool hint on
+    // win32: the absolute path is always tried and a spawn failure surfaces.
+    const originalSpawn = Bun.spawn
+    const spawned: string[][] = []
+    Bun.spawn = ((cmd: string[]) => {
+      spawned.push(cmd)
+      throw new Error("spawn clip failed")
+    }) as unknown as typeof Bun.spawn
+    try {
+      const result = await withPlatform("win32", () => copyToClipboard("hello"))
+      expect(result).toEqual({ success: false, error: "spawn clip failed" })
+      expect(spawned[0]?.[0]).toMatch(/[\\/]System32[\\/]clip\.exe$/)
+    } finally {
+      Bun.spawn = originalSpawn
     }
+  })
+
+  it("linux: no tool -> { success: false } naming wl-copy/xclip/xsel", async () => {
+    const result = await withPlatform("linux", () => copyToClipboard("hello"))
+    expect(result.success).toBe(false)
+    expect(result.error).toMatch(/wl-copy|xclip|xsel/)
   })
 
   it("drains a full stderr stream before waiting for child exit", async () => {
