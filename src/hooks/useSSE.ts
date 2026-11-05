@@ -101,14 +101,6 @@ function dig(record: Record<string, unknown>, ...path: string[]): Record<string,
 }
 
 /**
- * Finite-number sanitizer for values arriving from the network. Same contract
- * as `numberValue` in opencode-backend.ts (the v2 native route): a non-number
- * (string, undefined, null) or non-finite (NaN/Infinity) value becomes 0 so
- * token accumulators can never concatenate strings or poison sums.
- */
-
-
-/**
  * Sanitize the `tokens` block of a `step-finish` part before it crosses into
  * the token/cost accumulators. The part is an untrusted network payload (a
  * blind cast upstream), so `tokens.input` arriving as a string ("1200") would
