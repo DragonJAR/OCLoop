@@ -28,7 +28,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Pinned image: macos-latest runners died at 15m in consecutive runs.
+        os: [macos-15, windows-latest, ubuntu-latest]
 
     steps:
       - name: Checkout
@@ -62,7 +63,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, windows-latest, ubuntu-latest]
+        # Pinned image: macos-latest runners died at 15m in consecutive runs.
+        os: [macos-15, windows-latest, ubuntu-latest]
 
     steps:
       - name: Checkout
