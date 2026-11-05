@@ -72,6 +72,10 @@ Además `bun:test` no da DOM (`globalThis.document === undefined`): `solid-js/we
 
 ## Research
 
+`docs/` está en `.gitignore`: una referencia `@docs/...` solo resuelve en la
+máquina que escribió la nota, así que la línea del índice tiene que bastar por
+sí sola. El detalle va en el fichero; la línea es el resumen, no el puntero.
+
 <!--
 Índice de conocimiento externo descubierto (comportamiento de APIs, peculiaridades
 de librerías/repos). Mantén el detalle en docs/ y aquí solo referencias @ de una
