@@ -8,19 +8,28 @@
  * all of it, so a real run on each OS is what actually proves the launcher
  * works there.
  *
- * It also exercises the abort: the signal is aborted the way a server restart
- * does, and the abort must not escape as an uncaught exception (Bun emits an
- * 'error' with an AbortError on the child, and a ChildProcess with no
- * 'error' listener re-throws it).
+ * It also exercises the teardown the app performs on every restart and quit:
+ * close() then abort(). The abort must not escape as an uncaught exception,
+ * and the server must actually die: after close() the smoke polls its URL
+ * until the connection is refused and fails if it still answers. Any failure
+ * path reaps the server through an exit hook (closeSync).
  *
  * Usage: bun run scripts/smoke-server.ts
  */
 import { createClient } from "../src/lib/api"
-import { startOpencodeServer } from "../src/lib/opencode-server"
+import { startOpencodeServer, type OpencodeServer } from "../src/lib/opencode-server"
 
 const REQUEST_TIMEOUT_MS = 10_000
 const STARTUP_TIMEOUT_MS = 30_000 // cold CI runners are slow; the 5s default flakes
 const TEARDOWN_GRACE_MS = 500
+const DEATH_TIMEOUT_MS = 5_000
+const DEATH_POLL_MS = 100
+const PROBE_TIMEOUT_MS = 1_000
+
+// Declared outside the try so every failure path can reap it: this script
+// does not import index.tsx, so it has no exit hook of its own otherwise.
+let server: OpencodeServer | null = null
+process.on("exit", () => server?.closeSync())
 
 // Any exception that escapes (e.g. an unhandled AbortError from the child)
 // must fail the smoke instead of being swallowed by the exit(0) below.
@@ -29,10 +38,28 @@ process.on("uncaughtException", (err) => {
   process.exit(1)
 })
 
+/**
+ * Poll `url` until the connection is refused (the server is really dead) or
+ * the deadline passes. Any HTTP answer, even an error status, means alive.
+ */
+async function waitUntilDead(url: string): Promise<boolean> {
+  const deadline = Date.now() + DEATH_TIMEOUT_MS
+  while (Date.now() < deadline) {
+    try {
+      await fetch(url, { signal: AbortSignal.timeout(PROBE_TIMEOUT_MS) })
+    } catch (err) {
+      // A probe timeout is not a refusal: a hung-but-alive server still holds the port.
+      if (!(err instanceof Error && err.name === "TimeoutError")) return true
+    }
+    await new Promise((resolve) => setTimeout(resolve, DEATH_POLL_MS))
+  }
+  return false
+}
+
 const controller = new AbortController()
 
 try {
-  const server = await startOpencodeServer({
+  server = await startOpencodeServer({
     port: 0,
     signal: controller.signal,
     timeout: STARTUP_TIMEOUT_MS,
@@ -47,7 +74,6 @@ try {
   console.log(`[smoke] GET ${server.url} -> ${res.status}`)
   if (!res.ok) {
     console.error(`[smoke] FAIL: the server answered ${res.status}`)
-    server.close()
     process.exit(1)
   }
 
@@ -60,11 +86,20 @@ try {
 
   // Same order as the app: kill the process tree first, then abort the signal
   // (a restart does this); the abort must not throw.
+  const { url } = server
   server.close()
   controller.abort()
   console.log("[smoke] close + abort ok (no uncaught exception)")
 
-  // Give the tree kill and any late 'error' event a moment to surface.
+  // close() is fire-and-forget (taskkill on Windows, SIGTERM on POSIX): prove
+  // the whole tree really died and released the port, not just the shim.
+  if (!(await waitUntilDead(url))) {
+    console.error(`[smoke] FAIL: ${url} still answers ${DEATH_TIMEOUT_MS}ms after close()`)
+    process.exit(1)
+  }
+  console.log("[smoke] server is gone (connection refused)")
+
+  // Give any late 'error' event a moment to surface.
   await new Promise((resolve) => setTimeout(resolve, TEARDOWN_GRACE_MS))
   console.log("[smoke] SMOKE OK")
   process.exit(0)
