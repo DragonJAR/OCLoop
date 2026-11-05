@@ -504,6 +504,23 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(reaped).toBe(true)
   })
 
+  it.skipIf(process.platform === "win32")(
+    "tracks the child from spawn so the exit hook reaps a server still starting",
+    async () => {
+      const proc = createFakeProcess(9995)
+      nextProc = proc
+      autoServeOutput = null
+
+      const serverPromise = startOpencodeServer({ timeout: 1000 })
+      await waitForSpawnCalls(1)
+      // process.exit mid-handshake runs the exit hook before any ready marker.
+      killAllTrackedSync()
+      expect(groupSignals).toContainEqual({ pid: -9995, signal: "SIGKILL" })
+      proc.emit("exit", null)
+      await expect(serverPromise).rejects.toThrow("Server exited")
+    },
+  )
+
   it("does not let the abort error escape once the server is listening", async () => {
     const controller = new AbortController()
     const proc = createFakeProcess(9999)

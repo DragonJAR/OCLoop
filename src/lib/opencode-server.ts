@@ -142,6 +142,12 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   if (target.shell) spawnOptions.shell = true
 
   const proc = spawn(target.command, args, spawnOptions)
+  // Track IMMEDIATELY, not after the handshake: on POSIX the child is
+  // `detached` (own group), so it never sees the tty's SIGINT/SIGHUP. Any
+  // process.exit during startup (Ctrl+C in --create-plan, a crash, the
+  // shutdown failsafe) runs the exit hook's `killAllTrackedSync()`, which can
+  // only reap what is tracked. Idempotent with close() via isTracked/hasExited.
+  trackProcess(proc)
 
   const url = await new Promise<string>((resolve, reject) => {
     let timer: ReturnType<typeof setTimeout> | null = null
@@ -245,11 +251,6 @@ const startOpencodeServerImpl = async function startOpencodeServer(
     proc.on("error", () => {})
     merged.signal?.addEventListener("abort", abortHandler)
   })
-
-  // Registered so a crash handler can reap it via `killAllTrackedSync()`.
-  // killTree/killTreeSync unregister it, which also makes close() idempotent
-  // (including after a crash-handler sweep already reaped it).
-  trackProcess(proc)
 
   return {
     url,
