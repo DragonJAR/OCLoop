@@ -31,6 +31,7 @@
  */
 
 import { MAX_TIMEOUT_MS } from "./constants"
+import { stripEnvKey } from "./env"
 
 export interface CliRunResult {
   stdout: string
@@ -60,12 +61,31 @@ const KILL_GRACE_MS = 1_000
 /** Conventional timeout-kill exit code (matches `timeout(1)`). */
 const TIMEOUT_EXIT_CODE = 124
 
+/**
+ * The child env: process.env with `extra` on top. On win32 env keys are
+ * case-insensitive but the spread is a plain object, so an override such as
+ * `{ path: "..." }` would ship NEXT TO the inherited `Path`; every casing
+ * variant of an overridden key is dropped first. POSIX keys are
+ * case-sensitive and merge as before.
+ */
+export function buildChildEnv(
+  extra: Record<string, string> = {},
+  base: Record<string, string | undefined> = process.env,
+  platform: string = process.platform,
+): Record<string, string | undefined> {
+  const env = { ...base }
+  if (platform === "win32") {
+    for (const key of Object.keys(extra)) stripEnvKey(env, key)
+  }
+  return Object.assign(env, extra)
+}
+
 export async function runCli(
   argv: string[],
   options: CliRunOptions = {},
 ): Promise<CliRunResult> {
   const start = Date.now()
-  const env = { ...process.env, ...(options.env ?? {}) }
+  const env = buildChildEnv(options.env)
   const cwd = options.cwd ?? process.cwd()
   const entrypoint = options.entrypoint ?? DEFAULT_ENTRYPOINT
   const rawTimeout = options.timeoutMs ?? DEFAULT_TIMEOUT_MS

@@ -4,7 +4,7 @@
  * itself works end-to-end against the real entry point.
  */
 import { describe, expect, it } from "bun:test"
-import { runCli } from "./cli-runner"
+import { buildChildEnv, runCli } from "./cli-runner"
 import { VERSION } from "./cli-args"
 
 describe("runCli", () => {
@@ -63,5 +63,17 @@ describe("runCli", () => {
     const result = await runCli(["--version"], { timeoutMs: 1e12 })
     expect(result.exitCode).toBe(0)
     expect(result.stdout).toContain("ocloop ")
+  })
+})
+
+describe("buildChildEnv (T10-B P4)", () => {
+  it("win32: an override replaces every casing of the inherited key", () => {
+    const env = buildChildEnv({ path: "C:\\new" }, { Path: "C:\\old", HOME: "h" }, "win32")
+    expect(env).toEqual({ path: "C:\\new", HOME: "h" })
+  })
+
+  it("POSIX: keys are case-sensitive, so both spellings are kept", () => {
+    const env = buildChildEnv({ path: "/new" }, { PATH: "/old" }, "linux")
+    expect(env).toEqual({ PATH: "/old", path: "/new" })
   })
 })
