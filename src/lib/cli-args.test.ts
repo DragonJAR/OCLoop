@@ -249,6 +249,66 @@ describe("parseArgs — help/version exit", () => {
       assertResilienceKeysPresent(extractReadmeResilienceKeys(readme, fileName), fileName)
     }
   })
+
+  // The help text and the README options table are two copies of the same
+  // list of flags, and the guard above only ties the help to the parser. A
+  // flag the CLI accepts but the README never mentions is a flag nobody can
+  // find — so the README table is held to the help here.
+  it("documents every help flag in both README options tables", async () => {
+    setLocale("en")
+    const help = runParse(["--help"]).logs.join("\n")
+
+    /**
+     * The flags of the help's OPTIONS, not every flag token in the section:
+     * a description can mention an alias (--lang's row mentions --language),
+     * and the README documents that alias inside the --lang row, so counting
+     * it as a missing option would be wrong.
+     */
+    function helpOptionFlags(): Set<string> {
+      const section = help.slice(help.indexOf("Options:"), help.indexOf("Resilience keys"))
+      const flags = new Set<string>()
+      for (const line of section.split(/\r?\n/)) {
+        // The option column ends at the first run of two or more spaces.
+        const column = line.match(/^\s{2,}(.*?)\s{2,}/)?.[1]
+        if (!column) continue
+        for (const flag of column.matchAll(/(?<![\w-])--?[a-z][a-z-]*(?![\w-])/g)) {
+          flags.add(flag[0])
+        }
+      }
+      return flags
+    }
+
+    const helpFlags = helpOptionFlags()
+
+    /**
+     * The flags named by the README's options table, short and long forms.
+     * The table is found by its header row ("Option" / "Opción") rather than
+     * by a fixed offset, so it survives edits above it.
+     */
+    function readmeOptionFlags(readme: string): Set<string> {
+      const lines = readme.split(/\r?\n/)
+      const header = lines.findIndex((l) => /^\|\s*(Option|Opción)\s*\|/.test(l))
+      if (header < 0) throw new Error("Could not locate the options table in the README")
+      const flags = new Set<string>()
+      for (const line of lines.slice(header + 1)) {
+        if (!line.trimStart().startsWith("|")) break
+        for (const cell of line.matchAll(/\|\s*`([^`]+)`/g)) {
+          for (const flag of cell[1]!.matchAll(/(?<![\w-])--?[a-z][a-z-]*(?![\w-])/g)) {
+            flags.add(flag[0])
+          }
+        }
+      }
+      return flags
+    }
+
+    for (const fileName of ["README.md", "README.es.md"]) {
+      const readmePath = resolve(import.meta.dir, "../..", fileName)
+      const readme = await Bun.file(readmePath).text()
+      const documented = readmeOptionFlags(readme)
+      const missing = [...helpFlags].filter((flag) => !documented.has(flag)).sort()
+      expect({ fileName, missing }).toEqual({ fileName, missing: [] })
+    }
+  })
   it("-v/--version print version and exit 0", () => {
     for (const f of ["-v", "--version"]) {
       const r = runParse([f])

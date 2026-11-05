@@ -128,4 +128,14 @@ describe("the plan generator asks for the format the example plans use", () => {
       expect(template).toContain(`## ${heading}`)
     }
   })
+
+  it("is the format examples/PLAN.md (the one the READMEs say to copy) uses", () => {
+    const template = readFileSync(
+      join(import.meta.dir, "../../examples/PLAN.md"),
+      "utf8",
+    )
+    for (const heading of canonical) {
+      expect(template).toContain(`## ${heading}`)
+    }
+  })
 })
