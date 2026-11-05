@@ -19,11 +19,12 @@
  *   non-TTY pre-flight fix lands.
  * - It does not isolate the process group (no setsid). The child shares
  *   the parent's signals; a parent abort will leave a zombie until the
- *   timeout fires. A grandchild holding the stdio pipes can also outlive
- *   the killed child. On timeout the runner escalates SIGTERM → SIGKILL
- *   after a 1s grace so a signal-ignoring child cannot hang the await
- *   forever, but the no-setsid limitations remain. Acceptable for a test
- *   helper.
+ *   timeout fires. On timeout the runner tree-kills the child (killTree:
+ *   taskkill /t on Windows) and escalates to SIGKILL after a 1s grace so a
+ *   signal-ignoring child cannot hang the await forever. A grandchild that
+ *   inherited the stdio pipes can outlive the child and keep them open, so
+ *   stdout/stderr are read with a deadline after the child exits instead of
+ *   waiting for an EOF that may never come. Acceptable for a test helper.
  *
  * ponytail: one `Bun.spawn` call, four knobs (env, cwd, stdin, timeout).
  * The previous inline pattern in `cli-args.test.ts` is for unit-level
@@ -32,6 +33,7 @@
 
 import { MAX_TIMEOUT_MS } from "./constants"
 import { stripEnvKey } from "./env"
+import { killTree, killTreeSync } from "./kill-tree"
 
 export interface CliRunResult {
   stdout: string
@@ -60,6 +62,47 @@ const DEFAULT_TIMEOUT_MS = 10_000
 const KILL_GRACE_MS = 1_000
 /** Conventional timeout-kill exit code (matches `timeout(1)`). */
 const TIMEOUT_EXIT_CODE = 124
+/** How long to keep reading a pipe after the child exited before giving up on EOF. */
+export const PIPE_DRAIN_MS = 1_000
+
+/**
+ * Read `stream` to EOF, but stop `drainMs` after `exited` settles: a
+ * grandchild that inherited the pipe can hold it open long after the child
+ * died, and awaiting its EOF would hang the caller. Returns what was read.
+ */
+export async function readUntilExitDrained(
+  stream: ReadableStream<Uint8Array>,
+  exited: Promise<unknown>,
+  drainMs: number = PIPE_DRAIN_MS,
+): Promise<string> {
+  const reader = stream.getReader()
+  const decoder = new TextDecoder()
+  let out = ""
+  let finished = false
+  const pump = (async () => {
+    try {
+      for (;;) {
+        const { done, value } = await reader.read()
+        if (done) break
+        out += decoder.decode(value, { stream: true })
+      }
+    } catch {
+      // Cancelled below or the pipe broke: keep what was read.
+    } finally {
+      finished = true
+    }
+  })()
+  let drainTimer: ReturnType<typeof setTimeout> | undefined
+  const drained = exited.then(
+    () => new Promise<void>((resolve) => { drainTimer = setTimeout(resolve, drainMs) }),
+  )
+  await Promise.race([pump, drained])
+  if (drainTimer !== undefined) clearTimeout(drainTimer)
+  if (!finished) {
+    await reader.cancel().catch(() => {})
+  }
+  return out + decoder.decode()
+}
 
 /**
  * The child env: process.env with `extra` on top. On win32 env keys are
@@ -110,31 +153,22 @@ export async function runCli(
   let killEscalation: ReturnType<typeof setTimeout> | undefined
   const timer = setTimeout(() => {
     timedOut = true
-    try {
-      // SIGTERM first so a well-behaved child can flush and exit cleanly.
-      proc.kill()
-    } catch {
-      // Already exited — kill throws on a dead handle, safe to ignore.
-      return
-    }
+    // Tree kill (never throws; skips an exited child): SIGTERM first so a
+    // well-behaved child can flush, taskkill /t on Windows so a shim's
+    // descendants die too.
+    killTree(proc)
     // Escalation: a child that traps/ignores SIGTERM would otherwise leave
-    // `proc.exited` (and the `Promise.all` below) pending forever. SIGKILL
-    // cannot be ignored, so the await always settles (with the timeout exit
-    // code, not the child's).
-    killEscalation = setTimeout(() => {
-      try {
-        proc.kill("SIGKILL")
-      } catch {
-        // Exited between the two kills — nothing to escalate.
-      }
-    }, KILL_GRACE_MS)
+    // `proc.exited` (and the await below) pending forever. SIGKILL cannot be
+    // ignored, so the await always settles (with the timeout exit code, not
+    // the child's).
+    killEscalation = setTimeout(() => killTreeSync(proc), KILL_GRACE_MS)
   }, timeoutMs)
 
   try {
     const [exitCode, stdout, stderr] = await Promise.all([
       proc.exited,
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      readUntilExitDrained(proc.stdout, proc.exited),
+      readUntilExitDrained(proc.stderr, proc.exited),
     ])
     return {
       stdout,

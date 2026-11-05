@@ -4,7 +4,7 @@
  * itself works end-to-end against the real entry point.
  */
 import { describe, expect, it } from "bun:test"
-import { buildChildEnv, runCli } from "./cli-runner"
+import { buildChildEnv, readUntilExitDrained, runCli } from "./cli-runner"
 import { VERSION } from "./cli-args"
 
 describe("runCli", () => {
@@ -75,5 +75,33 @@ describe("buildChildEnv (T10-B P4)", () => {
   it("POSIX: keys are case-sensitive, so both spellings are kept", () => {
     const env = buildChildEnv({ path: "/new" }, { PATH: "/old" }, "linux")
     expect(env).toEqual({ PATH: "/old", path: "/new" })
+  })
+})
+
+describe("readUntilExitDrained (T10-B P9/P2)", () => {
+  const encode = (text: string) => new TextEncoder().encode(text)
+
+  it("returns what was read once the child exited, even if the pipe never closes", async () => {
+    // A grandchild that inherited the pipe keeps it open forever.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode("partial output"))
+      },
+    })
+    const started = Date.now()
+    const text = await readUntilExitDrained(stream, Promise.resolve(0), 30)
+    expect(text).toBe("partial output")
+    expect(Date.now() - started).toBeLessThan(1_000)
+  })
+
+  it("reads to EOF normally when the pipe closes", async () => {
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encode("all "))
+        controller.enqueue(encode("of it"))
+        controller.close()
+      },
+    })
+    expect(await readUntilExitDrained(stream, new Promise(() => {}), 30)).toBe("all of it")
   })
 })
