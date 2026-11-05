@@ -16,6 +16,7 @@ import { existsSync } from "node:fs"
 import { lstat, mkdir, rm, symlink, unlink } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import type { WorkerSlotId } from "../types"
+import { resolveCommandPath } from "./command-exists"
 import { log } from "./debug-logger"
 
 export const WORKTREES_DIR = ".loop-worktrees"
@@ -39,14 +40,37 @@ export interface WorkspaceManagerOptions {
   runGit?: GitRunner
 }
 
+/** Exit code reported when git itself cannot be found (shell convention). */
+export const GIT_NOT_FOUND_EXIT_CODE = 127
+
 /**
  * Default git subprocess runner using `node:child_process.execFile`.
- * Never rejects; returns `{ exitCode, stdout, stderr }`.
+ * Never rejects; returns `{ exitCode, stdout, stderr }`. git is resolved from
+ * PATH first so a missing binary surfaces as an explicit error instead of an
+ * ENOENT folded into a generic exit code 1.
  */
-export const defaultGitRunner: GitRunner = (args: string[], cwd: string): Promise<GitCommandResult> =>
-  new Promise((resolvePromise) => {
+export function createGitRunner(
+  resolveGit: () => Promise<string | null> = () => resolveCommandPath("git"),
+): GitRunner {
+  return async (args, cwd) => {
+    const git = await resolveGit()
+    if (!git) {
+      return {
+        exitCode: GIT_NOT_FOUND_EXIT_CODE,
+        stdout: "",
+        stderr: "git executable not found on PATH; install git to use parallel worktrees",
+      }
+    }
+    return execGit(git, args, cwd)
+  }
+}
+
+export const defaultGitRunner: GitRunner = createGitRunner()
+
+function execGit(git: string, args: string[], cwd: string): Promise<GitCommandResult> {
+  return new Promise((resolvePromise) => {
     execFile(
-      "git",
+      git,
       args,
       { cwd, maxBuffer: 10 * 1024 * 1024 },
       (err, stdout, stderr) => {
@@ -64,6 +88,7 @@ export const defaultGitRunner: GitRunner = (args: string[], cwd: string): Promis
       },
     )
   })
+}
 
 export function getSlotWorktreePath(repoRoot: string, slotId: WorkerSlotId): string {
   return join(resolve(repoRoot), WORKTREES_DIR, `slot-${slotId}`)

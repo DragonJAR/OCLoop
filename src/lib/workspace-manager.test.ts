@@ -3,7 +3,10 @@ import { mkdirSync, mkdtempSync, existsSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  GIT_NOT_FOUND_EXIT_CODE,
   acquireSlotWorkspace,
+  createGitRunner,
+  defaultGitRunner,
   cleanupAllWorkspaces,
   getSlotWorktreePath,
   releaseSlotWorkspace,
@@ -169,5 +172,20 @@ describe("workspace-manager", () => {
     } finally {
       rmSync(scratch, { recursive: true, force: true })
     }
+  })
+})
+
+describe("git runner", () => {
+  it("reports an explicit exit code and message when git is not on PATH", async () => {
+    const run = createGitRunner(async () => null)
+    const res = await run(["status"], process.cwd())
+    expect(res.exitCode).toBe(GIT_NOT_FOUND_EXIT_CODE)
+    expect(res.stderr).toContain("git executable not found")
+  })
+
+  it("runs the resolved git (real PATH)", async () => {
+    const res = await defaultGitRunner(["--version"], process.cwd())
+    expect(res.exitCode).toBe(0)
+    expect(res.stdout).toContain("git version")
   })
 })

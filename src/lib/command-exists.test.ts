@@ -2,30 +2,14 @@
  * `command-exists.ts` tests.
  *
  * The helper is the single gateway clipboard + terminal detection use to ask
- * "is this binary on PATH?". The critical invariant is that it must pick the
- * right lookup binary per platform: `which` on POSIX, `where.exe` on Windows.
- * `which` does not exist on Windows, so a hard-coded `which` would ALWAYS throw
- * on win32, which silently broke both clipboard detection (every probe returned
- * false, so the built-in `clip.exe` was never used) and terminal detection.
- *
- * Both axes are driven deterministically so the suite runs identically on every
- * host (macOS / Linux / Windows):
- * - PLATFORM via `commandExists`'s `platform` parameter (the same DI as
- *   `power.ts` / `term-caps.ts`) — no host-coupling, no `skipIf`.
- * - SPAWN via the shared `./test-helpers/bun-spawn-mock`. `Bun` is a global, not
- *   an importable module, so it can only be stubbed by assignment; the helper
- *   centralizes that save/override/reset (also used by `power.test.ts` and
- *   `terminal-launcher.test.ts`).
+ * "is this binary on PATH?". It uses native `Bun.which` (no `which`/`where.exe`
+ * subprocess). PLATFORM is injected via the `platform` parameter and the PATH
+ * lookup via the `which` parameter, so the suite runs identically on every
+ * host (macOS / Linux / Windows) without real binaries.
  */
 import { beforeEach, describe, expect, it } from "bun:test"
+import { resolve } from "node:path"
 import { mockCommandExists, realCommandExists } from "./command-exists-mock"
-import {
-  setupBunSpawnMock,
-  spawnState,
-  type FakeProc,
-} from "./test-helpers/bun-spawn-mock"
-
-setupBunSpawnMock()
 
 // resolveSpawnable delegates to resolveCommandPath via a live module binding;
 // reset any partial mock other files registered so internal calls stay real.
@@ -36,153 +20,138 @@ beforeEach(() => {
 const { commandExists, resolveCommandPath, resolveSpawnable, isWindowsShellShim } =
   realCommandExists
 
-// The shared FakeProc is the floor (unref/kill/pid); `commandExists` only reads
-// `proc.exited`, so extend it here per the helper's documented contract.
-const exitWith = (code: number) =>
-  ({ exited: Promise.resolve(code) }) as unknown as FakeProc
-
-/** First token of the spawned argv — the lookup binary (`which`/`where.exe`). */
-function lookupBinary(): string | undefined {
-  return spawnState.calls[0]?.cmd[0]
+/** Fake `Bun.which` over a fixed name -> path table; records every probe. */
+function fakeWhich(table: Record<string, string>) {
+  const probes: string[] = []
+  const which = (name: string): string | null => {
+    probes.push(name)
+    return table[name] ?? null
+  }
+  return { which, probes }
 }
 
-describe("commandExists — platform lookup binary", () => {
-  it("uses `which` on POSIX (linux)", async () => {
-    spawnState.impl = () => exitWith(0)
-    expect(await commandExists("pbcopy", "linux")).toBe(true)
-    expect(lookupBinary()).toBe("which")
+describe("commandExists", () => {
+  it("is true when the lookup finds the command (POSIX)", async () => {
+    const { which } = fakeWhich({ pbcopy: "/usr/bin/pbcopy" })
+    expect(await commandExists("pbcopy", "darwin", which)).toBe(true)
   })
 
-  it("uses `which` on POSIX (darwin)", async () => {
-    spawnState.impl = () => exitWith(0)
-    expect(await commandExists("pbcopy", "darwin")).toBe(true)
-    expect(lookupBinary()).toBe("which")
+  it("is false when the command is not on PATH", async () => {
+    const { which } = fakeWhich({})
+    expect(await commandExists("nope", "linux", which)).toBe(false)
   })
 
-  it("uses `where.exe` on win32 so the built-in clip.exe is detected", async () => {
-    spawnState.impl = () => exitWith(0)
-    expect(await commandExists("clip", "win32")).toBe(true)
-    expect(lookupBinary()).toBe("where.exe")
-  })
-
-  it("returns false when the lookup exits non-zero (command not on PATH)", async () => {
-    spawnState.impl = () => exitWith(1)
-    expect(await commandExists("definitely-not-a-real-binary-xyz", "linux")).toBe(false)
-    expect(lookupBinary()).toBe("which")
-  })
-
-  it("returns false (never throws) when Bun.spawn itself rejects", async () => {
-    spawnState.impl = () => {
-      throw new Error("ENOENT: lookup binary missing")
+  it("never throws when the lookup itself throws", async () => {
+    const which = () => {
+      throw new Error("boom")
     }
-    expect(await commandExists("pbcopy", "linux")).toBe(false)
+    expect(await commandExists("pbcopy", "linux", which)).toBe(false)
   })
 
-  it("defaults to the host platform when none is passed", async () => {
-    spawnState.impl = () => exitWith(0)
-    expect(await commandExists("pbcopy")).toBe(true)
-    // Assert against whatever the host resolves to (no host-specific value
-    // pinned), so this stays green on every OS in the CI matrix.
-    const expected = process.platform === "win32" ? "where.exe" : "which"
-    expect(lookupBinary()).toBe(expected)
+  it("probes the bare name only on POSIX", async () => {
+    const { which, probes } = fakeWhich({})
+    await commandExists("pbcopy", "linux", which)
+    expect(probes).toEqual(["pbcopy"])
+  })
+
+  it("probes executable extensions on win32 so the built-in clip.exe is detected", async () => {
+    const { which, probes } = fakeWhich({ "clip.exe": "C:\\Windows\\System32\\clip.exe" })
+    expect(await commandExists("clip", "win32", which)).toBe(true)
+    expect(probes).toContain("clip.exe")
+  })
+
+  it("does not append extensions when the command already has one", async () => {
+    const { which, probes } = fakeWhich({})
+    await commandExists("powershell.exe", "win32", which)
+    expect(probes).toEqual(["powershell.exe"])
+  })
+
+  it("ignores a match that lives in the current working directory", async () => {
+    const planted = resolve(process.cwd(), "opencode")
+    const { which } = fakeWhich({ opencode: planted })
+    expect(await commandExists("opencode", "linux", which)).toBe(false)
+    expect(await resolveCommandPath("opencode", "linux", which)).toBeNull()
+  })
+
+  it("defaults to the real Bun.which (a missing binary is simply false)", async () => {
+    expect(await commandExists("definitely-not-a-real-binary-xyz")).toBe(false)
+  })
+
+  it("does not resolve a file that only exists in the cwd (real Bun.which)", async () => {
+    expect(await commandExists("package.json")).toBe(false)
   })
 })
 
-// `resolveCommandPath` captures stdout (unlike `commandExists`), so its fake
-// proc carries a string `stdout` that `new Response(...)` reads back.
-const resolveWith = (stdout: string, code = 0) =>
-  ({ stdout, exited: Promise.resolve(code) }) as unknown as FakeProc
-
 describe("resolveCommandPath — full path resolution", () => {
-  it("returns the first match when the lookup prints several lines", async () => {
-    spawnState.impl = () =>
-      resolveWith("C:\\a\\opencode.exe\r\nC:\\b\\opencode.exe\r\n")
-    expect(await resolveCommandPath("opencode", "win32")).toBe(
-      "C:\\a\\opencode.exe",
+  it("returns the match on POSIX", async () => {
+    const { which } = fakeWhich({ opencode: "/usr/local/bin/opencode" })
+    expect(await resolveCommandPath("opencode", "linux", which)).toBe(
+      "/usr/local/bin/opencode",
     )
-    expect(lookupBinary()).toBe("where.exe")
   })
 
   it("on win32 skips the extensionless npm shim in favor of the .cmd", async () => {
-    // `where.exe opencode` typically lists the POSIX-style extensionless shim
-    // FIRST, then `opencode.cmd`. The extensionless file can't be launched by
-    // CreateProcess (uv_spawn ENOENT), so we must resolve to the .cmd — which
-    // opencode-server.ts then runs through a shell.
-    spawnState.impl = () =>
-      resolveWith(
-        "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode\r\n" +
-          "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd\r\n",
-      )
-    expect(await resolveCommandPath("opencode", "win32")).toBe(
+    // The extensionless file can't be launched by CreateProcess (uv_spawn
+    // ENOENT), so we must resolve to the .cmd — which opencode-server.ts then
+    // runs through a shell.
+    const { which } = fakeWhich({
+      opencode: "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode",
+      "opencode.cmd": "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd",
+    })
+    expect(await resolveCommandPath("opencode", "win32", which)).toBe(
       "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd",
     )
   })
 
   it("on win32 prefers a native .exe over a .cmd shim when both exist", async () => {
-    // A native install (.exe) is spawned directly so close() reaps opencode
-    // itself; it must win over the npm .cmd even if listed after it.
-    spawnState.impl = () =>
-      resolveWith(
-        "C:\\Users\\dev\\AppData\\Roaming\\npm\\opencode.cmd\r\n" +
-          "C:\\Program Files\\opencode\\opencode.exe\r\n",
-      )
-    expect(await resolveCommandPath("opencode", "win32")).toBe(
+    const { which } = fakeWhich({
+      "opencode.cmd": "C:\\npm\\opencode.cmd",
+      "opencode.exe": "C:\\Program Files\\opencode\\opencode.exe",
+    })
+    expect(await resolveCommandPath("opencode", "win32", which)).toBe(
       "C:\\Program Files\\opencode\\opencode.exe",
     )
   })
 
-  it("on win32 falls back to the first match when none has a spawnable extension", async () => {
-    // Only the extensionless shim exists: surface it (not null) so the caller
-    // keeps the SDK's familiar ENOENT rather than a misleading "not found".
-    spawnState.impl = () => resolveWith("C:\\bin\\opencode\r\n")
-    expect(await resolveCommandPath("opencode", "win32")).toBe("C:\\bin\\opencode")
+  it("on win32 falls back to the extensionless match when nothing is spawnable", async () => {
+    const { which } = fakeWhich({ opencode: "C:\\bin\\opencode" })
+    expect(await resolveCommandPath("opencode", "win32", which)).toBe("C:\\bin\\opencode")
   })
 
-  it("uses `which` on POSIX and trims the path", async () => {
-    spawnState.impl = () => resolveWith("/usr/local/bin/opencode\n")
-    expect(await resolveCommandPath("opencode", "linux")).toBe(
-      "/usr/local/bin/opencode",
-    )
-    expect(lookupBinary()).toBe("which")
+  it("returns null when not on PATH", async () => {
+    const { which } = fakeWhich({})
+    expect(await resolveCommandPath("nope", "linux", which)).toBeNull()
   })
 
-  it("returns null when the lookup exits non-zero (not on PATH)", async () => {
-    spawnState.impl = () => resolveWith("", 1)
-    expect(await resolveCommandPath("nope", "linux")).toBeNull()
-  })
-
-  it("returns null (never throws) when Bun.spawn rejects", async () => {
-    spawnState.impl = () => {
+  it("returns null (never throws) when the lookup throws", async () => {
+    const which = () => {
       throw new Error("boom")
     }
-    expect(await resolveCommandPath("opencode", "linux")).toBeNull()
+    expect(await resolveCommandPath("opencode", "linux", which)).toBeNull()
   })
 })
 
 describe("resolveSpawnable — gate + spawn-form in one lookup", () => {
-  it("win32 returns the resolved full path (via where.exe)", async () => {
-    spawnState.impl = () => resolveWith("C:\\Windows\\System32\\clip.exe\r\n")
-    expect(await resolveSpawnable("clip", "win32")).toBe(
+  it("win32 returns the resolved full path", async () => {
+    const { which } = fakeWhich({ "clip.exe": "C:\\Windows\\System32\\clip.exe" })
+    expect(await resolveSpawnable("clip", "win32", which)).toBe(
       "C:\\Windows\\System32\\clip.exe",
     )
-    expect(lookupBinary()).toBe("where.exe")
   })
 
   it("win32 returns null when the command is not on PATH", async () => {
-    spawnState.impl = () => resolveWith("", 1)
-    expect(await resolveSpawnable("nope", "win32")).toBeNull()
+    const { which } = fakeWhich({})
+    expect(await resolveSpawnable("nope", "win32", which)).toBeNull()
   })
 
   it("POSIX returns the BARE command when present (spawning it directly works)", async () => {
-    spawnState.impl = () => exitWith(0)
-    expect(await resolveSpawnable("pbcopy", "linux")).toBe("pbcopy")
-    // POSIX uses the existence gate (`which`), not path resolution.
-    expect(lookupBinary()).toBe("which")
+    const { which } = fakeWhich({ pbcopy: "/usr/bin/pbcopy" })
+    expect(await resolveSpawnable("pbcopy", "linux", which)).toBe("pbcopy")
   })
 
   it("POSIX returns null when the command is not on PATH", async () => {
-    spawnState.impl = () => exitWith(1)
-    expect(await resolveSpawnable("nope", "linux")).toBeNull()
+    const { which } = fakeWhich({})
+    expect(await resolveSpawnable("nope", "linux", which)).toBeNull()
   })
 })
 

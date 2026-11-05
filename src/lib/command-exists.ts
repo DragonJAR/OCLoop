@@ -1,49 +1,71 @@
+import { posix, win32 } from "node:path"
+
+/** Injectable PATH lookup (default `Bun.which`) so tests need no real binaries. */
+export type WhichFn = (command: string) => string | null
+
+/** Extensions probed on Windows, in `pickSpawnable` preference order. */
+const WIN_LOOKUP_EXTS = [".exe", ".cmd", ".bat", ".ps1"]
+
+const defaultWhich: WhichFn = (command) => Bun.which(command)
+
+/** True when `file` lives directly in the current working directory. */
+function isInCwd(file: string, platform: string): boolean {
+  // Platform-specific path flavor keeps this correct for an injected platform.
+  const path = platform === "win32" ? win32 : posix
+  const norm = (p: string) => (platform === "win32" ? p.toLowerCase() : p)
+  return norm(path.resolve(path.dirname(file))) === norm(path.resolve(process.cwd()))
+}
+
+/**
+ * All PATH matches for `command`, via native `Bun.which` (no subprocess, no
+ * `which`/`where.exe` dependency, works on every platform). Matches inside the
+ * current directory are dropped: `cmd.exe`/`where.exe` historically resolve
+ * from the cwd first, so a planted `opencode.cmd` in the project would
+ * otherwise be executed. On win32 several extensions are probed because
+ * `Bun.which` returns a single hit and {@link pickSpawnable} ranks them.
+ */
+function lookupAll(command: string, platform: string, which: WhichFn): string[] {
+  const names =
+    platform === "win32" && !/\.[a-z0-9]+$/i.test(command)
+      ? [command, ...WIN_LOOKUP_EXTS.map((ext) => command + ext)]
+      : [command]
+  const found: string[] = []
+  for (const name of names) {
+    const hit = which(name)
+    if (hit && !found.includes(hit) && !isInCwd(hit, platform)) found.push(hit)
+  }
+  return found
+}
+
 /**
  * Check whether a command is available on PATH.
  *
- * Uses the platform's native lookup utility — `which` on POSIX (always
- * available) and `where.exe` on Windows — so the test is fast and doesn't
- * actually execute the target binary. Shared by clipboard and terminal
- * detection to avoid duplicating the same `Bun.spawn([<lookup>, …])` pattern.
+ * Uses `Bun.which` (native, cross-platform, never executes the target and never
+ * resolves from the cwd). Shared by clipboard and terminal detection.
  *
  * The platform is an injectable parameter (default `process.platform`, the same
  * DI pattern as `power.ts` / `term-caps.ts`) so tests drive the win32-vs-POSIX
- * branch deterministically on any host. In tests, spawn is stubbed via the
- * shared `./test-helpers/bun-spawn-mock`.
+ * branch deterministically on any host; `which` is injectable for the same reason.
  */
 export async function commandExists(
   command: string,
   platform: string = process.platform,
+  which: WhichFn = defaultWhich,
 ): Promise<boolean> {
-  // `where.exe` is the Windows equivalent of `which` and ships with every
-  // stock install. Without it, `commandExists` always throws on win32 (no
-  // `which` binary), which made both clipboard detection (clipboard.ts) and
-  // terminal detection (terminal-launcher.ts) silently report "not found"
-  // for every probe — the clipboard would always fall through to the
-  // "No clipboard tool found" error even though `clip.exe` is built in.
-  // The clipboard.ts comment already documented this fallback (Finding
-  // 11.4.B); the implementation now matches the documented contract.
-  const lookup = platform === "win32" ? "where.exe" : "which"
   try {
-    const proc = Bun.spawn([lookup, command], {
-      stdout: "ignore",
-      stderr: "ignore",
-    })
-    const exitCode = await proc.exited
-    return exitCode === 0
+    return lookupAll(command, platform, which).length > 0
   } catch {
     return false
   }
 }
 
 /**
- * Resolve a command to its full executable path via the same native lookup as
- * {@link commandExists} (`where.exe` on Windows, `which` on POSIX), capturing
+ * Resolve a command to its full executable path via {@link lookupAll}, picking
  * the best match. Returns `null` when the command is not found or the lookup
  * fails. Used by the Windows opencode launcher to spawn the resolved path
  * (the SDK's bare-`opencode` spawn can't resolve a `.cmd`/`.ps1` shim).
  *
- * On Windows `where.exe` often lists a POSIX-style EXTENSIONLESS npm shim
+ * On Windows the PATH often holds a POSIX-style EXTENSIONLESS npm shim
  * (e.g. `…\npm\opencode`) BEFORE the spawnable `opencode.cmd`. CreateProcess
  * can't execute the extensionless file (it only appends `.exe`), so taking the
  * raw first match made `spawn` fail with `ENOENT` even though `opencode` ran
@@ -53,17 +75,10 @@ export async function commandExists(
 export async function resolveCommandPath(
   command: string,
   platform: string = process.platform,
+  which: WhichFn = defaultWhich,
 ): Promise<string | null> {
-  const lookup = platform === "win32" ? "where.exe" : "which"
   try {
-    const proc = Bun.spawn([lookup, command], {
-      stdout: "pipe",
-      stderr: "ignore",
-    })
-    const out = await new Response(proc.stdout).text()
-    if ((await proc.exited) !== 0) return null
-    const matches = out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
-    return pickSpawnable(matches, platform)
+    return pickSpawnable(lookupAll(command, platform, which), platform)
   } catch {
     return null
   }
@@ -81,9 +96,10 @@ export async function resolveCommandPath(
 export async function resolveSpawnable(
   command: string,
   platform: string = process.platform,
+  which: WhichFn = defaultWhich,
 ): Promise<string | null> {
-  if (platform === "win32") return resolveCommandPath(command, platform)
-  return (await commandExists(command, platform)) ? command : null
+  if (platform === "win32") return resolveCommandPath(command, platform, which)
+  return (await commandExists(command, platform, which)) ? command : null
 }
 
 /**
