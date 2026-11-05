@@ -6,6 +6,7 @@ import {
   GIT_NOT_FOUND_EXIT_CODE,
   acquireSlotWorkspace,
   createGitRunner,
+  execGit,
   defaultGitRunner,
   cleanupAllWorkspaces,
   getSlotWorktreePath,
@@ -187,5 +188,18 @@ describe("git runner", () => {
     const res = await defaultGitRunner(["--version"], process.cwd())
     expect(res.exitCode).toBe(0)
     expect(res.stdout).toContain("git version")
+  })
+})
+
+describe("execGit", () => {
+  it("spawns git with windowsHide so no console window flashes on Windows (T10-B P8)", async () => {
+    let options: unknown
+    const exec: Parameters<typeof execGit>[3] = (_file, _args, opts, cb) => {
+      options = opts
+      cb(null, "ok\n", "")
+    }
+    const res = await execGit("/usr/bin/git", ["status"], "/repo", exec)
+    expect(res).toEqual({ exitCode: 0, stdout: "ok\n", stderr: "" })
+    expect(options).toMatchObject({ cwd: "/repo", windowsHide: true })
   })
 })

@@ -67,16 +67,32 @@ export function createGitRunner(
 
 export const defaultGitRunner: GitRunner = createGitRunner()
 
-function execGit(git: string, args: string[], cwd: string): Promise<GitCommandResult> {
+/** The slice of `execFile` execGit uses (injectable for tests). */
+export type ExecFileFn = (
+  file: string,
+  args: string[],
+  options: { cwd: string; maxBuffer: number; windowsHide: boolean },
+  callback: (err: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void,
+) => unknown
+
+/** Run git once. Never rejects. Exported (with an injectable exec) for tests. */
+export function execGit(
+  git: string,
+  args: string[],
+  cwd: string,
+  exec: ExecFileFn = execFile as unknown as ExecFileFn,
+): Promise<GitCommandResult> {
   return new Promise((resolvePromise) => {
-    execFile(
+    exec(
       git,
       args,
-      { cwd, maxBuffer: 10 * 1024 * 1024 },
+      // windowsHide: background git must not flash a console window (or
+      // steal focus) on Windows while worktrees are created in parallel.
+      { cwd, maxBuffer: 10 * 1024 * 1024, windowsHide: true },
       (err, stdout, stderr) => {
         const code =
           err && typeof (err as { code?: unknown }).code === "number"
-            ? ((err as { code: number }).code)
+            ? ((err as unknown as { code: number }).code)
             : err
               ? 1
               : 0
