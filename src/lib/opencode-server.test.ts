@@ -585,4 +585,25 @@ describe("opencode-server — Windows process cleanup", () => {
     server.closeSync()
     expect(groupSignals.length + proc.kill.mock.calls.length).toBe(afterFirst)
   })
+
+  it("strips every case variant of OPENCODE_SERVER_PASSWORD from the child env", async () => {
+    const prev = process.env.opencode_server_password
+    process.env.opencode_server_password = "leaked-lowercase"
+    process.env.OPENCODE_SERVER_PASSWORD = "leaked-exact"
+    try {
+      versionOutput = "opencode v1.18.33\n" // v1: no replacement password is set
+      const proc = createFakeProcess(7779)
+      nextProc = proc
+      const server = await startOpencodeServer({ timeout: 1000 })
+      const env = (serverSpawnCall().opts as { env: Record<string, string> }).env
+      const keys = Object.keys(env).filter((k) => k.toUpperCase() === "OPENCODE_SERVER_PASSWORD")
+      expect(keys.map((k) => env[k])).not.toContain("leaked-lowercase")
+      expect(keys.map((k) => env[k])).not.toContain("leaked-exact")
+      server.close()
+    } finally {
+      delete process.env.OPENCODE_SERVER_PASSWORD
+      if (prev === undefined) delete process.env.opencode_server_password
+      else process.env.opencode_server_password = prev
+    }
+  })
 })

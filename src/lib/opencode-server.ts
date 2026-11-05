@@ -114,7 +114,11 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   // be v2 and need this header for the backend's capability probe; older v1
   // servers ignore the env override, while newer v1 builds honor this same
   // credential.
-  delete env.OPENCODE_SERVER_PASSWORD
+  // Windows env keys are case-insensitive: drop every spelling, not just the
+  // exact one, or a stray `opencode_server_password` would survive.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase() === "OPENCODE_SERVER_PASSWORD") delete env[key]
+  }
 
   let authorization: string | undefined
   if (version === 2 || version === null) {

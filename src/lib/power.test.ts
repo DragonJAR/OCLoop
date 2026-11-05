@@ -41,12 +41,12 @@ setupBunSpawnMock()
 const { createPowerManager } = await import("./power")
 
 describe("createPowerManager (Finding 18.2.D)", () => {
-  it("starts on darwin: spawns caffeinate -dimsu and isActive returns true", () => {
+  it("starts on darwin: spawns caffeinate -dimsu -w <pid> (dies with the parent) and isActive returns true", () => {
     const pm = createPowerManager({ enabled: () => true, platform: "darwin" })
     pm.start()
     expect(pm.isActive()).toBe(true)
     expect(spawnState.calls).toHaveLength(1)
-    expect(spawnState.calls[0].cmd).toEqual(["caffeinate", "-dimsu"])
+    expect(spawnState.calls[0].cmd).toEqual(["caffeinate", "-dimsu", "-w", String(process.pid)])
   })
 
   it("a second start() is a no-op while a proc is already running (line 35 guard)", () => {

@@ -129,4 +129,36 @@ describe("copyToClipboard (Finding 11.4.D)", () => {
       Bun.spawn = originalSpawn
     }
   })
+
+  it("does not capture stderr on Linux (xclip/wl-copy keep the pipe open in the background)", async () => {
+    commandExistsImpl = async () => true
+    resolveSpawnableImpl = async (cmd) => cmd
+    const originalSpawn = Bun.spawn
+    const descriptor = Object.getOwnPropertyDescriptor(process, "platform")
+    let captured: { stderr?: unknown } | undefined
+    Bun.spawn = ((_cmd: string[], opts: { stderr?: unknown }) => {
+      captured = opts
+      return {
+        stdin: { write: async () => 5, end: async () => {} },
+        // A pipe that never closes: reading it would hang forever.
+        stderr: new ReadableStream<Uint8Array>({ start() {} }),
+        exited: Promise.resolve(0),
+        kill: () => {},
+      }
+    }) as unknown as typeof Bun.spawn
+    Object.defineProperty(process, "platform", { value: "linux" })
+    try {
+      const result = await Promise.race([
+        copyToClipboard("hello"),
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error("clipboard hang")), 1000).unref?.(),
+        ),
+      ])
+      expect(result.success).toBe(true)
+      expect(captured?.stderr).toBe("ignore")
+    } finally {
+      if (descriptor) Object.defineProperty(process, "platform", descriptor)
+      Bun.spawn = originalSpawn
+    }
+  })
 })

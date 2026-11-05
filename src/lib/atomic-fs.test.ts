@@ -3,6 +3,8 @@ import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, 
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
+  renameWithRetry,
+  renameWithRetrySync,
   atomicWriteText,
   atomicWriteTextSync,
   cleanupDeterministicTmp,
@@ -177,5 +179,65 @@ describe("atomic-fs", () => {
       expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", NaN)).toBe(false)
       expect(isDeterministicTmpFile("PLAN.md.1234.tmp", "PLAN.md", Infinity)).toBe(false)
     })
+  })
+})
+
+describe("rename retry (Windows lock errors)", () => {
+  const errno = (code: string) => Object.assign(new Error(code), { code })
+
+  it("retries EPERM/EBUSY/EACCES on win32 and then succeeds", async () => {
+    for (const code of ["EPERM", "EBUSY", "EACCES"]) {
+      let calls = 0
+      await renameWithRetry("a", "b", async () => {
+        if (++calls < 3) throw errno(code)
+      }, "win32")
+      expect(calls).toBe(3)
+    }
+  })
+
+  it("gives up after 3 attempts and rethrows", async () => {
+    let calls = 0
+    await expect(
+      renameWithRetry("a", "b", async () => {
+        calls++
+        throw errno("EPERM")
+      }, "win32"),
+    ).rejects.toThrow("EPERM")
+    expect(calls).toBe(3)
+  })
+
+  it("does not retry on POSIX or for non-lock errors", async () => {
+    let calls = 0
+    await expect(
+      renameWithRetry("a", "b", async () => {
+        calls++
+        throw errno("EPERM")
+      }, "linux"),
+    ).rejects.toThrow()
+    expect(calls).toBe(1)
+    calls = 0
+    await expect(
+      renameWithRetry("a", "b", async () => {
+        calls++
+        throw errno("ENOENT")
+      }, "win32"),
+    ).rejects.toThrow()
+    expect(calls).toBe(1)
+  })
+
+  it("sync variant retries the same way", () => {
+    let calls = 0
+    renameWithRetrySync("a", "b", () => {
+      if (++calls < 3) throw errno("EBUSY")
+    }, "win32")
+    expect(calls).toBe(3)
+    calls = 0
+    expect(() =>
+      renameWithRetrySync("a", "b", () => {
+        calls++
+        throw errno("EBUSY")
+      }, "win32"),
+    ).toThrow("EBUSY")
+    expect(calls).toBe(3)
   })
 })

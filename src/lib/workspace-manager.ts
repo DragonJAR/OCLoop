@@ -99,7 +99,15 @@ async function removeNodeModulesSymlink(worktreePath: string): Promise<void> {
   try {
     const st = await lstat(nmPath)
     if (st.isSymbolicLink()) {
-      await unlink(nmPath)
+      try {
+        await unlink(nmPath)
+      } catch (err) {
+        // NTFS junctions can refuse unlink (EPERM/EBUSY/EISDIR). rm removes the
+        // link itself without following it.
+        const code = (err as NodeJS.ErrnoException).code
+        if (code !== "EPERM" && code !== "EBUSY" && code !== "EISDIR") throw err
+        await rm(nmPath, { recursive: true, force: true })
+      }
     }
   } catch {
     // Absent — nothing to unlink

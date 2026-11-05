@@ -15,6 +15,57 @@ import { mkdir, open, readdir, rename, rm } from "node:fs/promises"
 import type { FileHandle } from "node:fs/promises"
 import { basename, dirname, join } from "node:path"
 
+const RENAME_RETRIES = 3
+const RENAME_RETRY_DELAY_MS = 20
+const RETRYABLE_RENAME_CODES = new Set(["EPERM", "EBUSY", "EACCES"])
+
+function isTransientRenameError(err: unknown, platform: string): boolean {
+  // Only Windows: antivirus / indexers / another handle briefly lock the
+  // target. On POSIX these codes are real permission errors — fail fast.
+  return (
+    platform === "win32" &&
+    RETRYABLE_RENAME_CODES.has((err as NodeJS.ErrnoException | undefined)?.code ?? "")
+  )
+}
+
+/**
+ * rename with a bounded retry (3 attempts, ~20ms apart) on Windows lock
+ * errors, then rethrow. `op`/`platform` are injectable for deterministic tests.
+ */
+export async function renameWithRetry(
+  from: string,
+  to: string,
+  op: (from: string, to: string) => Promise<void> = rename,
+  platform: string = process.platform,
+): Promise<void> {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      await op(from, to)
+      return
+    } catch (err) {
+      if (attempt >= RENAME_RETRIES || !isTransientRenameError(err, platform)) throw err
+      await new Promise((r) => setTimeout(r, RENAME_RETRY_DELAY_MS))
+    }
+  }
+}
+
+export function renameWithRetrySync(
+  from: string,
+  to: string,
+  op: (from: string, to: string) => void = renameSync,
+  platform: string = process.platform,
+): void {
+  for (let attempt = 1; ; attempt++) {
+    try {
+      op(from, to)
+      return
+    } catch (err) {
+      if (attempt >= RENAME_RETRIES || !isTransientRenameError(err, platform)) throw err
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, RENAME_RETRY_DELAY_MS)
+    }
+  }
+}
+
 /** Synchronous atomic write — used by `saveConfig`. */
 export function atomicWriteTextSync(path: string, content: string): void {
   const dir = dirname(path)
@@ -22,7 +73,7 @@ export function atomicWriteTextSync(path: string, content: string): void {
   const tmp = deterministicTmpPath(path)
   try {
     writeFileSync(tmp, content, "utf-8")
-    renameSync(tmp, path)
+    renameWithRetrySync(tmp, path)
   } catch (err) {
     try {
       if (existsSync(tmp)) unlinkSync(tmp)
@@ -163,7 +214,7 @@ export async function atomicWriteText(path: string, content: string): Promise<vo
     await handle.sync()
     await handle.close()
     handle = null
-    await rename(tmp, path)
+    await renameWithRetry(tmp, path)
     await syncDirectoryBestEffort(dir)
   } catch (err) {
     if (handle) {

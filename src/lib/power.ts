@@ -41,7 +41,9 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
     }
     try {
       // -d display, -i idle, -m disk, -s system, -u user-active assertion.
-      proc = Bun.spawn(["caffeinate", "-dimsu"], {
+      // -w <pid>: caffeinate exits when OCLoop does, even on a hard crash
+      // where stop() never runs (otherwise the Mac is kept awake forever).
+      proc = Bun.spawn(["caffeinate", "-dimsu", "-w", String(process.pid)], {
         stdout: "ignore",
         stderr: "ignore",
         stdin: "ignore",

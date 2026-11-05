@@ -103,12 +103,19 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
   let proc: ReturnType<typeof Bun.spawn> | null = null
   let stderrRead: Promise<string> | null = null
   try {
+    // xclip / xsel / wl-copy fork a background process that keeps serving the
+    // selection and inherits our stderr pipe, so the pipe never reaches EOF
+    // and awaiting its text would hang the copy forever. Only capture stderr
+    // where the tool exits cleanly (macOS pbcopy, Windows clip.exe).
+    const capturesStderr = process.platform === "darwin" || process.platform === "win32"
     proc = Bun.spawn([tool.command, ...tool.args], {
       stdin: "pipe",
       stdout: "ignore",
-      stderr: "pipe",
+      stderr: capturesStderr ? "pipe" : "ignore",
     });
-    stderrRead = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+    if (capturesStderr) {
+      stderrRead = new Response(proc.stderr as ReadableStream<Uint8Array>).text();
+    }
 
     // Write text to stdin, awaiting the flush + close so the child receives
     // the full payload before we wait on its exit (avoids truncation/hangs).
@@ -121,7 +128,7 @@ export async function copyToClipboard(text: string): Promise<ClipboardResult> {
     const exitCode = await proc.exited;
 
     if (exitCode !== 0) {
-      const stderr = await stderrRead;
+      const stderr = (await stderrRead) ?? "";
       return {
         success: false,
         error: stderr.trim() || t("errClipboardFailed", { code: String(exitCode), stderr: "" }),
