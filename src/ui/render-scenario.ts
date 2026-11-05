@@ -31,6 +31,18 @@ export interface RenderScenarioResult {
 export const SCENARIO_ENV = "OCLOOP_UI_SCENARIO"
 
 /**
+ * Absolute path of the repository root, derived from this file's location.
+ *
+ * The expression was repeated in every test that spawns a process: it is the
+ * cwd those children need (the project's bunfig.toml, its node_modules and
+ * its source tree all live there), and a copy that drifts is a child that
+ * silently starts in the wrong directory.
+ */
+export function repoRoot(): string {
+  return fileURLToPath(new URL("../..", import.meta.url))
+}
+
+/**
  * Spawn `file` as a scenario and collect its output.
  *
  * @param opts.file      The .ts module that hosts the scenario.
@@ -54,7 +66,7 @@ export async function runRenderScenario(opts: {
   resultFile?: string
 }): Promise<RenderScenarioResult> {
   const child = Bun.spawn([process.execPath, "run", opts.file, opts.scenario], {
-    cwd: opts.cwd ?? fileURLToPath(new URL("../..", import.meta.url)),
+    cwd: opts.cwd ?? repoRoot(),
     stdout: "pipe",
     stderr: "pipe",
     env: { ...process.env, [SCENARIO_ENV]: "1", ...opts.env },

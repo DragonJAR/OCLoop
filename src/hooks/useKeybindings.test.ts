@@ -1,4 +1,4 @@
-import { fileURLToPath } from "node:url"
+import { repoRoot } from "../ui/render-scenario"
 import { discardingStdout } from "../lib/test-stdout"
 
 /**
@@ -15,7 +15,7 @@ if (process.env.OCLOOP_KEY_TEST !== "1") {
   const { test, expect } = await import("bun:test")
   test("Ctrl+C exits every loop state and modal without invoking plain c", async () => {
     const child = Bun.spawn([process.execPath, "run", import.meta.path], {
-      cwd: fileURLToPath(new URL("../..", import.meta.url)),
+      cwd: repoRoot(),
       env: { ...process.env, OCLOOP_KEY_TEST: "1" }, stdout: "pipe", stderr: "pipe",
     })
     const [code, stdout, stderr] = await Promise.all([

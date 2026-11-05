@@ -12,7 +12,7 @@
  * and the module that ends up loaded must be the client build.
  */
 import { describe, expect, it } from "bun:test"
-import { fileURLToPath } from "node:url"
+import { repoRoot } from "../ui/render-scenario"
 import { solidClientPlugin } from "./solid-client-plugin"
 
 /** Collect the filters the plugin registers. */
@@ -68,7 +68,7 @@ describe("solid client build plugin", () => {
         "import('solid-js').then(m => console.log(typeof m.cancelCallback))",
       ],
       {
-        cwd: fileURLToPath(new URL("../..", import.meta.url)),
+        cwd: repoRoot(),
         stdout: "pipe",
         stderr: "pipe",
       },
