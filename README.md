@@ -353,7 +353,7 @@ OCLoop is designed to keep running unattended. A **task guardian** (watchdog) wa
 What it handles:
 
 - **Rate limits** — a `429`/overloaded never fails the loop. It enters a `COOLDOWN` state, respects any `Retry-After`, backs off with full jitter, and retries the same task. After `maxRateLimitRetries` consecutive limits it surfaces a recoverable error.
-- **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects the event stream and reconciles the in-flight session (recovering a missed completion). On macOS it runs `caffeinate` while working to avoid sleeping at all (disable with `--no-caffeinate`).
+- **Sleep / suspension** — closing the lid is detected on wake; OCLoop reconnects the event stream and reconciles the in-flight session (recovering a missed completion). On macOS it runs `caffeinate` while working to avoid sleeping at all (disable with `--no-caffeinate`). Sleep *prevention* is macOS-only: on Linux and Windows a sleep is detected and recovered from, but not prevented — keep the machine awake yourself for long unattended runs.
 - **Server / session hangs** — an active health check restarts a hung OpenCode server and reconciles the session; a genuinely wedged session is aborted and retried. A circuit breaker stops after `maxRecoveryAttempts` and reports a full diagnostic instead of looping forever.
 - **Total crash** — minimal progress is persisted atomically to `.loop-state.json`. On the next start OCLoop offers to resume (automatic with `--resume`). Shutdown on `SIGINT`/`SIGTERM`/`SIGHUP` aborts the active session so no orphan server is left behind.
 - **Stuck loop** — if the same task starts `noProgressThreshold` times in a row (default 3) without the plan advancing, the loop halts with a recoverable `errNoProgress` error instead of burning iterations on a task the agent can't finish. The detector resets on any task change, so it only fires on a genuine stall. From the halt you can press **`P`** to have the agent split the stalled task into smaller subtasks — OCLoop shows them for approval and, if you accept, rewrites `PLAN.md` (replacing the stalled task) and resumes. Both decision windows auto-advance if left unattended — the halt auto-selects **`P`** after 30 s and the proposal auto-accepts after 30 s, so an unattended run keeps moving; any keypress cancels the countdown and hands control back to you.
@@ -386,7 +386,7 @@ Every operation has a 10-minute floor; the longer agent-work budgets scale above
 | `minIterationGapMs` | Minimum spacing between iterations (`0` = off) |
 | `sleepTickMs` | Sleep-detector sampling interval |
 | `sleepThresholdMs` | Wall-clock gap that counts as a suspend/resume |
-| `caffeinate` | Keep the system awake while running (`true`/`false`) |
+| `caffeinate` | Keep the system awake while running (`true`/`false`; macOS only — on Linux/Windows sleep is detected and recovered from, not prevented) |
 | `watchdogTickMs` | Watchdog evaluation interval |
 | `watchdogSuspectMs` | T1 — no heartbeat before suspecting |
 | `watchdogConfirmMs` | T2 — no heartbeat (while "working") before declaring wedged (default 30 min; raise it further if your agent runs long, output-free tools like big builds/test suites/installs) |
@@ -449,15 +449,15 @@ The mapping is **ephemeral** (this run only). Press `Enter` to pick a model, `S`
 
 The `judge` role composes with the eval layer: if you set both `--routing` and `evals.enabled`, the evals judge uses the model you picked in the panel (precedence: panel > `evals.judgeModel` config > active model).
 
-The `terminal` block can be a **known** terminal `{ "type": "known", "name": "<name>" }` (one of the four below) or a **custom** one `{ "type": "custom", "command": "<bin>", "args": "<args with {cmd}>" }` for any other terminal — for example `{ "type": "custom", "command": "gnome-terminal", "args": "-- bash -lc '{cmd}'" }`. The `{cmd}` placeholder is replaced with the full `opencode attach <url> --session <id>` command. You can also configure it interactively with `T` (or `Ctrl+P` → Choose default terminal).
+The `terminal` block can be a **known** terminal `{ "type": "known", "name": "<name>" }` (one of the seven below) or a **custom** one `{ "type": "custom", "command": "<bin>", "args": "<args with {cmd}>" }` for any other terminal — for example `{ "type": "custom", "command": "wezterm", "args": "start -- {cmd}" }`. The `{cmd}` placeholder is replaced with the full `opencode attach <url> --session <id>` command. You can also configure it interactively with `T` (or `Ctrl+P` → Choose default terminal).
 
-**Auto-detected (known) terminals** — only these four are detected automatically; anything else needs the custom form:
+**Auto-detected (known) terminals** — these seven are detected automatically; anything else needs the custom form:
 
 | OS | Terminal |
 | --- | --- |
 | macOS | `Terminal` (Terminal.app, via `osascript`) |
-| Windows | `cmd` (cmd.exe) |
-| Linux | `xterm`, `x-terminal-emulator` |
+| Windows | `cmd` (cmd.exe), `Windows Terminal` (`wt`) |
+| Linux | `xterm`, `x-terminal-emulator`, `gnome-terminal`, `konsole` |
 
 > **Clipboard note** — copying the attach command (`C`) needs `pbcopy` (macOS), `clip` (Windows), or `wl-copy`/`xclip`/`xsel` (Linux). On a minimal Linux without any of these, the copy fails with a toast instead of silently doing nothing.
 

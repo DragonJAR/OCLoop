@@ -353,7 +353,7 @@ OCLoop está diseñado para seguir corriendo sin supervisión. Un **guardián de
 Lo que maneja:
 
 - **Rate limits** — un `429`/overloaded nunca tumba el bucle. Entra en un estado `COOLDOWN`, respeta cualquier `Retry-After`, aplica backoff con jitter completo y reintenta la misma tarea. Tras `maxRateLimitRetries` límites consecutivos, expone un error recuperable.
-- **Suspensión** — al cerrar la tapa, se detecta al despertar; OCLoop reconecta el stream de eventos y reconcilia la sesión en curso (recuperando una finalización perdida). En macOS ejecuta `caffeinate` mientras trabaja para no suspenderse (desactívalo con `--no-caffeinate`).
+- **Suspensión** — al cerrar la tapa, se detecta al despertar; OCLoop reconecta el stream de eventos y reconcilia la sesión en curso (recuperando una finalización perdida). En macOS ejecuta `caffeinate` mientras trabaja para no suspenderse (desactívalo con `--no-caffeinate`). La *prevención* de suspensión es solo macOS: en Linux y Windows la suspensión se detecta y se recupera, pero no se previene — mantén el equipo despierto tú mismo en ejecuciones largas sin supervisión.
 - **Cuelgues de servidor / sesión** — un health check activo reinicia un servidor OpenCode colgado y reconcilia la sesión; una sesión genuinamente bloqueada se aborta y reintenta. Un circuit breaker se detiene tras `maxRecoveryAttempts` y reporta un diagnóstico completo en vez de quedar en bucle.
 - **Caída total** — el progreso mínimo se persiste de forma atómica en `.loop-state.json`. En el siguiente arranque OCLoop ofrece reanudar (automático con `--resume`). El apagado con `SIGINT`/`SIGTERM`/`SIGHUP` aborta la sesión activa para no dejar un servidor huérfano.
 - **Bucle atascado** — si la misma tarea arranca `noProgressThreshold` veces seguidas (por defecto 3) sin que el plan avance, el bucle se detiene con un error recuperable `errNoProgress` en vez de quemar iteraciones en una tarea que el agente no logra terminar. El detector se reinicia con cualquier cambio de tarea, así que solo dispara ante un atasco real. Desde la detención puedes pulsar **`P`** para que el agente parta la tarea estancada en subtareas más pequeñas — OCLoop las muestra para aprobación y, si aceptas, reescribe `PLAN.md` (reemplazando la tarea estancada) y reanuda. Ambas ventanas de decisión avanzan solas si nadie interviene — la detención auto-selecciona **`P`** a los 30 s y la propuesta se auto-acepta a los 30 s, así una ejecución desatendida sigue avanzando; cualquier tecla cancela la cuenta atrás y te devuelve el control.
@@ -386,7 +386,7 @@ Cada operación tiene un piso de 10 minutos; los presupuestos de trabajo del age
 | `minIterationGapMs` | Espaciado mínimo entre iteraciones (`0` = desactivado) |
 | `sleepTickMs` | Intervalo de muestreo del detector de suspensión |
 | `sleepThresholdMs` | Salto de reloj de pared que cuenta como suspensión/despertar |
-| `caffeinate` | Mantener el sistema despierto mientras corre (`true`/`false`) |
+| `caffeinate` | Mantener el sistema despierto mientras corre (`true`/`false`; solo macOS — en Linux/Windows la suspensión se detecta y recupera, no se previene) |
 | `watchdogTickMs` | Intervalo de evaluación del watchdog |
 | `watchdogSuspectMs` | T1 — sin latido antes de sospechar |
 | `watchdogConfirmMs` | T2 — sin latido (estando "working") antes de declarar bloqueo (por defecto 30 min; súbelo aún más si tu agente corre herramientas largas y silenciosas como builds/test suites/instalaciones grandes) |
@@ -449,15 +449,15 @@ El mapeo es **efímero** (solo este run). Presiona `Enter` para elegir un modelo
 
 El rol `judge` se compone con la capa de evaluación: si activas `--routing` y `evals.enabled`, el juez de los evals usa el modelo que elegiste en el panel (precedencia: panel > config `evals.judgeModel` > modelo activo).
 
-El bloque `terminal` puede ser una terminal **conocida** `{ "type": "known", "name": "<nombre>" }` (una de las cuatro de abajo) o **personalizada** `{ "type": "custom", "command": "<bin>", "args": "<args con {cmd}>" }` para cualquier otra terminal — por ejemplo `{ "type": "custom", "command": "gnome-terminal", "args": "-- bash -lc '{cmd}'" }`. El placeholder `{cmd}` se reemplaza con el comando completo `opencode attach <url> --session <id>`. También puedes configurarlo interactivamente con `T` (o `Ctrl+P` → Elegir terminal por defecto).
+El bloque `terminal` puede ser una terminal **conocida** `{ "type": "known", "name": "<nombre>" }` (una de las siete de abajo) o **personalizada** `{ "type": "custom", "command": "<bin>", "args": "<args con {cmd}>" }` para cualquier otra terminal — por ejemplo `{ "type": "custom", "command": "wezterm", "args": "start -- {cmd}" }`. El placeholder `{cmd}` se reemplaza con el comando completo `opencode attach <url> --session <id>`. También puedes configurarlo interactivamente con `T` (o `Ctrl+P` → Elegir terminal por defecto).
 
-**Terminales auto-detectadas (conocidas)** — solo estas cuatro se detectan automáticamente; cualquier otra necesita la forma personalizada:
+**Terminales auto-detectadas (conocidas)** — estas siete se detectan automáticamente; cualquier otra necesita la forma personalizada:
 
 | SO | Terminal |
 | --- | --- |
 | macOS | `Terminal` (Terminal.app, vía `osascript`) |
-| Windows | `cmd` (cmd.exe) |
-| Linux | `xterm`, `x-terminal-emulator` |
+| Windows | `cmd` (cmd.exe), `Windows Terminal` (`wt`) |
+| Linux | `xterm`, `x-terminal-emulator`, `gnome-terminal`, `konsole` |
 
 > **Nota sobre el portapapeles** — copiar el comando de conexión (`C`) requiere `pbcopy` (macOS), `clip` (Windows), o `wl-copy`/`xclip`/`xsel` (Linux). En un Linux mínimo sin ninguno, la copia falla con un toast en vez de hacer nada en silencio.
 
