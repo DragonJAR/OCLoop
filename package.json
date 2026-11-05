@@ -43,7 +43,6 @@
   "scripts": {
     "dev": "bun run src/index.tsx",
     "build": "bun run build.ts",
-    "prepublishOnly": "bun run build",
     "test": "bun test"
   },
   "dependencies": {
