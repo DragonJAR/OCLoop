@@ -12,6 +12,7 @@ import { atomicWriteTextSync, cleanupDeterministicTmp } from "./atomic-fs"
 import { log } from "./debug-logger"
 import { isLocale } from "./i18n"
 import { MAX_PARALLEL_JOBS, MIN_PARALLEL_JOBS } from "./task-scheduler"
+import { MAX_TIMEOUT_MS } from "./constants"
 
 export interface KnownTerminalConfig {
   type: "known"
@@ -181,11 +182,24 @@ export function resolveResilience(
       ),
     ) as Partial<T>
   }
-  return {
+  const merged: ResilienceConfig = {
     ...DEFAULT_RESILIENCE,
     ...pickDefined(fileConfig),
     ...pickDefined(cliOverrides),
   }
+
+  // Bound every number to the 32-bit setTimeout limit. A value above
+  // 2^31-1 is accepted by the validator (it is a safe integer) but
+  // setTimeout collapses it to ~1ms — so a huge backoffMaxMs would turn the
+  // rate-limit wait into an immediate retry and the loop would hammer the
+  // server. Clamping once here covers every consumer (the cooldown timers,
+  // the watchdog, the iteration gap) instead of each call site.
+  for (const [key, value] of Object.entries(merged)) {
+    if (typeof value === "number" && value > MAX_TIMEOUT_MS) {
+      ;(merged as unknown as Record<string, number>)[key] = MAX_TIMEOUT_MS
+    }
+  }
+  return merged
 }
 
 /**

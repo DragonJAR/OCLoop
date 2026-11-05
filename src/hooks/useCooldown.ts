@@ -175,7 +175,10 @@ export function useCooldown(deps: CooldownDeps): CooldownApi {
       if (deps.stateType() === "cooldown") {
         deps.dispatch({ type: "resume_cooldown" })
       }
-    }, Math.max(0, resumeAt - monotonicNow()))
+      // The deadline comes from the server's Retry-After (or the computed
+      // backoff), so it is untrusted: bound it to the 32-bit setTimeout limit
+      // or a huge value collapses to ~1ms and the cooldown ends instantly.
+    }, Math.min(MAX_TIMEOUT_MS, Math.max(0, resumeAt - monotonicNow())))
   }
 
   function enterCooldown(

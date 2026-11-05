@@ -1,3 +1,4 @@
+import { MAX_TIMEOUT_MS } from "./constants"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
@@ -751,6 +752,24 @@ describe("resolveResilience — invalid-value skip", () => {
   it("drops non-integers and falls back to default", () => {
     const result = resolveResilience({ createTimeoutMs: 12.34 } as any)
     expect(result.createTimeoutMs).toBe(DEFAULT_RESILIENCE.createTimeoutMs)
+  })
+
+  it("clamps values above the 32-bit setTimeout limit", () => {
+    // A value above 2^31-1 is a safe integer, so the validator accepts it —
+    // but setTimeout collapses it to ~1ms. A huge backoffMaxMs would then
+    // turn the rate-limit wait into an immediate retry and the loop would
+    // hammer the server.
+    const result = resolveResilience({
+      backoffMaxMs: 5_000_000_000,
+      watchdogConfirmMs: 9_000_000_000,
+    } as any)
+    expect(result.backoffMaxMs).toBe(MAX_TIMEOUT_MS)
+    expect(result.watchdogConfirmMs).toBe(MAX_TIMEOUT_MS)
+  })
+
+  it("clamps an over-large CLI override too", () => {
+    const result = resolveResilience(undefined, { backoffBaseMs: 3_000_000_000 } as any)
+    expect(result.backoffBaseMs).toBe(MAX_TIMEOUT_MS)
   })
 
   it("drops values below RESILIENCE_MINS floor (e.g. noProgressThreshold: 0)", () => {
