@@ -15,3 +15,18 @@ export function stripEnvKey<T extends Record<string, string | undefined>>(env: T
   }
   return env
 }
+
+/**
+ * Copy of `env` with every key upper-cased (the spelling detection code reads).
+ * When two spellings collide, the already-upper-case key wins.
+ */
+export function upperCaseEnvKeys(
+  env: Record<string, string | undefined>,
+): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {}
+  for (const [key, value] of Object.entries(env)) {
+    const upper = key.toUpperCase()
+    if (key === upper || !(upper in out)) out[upper] = value
+  }
+  return out
+}

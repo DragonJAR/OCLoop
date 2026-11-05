@@ -13,6 +13,8 @@
  * `isTTY`, which Bun provides on macOS, Linux and Windows alike.
  */
 
+import { upperCaseEnvKeys } from "./env"
+
 export type ColorLevel = "none" | "ansi16" | "ansi256" | "truecolor"
 
 export interface TerminalCapabilities {
@@ -60,7 +62,12 @@ function forceColorLevel(fc: string | undefined, colorterm: string): ColorLevel 
  * FORCE_COLOR > NO_COLOR > TERM=dumb > non-TTY > COLORTERM/TERM heuristic.
  */
 export function detectTerminalCapabilities(input: DetectInput = {}): TerminalCapabilities {
-  const env = input.env ?? (process.env as Record<string, string | undefined>)
+  // An injected env is a plain object: normalize its keys to the upper-case
+  // spelling read below (Windows env keys are case-insensitive, so `term` or
+  // `github_actions` are the same variables there). process.env is used as is.
+  const env = input.env
+    ? upperCaseEnvKeys(input.env)
+    : (process.env as Record<string, string | undefined>)
   const isTTY = input.isTTY ?? Boolean((process.stdout as { isTTY?: boolean })?.isTTY)
   const isStdinTTY = input.isStdinTTY ?? Boolean((process.stdin as { isTTY?: boolean })?.isTTY)
   const platform = input.platform ?? process.platform

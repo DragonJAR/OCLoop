@@ -67,3 +67,26 @@ describe("detectTerminalCapabilities — tty / ci", () => {
     expect(tty({}).isCI).toBe(false)
   })
 })
+
+describe("detectTerminalCapabilities — injected env key casing (T10-B P4)", () => {
+  it("reads lower/mixed-case keys of an injected env (Windows semantics)", () => {
+    const caps = detectTerminalCapabilities({
+      env: { github_actions: "true", Ocloop_Ascii: "1", term: "xterm-256color" },
+      isTTY: true,
+      isStdinTTY: true,
+      platform: "win32",
+    })
+    expect(caps.isCI).toBe(true)
+    expect(caps.unicode).toBe(false)
+    expect(caps.color).toBe("ansi256")
+  })
+
+  it("an upper-case key wins over a colliding lower-case one", () => {
+    const caps = detectTerminalCapabilities({
+      env: { term: "dumb", TERM: "xterm-256color" },
+      isTTY: true,
+      isStdinTTY: true,
+    })
+    expect(caps.color).toBe("ansi256")
+  })
+})
