@@ -30,6 +30,40 @@ for (const locale of ["en", "es"] as const) {
   })
 }
 
+// The prompt is duplicated per locale, and duplicates drift: a line added to
+// one and not the other means an agent working in that language gets
+// different instructions than an agent working in the other — and nothing
+// notices, because each locale's copy is internally consistent.
+//
+// The wording is translated, so it cannot be compared; the SHAPE can. A
+// translated prompt has the same lines, the same numbered items, the same
+// bullets and the same blanks as the original. Pinning those four counts is
+// enough to catch a line that was added, dropped or re-ordered in one
+// locale only — which is how the eval-rubrics block and the
+// {{CURRENT_TASK}} line ended up in one copy and not the other.
+function promptShape(locale: "en" | "es"): {
+  lines: number
+  numbered: number
+  bullets: number
+  blanks: number
+} {
+  setLocale(locale)
+  const lines = t("defaultLoopPrompt").split("\n")
+  return {
+    lines: lines.length,
+    numbered: lines.filter((l) => /^\d+\.\s/.test(l)).length,
+    bullets: lines.filter((l) => /^- /.test(l)).length,
+    blanks: lines.filter((l) => l.trim() === "").length,
+  }
+}
+
+test("defaultLoopPrompt has the same shape in both locales", () => {
+  const en = promptShape("en")
+  const es = promptShape("es")
+  setLocale("en")
+  expect(es).toEqual(en)
+})
+
 // The shipped example prompts are what the README tells users to copy over
 // `.loop-prompt.md`, and OCLoop writes `t("defaultLoopPrompt")` there when
 // the file is missing (src/index.tsx). A user who copies the example must get
