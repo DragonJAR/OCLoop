@@ -5,6 +5,48 @@ All notable changes to OCLoop are documented here. Format based on
 
 ## [Unreleased]
 
+### Fixed
+- **Aborting the OpenCode server no longer takes the whole TUI down** — the
+  spawn's permanent `error` listener was unhandled and killed the process. The
+  failure is now surfaced and the loop keeps running.
+- **A completed task is no longer read as an already-blocked one** — the eval
+  feedback note goes through a shared compare-and-swap policy, so a task that
+  is genuinely finished can no longer be re-marked `[BLOCKED]`.
+- **The parallel path asks the parser for a task's real status** — it used to
+  read "the line is present" as "the task is pending", which let it report a
+  blocked task as integrable.
+- **Resilience timers are bounded** — an over-large value in the config or in a
+  `--resilience` override could collapse the retry ladder. The clamp is applied
+  once, at the config boundary.
+- **Token counters no longer concatenate strings** — a token value that arrived
+  as `"1200"` was appended instead of added, and a `NaN`/`Infinity` poisoned
+  every downstream sum. One sanitizer now guards every boundary that touches
+  those numbers, and the accumulator sanitizes its own inputs instead of
+  trusting its caller.
+- **Dialogs no longer clip their last entry** — the option lists were sized by
+  hand-written heights. Every dialog is now measured in a real render, and the
+  suite fails if a list does not fit its viewport or a button is pushed out.
+- **`PLAN.md` keeps its line endings** — the plan transforms rewrote a CRLF plan
+  to LF; the blocked-task mark now lands without touching the file's endings.
+- **Windows** — Git Bash/MSYS is treated as a degraded console, commands are
+  resolved with `Bun.which` instead of being looked up in the current
+  directory, the Solid client build is loaded on Windows too, and
+  `XDG_CONFIG_HOME` stays the override with `%APPDATA%` as the fallback.
+- **The server is always reaped** — one process-tree killer now covers the whole
+  server lifecycle, and tracked servers are reaped on every process exit.
+
+### Added
+- **CI on macOS, Windows and Linux** — the three gates run on all three
+  systems, plus a smoke job that installs the real OpenCode binary and starts
+  it, because the unit tests mock the launcher and cannot prove that the actual
+  binary spawns and answers on each OS.
+
+### Changed
+- The supported terminals and the `caffeinate` limit are listed in the README.
+- The testing constraints are documented in one tracked place
+  (`AGENTS.md`) instead of behind pointers to unversioned notes, and the
+  comments that referenced deleted symbols now name the symbols that exist.
+
 ## [0.9.0] — 2026-10-30
 
 ### Added
