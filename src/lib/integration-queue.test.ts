@@ -454,4 +454,50 @@ describe("integration-queue", () => {
       rmSync(scratch, { recursive: true, force: true })
     }
   })
+
+  it("defers the eval block when the task line is present but NOT blocked", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-notblocked-"))
+    try {
+      const rootPlanPath = join(scratch, "PLAN.md")
+      const wtPath = join(scratch, ".loop-worktrees", "slot-4")
+      mkdirSync(wtPath, { recursive: true })
+
+      // The task line exists but the block transform cannot mark it (the
+      // transform only accepts pending/completed lines, so a [MANUAL] task
+      // yields nothing to change → skipped:no_change). "The line is present"
+      // is NOT the same as "the task is already blocked": counting it as
+      // benign would report eval_blocked while the plan never recorded the
+      // block — the same defect the integrated path had, fixed by asking the
+      // parser for the task's actual status.
+      writeFileSync(rootPlanPath, "- [MANUAL] **1.1** Task A" + String.fromCharCode(10))
+      writeFileSync(join(wtPath, "PLAN.md"), "- [ ] **1.1** Task A" + String.fromCharCode(10))
+
+      const fakeGit: GitRunner = async (args) => {
+        if (args[0] === "show") {
+          return { exitCode: 0, stdout: "- [ ] **1.1** Task A" + String.fromCharCode(10), stderr: "" }
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+
+      const outcome = await integrateWorkerResult({
+        slotId: 4,
+        taskId: "1.1",
+        taskDescription: "**1.1** Task A",
+        sessionId: "ses-manual",
+        worktreePath: wtPath,
+        baseSha: "sha-base-0",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: fakeGit,
+        evalGate: async () => ({ pass: false, retry: false, reason: "Missing unit test" }),
+      })
+
+      expect(outcome.status).toBe("plan_write_deferred")
+      if (outcome.status === "plan_write_deferred") {
+        expect(outcome.deferred).toBe("eval_block")
+      }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
 })

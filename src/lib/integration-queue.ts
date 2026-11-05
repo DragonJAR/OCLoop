@@ -18,6 +18,7 @@
 import { join, relative, resolve } from "node:path"
 import { compareAndSwapPlan } from "./plan-cas"
 import {
+  findBlockedLineIndex,
   findTaskLineIndex,
   getTaskSubNotes,
   listPendingTaskDescriptions,
@@ -219,12 +220,15 @@ export async function integrateWorkerResult(
       if (!cas.wrote) {
         if (cas.skipped === "no_change") {
           // Already [BLOCKED] (benign) vs task gone from the root plan (the
-          // block will never be recorded): distinguish via parser-aware
-          // presence (task-line matching outside code fences), mirroring the
-          // integrated-mark branch. A raw substring hit inside a note or
-          // fence would falsely report "task present".
+          // block will never be recorded): the line must really be [BLOCKED],
+          // not merely present. A task that is still [x] has NOT been
+          // blocked, and calling that benign would drop the [BLOCKED] mark
+          // silently — the task would read as done while its eval failed.
           const planText = await Bun.file(absPlanPath).text().catch(() => null)
-          if (planText !== null && findTaskLineIndex(planText, job.taskDescription) !== -1) {
+          if (
+            planText !== null &&
+            findBlockedLineIndex(planText, job.taskDescription) !== -1
+          ) {
             return { status: "eval_blocked", reason: verdict.reason }
           }
           return {
@@ -309,8 +313,10 @@ export async function integrateWorkerResult(
   if (!markCas.wrote) {
     if (markCas.skipped === "no_change") {
       // The transform found nothing to mark. Two very different causes:
-      // (a) the task is already [x] in the root plan (the agent checked it
-      //     off itself) — benign, nothing left to do;
+      // (a) the task is no longer markable in the root plan (the agent
+      //     checked it off itself, or a prior pass already [BLOCKED]-marked
+      //     it) — the commit is already merged, so the integration counts as
+      //     done; nothing is left to record.
       // (b) the task description is gone entirely (another writer rewrote
       //     the plan) — the plan will never record this integration, and a
       //     false "integrated" would hide it. Distinguish via parser-aware
