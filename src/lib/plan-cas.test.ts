@@ -3,6 +3,7 @@ import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, wri
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 
+import { findBlockedLineIndex, replaceTaskWithBlocked } from "./plan-parser"
 import { compareAndSwapPlan } from "./plan-cas"
 
 /**
@@ -32,6 +33,30 @@ describe("compareAndSwapPlan", () => {
     expect(res.wrote).toBe(true)
     expect(res.result).toBe("- [x] one\n")
     expect(await Bun.file(planPath).text()).toBe("- [x] one\n")
+  })
+
+  it("marks a task blocked in a CRLF plan and keeps its line endings", async () => {
+    // A PLAN.md authored on Windows carries CRLF. The block has to land AND
+    // the file must keep its endings: rewriting them would show the user a
+    // whole-file diff in their plan.
+    const task = "**1.1** Task A"
+    const crlf = ["# Plan", "", `- [ ] ${task}`, "  - eval: algo", ""].join("\r\n")
+    writeFileSync(planPath, crlf, "utf-8")
+
+    const res = await compareAndSwapPlan(
+      planPath,
+      (c) => replaceTaskWithBlocked(c, task, "eval failed"),
+      "eval",
+    )
+    expect(res.wrote).toBe(true)
+
+    const after = await Bun.file(planPath).text()
+    expect(after).toContain(`- [BLOCKED: eval failed] ${task}`)
+    expect(after).toContain("\r\n")
+    // No bare LF sneaked in among the CRLF endings.
+    expect(/(?<!\r)\n/.test(after)).toBe(false)
+    // And the parser finds the blocked task by its description.
+    expect(findBlockedLineIndex(after, task)).toBeGreaterThanOrEqual(0)
   })
 
   it("returns wrote:false (no result) when transform yields null", async () => {
