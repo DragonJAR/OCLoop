@@ -46,6 +46,16 @@ All notable changes to OCLoop are documented here. Format based on
 - The testing constraints are documented in one tracked place
   (`AGENTS.md`) instead of behind pointers to unversioned notes, and the
   comments that referenced deleted symbols now name the symbols that exist.
+- **`--create-plan` now generates the same plan format the example plans
+  use** — it asks for the `Architecture context`, `Testing Notes` and
+  `How OCLoop reads this file` sections that all twenty shipped examples
+  carry, and the refine path follows the same shape. The plan the generator
+  produced had drifted from the plan a user copies.
+- The shipped example prompts now match the prompt OCLoop writes by default,
+  byte for byte: the copies had lost the `{{CURRENT_TASK}}` line and the
+  eval-rubrics block, and the eval layer was missing from the default prompt
+  altogether — so a failed evaluation retried the task with a note the agent
+  was never told how to read.
 
 ## [0.9.0] — 2026-10-30
 
