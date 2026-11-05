@@ -32,17 +32,18 @@ interface SpawnTarget {
 /**
  * Resolve how to spawn the `opencode` binary on this platform.
  *
- * Single source of truth shared with `opencode-server.ts` (server launcher):
- * POSIX spawns the bare name on PATH; Windows resolves the shim path and
- * quotes it when the shim needs a shell. Returns `null` on Windows when the
- * binary cannot be resolved — the version detector surfaces that as "not
- * found"; the server launcher falls back to the bare name.
+ * Single source of truth shared with `opencode-server.ts` (server launcher).
+ * EVERY platform goes through `resolveSpawnable`, so a match inside the cwd
+ * (a planted `opencode`/`opencode.cmd` in the project) is always discarded:
+ * - win32: the resolved shim path, quoted when the shim needs a shell.
+ * - POSIX: the bare name, but only once `lookupAll` validated the PATH hit —
+ *   a bare spawn without that check would let `execvp` run `./opencode` when
+ *   PATH holds `.` or an empty entry before the real binary.
+ * Returns `null` when opencode cannot be resolved. Callers must NOT fall back
+ * to a bare-name spawn (that would bypass the cwd filter): the version
+ * detector reports "unknown", the server launcher fails with "not found".
  */
 export async function getOpencodeSpawnTarget(): Promise<SpawnTarget | null> {
-  if (process.platform !== "win32") {
-    return { command: "opencode", shell: false }
-  }
-
   const resolved = await resolveSpawnable("opencode")
   if (!resolved) return null
   const shell = isWindowsShellShim(resolved)

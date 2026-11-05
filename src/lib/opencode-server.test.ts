@@ -118,7 +118,7 @@ const {
  * marker.
  */
 function resolvableOpencode(): string | null {
-  return process.platform === "win32" ? "C:\\bin\\opencode.cmd" : null
+  return process.platform === "win32" ? "C:\\bin\\opencode.cmd" : "opencode"
 }
 
 beforeEach(() => {
@@ -340,6 +340,33 @@ describe("opencode-server — startOpencodeServer carries permissions into confi
       if (prior === undefined) delete process.env.OPENCODE_SERVER_PASSWORD
       else process.env.OPENCODE_SERVER_PASSWORD = prior
     }
+  })
+})
+
+describe("opencode-server — binary resolution", () => {
+  for (const platform of ["linux", "darwin", "win32"] as const) {
+    it(`fails with "opencode not found" and never spawns a bare name (${platform})`, async () => {
+      resolveSpawnableImpl = async () => null
+      await withPlatform(platform, async () => {
+        await expect(startOpencodeServer({ timeout: 1000 })).rejects.toThrow(
+          "opencode not found",
+        )
+      })
+      expect(spawnCalls.filter(({ args }) => args[0] === "serve")).toEqual([])
+    })
+  }
+
+  it("resolves opencode through resolveSpawnable on POSIX too (cwd filter applies)", async () => {
+    const asked: string[] = []
+    resolveSpawnableImpl = async (cmd) => {
+      asked.push(cmd)
+      return "opencode"
+    }
+    await withPlatform("linux", async () => {
+      const server = await startOpencodeServer({ timeout: 1000 })
+      server.closeSync()
+    })
+    expect(asked).toContain("opencode")
   })
 })
 

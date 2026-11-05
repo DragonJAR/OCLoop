@@ -69,13 +69,17 @@ function withAutonomousPermissions(
   }
 }
 
+/** Shown when opencode cannot be resolved on PATH (outside the cwd). */
+const OPENCODE_NOT_FOUND_MESSAGE =
+  "opencode not found: install it and make sure it is on PATH (a binary in the current directory is ignored on purpose)"
+
 async function getServerSpawnTarget(): Promise<{ command: string; shell: boolean }> {
-  // Shared resolution with the version detector (DRY): POSIX bare name,
-  // Windows resolved+quoted shim. Falls back to the bare name when the
-  // Windows lookup fails — the launcher must still try PATH.
+  // Shared resolution with the version detector (DRY). No bare-name fallback
+  // on ANY platform: spawning a bare `opencode` would bypass the cwd filter
+  // and could execute a binary planted in the project.
   const target = await getOpencodeSpawnTarget()
   if (target) return target
-  return { command: "opencode", shell: false }
+  throw new Error(OPENCODE_NOT_FOUND_MESSAGE)
 }
 
 type StartOpencodeServerFunction = {
