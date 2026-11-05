@@ -4,6 +4,7 @@ import {
   clampParallelJobs,
   scopePatternsOverlap,
   selectEligibleTasks,
+  taskScopesOverlap,
   validateTaskGraph,
 } from "./task-scheduler"
 
@@ -174,5 +175,24 @@ describe("task-scheduler", () => {
     expect(batch.eligible).toEqual([])
     expect(batch.deadlocked).toBe(true)
     expect(batch.deadlockReason).toContain("1.1 (blocked)")
+  })
+})
+
+describe("scope overlap is case-insensitive where the file system is (T10-A O-04)", () => {
+  it("src/App.tsx and src/app.tsx overlap on win32 and darwin, not on linux", () => {
+    expect(scopePatternsOverlap("src/App.tsx", "src/app.tsx", "win32")).toBe(true)
+    expect(scopePatternsOverlap("src/App.tsx", "src/app.tsx", "darwin")).toBe(true)
+    expect(scopePatternsOverlap("src/App.tsx", "src/app.tsx", "linux")).toBe(false)
+  })
+
+  it("folds case for wildcard/directory prefixes too", () => {
+    expect(scopePatternsOverlap("SRC/ui/**", "src/UI/Dialog.tsx", "win32")).toBe(true)
+    expect(scopePatternsOverlap("Src/", "src/lib/", "darwin")).toBe(true)
+    expect(scopePatternsOverlap("SRC/ui/**", "src/UI/Dialog.tsx", "linux")).toBe(false)
+  })
+
+  it("taskScopesOverlap forwards the platform", () => {
+    expect(taskScopesOverlap(["src/App.tsx"], ["SRC/APP.TSX"], "win32")).toBe(true)
+    expect(taskScopesOverlap(["src/App.tsx"], ["SRC/APP.TSX"], "linux")).toBe(false)
   })
 })

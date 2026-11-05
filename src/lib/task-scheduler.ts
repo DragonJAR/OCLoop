@@ -68,11 +68,27 @@ function normalizeScopePattern(raw: string): { prefix: string; isWildcard: boole
 }
 
 /**
- * Returns true if two single file/glob scope patterns can touch the same file.
+ * Default file systems on Windows (NTFS) and macOS (APFS) are case-insensitive:
+ * `src/App.tsx` and `src/app.tsx` are the SAME file there (same principle as
+ * App.tsx's plan-path `samePath`). Linux stays case-sensitive.
  */
-export function scopePatternsOverlap(patternA: string, patternB: string): boolean {
-  const a = normalizeScopePattern(patternA)
-  const b = normalizeScopePattern(patternB)
+function isCaseInsensitiveFs(platform: string): boolean {
+  return platform === "win32" || platform === "darwin"
+}
+
+/**
+ * Returns true if two single file/glob scope patterns can touch the same file.
+ * The platform is injectable (default `process.platform`, the commandExists DI
+ * pattern) so the case-folding branch is testable on any host.
+ */
+export function scopePatternsOverlap(
+  patternA: string,
+  patternB: string,
+  platform: string = process.platform,
+): boolean {
+  const fold = (p: string) => (isCaseInsensitiveFs(platform) ? p.toLowerCase() : p)
+  const a = normalizeScopePattern(fold(patternA))
+  const b = normalizeScopePattern(fold(patternB))
 
   if (a.isWildcard && a.prefix === "") return true
   if (b.isWildcard && b.prefix === "") return true
@@ -102,11 +118,15 @@ export function scopePatternsOverlap(patternA: string, patternB: string): boolea
  * Note: if either list is empty, static scope overlap is false (isolation relies
  * on worktrees + integration-queue conflict detection).
  */
-export function taskScopesOverlap(filesA: readonly string[], filesB: readonly string[]): boolean {
+export function taskScopesOverlap(
+  filesA: readonly string[],
+  filesB: readonly string[],
+  platform: string = process.platform,
+): boolean {
   if (filesA.length === 0 || filesB.length === 0) return false
   for (const a of filesA) {
     for (const b of filesB) {
-      if (scopePatternsOverlap(a, b)) return true
+      if (scopePatternsOverlap(a, b, platform)) return true
     }
   }
   return false
