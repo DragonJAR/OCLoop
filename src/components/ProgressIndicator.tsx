@@ -29,16 +29,23 @@ export function ProgressIndicator(props: ProgressIndicatorProps) {
 
   // Clamp the ratio to [0,1] so an over-/under-count never produces a bar
   // longer than `width` or a negative repeat() (which throws RangeError).
+  // Non-finite total (NaN/Infinity) or width falls back to the empty/1-ratio
+  // path instead of propagating NaN (Math.max(0, NaN) === NaN).
   const ratio = createMemo(() => {
+    if (!Number.isFinite(props.total) || !Number.isFinite(props.completed)) return 0
     if (props.total === 0) return 1
     return Math.min(1, Math.max(0, props.completed / props.total))
   })
 
   const percentage = createMemo(() => Math.round(ratio() * 100))
 
-  const filledWidth = createMemo(() => Math.round(ratio() * props.width))
+  const filledWidth = createMemo(() =>
+    Number.isFinite(props.width) ? Math.round(ratio() * props.width) : 0,
+  )
 
-  const emptyWidth = createMemo(() => Math.max(0, props.width - filledWidth()))
+  const emptyWidth = createMemo(() =>
+    Number.isFinite(props.width) ? Math.max(0, props.width - filledWidth()) : props.width,
+  )
 
   const filledChars = createMemo(() => {
     return glyph("progressFull", unicode()).repeat(filledWidth())

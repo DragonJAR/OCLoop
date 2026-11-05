@@ -114,15 +114,19 @@ export function lookupCost(model: string | undefined): ModelCost {
   return FALLBACK
 }
 
-/** USD estimados (precios por 1M tokens). */
+/** USD estimados (precios por 1M tokens). Non-finite inputs or result → 0. */
 export function estimateCost(
   t: { input: number; output: number; cacheRead: number; cacheWrite: number },
   c: ModelCost,
 ): number {
-  return (
+  const fields = [t.input, t.output, t.cacheRead, t.cacheWrite]
+  // An Infinity/NaN sneaking in from an unsanitized token accumulator would
+  // poison the estimate (the manifest then serializes costUsd as null).
+  if (fields.some((v) => !Number.isFinite(v) || v < 0)) return 0
+  const usd =
     (t.input * c.input + t.output * c.output + t.cacheRead * c.cacheRead + t.cacheWrite * c.cacheWrite) /
     1_000_000
-  )
+  return Number.isFinite(usd) ? usd : 0
 }
 
 /** Siempre con ~ (todo es aproximado). <$1 → 4 decimales; ≥$1 → 2. */

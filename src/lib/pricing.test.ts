@@ -7,6 +7,13 @@ describe("pricing", () => {
     expect(estimateCost({ input: 1_000_000, output: 0, cacheRead: 0, cacheWrite: 0 }, c)).toBeCloseTo(3, 9)
   })
 
+  it("estimateCost: non-finite or negative token fields → 0 (never NaN/Infinity)", () => {
+    const c = lookupCost("anthropic/claude-sonnet-4-6")
+    expect(estimateCost({ input: NaN, output: 0, cacheRead: 0, cacheWrite: 0 }, c)).toBe(0)
+    expect(estimateCost({ input: Infinity, output: 0, cacheRead: 0, cacheWrite: 0 }, c)).toBe(0)
+    expect(estimateCost({ input: 1_000_000, output: 0, cacheRead: -1, cacheWrite: 0 }, c)).toBe(0)
+  })
+
   it("lookupCost: exact match", () => {
     expect(lookupCost("anthropic/claude-opus-4-8")).toEqual({ input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 })
   })

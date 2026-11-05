@@ -76,8 +76,11 @@ describe("ensureGitignore", () => {
     log.warn = warnSpy
 
     try {
-      // Passing an invalid or non-writable path (e.g. non-existent nested directory)
-      const invalidDir = join(tempDir, "non_existent_folder", "sub")
+      // A path whose parent is a FILE: mkdir -p cannot create it and no
+      // rename can land there — a genuinely unwritable target.
+      const blockingFile = join(tempDir, "blocker")
+      writeFileSync(blockingFile, "not a dir", "utf-8")
+      const invalidDir = join(blockingFile, "sub")
       await expect(ensureGitignore(invalidDir)).resolves.toBeUndefined()
       expect(warnSpy).toHaveBeenCalled()
     } finally {

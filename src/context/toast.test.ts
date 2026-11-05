@@ -121,4 +121,27 @@ describe("createToastController (Finding 18.2.F)", () => {
       expect(t?.message).toBe("plain string failure")
     })
   })
+
+  it("show with a non-finite or non-positive duration uses the default duration", async () => {
+    await withToastController(async (ctrl) => {
+      ctrl.show({ message: "bad duration", variant: "info", duration: NaN })
+      expect(ctrl.currentToast()).not.toBeNull()
+      // A NaN/undefined duration falls back to the default (5000ms), NOT the
+      // ~1ms a raw setTimeout(NaN) would collapse to. Still visible at 150ms.
+      await tick(150)
+      expect(ctrl.currentToast()).not.toBeNull()
+    })
+  })
+
+  it("show with an overflowing duration (1e12ms) does not collapse to ~1ms", async () => {
+    await withToastController(async (ctrl) => {
+      ctrl.show({ message: "overflow duration", variant: "info", duration: 1e12 })
+      await tick(50)
+      // MAX_TIMEOUT_MS clamp: still visible after 50ms (a 32-bit overflow
+      // would have collapsed the delay to ~1ms and hidden the toast).
+      expect(ctrl.currentToast()).not.toBeNull()
+      await tick(80)
+      expect(ctrl.currentToast()).not.toBeNull()
+    })
+  })
 })

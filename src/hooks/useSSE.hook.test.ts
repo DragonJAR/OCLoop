@@ -248,6 +248,26 @@ function evMessagePartText(
   }
 }
 
+function evMessagePartStepFinish(
+  partId: string,
+  messageId: string,
+  sessionId: string,
+  tokens: unknown,
+): BackendEvent {
+  return {
+    type: "message.part.updated",
+    properties: {
+      part: {
+        id: partId,
+        messageID: messageId,
+        sessionID: sessionId,
+        type: "step-finish",
+        tokens,
+      },
+    } as never,
+  }
+}
+
 /**
  * Build a `useSSE` instance inside a `createRoot` and run a callback
  * once any microtasks have settled. The callback receives the hook
@@ -666,8 +686,54 @@ describe("useSSE hook (Finding 18.3.A)", () => {
         },
       ))
 
-    it("message.part.updated (text) → onMessageText defaults to 'assistant' without message.updated", () =>
+    it("message.part.updated (step-finish) → onStepFinish sanitizes non-finite/string token fields to 0", () =>
       withSSE(
+        { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
+        async (_sse, dispose) => {
+          const sub = driveableSubscribe()
+          const { useSSE } = await import("./useSSE")
+          let capturedTokens: unknown
+          const wrapped = createRoot((d) => {
+            const h = useSSE({
+              info: () => ({ url: "http://x", version: 1 }),
+              handlers: {
+                onStepFinish: (part) => {
+                  capturedTokens = (part as { tokens?: unknown }).tokens
+                },
+              },
+            })
+            return { h, d }
+          })
+
+          await wrapped.h.reconnect()
+          await waitForStatus(wrapped.h, "connected")
+          // Malformed payload exactly as an unsanitized network boundary can
+          // deliver it: input as STRING ("1200" — would concatenate into the
+          // running totals via `newTokens.input || 0`), output Infinity
+          // (truthy — would poison every downstream sum), missing cache.
+          sub.push(
+            evMessagePartStepFinish("part-sf1", "msg-1", "sess-7", {
+              input: "1200",
+              output: Infinity,
+            }),
+          )
+          await tick(5)
+          const tokens = capturedTokens as {
+            input: number
+            output: number
+            cache: { read: number; write: number }
+          }
+          expect(typeof tokens.input).toBe("number")
+          expect(tokens.input).toBe(0)
+          expect(tokens.output).toBe(0)
+          expect(tokens.cache.read).toBe(0)
+          expect(tokens.cache.write).toBe(0)
+          wrapped.d()
+          dispose()
+        },
+      ))
+
+    it("message.part.updated (text) → onMessageText defaults to 'assistant' without message.updated", () =>      withSSE(
         { info: () => ({ url: "http://x", version: 1 }), handlers: {} },
         async (_sse, dispose) => {
           const sub = driveableSubscribe()

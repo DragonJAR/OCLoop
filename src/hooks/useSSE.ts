@@ -99,6 +99,50 @@ function dig(record: Record<string, unknown>, ...path: string[]): Record<string,
   return isObject(cur) ? cur : undefined
 }
 
+/**
+ * Finite-number sanitizer for values arriving from the network. Same contract
+ * as `numberValue` in opencode-backend.ts (the v2 native route): a non-number
+ * (string, undefined, null) or non-finite (NaN/Infinity) value becomes 0 so
+ * token accumulators can never concatenate strings or poison sums.
+ */
+function numOrZero(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0
+}
+
+/**
+ * Sanitize the `tokens` block of a `step-finish` part before it crosses into
+ * the token/cost accumulators. The part is an untrusted network payload (a
+ * blind cast upstream), so `tokens.input` arriving as a string ("1200") would
+ * otherwise be truthy for `newTokens.input || 0` in useSessionStats and
+ * CONCATENATE into the running totals; Infinity would poison every sum
+ * downstream (tokensPerMin, estimateCost, manifest costUsd).
+ */
+function sanitizeStepFinishTokens(
+  part: StepFinishPart,
+): StepFinishPart {
+  const tokens = (part as { tokens?: unknown }).tokens
+  // Absent/malformed block → all-zero block: downstream `newTokens.input || 0`
+  // would throw on undefined.input, so the boundary guarantees the shape.
+  if (!isObject(tokens)) {
+    return {
+      ...part,
+      tokens: { input: 0, output: 0, cache: { read: 0, write: 0 } },
+    }
+  }
+  const cache = isObject(tokens.cache) ? tokens.cache : undefined
+  return {
+    ...part,
+    tokens: {
+      input: numOrZero(tokens.input),
+      output: numOrZero(tokens.output),
+      cache: {
+        read: numOrZero(cache?.read),
+        write: numOrZero(cache?.write),
+      },
+    },
+  }
+}
+
 /** Maximum length for individual string values in logged event data */
 const MAX_LOG_VALUE_LENGTH = 200
 
@@ -661,7 +705,10 @@ export function createSSEEventProcessor(
         } else if (part.type === "step-finish") {
           if (!seenPartIds.has(partKey)) {
             seenPartIds.add(partKey)
-            handlers.onStepFinish?.(part as StepFinishPart, eventSessionId)
+            handlers.onStepFinish?.(
+              sanitizeStepFinishTokens(part as StepFinishPart),
+              eventSessionId,
+            )
           }
         }
         break

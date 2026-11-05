@@ -1,6 +1,6 @@
-import { writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { log } from "./debug-logger";
+import { atomicWriteText } from "./atomic-fs";
 import { splitLines, normalizeLineEndings } from "./text";
 
 const GITIGNORE_FILE = ".gitignore";
@@ -20,8 +20,9 @@ export async function ensureGitignore(baseDir: string = process.cwd()): Promise<
     const exists = await gitignoreFile.exists();
 
     if (!exists) {
-      // Create .gitignore with our entry
-      await writeFile(gitignorePath, `${entry}\n`, "utf-8");
+      // Create .gitignore with our entry — atomic (tmp+rename) so a crash
+      // mid-write can never truncate the user's file.
+      await atomicWriteText(gitignorePath, `${entry}\n`);
       log.info("git", "Created .gitignore", { entry });
       return;
     }
@@ -41,9 +42,11 @@ export async function ensureGitignore(baseDir: string = process.cwd()): Promise<
     }
 
     // Append entry - ensure we start on a new line if file doesn't end with one.
-    // content is now `\n`-only, so `endsWith("\n")` is unambiguous.
+    // content is now `\n`-only, so `endsWith("\n")` is unambiguous. Atomic
+    // write: this rewrites the user's whole .gitignore, so a crash mid-write
+    // must not destroy the existing rules (same policy as PLAN.md / state).
     const suffix = content.endsWith("\n") ? "" : "\n";
-    await writeFile(gitignorePath, `${content}${suffix}${entry}\n`, "utf-8");
+    await atomicWriteText(gitignorePath, `${content}${suffix}${entry}\n`);
     log.info("git", "Updated .gitignore", { entry });
   } catch (err) {
     log.warn("git", "Failed to update .gitignore", err);

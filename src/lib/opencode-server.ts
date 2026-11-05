@@ -6,6 +6,7 @@ import type { Config } from "@opencode-ai/sdk"
 import type { ServerOptions } from "@opencode-ai/sdk/server"
 import { detectOpencodeVersion, getOpencodeSpawnTarget, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
+import { MAX_TIMEOUT_MS } from "./constants"
 
 export interface OpencodeServer {
   url: string
@@ -112,7 +113,15 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   const version = await detectOpencodeVersion()
   const hostname = merged.hostname ?? "127.0.0.1"
   const port = merged.port ?? 4096
-  const timeout = merged.timeout ?? 5000
+  // Clamp to the 32-bit setTimeout limit: a caller-supplied timeout beyond
+  // 2^31-1 (or non-finite) would collapse to ~1ms and kill the server
+  // startup instantly (MAX_TIMEOUT_MS policy shared with with-timeout etc.).
+  const timeout = Math.min(
+    typeof merged.timeout === "number" && Number.isFinite(merged.timeout) && merged.timeout > 0
+      ? merged.timeout
+      : 5000,
+    MAX_TIMEOUT_MS,
+  )
   const config = merged.config
 
   const args = ["serve", `--hostname=${hostname}`, `--port=${port}`]

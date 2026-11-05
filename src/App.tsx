@@ -34,11 +34,12 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findTaskLineIndex } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findTaskLineIndex, findPendingLineIndex } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile, resolvePromptFile, resolveRepoRoot } from "./lib/plan-file"
 import { compareAndSwapPlan } from "./lib/plan-cas"
+import { casPlanOrDispatch } from "./lib/eval-mark-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { clampParallelJobs } from "./lib/task-scheduler"
 import { createParallelCoordinator } from "./lib/parallel-run"
@@ -408,6 +409,12 @@ function AppContent(props: AppProps) {
 
   // Track if we've initialized (to prevent double initialization)
   let sessionInitialized = false
+  // Generation counter for the async agent/model resolution chain (below).
+  // The server-ready effect re-fires on every server restart/recovery; each
+  // re-entry must invalidate the previous fetch chain's late resolutions, or
+  // a 15s-timeout chain resolving late would apply agent/model state (or open
+  // DialogInvalidAgent) over a loop the user has already driven elsewhere.
+  let resolveGeneration = 0
   // Model-routing: opt-in via --routing. Null when the feature is off or the
   // user cancelled the panel — in that case the loop uses the single resolved
   // model (activeModel) for everything, byte-identical to today. `routingPanelShown`
@@ -1345,25 +1352,35 @@ function AppContent(props: AppProps) {
   /**
    * Prepare the eval retry in PLAN.md with compare-and-swap: re-read +
    * byte-compare before writing so a concurrent agent edit is never clobbered.
-   * Best-effort — a failure to write is logged but does not abort the retry
-   * (the iteration re-reads the plan regardless).
+   * The CAS result is never ignored (shared casPlanOrDispatch policy in
+   * src/lib/eval-mark-cas.ts — unit-tested there): `no_change` is benign only
+   * when the parser still finds the task line PENDING (the reopen already won
+   * the race); a write that did not land dispatches a recoverable `plan`-source
+   * error — otherwise the retry would re-run the task WITHOUT the eval
+   * feedback and with the task possibly still marked complete.
    */
   async function writeEvalNote(task: string, feedback: string): Promise<void> {
-    try {
-      const planPath = resolvePlanFile(props.planFile)
-      // Insert the note right after the task line. Keep it simple and safe:
-      // append a single indented prose line (never a `- [ ]`). The parser
-      // transform also flips a completed task back to pending so the retry
-      // genuinely re-runs the SAME task (see reopenTaskForEvalRetry).
-      const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
-      await compareAndSwapPlan(
+    const planPath = resolvePlanFile(props.planFile)
+    // Insert the note right after the task line. Keep it simple and safe:
+    // append a single indented prose line (never a `- [ ]`). The parser
+    // transform also flips a completed task back to pending so the retry
+    // genuinely re-runs the SAME task (see reopenTaskForEvalRetry).
+    const note = `  - eval feedback: ${feedback.replace(/\n/g, " ").slice(0, 200)}`
+    await casPlanOrDispatch(
+      { dispatch: loop.dispatch, t },
+      {
+        task,
         planPath,
-        (c) => reopenTaskForEvalRetry(c, task, note),
-        "eval",
-      )
-    } catch (err) {
-      log.warn("eval", "Failed to write eval feedback note", err)
-    }
+        transform: (c) => reopenTaskForEvalRetry(c, task, note),
+        // Benign only if the parser still sees the task line PENDING — the
+        // reopen+note already landed in a prior pass. A line that exists but is
+        // no longer pending ([x]/[BLOCKED]) means the note can never be
+        // recorded on a task the retry would actually re-run.
+        benignStillMatches: (planText) => findPendingLineIndex(planText, task) !== -1,
+        causeTransformError: "note transform threw",
+        errKey: "errEvalNoteDeferred",
+      },
+    )
   }
 
   /**
@@ -1383,59 +1400,31 @@ function AppContent(props: AppProps) {
    * advances: the recovered-from-error dialog owns what happens next.
    */
   async function blockTaskWithCompareAndSwap(task: string, reason: string): Promise<void> {
-    try {
-      const planPath = resolvePlanFile(props.planFile)
-      const cas = await compareAndSwapPlan(
+    const planPath = resolvePlanFile(props.planFile)
+    await casPlanOrDispatch(
+      { dispatch: loop.dispatch, t },
+      {
+        task,
         planPath,
-        (c) => replaceTaskWithBlocked(c, task, reason),
-        "eval",
-      )
-      if (cas.wrote) {
-        activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
-          level: "warn",
-        })
-        return
-      }
-      if (cas.skipped === "no_change") {
-        // Two very different causes, like the integrated-mark branch: a prior
-        // mark pass already [BLOCKED]ed the line (benign) vs the task line
-        // vanished (the block can never be recorded). Distinguish via the
-        // parser — a raw substring hit inside a note or fence must not count.
-        const planText = await Bun.file(planPath).text().catch(() => null)
-        if (planText !== null && findTaskLineIndex(planText, task) !== -1) {
+        transform: (c) => replaceTaskWithBlocked(c, task, reason),
+        // Distinguish via the parser — a raw substring hit inside a note or
+        // fence must not count. Any-status is correct here: the prior-pass-won
+        // state is a line already [BLOCKED], which findTaskLineIndex finds.
+        benignStillMatches: (planText) => findTaskLineIndex(planText, task) !== -1,
+        causeTransformError: "mark transform threw",
+        errKey: "errBlockMarkDeferred",
+        onWrote: () => {
           activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
             level: "warn",
           })
-          return
-        }
-      }
-      const deferred =
-        cas.skipped === "deferred"
-          ? "plan changed underfoot"
-          : cas.skipped === "transform_error"
-            ? "mark transform threw"
-            : cas.skipped === "io_error"
-              ? "PLAN.md I/O failed"
-              : "task line no longer present"
-      log.warn("eval", "PLAN.md [BLOCKED] mark did not land", { skipped: cas.skipped })
-      loop.dispatch({
-        type: "error",
-        source: "plan",
-        message: t("errBlockMarkDeferred", { task: task.slice(0, 40), cause: deferred }),
-        recoverable: true,
-      })
-    } catch (err) {
-      log.warn("eval", "Failed to mark task [BLOCKED] from eval", err)
-      loop.dispatch({
-        type: "error",
-        source: "plan",
-        message: t("errBlockMarkDeferred", {
-          task: task.slice(0, 40),
-          cause: toErrorMessage(err),
-        }),
-        recoverable: true,
-      })
-    }
+        },
+        onBenignNoChange: () => {
+          activityLog.addEvent("error", t("actEvalBlocked", { task: task.slice(0, 40) }), {
+            level: "warn",
+          })
+        },
+      },
+    )
   }
 
   // Per-task eval retry counters for parallel worker slots
@@ -1868,6 +1857,7 @@ function AppContent(props: AppProps) {
         // No URL yet; the effect re-runs reactively when server.url() resolves.
         startOnce()
       } else {
+        const generation = ++resolveGeneration
         Promise.all([
           client.fetchConfig({ timeoutMs: 15_000 })
             .then((config) => config as OcConfig)
@@ -1883,6 +1873,16 @@ function AppContent(props: AppProps) {
             }),
         ])
           .then(([config, agents]) => {
+            // A newer effect pass superseded this chain (server restart,
+            // recovery, retry): its late resolution must not touch agent/model
+            // state nor open dialogs. The newest chain always proceeds.
+            if (generation !== resolveGeneration) {
+              log.info("resolve", "Skipping superseded agent/model resolution", {
+                generation,
+                current: resolveGeneration,
+              })
+              return
+            }
             const resolved = resolveAgentAndModel(config, agents, props.agent, props.model)
             // An explicit --agent that the server rejects: offer its default
             // (resolved without the CLI agent) before starting, so the first
@@ -1942,9 +1942,13 @@ function AppContent(props: AppProps) {
             startOnce()
           })
           .catch((err) => {
-            // Never block startup on a resolution-infrastructure failure.
-            log.error("resolve", "Agent/model resolution failed", err)
-            startOnce()
+            // Never block startup on a resolution-infrastructure failure. A
+            // superseded chain is equally skipped: only the newest generation
+            // may call startOnce.
+            if (generation === resolveGeneration) {
+              log.error("resolve", "Agent/model resolution failed", err)
+              startOnce()
+            }
           })
       }
     }

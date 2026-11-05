@@ -210,7 +210,14 @@ export function Dashboard(props: DashboardProps) {
     const p = props.progress
     if (!p) return ""
     const total = p.total - p.manual
-    const percent = total === 0 ? 100 : Math.round(Math.min(1, Math.max(0, p.completed / total)) * 100)
+    // Non-finite total/completed (NaN/Infinity) would render "NaN%" via
+    // Math.max(0, NaN) === NaN — same guard policy as ProgressIndicator.
+    const percent =
+      !Number.isFinite(total) || !Number.isFinite(p.completed)
+        ? 0
+        : total === 0
+          ? 100
+          : Math.round(Math.min(1, Math.max(0, p.completed / total)) * 100)
     return fitSegments([
       `${t("lblTasks")} ${progressText()} ${percent}%`,
       iteration() > 0 ? `${t("lblIter")} ${iteration()}` : "",

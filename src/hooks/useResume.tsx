@@ -203,6 +203,18 @@ export function useResume(deps: ResumeDeps): ResumeApi {
         if (deps.resilience().resume) {
           await doResume(persisted)
         } else {
+          // BUG #2 fix: between the start of initializeSession (loadLoopState,
+          // the PLAN.md alignment read — slow disk I/O) and this dialog.show,
+          // the user may have already driven the loop away from ready (quit
+          // flow, palette action, --run start). Revalidate the CURRENT state
+          // right before showing: a stale async chain must not open a Resume
+          // dialog over a loop that is no longer waiting for this decision.
+          if (loop.state().type !== "ready") {
+            log.info("resume", "Skipping resume dialog: loop state moved on", {
+              stateType: loop.state().type,
+            })
+            return
+          }
           dialog.show(() =>
             createComponent(DialogConfirm, {
               title: t("dlgResumeTitle"),

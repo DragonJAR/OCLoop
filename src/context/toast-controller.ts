@@ -17,6 +17,7 @@
 import { createSignal, onCleanup, type Accessor } from "solid-js"
 import { t } from "../lib/i18n"
 import { toErrorMessage } from "../lib/format"
+import { MAX_TIMEOUT_MS } from "../lib/constants"
 
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -55,7 +56,15 @@ export function createToastController(): ToastContextValue {
 
     if (timeoutId) clearTimeout(timeoutId)
 
-    const duration = options.duration ?? DEFAULT_TOAST_DURATION_MS
+    // Clamp to the 32-bit setTimeout limit: a caller-supplied duration beyond
+    // 2^31-1 (or non-finite) would collapse to ~1ms and close the toast
+    // instantly (MAX_TIMEOUT_MS policy, same as with-timeout/backoff).
+    const duration = Math.min(
+      typeof options.duration === "number" && Number.isFinite(options.duration) && options.duration > 0
+        ? options.duration
+        : DEFAULT_TOAST_DURATION_MS,
+      MAX_TIMEOUT_MS,
+    )
     timeoutId = setTimeout(() => {
       setCurrentToast(null)
     }, duration)

@@ -20,6 +20,7 @@ if (process.env.OCLOOP_RESUME_TEST !== "1") {
     "cleanup_stale_snapshot",
     "auto_resume",
     "dialog_callbacks",
+    "stale_state_no_dialog",
   ]
 
   for (const scenario of scenarios) {
@@ -102,7 +103,10 @@ if (process.env.OCLOOP_RESUME_TEST !== "1") {
         dispatch: (a: any) => {
           harness.dispatched.push(a)
         },
-        state: { type: "idle" } as any,
+        // Production parity: by the time initializeSession runs, the
+        // server-ready effect has already dispatched server_ready → the loop
+        // is in `ready` when the Resume dialog decision point is reached.
+        state: () => ({ type: "ready" }) as any,
       } as any,
       cooldown: {
         cancel: () => {},
@@ -273,6 +277,36 @@ if (process.env.OCLOOP_RESUME_TEST !== "1") {
       dialogEl.props.onConfirm()
       dialogEl.props.onCancel()
       assertEqual(harness.dispatched.some((a) => a.type === "start"), true)
+    } else if (scenario === "stale_state_no_dialog") {
+      // BUG #2 regression: a resumable snapshot exists, but the loop state has
+      // already moved past `ready` by the time the async init chain resolves —
+      // the stale chain must NOT open the Resume dialog over the new state.
+      const state: PersistedLoopState = {
+        version: 1,
+        iteration: 1,
+        sessionId: "sess-stale",
+        stateType: "running",
+        rateLimitAttempts: 0,
+        updatedAt: new Date().toISOString(),
+      }
+      await saveLoopState(state)
+
+      const harness = createHarness({
+        loop: {
+          dispatch: (a: any) => {
+            harness.dispatched.push(a)
+          },
+          // The state was NOT ready when initializeSession's async chain
+          // reached the dialog.show decision point.
+          state: () => ({ type: "running" }) as any,
+        } as any,
+      })
+      const { initializeSession } = useResume(harness.deps)
+      await initializeSession()
+      assertEqual(harness.dialogShown.length, 0)
+      // The snapshot must be left untouched (no clearLoopState ran either).
+      const remaining = await loadLoopState()
+      assertEqual(remaining?.sessionId, "sess-stale")
     }
   } finally {
     process.chdir(prevCwd)
