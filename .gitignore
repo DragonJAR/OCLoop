@@ -8,6 +8,7 @@ dist/
 # the project explicitly decides they belong in Git.
 .*
 !/.gitignore
+!/.gitattributes
 # CI workflows live in a dotfolder; allowlist so GitHub Actions sees them.
 !/.github/
 !/.github/**
