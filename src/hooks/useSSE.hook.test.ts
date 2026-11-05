@@ -29,7 +29,7 @@
  * `useSSE`'s autoStart is registered via Solid's `onMount`, which only
  * fires after the hook is attached to a *rendered* component (it
  * requires the owner to be "mounted" to a DOM, not just created in a
- * `createRoot`). Verified empirically per `docs/solid-hook-testing.md`:
+ * `createRoot`). Verified empirically (AGENTS.md § Testing constraints):
  * registering `onMount` inside a bare `createRoot` (no `render`) does
  * not fire the callback. `bun:test` does not provide a DOM
  * (`globalThis.document === undefined`) so `solid-js/web`'s `render` /
@@ -53,8 +53,9 @@
  * server-side disconnect). An `abort` listener on the signal closes
  * the stream so `disconnect()` unblocks the `for await` loop.
  *
- * Safe here because `useSSE.ts` has no JSX (the `docs/testing.md`
- * `@opentui/solid` `mock.module` warning is JSX-transform specific).
+ * Safe here because `useSSE.ts` has no JSX (the AGENTS.md § Testing
+ * constraints `@opentui/solid` `mock.module` warning is JSX-transform
+ * specific).
  */
 
 import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
@@ -297,10 +298,10 @@ function withSSE<T>(
 }
 
 /**
- * Set up `subscribeImpl` to return a `PushStream` that the test can drive.
- * Returns the push controller so the test can push events / close the stream.
- * The signal's `abort` event is wired to close the stream so `disconnect()`
- * unblocks the `for await` loop.
+ * Set up `subscribeImpl` to return the `makePushStream` handle that the test
+ * can drive. Returns the push controller so the test can push events / close
+ * the stream. The signal's `abort` event is wired to close the stream so
+ * `disconnect()` unblocks the `for await` loop.
  */
 function driveableSubscribe(): ReturnType<typeof makePushStream<BackendEvent>> {
   const sub = makePushStream<BackendEvent>()

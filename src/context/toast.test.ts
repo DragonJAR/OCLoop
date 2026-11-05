@@ -11,7 +11,7 @@
  *
  * The factory lives in `toast-controller.ts` (a pure `.ts` file) so
  * importing it doesn't pull in the `@opentui/solid` JSX transform
- * (see `docs/testing.md`).
+ * (see AGENTS.md § Testing constraints).
  *
  * The factory uses `onCleanup` to clear its auto-hide timer when the
  * surrounding reactive owner disposes. `bun:test` doesn't have a DOM,
@@ -27,7 +27,7 @@ import { createToastController, type ToastContextValue } from "./toast-controlle
 const tick = (ms = 10) => new Promise<void>((r) => setTimeout(r, ms))
 
 /**
- * Run a callback inside a `createRoot` with a `ToastController` and
+ * Run a callback inside a `createRoot` with a `ToastContextValue` and
  * dispose the root when the callback resolves. Returns a promise so
  * async assertions on the auto-hide timer can be awaited.
  */
