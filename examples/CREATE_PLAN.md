@@ -9,8 +9,13 @@ Structure (in this order):
 3. For non-trivial work, an `## Architecture context (read first)` section: the key files, entry points, and constraints an implementer must know - with exact paths (e.g. `src/hooks/useServer.ts`) and the core problem each phase solves. This is re-read every iteration, so keep it tight.
 4. `## Phase N — <title>` headings that group the work into ordered, independently shippable milestones. Phases run IN ORDER; each phase is a natural commit/checkpoint boundary.
 5. `## Testing Notes`: how to verify the implementation - the exact test command (`bun test`) plus any manual steps. This project has NO lint script, so do not add lint steps.
-6. `## File Change Summary`: a markdown table of files created/modified and the purpose of each.
-7. `## Acceptance criteria`: a numbered definition of done - the concrete, checkable conditions that mean the whole plan is complete.
+6. `## Acceptance criteria`: a numbered definition of done - the concrete, checkable conditions that mean the whole plan is complete.
+7. `## How OCLoop reads this file`: the markers OCLoop understands and how it drives the plan.
+   - Markers: `- [x]` complete, `- [ ]` pending (executed), `- [MANUAL]` human-only (skipped), `- [BLOCKED: reason]` blocked (skipped).
+   - It runs one pending task per fresh session, marks it `[x]`, and continues.
+   - After marking `[x]`, the agent leaves a short indented note beneath it (prose or plain sub-bullets, never `- [ ]`/`- [x]` lines) as inter-task memory for the next iteration.
+   - **Self-expanding tasks:** a task marked `(recon)` discovers items; upon completion it inserts one new `- [ ]` task per item, immediately after its `[x]` line, so OCLoop executes each in a later iteration.
+   - The run ends automatically when no automatable tasks remain; OCLoop appends a `<plan-complete>` summary itself.
 
 Task rules (CRITICAL - OCLoop parses these literally):
 - Every actionable task is ONE line: `- [ ] <concrete, verifiable description>`. OCLoop counts every line that starts with `- [` as a task and runs one per iteration.

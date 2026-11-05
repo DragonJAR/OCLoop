@@ -174,6 +174,8 @@ ocloop --create-plan --model openai/gpt-5  # modelo personalizado
 ocloop --create-plan --plan roadmap.md     # escribir en una ruta personalizada
 ```
 
+El formato del plan es el que usan los [planes de ejemplo](examples/plans/). Para redactar un plan con otra herramienta, [`examples/CREATE_PLAN.md`](examples/CREATE_PLAN.md) es la plantilla completa del prompt — incluidas las reglas de tareas que OCLoop interpreta literalmente.
+
 **Objetivos de planes recursivos (auto-expansibles)** — formula el objetivo para que la primera tarea sea de reconocimiento: OCLoop descubre los elementos y luego genera una tarea de seguimiento por cada uno. Buenas frases de partida:
 
 ```bash

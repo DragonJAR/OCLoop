@@ -174,6 +174,8 @@ ocloop --create-plan --model openai/gpt-5  # custom model
 ocloop --create-plan --plan roadmap.md     # write to a custom path
 ```
 
+The plan format is the one the [example plans](examples/plans/) use. To draft a plan with a different tool, [`examples/CREATE_PLAN.md`](examples/CREATE_PLAN.md) is the full prompt template for it — including the task rules OCLoop parses literally.
+
 **Recursive (self-expanding) plan goals** — phrase the goal so the first task is reconnaissance: OCLoop discovers the items, then fans out one follow-up task per item. Good starting phrases:
 
 ```bash
