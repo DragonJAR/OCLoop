@@ -33,22 +33,29 @@ for (const locale of ["en", "es"] as const) {
 // The shipped example prompts are what the README tells users to copy over
 // `.loop-prompt.md`, and OCLoop writes `t("defaultLoopPrompt")` there when
 // the file is missing (src/index.tsx). A user who copies the example must get
-// the SAME prompt as a user who does not — so the example has to be
-// byte-identical to the embedded one.
+// the SAME prompt as a user who does not — so the example has to match the
+// embedded one.
 //
 // Nothing imports the examples, so drift is invisible: it happened twice
 // (the `{{CURRENT_TASK}}` line and the eval-rubrics block each lived in one
 // copy only) and no test noticed. This guard closes that hole.
+//
+// The comparison is on CONTENT, not on the bytes of the file: what Git checks
+// out depends on the platform's line-ending settings, so a byte comparison
+// fails on a Windows checkout for a reason that has nothing to do with the
+// prompt (it did, on the first CI run of this guard). The embedded prompt is
+// always LF (it is built with join("\n")), so normalising the file's endings
+// is enough to compare them.
 const EXAMPLE_PROMPTS = [
   { locale: "en", file: "examples/loop-prompt.md" },
   { locale: "es", file: "examples/loop-prompt.es.md" },
 ] as const
 
 for (const { locale, file } of EXAMPLE_PROMPTS) {
-  test(`${file} is byte-identical to the default loop prompt (${locale})`, async () => {
+  test(`${file} matches the default loop prompt (${locale})`, async () => {
     setLocale(locale)
     const onDisk = await Bun.file(`${repoRoot()}/${file}`).text()
-    expect(onDisk).toBe(t("defaultLoopPrompt"))
+    expect(onDisk.replace(/\r\n/g, "\n")).toBe(t("defaultLoopPrompt"))
   })
 }
 
