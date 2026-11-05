@@ -538,6 +538,17 @@ bun run /path/to/OCLoop/bin/ocloop-dev.ts --help
 Without it, Bun falls back to React's automatic JSX runtime and fails with
 `Cannot find module 'react/jsx-dev-runtime'`.
 
+### Continuous integration
+
+Every push runs on macOS, Windows and Linux (`.github/workflows/ci.yml`):
+the three gates above, plus a smoke job that installs the real OpenCode
+binary and starts it — the unit tests mock the launcher, so nothing else
+proves that the actual binary spawns and answers on each system.
+
+```bash
+bun run scripts/smoke-server.ts   # the same smoke test, locally
+```
+
 ## License
 
 MIT
