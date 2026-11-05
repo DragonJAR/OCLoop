@@ -1,5 +1,6 @@
 import { test, expect, afterAll } from "bun:test"
 import { t, setLocale, getLocale } from "./i18n"
+import { repoRoot } from "../ui/render-scenario"
 
 // Regression guard: the loop prompt must scope its failed-task revert to the
 // files the iteration itself changed. A whole-tree `git checkout -- .` wipes a
@@ -26,6 +27,28 @@ for (const locale of ["en", "es"] as const) {
   test(`defaultLoopPrompt (${locale}) declares the cwd as the working directory`, () => {
     setLocale(locale)
     expect(t("defaultLoopPrompt").toLowerCase()).toMatch(/working directory|directorio de trabajo/)
+  })
+}
+
+// The shipped example prompts are what the README tells users to copy over
+// `.loop-prompt.md`, and OCLoop writes `t("defaultLoopPrompt")` there when
+// the file is missing (src/index.tsx). A user who copies the example must get
+// the SAME prompt as a user who does not — so the example has to be
+// byte-identical to the embedded one.
+//
+// Nothing imports the examples, so drift is invisible: it happened twice
+// (the `{{CURRENT_TASK}}` line and the eval-rubrics block each lived in one
+// copy only) and no test noticed. This guard closes that hole.
+const EXAMPLE_PROMPTS = [
+  { locale: "en", file: "examples/loop-prompt.md" },
+  { locale: "es", file: "examples/loop-prompt.es.md" },
+] as const
+
+for (const { locale, file } of EXAMPLE_PROMPTS) {
+  test(`${file} is byte-identical to the default loop prompt (${locale})`, async () => {
+    setLocale(locale)
+    const onDisk = await Bun.file(`${repoRoot()}/${file}`).text()
+    expect(onDisk).toBe(t("defaultLoopPrompt"))
   })
 }
 
