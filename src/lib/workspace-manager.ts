@@ -18,6 +18,7 @@ import { join, resolve } from "node:path"
 import type { WorkerSlotId } from "../types"
 import { resolveCommandPath } from "./command-exists"
 import { log } from "./debug-logger"
+import { killTree, type KillableProcess } from "./kill-tree"
 
 export const WORKTREES_DIR = ".loop-worktrees"
 
@@ -67,23 +68,53 @@ export function createGitRunner(
 
 export const defaultGitRunner: GitRunner = createGitRunner()
 
+/** Exit code reported when git is killed for exceeding its deadline (`timeout(1)`). */
+export const GIT_TIMEOUT_EXIT_CODE = 124
+/** Deadline for one git command (worktree add, rebase, merge... all local). */
+export const GIT_TIMEOUT_MS = 30_000
+
 /** The slice of `execFile` execGit uses (injectable for tests). */
 export type ExecFileFn = (
   file: string,
   args: string[],
   options: { cwd: string; maxBuffer: number; windowsHide: boolean },
   callback: (err: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void,
-) => unknown
+) => KillableProcess | void
 
-/** Run git once. Never rejects. Exported (with an injectable exec) for tests. */
+/**
+ * Run git once. Never rejects. Exported (with an injectable exec/deadline)
+ * for tests.
+ *
+ * Bounded: a credential prompt (SSH passphrase, Git Credential Manager) or a
+ * stuck `.git/index.lock` would otherwise never settle, freezing a worker slot
+ * or the serial integration queue forever. On the deadline the git tree is
+ * killed and the promise resolves at once with GIT_TIMEOUT_EXIT_CODE — it does
+ * not wait for pipes a credential-helper grandchild may still hold.
+ */
 export function execGit(
   git: string,
   args: string[],
   cwd: string,
   exec: ExecFileFn = execFile as unknown as ExecFileFn,
+  timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitCommandResult> {
   return new Promise((resolvePromise) => {
-    exec(
+    let settled = false
+    const settle = (result: GitCommandResult) => {
+      if (settled) return
+      settled = true
+      clearTimeout(timer)
+      resolvePromise(result)
+    }
+    const timer = setTimeout(() => {
+      if (child) killTree(child)
+      settle({
+        exitCode: GIT_TIMEOUT_EXIT_CODE,
+        stdout: "",
+        stderr: `git ${args[0] ?? ""} timed out after ${timeoutMs}ms (credential prompt or a stuck .git/index.lock?)`,
+      })
+    }, timeoutMs)
+    const child = exec(
       git,
       args,
       // windowsHide: background git must not flash a console window (or
@@ -96,7 +127,7 @@ export function execGit(
             : err
               ? 1
               : 0
-        resolvePromise({
+        settle({
           exitCode: code,
           stdout: String(stdout ?? ""),
           stderr: String(stderr ?? ""),

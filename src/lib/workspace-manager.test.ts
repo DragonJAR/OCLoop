@@ -1,4 +1,4 @@
-import { describe, expect, it } from "bun:test"
+import { describe, expect, it, mock } from "bun:test"
 import { mkdirSync, mkdtempSync, existsSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -7,6 +7,7 @@ import {
   acquireSlotWorkspace,
   createGitRunner,
   execGit,
+  GIT_TIMEOUT_EXIT_CODE,
   defaultGitRunner,
   cleanupAllWorkspaces,
   getSlotWorktreePath,
@@ -201,5 +202,27 @@ describe("execGit", () => {
     const res = await execGit("/usr/bin/git", ["status"], "/repo", exec)
     expect(res).toEqual({ exitCode: 0, stdout: "ok\n", stderr: "" })
     expect(options).toMatchObject({ cwd: "/repo", windowsHide: true })
+  })
+
+  it("kills a hung git and resolves with the timeout code (T10-B P9)", async () => {
+    const kill = mock(() => true)
+    // Never calls back: a credential prompt / stuck index.lock.
+    const exec: Parameters<typeof execGit>[3] = () => ({ pid: undefined, kill })
+    const res = await execGit("/usr/bin/git", ["fetch"], "/repo", exec, 20)
+    expect(res.exitCode).toBe(GIT_TIMEOUT_EXIT_CODE)
+    expect(res.stderr).toContain("timed out")
+    expect(kill).toHaveBeenCalled()
+  })
+
+  it("a git that answers in time is not killed", async () => {
+    const kill = mock(() => true)
+    const exec: Parameters<typeof execGit>[3] = (_f, _a, _o, cb) => {
+      cb(null, "", "")
+      return { pid: undefined, kill }
+    }
+    const res = await execGit("/usr/bin/git", ["status"], "/repo", exec, 20)
+    expect(res.exitCode).toBe(0)
+    await new Promise((r) => setTimeout(r, 40))
+    expect(kill).not.toHaveBeenCalled()
   })
 })
