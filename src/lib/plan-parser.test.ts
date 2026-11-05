@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, replaceTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, findPendingLineIndex, findTaskLineIndex, reopenTaskForEvalRetry, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
+import { parsePlan, getCurrentTaskFromContent, parseTaskLine, parsePlanComplete, getPlanCompleteSummary, parsePlanFile, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceFirstPendingTaskWithBlocked, replacePendingTaskWithBlocked, replaceTaskWithBlocked, listPendingTaskDescriptions, findTaskStatusByDescription, findPendingLineIndex, findTaskLineIndex, reopenTaskForEvalRetry, markTaskCompleted, stripCodeFences, splitPlanLinesWithFenceState } from "./plan-parser"
 import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -1222,9 +1222,9 @@ describe("eval write path (status-tolerant, mirrors the rubric reader C2-10)", (
     expect(reopenTaskForEvalRetry("- [ ] other", "Task A", "  - n")).toBeNull()
   })
 
-  it("reopenTaskForEvalRetry preserves indentation and normalizes line endings", () => {
+  it("reopenTaskForEvalRetry preserves indentation and the file's line endings (CRLF in, CRLF out)", () => {
     expect(reopenTaskForEvalRetry("  - [x] Task\r\n  - [ ] next", "Task", "  - n")).toBe(
-      "  - [ ] Task\n  - n\n  - [ ] next",
+      "  - [ ] Task\r\n  - n\r\n  - [ ] next",
     )
   })
 })
@@ -1493,6 +1493,54 @@ describe("withPlanCompleteTag (structural completeness & CRLF)", () => {
     const content = "- [x] completed task\r\n"
     const tagged = withPlanCompleteTag(content, "all done")
     expect(tagged).toBe("- [x] completed task\r\n\r\n<plan-complete>all done</plan-complete>\r\n")
+  })
+})
+
+describe("plan mutators preserve the file's line endings (D-6: CRLF in, CRLF out)", () => {
+  // A CRLF PLAN.md (Notepad, core.autocrlf=true checkouts) must not be
+  // rewritten to LF wholesale by any mutating transform — that made every line
+  // of the file show as changed in git diff. All four mutators go through
+  // preserveEol (text.ts); LF files keep LF byte-for-byte.
+  it("replaceFirstPendingTaskWithSubtasks keeps every CRLF terminator", () => {
+    const content = "# P\r\n\r\n- [x] a\r\n- [ ] b\r\n  - [ ] c\r\n"
+    expect(replaceFirstPendingTaskWithSubtasks(content, ["s1", "s2"])).toBe(
+      "# P\r\n\r\n- [x] a\r\n- [ ] s1\r\n- [ ] s2\r\n  - [ ] c\r\n",
+    )
+  })
+
+  it("replaceFirstPendingTaskWithSubtasks keeps LF terminators for an LF file", () => {
+    const content = "# P\n\n- [x] a\n- [ ] b\n  - [ ] c\n"
+    expect(replaceFirstPendingTaskWithSubtasks(content, ["s1"])).toBe(
+      "# P\n\n- [x] a\n- [ ] s1\n  - [ ] c\n",
+    )
+  })
+
+  it("markTaskCompleted keeps every CRLF terminator (incl. inserted notes)", () => {
+    const content = "- [ ] a\r\n- [ ] b\r\n"
+    expect(
+      markTaskCompleted(content, "a", { notes: ["note one"], reconTasks: ["recon X"] }),
+    ).toBe("- [x] a\r\n  - note one\r\n- [ ] recon X\r\n- [ ] b\r\n")
+  })
+
+  it("reopenTaskForEvalRetry keeps every CRLF terminator", () => {
+    const content = "- [x] Task A\r\n- [ ] Task B\r\n"
+    expect(reopenTaskForEvalRetry(content, "Task A", "  - fix X")).toBe(
+      "- [ ] Task A\r\n  - fix X\r\n- [ ] Task B\r\n",
+    )
+  })
+
+  it("replaceTaskWithBlocked keeps every CRLF terminator", () => {
+    const content = "- [ ] Task A\r\n- [ ] Task B\r\n"
+    expect(replaceTaskWithBlocked(content, "Task A", "eval failed")).toBe(
+      "- [BLOCKED: eval failed] Task A\r\n- [ ] Task B\r\n",
+    )
+  })
+
+  it("replaceFirstPendingTaskWithBlocked keeps every CRLF terminator", () => {
+    const content = "- [ ] Task A\r\n- [ ] Task B\r\n"
+    expect(replaceFirstPendingTaskWithBlocked(content, "no terminal")).toBe(
+      "- [BLOCKED: no terminal] Task A\r\n- [ ] Task B\r\n",
+    )
   })
 })
 

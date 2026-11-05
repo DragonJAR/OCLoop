@@ -1,5 +1,5 @@
 import type { PlanProgress, PlanTaskNode } from "../types"
-import { splitLines, normalizeLineEndings } from "./text"
+import { splitLines, normalizeLineEndings, eolOf, preserveEol } from "./text"
 
 export type TaskType = "completed" | "pending" | "manual" | "blocked" | "not-a-task"
 export type TaskLookupStatus = TaskType | "missing"
@@ -325,8 +325,11 @@ export function parsePlanComplete(content: string): string | null {
 export function withPlanCompleteTag(content: string, summary: string): string {
   if (parsePlanComplete(content) !== null) return content
   if (!isStructurallyComplete(parsePlan(content))) return content
-  const isCrlf = content.includes("\r\n")
-  const nl = isCrlf ? "\r\n" : "\n"
+  // Same EOL policy as the other plan transforms (DRY): the appended tag uses
+  // the file's own terminator. `preserveEol` itself is not applicable here —
+  // `content` is NOT \n-normalized, so a blanket `\n → \r\n` would corrupt the
+  // existing `\r\n`s into `\r\r\n`; only the shared `eolOf` primitive is used.
+  const nl = eolOf(content)
   const base = content.endsWith("\n") ? content : content + nl
   return `${base}${nl}<plan-complete>${summary}</plan-complete>${nl}`
 }
@@ -508,7 +511,7 @@ export function replaceFirstPendingTaskWithSubtasks(
       const indent = entry.line.match(/^(\s*)/)?.[1] ?? ""
       const replacement = cleanSubtasks.map((s) => `${indent}- [ ] ${s}`)
       lines.splice(entry.index, 1, ...replacement)
-      return lines.join("\n")
+      return preserveEol(content, lines.join("\n"))
     }
   }
   return null
@@ -788,7 +791,7 @@ export function markTaskCompleted(
     lines.splice(endLineIdx + 1, 0, ...insertions)
   }
 
-  return lines.join("\n")
+  return preserveEol(content, lines.join("\n"))
 }
 
 /**
@@ -810,7 +813,7 @@ export function reopenTaskForEvalRetry(
     lines[idx] = lines[idx].replace(/^(\s*)-\s*\[\s*[xX]\s*\]/, "$1- [ ]")
   }
   lines.splice(idx + 1, 0, note)
-  return lines.join("\n")
+  return preserveEol(content, lines.join("\n"))
 }
 
 /**
@@ -881,5 +884,5 @@ function replaceTaskLineWithBlocked(
   const indent = lines[idx].match(/^(\s*)/)?.[1] ?? ""
   const task = parseTaskLine(lines[idx])
   lines[idx] = `${indent}- [BLOCKED: ${cleanReason}] ${task.description}`
-  return lines.join("\n")
+  return preserveEol(content, lines.join("\n"))
 }
