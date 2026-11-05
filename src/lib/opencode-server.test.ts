@@ -660,6 +660,24 @@ describe("opencode-server — Windows process cleanup", () => {
     expect(groupSignals.length + proc.kill.mock.calls.length).toBe(afterFirst)
   })
 
+  it("strips every case variant of OPENCODE_CONFIG_CONTENT, keeping only the official one", async () => {
+    const prev = process.env.opencode_config_content
+    process.env.opencode_config_content = '{"permission":{"bash":"deny"}}'
+    try {
+      const proc = createFakeProcess(7780)
+      nextProc = proc
+      const server = await startOpencodeServer({ timeout: 1000 })
+      const env = (serverSpawnCall().opts as { env: Record<string, string> }).env
+      const keys = Object.keys(env).filter((k) => k.toUpperCase() === "OPENCODE_CONFIG_CONTENT")
+      expect(keys).toEqual(["OPENCODE_CONFIG_CONTENT"])
+      expect(JSON.parse(env.OPENCODE_CONFIG_CONTENT).permission.bash).toBe("allow")
+      server.closeSync()
+    } finally {
+      if (prev === undefined) delete process.env.opencode_config_content
+      else process.env.opencode_config_content = prev
+    }
+  })
+
   it("strips every case variant of OPENCODE_SERVER_PASSWORD from the child env", async () => {
     const prev = process.env.opencode_server_password
     process.env.opencode_server_password = "leaked-lowercase"

@@ -7,6 +7,7 @@ import type { ServerOptions } from "@opencode-ai/sdk/server"
 import { detectOpencodeVersion, getOpencodeSpawnTarget, type OpencodeMajor } from "./opencode-version"
 import { PERMISSION_TOOLS, type PermissionsConfig } from "./config"
 import { MAX_TIMEOUT_MS } from "./constants"
+import { stripEnvKey } from "./env"
 import { isTracked, killTree, killTreeSync, trackProcess } from "./kill-tree"
 
 export interface OpencodeServer {
@@ -110,19 +111,19 @@ const startOpencodeServerImpl = async function startOpencodeServer(
   if (logLevel) args.push(`--log-level=${logLevel}`)
 
   const target = await getServerSpawnTarget()
-  const env: NodeJS.ProcessEnv = {
-    ...process.env,
-    OPENCODE_CONFIG_CONTENT: JSON.stringify(config ?? {}),
-  }
+  // The spread is a plain object even on Windows, where env keys are
+  // case-insensitive: drop EVERY spelling of the keys we own before setting
+  // the official one, or a stray `opencode_config_content` (overriding the
+  // autonomous permissions) or `opencode_server_password` would survive.
+  const env: NodeJS.ProcessEnv = stripEnvKey(
+    stripEnvKey({ ...process.env }, "OPENCODE_CONFIG_CONTENT"),
+    "OPENCODE_SERVER_PASSWORD",
+  )
+  env.OPENCODE_CONFIG_CONTENT = JSON.stringify(config ?? {})
   // Use our own credential for v2 and unknown versions. Unknown launches may
   // be v2 and need this header for the backend's capability probe; older v1
   // servers ignore the env override, while newer v1 builds honor this same
   // credential.
-  // Windows env keys are case-insensitive: drop every spelling, not just the
-  // exact one, or a stray `opencode_server_password` would survive.
-  for (const key of Object.keys(env)) {
-    if (key.toUpperCase() === "OPENCODE_SERVER_PASSWORD") delete env[key]
-  }
 
   let authorization: string | undefined
   if (version === 2 || version === null) {
