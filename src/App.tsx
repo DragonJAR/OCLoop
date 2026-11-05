@@ -34,7 +34,7 @@ import { useLoopStats } from "./hooks/useLoopStats"
 import { useSessionStats } from "./hooks/useSessionStats"
 import { useActivityLog } from "./hooks/useActivityLog"
 import { log } from "./lib/debug-logger"
-import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findTaskLineIndex, findPendingLineIndex } from "./lib/plan-parser"
+import { parsePlanFile, getCurrentTask, getCurrentTaskFromContent, getPlanCompleteSummary, parsePlan, parsePlanComplete, parseTaskLine, isStructurallyComplete, buildCompletionSummary, withPlanCompleteTag, parseSubtasksFromReply, replaceFirstPendingTaskWithSubtasks, getEvalRubricForTask, replaceTaskWithBlocked, listPendingTaskDescriptions, reopenTaskForEvalRetry, findPendingLineIndex, findBlockedLineIndex } from "./lib/plan-parser"
 import { describePlanTransition, type PlanTransition } from "./lib/resume-alignment"
 import { DEFAULTS, DEFAULT_PLAN_AGENT } from "./lib/constants"
 import { resolvePlanFile, resolvePromptFile, resolveRepoRoot } from "./lib/plan-file"
@@ -1408,9 +1408,12 @@ function AppContent(props: AppProps) {
         planPath,
         transform: (c) => replaceTaskWithBlocked(c, task, reason),
         // Distinguish via the parser — a raw substring hit inside a note or
-        // fence must not count. Any-status is correct here: the prior-pass-won
-        // state is a line already [BLOCKED], which findTaskLineIndex finds.
-        benignStillMatches: (planText) => findTaskLineIndex(planText, task) !== -1,
+        // fence must not count. The prior-pass-won state is a line that is
+        // ALREADY [BLOCKED]: a task that is merely present (still [x], still
+        // pending) has NOT been blocked, and treating it as benign would drop
+        // the [BLOCKED] mark silently — the task would read as done while its
+        // eval failed, with no error to show for it.
+        benignStillMatches: (planText) => findBlockedLineIndex(planText, task) !== -1,
         causeTransformError: "mark transform threw",
         errKey: "errBlockMarkDeferred",
         onWrote: () => {

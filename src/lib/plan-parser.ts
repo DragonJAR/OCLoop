@@ -422,6 +422,19 @@ export function findPendingLineIndex(content: string, description: string): numb
 }
 
 /**
+ * Line index of the first BLOCKED task matching `description`, or -1.
+ *
+ * `findTaskLineIndex` matches a task in ANY status, so it cannot answer
+ * "is this task already blocked?". The eval paths need exactly that: a task
+ * that is still `[x]` has NOT been blocked yet, and treating its presence as
+ * "a prior pass already won the race" silently drops the `[BLOCKED]` mark —
+ * the task would look done while its eval failed.
+ */
+export function findBlockedLineIndex(content: string, description: string): number {
+  return findTaskLineIndexWhere(content, description, (type) => type === "blocked")
+}
+
+/**
  * Line index of the first task matching `description` regardless of status
  * (pending/completed/manual/blocked), or -1.
  */

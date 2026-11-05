@@ -50,3 +50,33 @@ jobs:
 
       - name: Test
         run: bun test
+
+  # The unit tests mock the OpenCode launcher, so they cannot prove that the
+  # real binary spawns and answers on each OS — the most platform-sensitive
+  # path in the project (PATHEXT on Windows, the .cmd shell shim, the ready
+  # marker, the teardown). This job runs the actual binary everywhere.
+  server-smoke:
+    name: server smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Install the real OpenCode binary
+        run: npm install -g opencode-ai
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Smoke: start the real server, answer a request, tear it down
+        run: bun run scripts/smoke-server.ts

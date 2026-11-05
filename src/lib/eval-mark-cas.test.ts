@@ -4,6 +4,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { casPlanOrDispatch } from "./eval-mark-cas"
 import { t } from "./i18n"
+import { findBlockedLineIndex } from "./plan-parser"
 
 /**
  * Regression tests for the shared eval-path CAS policy — the A4/A9 class
@@ -96,6 +97,36 @@ describe("casPlanOrDispatch (A4/A9: CAS result never ignored)", () => {
     expect(benignCalled).toBe(false)
     expect(dispatched).toHaveLength(1)
     expect(dispatched[0].message).toContain("task line no longer present")
+  })
+
+  it("no_change benign ONLY on the blocked predicate: a [x] line is not benign for a block", async () => {
+    // The blockTaskWithCompareAndSwap contract: benign requires the task
+    // ALREADY [BLOCKED] (a prior pass won the race). A merely present line —
+    // still [x], still pending — has NOT been blocked: treating it as benign
+    // dropped the [BLOCKED] mark SILENTLY, so a task whose eval failed read as
+    // done, with no error and nothing in the log.
+    writeFileSync(planPath, "- [x] Implement feature X\n", "utf-8")
+    await run({
+      transform: () => null,
+      benignStillMatches: (text) =>
+        findBlockedLineIndex(text, "Implement feature X") !== -1,
+      errKey: "errBlockMarkDeferred",
+    })
+    expect(benignCalled).toBe(false)
+    expect(dispatched).toHaveLength(1)
+    expect(dispatched[0].message).toContain("task line no longer present")
+  })
+
+  it("an already [BLOCKED] task is benign (a prior pass won the race)", async () => {
+    writeFileSync(planPath, "- [BLOCKED: eval failed] Implement feature X\n", "utf-8")
+    await run({
+      transform: () => null,
+      benignStillMatches: (text) =>
+        findBlockedLineIndex(text, "Implement feature X") !== -1,
+      errKey: "errBlockMarkDeferred",
+    })
+    expect(benignCalled).toBe(true)
+    expect(dispatched).toHaveLength(0)
   })
 
   it("io_error (plan file missing) → recoverable plan error dispatched", async () => {
