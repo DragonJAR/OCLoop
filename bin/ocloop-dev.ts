@@ -17,7 +17,15 @@
 import { plugin } from "bun"
 import { fileURLToPath } from "node:url"
 import solidTransformPlugin from "@opentui/solid/bun-plugin"
+import { solidClientPlugin } from "../src/lib/solid-client-plugin"
 
+// Same order as bunfig.toml (preload) and build.ts: our separator-agnostic
+// client-build swap registers FIRST so it wins the onLoad match on every OS —
+// @opentui/solid's own filter only matches POSIX separators, which silently
+// left Windows running Solid's SSR build (D-4). Without bunfig.toml being
+// read (this launcher exists precisely for runs outside the repo cwd), the
+// solid transform alone is not enough.
+plugin(solidClientPlugin)
 plugin(solidTransformPlugin)
 
 await import(fileURLToPath(new URL("../src/index.tsx", import.meta.url)))
