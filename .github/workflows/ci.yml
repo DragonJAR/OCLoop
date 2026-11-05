@@ -17,14 +17,23 @@ on:
     branches: [main]
   workflow_dispatch:
 
+# Least privilege: the workflow only checks out and reads the repo.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A newer push cancels a stale PR/branch run, but never a main run: every
+  # commit on main keeps its own green/red signal.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   gates:
     name: ${{ matrix.os }}
     runs-on: ${{ matrix.os }}
+    # Local suite + build take well under a minute; the slowest runner
+    # (Windows) a few. A hung child or runner must not burn the 360m default.
+    timeout-minutes: 20
     strategy:
       fail-fast: false
       matrix:
@@ -38,7 +47,9 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned to the 1.3 line (local dev uses 1.3.8): a new Bun minor must
+          # not break main without a change in this repo. Bump deliberately.
+          bun-version: 1.3.x
 
       - name: Install dependencies
         run: bun install --frozen-lockfile
@@ -66,6 +77,8 @@ jobs:
         # Pinned image: macos-latest runners died at 15m in consecutive runs.
         os: [macos-15, windows-latest, ubuntu-latest]
         # v1 has no server password (v1 ready-marker path); latest is v2 (Basic auth).
+        # `@latest` floats ON PURPOSE: it tracks the current v2 line users
+        # install, so an upstream break shows up here before it reaches them.
         opencode: ["opencode-ai@^1", "opencode-ai@latest"]
 
     steps:
@@ -75,7 +88,9 @@ jobs:
       - name: Set up Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          # Pinned to the 1.3 line (local dev uses 1.3.8): a new Bun minor must
+          # not break main without a change in this repo. Bump deliberately.
+          bun-version: 1.3.x
 
       - name: Install the real OpenCode binary
         shell: bash
