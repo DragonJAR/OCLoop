@@ -595,6 +595,18 @@ describe("getConfigDir — per-platform location", () => {
     expect(getConfigDir("darwin")).toBe(join(dir, "xdg", "ocloop"))
   })
 
+  it("ignores a relative XDG_CONFIG_HOME (XDG spec: relative values are invalid)", () => {
+    process.env.XDG_CONFIG_HOME = "config"
+    expect(getConfigDir("linux")).toBe(join(homedir(), ".config", "ocloop"))
+    expect(getConfigDir("darwin")).toBe(join(homedir(), ".config", "ocloop"))
+  })
+
+  it("ignores a relative XDG_CONFIG_HOME on Windows too (falls back to %APPDATA%)", () => {
+    process.env.XDG_CONFIG_HOME = "config"
+    process.env.APPDATA = join(dir, "AppData", "Roaming")
+    expect(getConfigDir("win32")).toBe(join(dir, "AppData", "Roaming", "ocloop"))
+  })
+
   it("falls back to ~/.config when XDG_CONFIG_HOME is unset", () => {
     delete process.env.XDG_CONFIG_HOME
     delete process.env.APPDATA

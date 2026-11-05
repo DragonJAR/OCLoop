@@ -7,7 +7,7 @@
 
 import { existsSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { join } from "node:path"
+import { isAbsolute, join } from "node:path"
 import { atomicWriteTextSync, cleanupDeterministicTmp } from "./atomic-fs"
 import { log } from "./debug-logger"
 import { isLocale } from "./i18n"
@@ -191,8 +191,12 @@ export function resolveResilience(
 /**
  * Directory holding the user-level config file.
  *
- * - `XDG_CONFIG_HOME` wins everywhere: it is an explicit override, and it is
- *   what a Linux user (or a WSL / Git Bash environment) sets on purpose.
+ * - `XDG_CONFIG_HOME` wins everywhere when it is an ABSOLUTE path: it is an
+ *   explicit override, and it is what a Linux user (or a WSL / Git Bash
+ *   environment) sets on purpose. A relative value is ignored, per the XDG
+ *   Base Directory spec ("if the variable is set, but not absolute, its value
+ *   is ignored") — otherwise `XDG_CONFIG_HOME=config` would silently scatter
+ *   the config across whatever the current working directory happens to be.
  * - Windows otherwise uses `%APPDATA%\ocloop`
  *   (`C:\Users\<u>\AppData\Roaming\ocloop`), where Windows applications are
  *   expected to keep per-user settings.
@@ -203,7 +207,7 @@ export function resolveResilience(
  */
 export function getConfigDir(platform: NodeJS.Platform = process.platform): string {
   const xdgConfigHome = process.env.XDG_CONFIG_HOME
-  if (xdgConfigHome) {
+  if (xdgConfigHome && isAbsolute(xdgConfigHome)) {
     return join(xdgConfigHome, "ocloop")
   }
   if (platform === "win32") {

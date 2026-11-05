@@ -341,10 +341,11 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     expect(result.error).toContain("url is required")
   })
 
-  it("spawns with detached: true and windowsHide: true (Finding 11.2.A)", async () => {
-    // The flags prevent SIGHUP from the parent TUI on POSIX and suppress the
-    // console flash on Windows. Pin them so a future refactor that drops them
-    // does not silently regress.
+  it("spawns detached with windowsHide only for win32 console wrappers (B1)", async () => {
+    // detached stays on every platform (SIGHUP protection, Finding 11.2.A);
+    // windowsHide now applies ONLY when the direct child is a transient
+    // console wrapper — on the direct spawn path it hid the real terminal's
+    // window (B1). xterm is a direct spawn on POSIX: no hide.
     commandExistsImpl = async () => true
     await launchTerminal(
       { type: "known", name: "xterm" },
@@ -357,7 +358,59 @@ describe("launchTerminal (Finding 18.2.D)", () => {
       windowsHide?: boolean
     }
     expect(opts.detached).toBe(true)
-    expect(opts.windowsHide).toBe(true)
+    expect(opts.windowsHide).toBe(false)
+  })
+
+  it("keeps windowsHide for the PowerShell shim wrapper path on win32", async () => {
+    const shim = String.raw`C:\Program Files\my-term.cmd`
+    resolveSpawnableImpl = async () => shim
+    await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "my-term", args: "-e {cmd}" },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls).toHaveLength(1)
+    expect(spawnState.calls[0].cmd[0]).toEndWith("powershell.exe")
+    expect((spawnState.calls[0].opts as { windowsHide?: boolean }).windowsHide).toBe(true)
+  })
+
+  it("keeps windowsHide for the `cmd /c start` wrapper path on win32", async () => {
+    // The known `cmd` entry spawns cmd.exe whose console flashes before
+    // `start` opens the real window; hiding the wrapper is the anti-flash win.
+    resolveSpawnableImpl = async () => String.raw`C:\Windows\System32\cmd.exe`
+    await withPlatform("win32", () => launchTerminal(
+      { type: "known", name: "cmd" },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls).toHaveLength(1)
+    expect(spawnState.calls[0].cmd).toEqual([
+      String.raw`C:\Windows\System32\cmd.exe`, "/c", "start", "", "cmd", "/k",
+      "opencode", "attach", "http://127.0.0.1:4096", "--session", "ses_abc",
+    ])
+    expect((spawnState.calls[0].opts as { windowsHide?: boolean }).windowsHide).toBe(true)
+  })
+
+  it("does NOT hide a directly-spawned terminal exe on win32 (B1)", async () => {
+    // wt.exe is the terminal itself: windowsHide would start its window hidden.
+    resolveSpawnableImpl = async () =>
+      String.raw`C:\Users\Ana\AppData\Local\Microsoft\WindowsApps\wt.exe`
+    await withPlatform("win32", () => launchTerminal(
+      { type: "known", name: "Windows Terminal" },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls).toHaveLength(1)
+    const opts = spawnState.calls[0].opts as { windowsHide?: boolean; detached?: boolean }
+    expect(opts.windowsHide).toBe(false)
+    expect(opts.detached).toBe(true)
+  })
+
+  it("does NOT hide a custom terminal exe spawned directly on win32", async () => {
+    resolveSpawnableImpl = async () => String.raw`C:\Program Files\wezterm\wezterm.exe`
+    await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "wezterm", args: "start -- {cmd}" },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(spawnState.calls).toHaveLength(1)
+    expect((spawnState.calls[0].opts as { windowsHide?: boolean }).windowsHide).toBe(false)
   })
 
   it("uses an encoded PowerShell invocation for a Windows shell shim", async () => {

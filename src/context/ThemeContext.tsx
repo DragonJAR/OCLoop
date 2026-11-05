@@ -10,6 +10,7 @@
 
 import { createContext, useContext, createSignal, onMount, type JSX } from "solid-js"
 import { join } from "node:path"
+import { homedir } from "node:os"
 import {
   getResolvedTheme,
   isValidTheme,
@@ -85,16 +86,17 @@ interface OpenCodeKV {
  * concatenation (`${home}/.local/state`) produced mixed forward+back slashes
  * on Windows (`C:\Users\foo/.local/state/...`), which Node/Bun tolerate on
  * read but which can confuse other tools and look broken in error messages.
- * `HOME || USERPROFILE` covers Unix and Windows home resolution. OpenCode
- * itself uses the XDG `~/.local/state/opencode` convention on all platforms,
- * so the directory layout is kept consistent with it (we read a file it
- * writes).
+ * `homedir()` resolves the home directory natively on every platform (same
+ * pattern as `config.ts`): on Windows it consults USERPROFILE and
+ * HOMEDRIVE/HOMEPATH via the Win32 API, so a POSIX-style `HOME` inherited from
+ * Git Bash/MSYS2 (`/c/Users/dev`) can no longer produce a garbage path.
+ * OpenCode itself uses the XDG `~/.local/state/opencode` convention on all
+ * platforms, so the directory layout is kept consistent with it (we read a
+ * file it writes).
  */
 function getKVPath(): string {
   const xdgState = process.env.XDG_STATE_HOME
-  const home = process.env.HOME || process.env.USERPROFILE || ""
-
-  const stateDir = xdgState || join(home, ".local", "state")
+  const stateDir = xdgState || join(homedir(), ".local", "state")
   return join(stateDir, "opencode", "kv.json")
 }
 

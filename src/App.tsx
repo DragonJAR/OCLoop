@@ -926,12 +926,14 @@ function AppContent(props: AppProps) {
       const absolutePlanPath = path.resolve(planFile)
       const absoluteFilePath = path.resolve(file)
 
-      // Windows filesystems are case-insensitive, so `C:\repo\plan.md` and
-      // `C:\repo\PLAN.md` are the same file. Comparing the raw strings there
-      // misses the edit and the dashboard keeps showing a stale plan. POSIX
-      // filesystems are case-sensitive, so the comparison stays exact.
+      // Windows AND macOS filesystems are case-insensitive (APFS/HFS+ keep
+      // that default on macOS), so `C:\repo\plan.md` vs `C:\repo\PLAN.md` —
+      // or `PLAN.md` vs `plan.md` on a Mac — are the same file. Comparing the
+      // raw strings there misses the edit and the dashboard keeps showing a
+      // stale plan. Linux filesystems are case-sensitive, so the comparison
+      // stays exact there.
       const samePath =
-        process.platform === "win32"
+        process.platform === "win32" || process.platform === "darwin"
           ? absoluteFilePath.toLowerCase() === absolutePlanPath.toLowerCase()
           : absoluteFilePath === absolutePlanPath
 

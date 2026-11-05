@@ -14,6 +14,7 @@
 
 import { createSignal } from "solid-js"
 import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./constants"
+import { getConfigPath } from "./config"
 
 export type Locale = "en" | "es"
 
@@ -22,6 +23,24 @@ type Msg = string | ((p: Params) => string)
 
 export function isLocale(v: unknown): v is Locale {
   return v === "en" || v === "es"
+}
+
+/**
+ * The config-file path a user-visible message should cite. The hardcoded
+ * `~/.config/ocloop/ocloop.json` in these messages was wrong on Windows
+ * (where the real path is `%APPDATA%\ocloop\ocloop.json` unless XDG is set),
+ * so the strings interpolate the REAL path instead. Callers may pass an
+ * explicit `configPath` param (tests, future call sites); the default resolves
+ * live from `getConfigPath()`, which every call site gets for free — including
+ * ones that don't pass params at all.
+ *
+ * Note: config.ts imports `isLocale` from here; this import goes the other
+ * way. Both cross-references are hoisted function declarations and nothing
+ * runs at module top level, so the cycle is evaluation-order safe.
+ */
+function configPathFor(p: Params): string {
+  const explicit = p.configPath
+  return typeof explicit === "string" && explicit ? explicit : getConfigPath()
 }
 
 // Locale-identical UI strings — written once here and spread into BOTH `en` and
@@ -74,7 +93,7 @@ const en = {
     "Could not create the planning session. Make sure opencode is installed and the port isn't in use (try --port <number>).",
   cpGenerating: "Generating plan… (this may take a few minutes — please be patient)\n",
   cpTimeout: (p: Params) =>
-    `Plan generation timed out after ${p.secs}s (~${Math.round(Number(p.secs) / 60)} min). Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=1800000 for 30 min), or set "resilience": { "planTimeoutMs": <ms> } in ~/.config/ocloop/ocloop.json — or simplify the goal.`,
+    `Plan generation timed out after ${p.secs}s (~${Math.round(Number(p.secs) / 60)} min). Increase the budget with --resilience planTimeoutMs=<ms> (e.g. planTimeoutMs=1800000 for 30 min), or set "resilience": { "planTimeoutMs": <ms> } in ${configPathFor(p)} — or simplify the goal.`,
   cpNoContent:
     "The model returned no content. Try again with a different goal.",
   cpProposedTitle: "PROPOSED PLAN",
@@ -174,7 +193,7 @@ Options:
 Resilience keys (--resilience <key>=<value>, repeatable; defaults shown):
 ${p.resilienceKeys}
 
-Config file (~/.config/ocloop/ocloop.json): also sets evals, theme, terminal, scrollbar_visible — see README.
+Config file (${configPathFor(p)}): also sets evals, theme, terminal, scrollbar_visible — see README.
 
 Examples:
   ocloop                           # Start, wait for [S] to begin
@@ -680,9 +699,11 @@ Examples:
   toastRestarting: "Restarting OpenCode server…",
   // Surfaced when saveConfig returns false (EACCES/ENOSPC/EROFS/EXDEV). The
   // on-disk state is stale and the user needs to know the change won't survive
-  // a restart.
-  toastConfigSaveFailed:
-    "Failed to save config — change will not persist. Check that ~/.config/ocloop/ocloop.json is writable.",
+  // a restart. The path cited is the REAL config path (XDG > %APPDATA% >
+  // ~/.config), not the hardcoded POSIX location — on Windows that file is
+  // never read.
+  toastConfigSaveFailed: (p: Params) =>
+    `Failed to save config — change will not persist. Check that ${configPathFor(p)} is writable.`,
   // Chaos fault-injection (debug + --chaos). One label + one "done" per action,
   // so the command title and its toast are single-sourced.
   chaosKill: "Chaos: kill server",
@@ -821,7 +842,7 @@ const es: Record<MessageKey, Msg> = {
     "No se pudo crear la sesión de planificación. Verifica que opencode esté instalado y que el puerto no esté en uso (usa --port <número>).",
   cpGenerating: "Generando plan… (esto puede tardar unos minutos, ten paciencia)\n",
   cpTimeout: (p) =>
-    `La generación del plan superó el tiempo límite (${p.secs}s, ~${Math.round(Number(p.secs) / 60)} min). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=1800000 para 30 min), o pon "resilience": { "planTimeoutMs": <ms> } en ~/.config/ocloop/ocloop.json — o simplifica el objetivo.`,
+    `La generación del plan superó el tiempo límite (${p.secs}s, ~${Math.round(Number(p.secs) / 60)} min). Auméntalo con --resilience planTimeoutMs=<ms> (p. ej. planTimeoutMs=1800000 para 30 min), o pon "resilience": { "planTimeoutMs": <ms> } en ${configPathFor(p)} — o simplifica el objetivo.`,
   cpNoContent:
     "El modelo no devolvió contenido. Intenta de nuevo con otro objetivo.",
   cpProposedTitle: "PLAN PROPUESTO",
@@ -918,7 +939,7 @@ Opciones:
 Claves de resiliencia (--resilience <clave>=<valor>, repetible; valores por defecto):
 ${p.resilienceKeys}
 
-Configuración (~/.config/ocloop/ocloop.json): evals, theme, terminal, scrollbar_visible.
+Configuración (${configPathFor(p)}): evals, theme, terminal, scrollbar_visible.
 
 Ejemplos:
   ocloop                           # Abrir y esperar a [S]
@@ -1360,8 +1381,8 @@ Ejemplos:
   toastLanguageChanged: "Idioma cambiado",
   toastRestarting: "Reiniciando el servidor OpenCode…",
   // Spanish mirror of toastConfigSaveFailed above.
-  toastConfigSaveFailed:
-    "Fallo al guardar la configuración — el cambio no se mantendrá. Verifica que ~/.config/ocloop/ocloop.json sea escribible.",
+  toastConfigSaveFailed: (p: Params) =>
+    `Fallo al guardar la configuración — el cambio no se mantendrá. Verifica que ${configPathFor(p)} sea escribible.`,
   chaosKill: "Chaos: matar servidor",
   chaosKillDone: "Chaos: servidor terminado",
   chaosRevive: "Chaos: revivir servidor",

@@ -29,7 +29,7 @@ import { getIgnoredCreatePlanFlags } from "./lib/create-plan-warning"
 import { randomBytes } from "node:crypto"
 import { writeFile, unlink } from "node:fs/promises"
 import { TERMINAL_RESTORE_SEQUENCE } from "./lib/terminal-restore"
-import { ensureWindowsConsoleReady } from "./lib/windows-console"
+import { ensureWindowsConsoleReady, msysVtTerminalAssumed } from "./lib/windows-console"
 import { killAllTrackedSync } from "./lib/kill-tree"
 
 // DEFAULT_PLAN_MODEL / DEFAULT_PLAN_AGENT now live in ./lib/constants (shared
@@ -528,7 +528,16 @@ async function main(): Promise<void> {
   // so the PLAN.md / .loop-prompt.md checks still run (the auto-create prompt
   // side effect is preserved), and before tuiStarted = true so the exit handler
   // skips its terminal-mode restore. The --create-plan path never reaches here.
-  if (!process.stdout.isTTY || !process.stdin.isTTY) {
+  //
+  // One exception (B5): Git Bash / MSYS2 mintty sessions expose their pty as a
+  // named pipe, so isTTY is false even though mintty is a fully interactive,
+  // VT-capable terminal. `msysVtTerminalAssumed()` recognizes that exact shape
+  // (win32 + stdio not console buffers + modern TERM) and lets it through;
+  // every other non-TTY invocation keeps the hard gate.
+  if (
+    (!process.stdout.isTTY || !process.stdin.isTTY) &&
+    !msysVtTerminalAssumed()
+  ) {
     console.error(t("errNoTty"))
     process.exit(1)
   }

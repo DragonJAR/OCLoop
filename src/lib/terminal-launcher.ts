@@ -368,12 +368,28 @@ export async function launchTerminal(
     const spawnArgs = isWindowsShellShim(spawnCommand)
       ? windowsShimInvocation(spawnCommand, args)
       : [spawnCommand, ...args]
+    // windowsHide must only be set when the DIRECT child is a transient console
+    // WRAPPER, not the terminal itself (STARTF_USESHOWWINDOW/SW_HIDE would start
+    // the real terminal's window hidden — the B1 audit defect). Two wrapper
+    // shapes exist on win32:
+    // - the PowerShell -EncodedCommand console that runs a .cmd/.bat/.ps1 shim
+    //   (isWindowsShellShim): hiding it removes the flash; the terminal the
+    //   script launches gets the default show state.
+    // - `cmd /c start "" cmd /k ...`: the cmd.exe wrapper's console would flash
+    //   before `start` opens the real window (start passes its own, visible
+    //   STARTUPINFO — the wrapper's hide is not inherited).
+    // Everything else (wt.exe, wezterm.exe, alacritty.exe, xterm, osascript...)
+    // spawns the terminal DIRECTLY, so no hide. POSIX ignores the flag anyway.
+    const hideWrapperConsole =
+      process.platform === "win32" &&
+      (isWindowsShellShim(spawnCommand) ||
+        (args[0] === "/c" && args[1] === "start"))
     const proc = Bun.spawn(spawnArgs, {
       stdout: "ignore",
       stderr: "ignore",
       stdin: "ignore",
       detached: true,
-      windowsHide: true,
+      windowsHide: hideWrapperConsole,
     })
 
     // A wrapper that exits immediately with an error never opened a terminal.

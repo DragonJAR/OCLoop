@@ -28,3 +28,34 @@ for (const locale of ["en", "es"] as const) {
     expect(t("defaultLoopPrompt").toLowerCase()).toMatch(/working directory|directorio de trabajo/)
   })
 }
+
+// B3: messages that cite the config file must interpolate the REAL path
+// (getConfigPath(): XDG_CONFIG_HOME > %APPDATA% > ~/.config), not the
+// hardcoded POSIX location — on Windows that file is never read. Pinned in
+// both locales; an explicit configPath param must win for tests/future sites.
+import { getConfigPath } from "./config"
+
+for (const locale of ["en", "es"] as const) {
+  test(`config-path messages (${locale}) cite the real config path`, () => {
+    setLocale(locale)
+    expect(t("toastConfigSaveFailed")).toContain(getConfigPath())
+    expect(t("cpTimeout", { secs: 60 })).toContain(getConfigPath())
+    expect(t("cliHelp", { version: "test", resilienceKeys: "n/a" })).toContain(getConfigPath())
+  })
+
+  test(`config-path messages (${locale}) accept an explicit configPath param`, () => {
+    setLocale(locale)
+    expect(t("toastConfigSaveFailed", { configPath: "/custom/ocloop.json" })).toContain(
+      "/custom/ocloop.json",
+    )
+    expect(t("toastConfigSaveFailed", { configPath: "/custom/ocloop.json" })).not.toContain(
+      getConfigPath(),
+    )
+  })
+
+  test(`config-path messages (${locale}) no longer cite the hardcoded POSIX path`, () => {
+    setLocale(locale)
+    expect(t("toastConfigSaveFailed")).not.toContain("~/.config/ocloop/ocloop.json")
+    expect(t("cpTimeout", { secs: 60 })).not.toContain("~/.config/ocloop/ocloop.json")
+  })
+}
