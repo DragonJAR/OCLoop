@@ -3,6 +3,20 @@ import { describe, expect, it } from "bun:test"
 import { formatPlanForSave, runCreatePlanFlow, type CreatePlanFlowDeps } from "./create-plan-flow"
 import type { OpencodeBackend, SessionMessage } from "./api"
 import type { ReconcileResult } from "./api"
+import { systemEol } from "./text"
+import { withPlatform } from "./test-helpers/with-platform"
+
+/**
+ * formatPlanForSave defaults `platform` to process.platform, so a NEW plan is
+ * written with CRLF on win32 and LF elsewhere (O-05, by design). Flow-level
+ * tests therefore pin the platform explicitly and build every expected string
+ * with that platform's EOL instead of depending on the host running the suite.
+ */
+const runOn = (platform: NodeJS.Platform, deps: CreatePlanFlowDeps) =>
+  withPlatform(platform, () => runCreatePlanFlow(deps))
+const eolize = (text: string, platform: NodeJS.Platform) =>
+  text.replace(/\n/g, systemEol(platform))
+const PLATFORMS: NodeJS.Platform[] = ["linux", "darwin", "win32"]
 
 /**
  * Coverage for the `--create-plan` flow, previously an untested inline
@@ -184,46 +198,50 @@ describe("runCreatePlanFlow", () => {
   })
 
   describe("accept ([y/yes/s/si/sí])", () => {
-    it("writes the plan and returns saved with runAfter=false on 'y'", async () => {
-      const { deps, state } = makeDeps({
-        choices: ["y"],
-        messagesByIteration: [[assistantMsg("# Plan\n\n- [ ] task one\n")]],
-        verdict: "idle",
+    for (const platform of PLATFORMS) {
+      it(`writes the plan and returns saved with runAfter=false on 'y' (${platform})`, async () => {
+        const { deps, state } = makeDeps({
+          choices: ["y"],
+          messagesByIteration: [[assistantMsg("# Plan\n\n- [ ] task one\n")]],
+          verdict: "idle",
+        })
+        const outcome = await runOn(platform, deps)
+        expect(outcome).toEqual({ type: "saved", runAfter: false })
+        expect(state.writtenPlan).toEqual({
+          path: "/tmp/__test_plan.md",
+          content: eolize("# Plan\n\n- [ ] task one\n", platform),
+        })
       })
-      const outcome = await runCreatePlanFlow(deps)
-      expect(outcome).toEqual({ type: "saved", runAfter: false })
-      expect(state.writtenPlan).toEqual({
-        path: "/tmp/__test_plan.md",
-        content: "# Plan\n\n- [ ] task one\n",
-      })
-    })
+    }
 
     it("accepts the Spanish 'sí'", async () => {
       const { deps, state } = makeDeps({
         choices: ["sí"],
         messagesByIteration: [[assistantMsg("plan")]],
       })
-      const outcome = await runCreatePlanFlow(deps)
+      const outcome = await runOn("linux", deps)
       expect(outcome).toEqual({ type: "saved", runAfter: false })
       expect(state.writtenPlan?.content).toBe("plan\n")
     })
 
-    it("strips a ```fence``` wrapper before saving", async () => {
-      const { deps, state } = makeDeps({
-        choices: ["yes"],
-        messagesByIteration: [[assistantMsg("```markdown\n- [ ] task\n```")]],
+    for (const platform of PLATFORMS) {
+      it(`strips a \`\`\`fence\`\`\` wrapper before saving (${platform})`, async () => {
+        const { deps, state } = makeDeps({
+          choices: ["yes"],
+          messagesByIteration: [[assistantMsg("```markdown\n- [ ] task\n```")]],
+        })
+        await runOn(platform, deps)
+        expect(state.writtenPlan?.content).toBe(eolize("- [ ] task\n", platform))
       })
-      await runCreatePlanFlow(deps)
-      expect(state.writtenPlan?.content).toBe("- [ ] task\n")
-    })
+    }
 
     it("ensures the saved content ends with a newline", async () => {
       const { deps, state } = makeDeps({
         choices: ["y"],
         messagesByIteration: [[assistantMsg("- [ ] no trailing newline")]],
       })
-      await runCreatePlanFlow(deps)
-      expect(state.writtenPlan?.content.endsWith("\n")).toBe(true)
+      await runOn("win32", deps)
+      expect(state.writtenPlan?.content.endsWith(systemEol("win32"))).toBe(true)
     })
 
     it("preserves CRLF of an existing plan when overwriting (O-05)", async () => {
@@ -232,7 +250,7 @@ describe("runCreatePlanFlow", () => {
         messagesByIteration: [[assistantMsg("# New Plan\n- [ ] task one\n")]],
       })
       deps.readExistingPlan = async () => "# Old Plan\r\n- [x] old task\r\n"
-      await runCreatePlanFlow(deps)
+      await runOn("linux", deps)
       expect(state.writtenPlan?.content).toBe("# New Plan\r\n- [ ] task one\r\n")
     })
   })
@@ -282,7 +300,7 @@ describe("runCreatePlanFlow", () => {
         choices: ["run"],
         messagesByIteration: [[assistantMsg("plan")]],
       })
-      const outcome = await runCreatePlanFlow(deps)
+      const outcome = await runOn("linux", deps)
       expect(outcome).toEqual({ type: "saved", runAfter: true })
       expect(state.writtenPlan?.content).toBe("plan\n")
     })
@@ -328,7 +346,7 @@ describe("runCreatePlanFlow", () => {
         // Two iterations: [0] first generation, [1] refined after edit feedback.
         messagesByIteration: [[assistantMsg("first plan")], [assistantMsg("refined plan")]],
       })
-      const outcome = await runCreatePlanFlow(deps)
+      const outcome = await runOn("linux", deps)
       expect(outcome).toEqual({ type: "saved", runAfter: false })
       expect(state.writtenPlan?.content).toBe("refined plan\n")
       // Two generations happened (one per outer-loop iteration).
