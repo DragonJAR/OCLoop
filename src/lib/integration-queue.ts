@@ -31,6 +31,7 @@ import {
   GIT_LONG_TIMEOUT_MS,
   GIT_TIMEOUT_EXIT_CODE,
   type GitRunner,
+  type GitRunOptions,
 } from "./workspace-manager"
 import type { WorkerSlotId } from "../types"
 
@@ -216,6 +217,28 @@ export async function integrateWorkerResult(
   const isPlanPath = (p: string) =>
     foldPathCase(p, platform) === foldPathCase(relPlanPath, platform)
 
+  // Run a git step whose failure must abort the integration: a silently
+  // ignored failure (e.g. `add -A` on a locked index) would skip the commit
+  // and still mark the task [x] with no code integrated.
+  const mustGit = async (
+    op: string,
+    args: string[],
+    cwd: string,
+    opts?: GitRunOptions,
+  ): Promise<{ ok: true; stdout: string } | { ok: false; error: IntegrationOutcome }> => {
+    const res = await runGit(args, cwd, opts)
+    if (res.exitCode !== 0) {
+      return {
+        ok: false,
+        error: {
+          status: "error",
+          message: `${op} failed for task ${job.taskId}: ${res.stderr.trim() || res.stdout.trim() || `exit ${res.exitCode}`}`,
+        },
+      }
+    }
+    return { ok: true, stdout: res.stdout }
+  }
+
   // 1. Read base PLAN.md vs worktree PLAN.md to extract any agent-written notes/recon tasks
   const basePlanRes = await runGit(["show", `${job.baseSha}:${relPlanPath}`], repoRoot)
   const basePlanContent =
@@ -227,24 +250,44 @@ export async function integrateWorkerResult(
   const { notes: extractedNotes, reconTasks: extractedReconTasks } =
     extractWorkerPlanEdits(basePlanContent, workerPlanContent, job.taskDescription)
 
-  // 2. Restore PLAN.md in the worktree to baseSha so it never conflicts on rebase
-  await runGit(["checkout", job.baseSha, "--", relPlanPath], job.worktreePath)
+  // 2. Restore PLAN.md in the worktree to baseSha so it never conflicts on rebase.
+  // Only when the plan is tracked at baseSha (the `show` above succeeded):
+  // an untracked plan cannot be checked out, and that is not a failure.
+  if (basePlanRes.exitCode === 0) {
+    const restore = await mustGit(
+      "Restoring the plan",
+      ["checkout", job.baseSha, "--", relPlanPath],
+      job.worktreePath,
+    )
+    if (!restore.ok) return restore.error
+  }
 
   // 3. Check if the worker left uncommitted code changes (excluding .loop* and PLAN.md)
-  const statusRes = await runGit(["status", "--porcelain"], job.worktreePath)
-  if (statusRes.exitCode === 0 && statusRes.stdout.trim() !== "") {
-    await runGit(["add", "-A"], job.worktreePath)
-    await runGit(["reset", "HEAD", "--", relPlanPath], job.worktreePath)
-    const stagedRes = await runGit(["diff", "--cached", "--name-only"], job.worktreePath)
-    if (stagedRes.stdout.trim() !== "") {
-      const commitRes = await runGit(
+  const status = await mustGit("git status", ["status", "--porcelain"], job.worktreePath)
+  if (!status.ok) return status.error
+  if (status.stdout.trim() !== "") {
+    const add = await mustGit("git add", ["add", "-A"], job.worktreePath)
+    if (!add.ok) return add.error
+    const unstage = await mustGit(
+      "Unstaging the plan",
+      ["reset", "HEAD", "--", relPlanPath],
+      job.worktreePath,
+    )
+    if (!unstage.ok) return unstage.error
+    const staged = await mustGit(
+      "git diff --cached",
+      ["diff", "--cached", "--name-only"],
+      job.worktreePath,
+    )
+    if (!staged.ok) return staged.error
+    if (staged.stdout.trim() !== "") {
+      const commit = await mustGit(
+        "Commit",
         ["commit", "-m", `chore(ocloop): complete task ${job.taskId}`],
         job.worktreePath,
         { timeoutMs: 120000 },
       )
-      if (commitRes.exitCode !== 0) {
-        return { status: "error", message: commitRes.stderr }
-      }
+      if (!commit.ok) return commit.error
     }
   } else {
     // If the worker already committed changes that included PLAN.md, strip PLAN.md from the commit
@@ -253,15 +296,19 @@ export async function integrateWorkerResult(
       job.worktreePath,
     )
     if (diffPlan.exitCode === 0 && diffPlan.stdout.trim() !== "") {
-      await runGit(["checkout", job.baseSha, "--", relPlanPath], job.worktreePath)
-      const amendRes = await runGit(
+      const restore = await mustGit(
+        "Restoring the plan",
+        ["checkout", job.baseSha, "--", relPlanPath],
+        job.worktreePath,
+      )
+      if (!restore.ok) return restore.error
+      const amend = await mustGit(
+        "Commit amend",
         ["commit", "--amend", "--no-edit", "--allow-empty"],
         job.worktreePath,
         { timeoutMs: 120000 },
       )
-      if (amendRes.exitCode !== 0) {
-        return { status: "error", message: amendRes.stderr }
-      }
+      if (!amend.ok) return amend.error
     }
   }
 
@@ -316,11 +363,13 @@ export async function integrateWorkerResult(
   }
   const mainHead = mainHeadRes.stdout.trim()
 
-  const changedRes = await runGit(
+  const changed = await mustGit(
+    "git diff base..HEAD",
     ["diff", "--name-only", `${job.baseSha}..HEAD`],
     job.worktreePath,
   )
-  const changedFiles = changedRes.stdout
+  if (!changed.ok) return changed.error
+  const changedFiles = changed.stdout
     .split(/\r?\n/)
     .map((s) => s.trim())
     .filter((s) => s.length > 0 && !isPlanPath(s))
