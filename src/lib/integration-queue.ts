@@ -25,7 +25,7 @@ import {
   markTaskCompleted,
   replaceTaskWithBlocked,
 } from "./plan-parser"
-import { isCaseInsensitiveFs } from "./path-semantics"
+import { foldPathCase, isCaseInsensitiveFs } from "./path-semantics"
 import {
   defaultGitRunner,
   GIT_LONG_TIMEOUT_MS,
@@ -213,8 +213,8 @@ export async function integrateWorkerResult(
   const worktreePlanPath = join(job.worktreePath, relPlanPath)
   // Second, defensive barrier (the canonical pathspec above is the real fix):
   // never let a casing variant of the plan count as a changed code file.
-  const foldCase = (p: string) => (isCaseInsensitiveFs(platform) ? p.toLowerCase() : p)
-  const isPlanPath = (p: string) => foldCase(p) === foldCase(relPlanPath)
+  const isPlanPath = (p: string) =>
+    foldPathCase(p, platform) === foldPathCase(relPlanPath, platform)
 
   // 1. Read base PLAN.md vs worktree PLAN.md to extract any agent-written notes/recon tasks
   const basePlanRes = await runGit(["show", `${job.baseSha}:${relPlanPath}`], repoRoot)
