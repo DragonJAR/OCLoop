@@ -45,6 +45,16 @@ let prevCwd: string
 const PROJECT_ROOT = process.cwd()
 const ENTRYPOINT = join(PROJECT_ROOT, "dist/index.js")
 
+/**
+ * Pin TERM for tests that expect the non-TTY guard (errNoTty) to fire. On
+ * win32 the guard has a deliberate exemption (B5): stdout is not a console
+ * buffer AND `TERM` names a VT-capable terminal => Git Bash/mintty is assumed
+ * interactive. A Windows CI runner's bash exports TERM=xterm*, which the child
+ * inherits, so the exemption fired and the guard was skipped. `dumb` never
+ * unlocks it (isVtCapableTerm), making the test hermetic on every platform.
+ */
+const NON_TTY_ENV = { TERM: "dumb" }
+
 beforeEach(() => {
   prevCwd = process.cwd()
   dir = mkdtempSync(join(tmpdir(), "ocloop-noargs-"))
@@ -90,6 +100,7 @@ describe("CLI: ejecución con PLAN.md mínimo válido", () => {
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
       timeoutMs: 5_000,
+      env: NON_TTY_ENV,
     })
 
     // Side-effect proof: validatePrerequisites ran end-to-end. PLAN.md
@@ -479,6 +490,7 @@ describe("CLI: ejecución con una sola tarea pendiente entre varias completadas"
     const result = await runCli(["--lang", "en"], {
       entrypoint: ENTRYPOINT,
       timeoutMs: 5_000,
+      env: NON_TTY_ENV,
     })
 
     // Same side-effect proof as the other pre-flight tests: the pre-TUI
