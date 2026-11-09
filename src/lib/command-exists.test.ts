@@ -10,6 +10,7 @@
 import { beforeEach, describe, expect, it } from "bun:test"
 import { resolve } from "node:path"
 import { mockCommandExists, realCommandExists } from "./command-exists-mock"
+import { withSystemRoot } from "./test-helpers/with-system-root"
 
 // resolveSpawnable delegates to resolveCommandPath via a live module binding;
 // reset any partial mock other files registered so internal calls stay real.
@@ -181,23 +182,11 @@ describe("isInCwd — cwd filter with an injectable cwd (any host)", () => {
 })
 
 describe("systemBinary — absolute paths for guaranteed OS binaries", () => {
-  const withSystemRoot = (value: string | undefined, fn: () => void) => {
-    const prev = process.env.SystemRoot
-    if (value === undefined) delete process.env.SystemRoot
-    else process.env.SystemRoot = value
-    try {
-      fn()
-    } finally {
-      if (prev === undefined) delete process.env.SystemRoot
-      else process.env.SystemRoot = prev
-    }
-  }
-
-  it("win32: %SystemRoot%\\System32\\<name>.exe, defaulting to C:\\Windows", () => {
-    withSystemRoot("D:\\Win", () => {
+  it("win32: %SystemRoot%\\System32\\<name>.exe, defaulting to C:\\Windows", async () => {
+    await withSystemRoot("D:\\Win", () => {
       expect(systemBinary("clip", "win32")).toBe("D:\\Win\\System32\\clip.exe")
     })
-    withSystemRoot(undefined, () => {
+    await withSystemRoot(undefined, () => {
       expect(systemBinary("cmd", "win32")).toBe("C:\\Windows\\System32\\cmd.exe")
       expect(systemBinary("powershell", "win32", ["WindowsPowerShell", "v1.0"])).toBe(
         "C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe",

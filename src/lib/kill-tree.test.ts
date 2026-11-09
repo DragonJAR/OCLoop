@@ -9,6 +9,7 @@ import {
   taskkillPath,
   trackProcess,
 } from "./kill-tree"
+import { withSystemRoot } from "./test-helpers/with-system-root"
 
 const realKill = process.kill
 let signals: Array<{ pid: number; signal: unknown }> = []
@@ -101,25 +102,16 @@ describe("killTreeSync — POSIX", () => {
 })
 
 describe("taskkillPath", () => {
-  it("is absolute under SystemRoot\\System32", () => {
-    const prev = process.env.SystemRoot
-    process.env.SystemRoot = "D:\\Win"
-    try {
+  it("is absolute under SystemRoot\\System32", async () => {
+    await withSystemRoot("D:\\Win", () => {
       expect(taskkillPath()).toBe("D:\\Win\\System32\\taskkill.exe")
-    } finally {
-      if (prev === undefined) delete process.env.SystemRoot
-      else process.env.SystemRoot = prev
-    }
+    })
   })
 
-  it("defaults to C:\\Windows", () => {
-    const prev = process.env.SystemRoot
-    delete process.env.SystemRoot
-    try {
+  it("defaults to C:\\Windows", async () => {
+    await withSystemRoot(undefined, () => {
       expect(taskkillPath()).toBe("C:\\Windows\\System32\\taskkill.exe")
-    } finally {
-      if (prev !== undefined) process.env.SystemRoot = prev
-    }
+    })
   })
 })
 
