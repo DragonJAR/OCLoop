@@ -14,6 +14,7 @@
  */
 
 import type { PlanTaskNode } from "../types"
+import { foldPathCase } from "./path-semantics"
 import { parsePlanTasks } from "./plan-parser"
 
 export const MAX_PARALLEL_JOBS = 4
@@ -68,15 +69,6 @@ function normalizeScopePattern(raw: string): { prefix: string; isWildcard: boole
 }
 
 /**
- * Default file systems on Windows (NTFS) and macOS (APFS) are case-insensitive:
- * `src/App.tsx` and `src/app.tsx` are the SAME file there (same principle as
- * App.tsx's plan-path `samePath`). Linux stays case-sensitive.
- */
-function isCaseInsensitiveFs(platform: string): boolean {
-  return platform === "win32" || platform === "darwin"
-}
-
-/**
  * Returns true if two single file/glob scope patterns can touch the same file.
  * The platform is injectable (default `process.platform`, the commandExists DI
  * pattern) so the case-folding branch is testable on any host.
@@ -86,7 +78,7 @@ export function scopePatternsOverlap(
   patternB: string,
   platform: string = process.platform,
 ): boolean {
-  const fold = (p: string) => (isCaseInsensitiveFs(platform) ? p.toLowerCase() : p)
+  const fold = (p: string) => foldPathCase(p, platform)
   const a = normalizeScopePattern(fold(patternA))
   const b = normalizeScopePattern(fold(patternB))
 
