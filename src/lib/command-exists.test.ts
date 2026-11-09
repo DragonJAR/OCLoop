@@ -165,7 +165,13 @@ describe("isInCwd — cwd filter with an injectable cwd (any host)", () => {
     expect(isInCwd("C:\\Tools\\opencode.cmd", "win32", "c:\\proj")).toBe(false)
   })
 
-  it("POSIX stays case-sensitive", () => {
+  it("darwin matches the cwd case-insensitively (APFS default)", () => {
+    expect(isInCwd("/Proj/opencode", "darwin", "/proj")).toBe(true)
+    expect(isInCwd("/proj/opencode", "darwin", "/Proj/")).toBe(true)
+    expect(isInCwd("/other/opencode", "darwin", "/proj")).toBe(false)
+  })
+
+  it("Linux stays case-sensitive", () => {
     expect(isInCwd("/proj/opencode", "linux", "/proj")).toBe(true)
     expect(isInCwd("/Proj/opencode", "linux", "/proj")).toBe(false)
   })
@@ -178,6 +184,14 @@ describe("isInCwd — cwd filter with an injectable cwd (any host)", () => {
     expect(await resolveSpawnable("opencode", "win32", which, "c:\\other")).toBe(
       "C:\\Proj\\opencode.cmd",
     )
+  })
+
+  it("resolveSpawnable drops a planted darwin binary whose case differs from the cwd", async () => {
+    const { which } = fakeWhich({
+      opencode: "/Proj/opencode",
+    })
+    expect(await resolveSpawnable("opencode", "darwin", which, "/proj")).toBeNull()
+    expect(await resolveSpawnable("opencode", "darwin", which, "/other")).toBe("opencode")
   })
 })
 
