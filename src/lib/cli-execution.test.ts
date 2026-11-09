@@ -112,7 +112,15 @@ describe("CLI: ejecución con PLAN.md mínimo válido", () => {
     // re-checks the plan file after the prompt step) and the test
     // would catch it.
     const promptFile = join(dir, ".loop-prompt.md")
-    expect(existsSync(promptFile)).toBe(true)
+    // Diagnose first: when the auto-create did not land, the child's own
+    // stderr says why (errCannotCreatePrompt, a read-only cwd, ...) and the
+    // bare `expected true, received false` hides it.
+    expect({
+      exists: existsSync(promptFile),
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }).toMatchObject({ exists: true })
 
     // Phase 3 fix: clean exit 1 with the localized TTY-required
     // message. The pre-fix behavior (timeout-kill at 124, or SIGSEGV
@@ -498,7 +506,14 @@ describe("CLI: ejecución con una sola tarea pendiente entre varias completadas"
     // auto-created BEFORE the TTY guard. If the file is missing,
     // validation aborted earlier than expected.
     const promptFile = join(dir, DEFAULTS.PROMPT_FILE)
-    expect(existsSync(promptFile)).toBe(true)
+    // Same diagnostic shape as the test above: surface the child's stderr
+    // when the auto-create did not land.
+    expect({
+      exists: existsSync(promptFile),
+      exitCode: result.exitCode,
+      stdout: result.stdout,
+      stderr: result.stderr,
+    }).toMatchObject({ exists: true })
 
     // Phase 3 fix: clean exit 1 with the localized TTY-required message.
     // (No `stdout === ""` check — see comment in the "PLAN.md mínimo válido"
