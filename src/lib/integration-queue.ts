@@ -190,6 +190,17 @@ export type IntegrationOutcome =
  */
 export const GIT_COMMIT_TIMEOUT_MS = 120_000
 
+/**
+ * `-c` flags for OCLoop's internal commits: they are ephemeral commits in a
+ * disposable worktree, so the user's hooks and GPG signing must never run
+ * (a failing/slow pre-commit or an unavailable pinentry would block every
+ * integration).
+ */
+export function internalCommitConfig(platform: string = process.platform): string[] {
+  const nullPath = platform === "win32" ? "NUL" : "/dev/null"
+  return ["-c", `core.hooksPath=${nullPath}`, "-c", "commit.gpgsign=false"]
+}
+
 async function defaultReadFile(path: string): Promise<string | null> {
   try {
     return await Bun.file(path).text()
@@ -244,6 +255,7 @@ export async function integrateWorkerResult(
     }
     return { ok: true, stdout: res.stdout }
   }
+  const commitPrefix = internalCommitConfig(platform)
 
   // 1. Read base PLAN.md vs worktree PLAN.md to extract any agent-written notes/recon tasks
   const basePlanRes = await runGit(["show", `${job.baseSha}:${relPlanPath}`], repoRoot)
@@ -291,7 +303,7 @@ export async function integrateWorkerResult(
     if (staged.stdout.trim() !== "") {
       const commit = await mustGit(
         "Commit",
-        ["commit", "-m", `chore(ocloop): complete task ${job.taskId}`],
+        [...commitPrefix, "commit", "-m", `chore(ocloop): complete task ${job.taskId}`],
         job.worktreePath,
         { timeoutMs: GIT_COMMIT_TIMEOUT_MS },
       )
@@ -312,7 +324,7 @@ export async function integrateWorkerResult(
       if (!restore.ok) return restore.error
       const amend = await mustGit(
         "Commit amend",
-        ["commit", "--amend", "--no-edit", "--allow-empty"],
+        [...commitPrefix, "commit", "--amend", "--no-edit", "--allow-empty"],
         job.worktreePath,
         { timeoutMs: GIT_COMMIT_TIMEOUT_MS },
       )
