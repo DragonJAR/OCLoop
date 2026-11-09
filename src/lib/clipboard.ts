@@ -114,7 +114,11 @@ export async function copyToClipboard(
     );
   } catch (err) {
     // runClipboardTool never rejects, so this is the timeout: reap the hung
-    // tool defensively and report it instead of hanging the caller.
+    // tool defensively and report it instead of hanging the caller. The tool
+    // is spawned non-detached, so killTree is a real tree kill only on win32
+    // (taskkill /t); on POSIX it signals just the direct process. That is
+    // intended: xclip/xsel fork a daemon that must survive to serve the
+    // selection, and killing its group would clear the clipboard.
     if (spawned.proc) killTree(spawned.proc);
     return {
       success: false,

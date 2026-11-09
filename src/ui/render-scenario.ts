@@ -77,6 +77,11 @@ export async function runRenderScenario(opts: {
   const timeoutMs = opts.timeoutMs ?? 30_000
   let escalation: ReturnType<typeof setTimeout> | undefined
   const killer = setTimeout(() => {
+    // Bun.spawn is not detached here, so killTree is a real tree kill only on
+    // win32 (taskkill /t); on POSIX it signals just the direct child (there
+    // is no process group to target). Making it detached would need untracking
+    // on exit (Bun subprocesses lack `once`) and would orphan the child on
+    // Ctrl-C, so the scenario runner deliberately keeps the direct-kill model.
     killTree(child)
     // A child that ignores SIGTERM would leave `child.exited` pending forever.
     escalation = setTimeout(() => killTreeSync(child), 1_000)
