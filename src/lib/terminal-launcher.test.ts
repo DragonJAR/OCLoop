@@ -380,6 +380,7 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("keeps windowsHide for the PowerShell shim wrapper path on win32", async () => {
     const shim = String.raw`C:\Program Files\my-term.cmd`
     resolveSpawnableImpl = async () => shim
+    systemBinaryExistsImpl = (name) => name === "powershell"
     await withPlatform("win32", () => launchTerminal(
       { type: "custom", command: "my-term", args: "-e {cmd}" },
       "http://127.0.0.1:4096", "ses_abc",
@@ -387,6 +388,18 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     expect(spawnState.calls).toHaveLength(1)
     expect(spawnState.calls[0].cmd[0]).toEndWith("powershell.exe")
     expect((spawnState.calls[0].opts as { windowsHide?: boolean }).windowsHide).toBe(true)
+  })
+
+  it("degrades with a readable error when PowerShell is missing for a shim (win32)", async () => {
+    resolveSpawnableImpl = async () => String.raw`C:\Program Files\my-term.cmd`
+    systemBinaryExistsImpl = () => false
+    const result = await withPlatform("win32", () => launchTerminal(
+      { type: "custom", command: "my-term", args: "-e {cmd}" },
+      "http://127.0.0.1:4096", "ses_abc",
+    ))
+    expect(result.success).toBe(false)
+    expect(result.error).toContain("PowerShell")
+    expect(spawnState.calls).toHaveLength(0)
   })
 
   it("reports not-found for the known cmd entry when System32\\cmd.exe is missing (win32)", async () => {
@@ -451,6 +464,7 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("uses an encoded PowerShell invocation for a Windows shell shim", async () => {
     const shim = String.raw`C:\Program Files\my-term.cmd`
     resolveSpawnableImpl = async (cmd) => (cmd === "my-term" ? shim : null)
+    systemBinaryExistsImpl = (name) => name === "powershell"
 
     const result = await withPlatform("win32", async () =>
       launchTerminal(
@@ -472,6 +486,7 @@ describe("launchTerminal (Finding 18.2.D)", () => {
   it("keeps metacharacters inside a literal argument for a Windows shim", async () => {
     const shim = String.raw`C:\Program Files\my-term.ps1`
     resolveSpawnableImpl = async () => shim
+    systemBinaryExistsImpl = (name) => name === "powershell"
     await withPlatform("win32", () => launchTerminal(
       { type: "custom", command: "my-term", args: `-e "{cmd} & whoami"` },
       "http://127.0.0.1:4096", "ses_abc",

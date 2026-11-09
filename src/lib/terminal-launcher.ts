@@ -205,10 +205,12 @@ export function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
 }
 
 /** Pass shim path and argv as PowerShell string literals, never as shell code. */
+const POWERSHELL_SUBDIRS = ["WindowsPowerShell", "v1.0"]
+
 function windowsShimInvocation(command: string, args: string[]): string[] {
   const literal = (value: string) => `'${value.replaceAll("'", "''")}'`
   const script = `$ErrorActionPreference = 'Stop'; & ${[command, ...args].map(literal).join(" ")}; if ($null -ne $LASTEXITCODE) { exit $LASTEXITCODE }`
-  const powershell = systemBinary("powershell", "win32", ["WindowsPowerShell", "v1.0"])
+  const powershell = systemBinary("powershell", "win32", POWERSHELL_SUBDIRS)
   return [powershell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
     "-EncodedCommand", Buffer.from(script, "utf16le").toString("base64")]
 }
@@ -379,7 +381,13 @@ export async function launchTerminal(
     // does not SIGHUP the launched terminal. stdio: "ignore" because the terminal
     // owns its own TTY/display and we don't want OCLoop blocked on its output.
     // proc.unref() keeps the parent from waiting on the child.
-    const spawnArgs = isWindowsShellShim(spawnCommand)
+    const isShim = isWindowsShellShim(spawnCommand)
+    // The shim runs through an absolute System32 PowerShell: degrade with a
+    // readable error instead of a spawn failure when it is missing.
+    if (isShim && !systemBinaryExists("powershell", "win32", POWERSHELL_SUBDIRS)) {
+      return { success: false, error: t("errTerminalPowershellMissing") }
+    }
+    const spawnArgs = isShim
       ? windowsShimInvocation(spawnCommand, args)
       : [spawnCommand, ...args]
     // windowsHide must only be set when the DIRECT child is a transient console
