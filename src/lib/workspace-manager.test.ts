@@ -214,6 +214,18 @@ describe("execGit", () => {
     expect(kill).toHaveBeenCalled()
   })
 
+  it("resolves (never rejects, no stray timer) when exec throws synchronously (N-7)", async () => {
+    const exec: Parameters<typeof execGit>[3] = () => {
+      throw new TypeError("The \"cwd\" argument must be of type string")
+    }
+    const res = await execGit("/usr/bin/git", ["status"], "/repo", exec, 20)
+    expect(res.exitCode).toBe(1)
+    expect(res.stderr).toContain("failed to start")
+    // The deadline was cleared: past it, nothing fires (a stray timer would
+    // have read `child` in its TDZ and crashed the process).
+    await new Promise((r) => setTimeout(r, 40))
+  })
+
   it("a git that answers in time is not killed", async () => {
     const kill = mock(() => true)
     const exec: Parameters<typeof execGit>[3] = (_f, _a, _o, cb) => {

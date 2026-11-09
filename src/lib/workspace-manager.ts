@@ -99,6 +99,8 @@ export function execGit(
   timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitCommandResult> {
   return new Promise((resolvePromise) => {
+    // Declared before the timer reads it (no TDZ if exec throws synchronously).
+    let child: KillableProcess | void = undefined
     let settled = false
     const settle = (result: GitCommandResult) => {
       if (settled) return
@@ -114,26 +116,34 @@ export function execGit(
         stderr: `git ${args[0] ?? ""} timed out after ${timeoutMs}ms (credential prompt or a stuck .git/index.lock?)`,
       })
     }, timeoutMs)
-    const child = exec(
-      git,
-      args,
-      // windowsHide: background git must not flash a console window (or
-      // steal focus) on Windows while worktrees are created in parallel.
-      { cwd, maxBuffer: 10 * 1024 * 1024, windowsHide: true },
-      (err, stdout, stderr) => {
-        const code =
-          err && typeof (err as { code?: unknown }).code === "number"
-            ? ((err as unknown as { code: number }).code)
-            : err
-              ? 1
-              : 0
-        settle({
-          exitCode: code,
-          stdout: String(stdout ?? ""),
-          stderr: String(stderr ?? ""),
-        })
-      },
-    )
+    try {
+      child = exec(
+        git,
+        args,
+        {
+          cwd,
+          maxBuffer: 10 * 1024 * 1024,
+          // windowsHide: background git must not flash a console window (or
+          // steal focus) on Windows while worktrees are created in parallel.
+          windowsHide: true,
+        },
+        (err, stdout, stderr) => {
+          const code =
+            err && typeof (err as { code?: unknown }).code === "number"
+              ? ((err as unknown as { code: number }).code)
+              : err
+                ? 1
+                : 0
+          settle({
+            exitCode: code,
+            stdout: String(stdout ?? ""),
+            stderr: String(stderr ?? ""),
+          })
+        },
+      )
+    } catch (err) {
+      settle({ exitCode: 1, stdout: "", stderr: `git ${args[0] ?? ""} failed to start: ${String(err)}` })
+    }
   })
 }
 
