@@ -1,6 +1,6 @@
 import { describe, expect, it } from "bun:test"
 
-import { runCreatePlanFlow, type CreatePlanFlowDeps } from "./create-plan-flow"
+import { formatPlanForSave, runCreatePlanFlow, type CreatePlanFlowDeps } from "./create-plan-flow"
 import type { OpencodeBackend, SessionMessage } from "./api"
 import type { ReconcileResult } from "./api"
 
@@ -224,6 +224,46 @@ describe("runCreatePlanFlow", () => {
       })
       await runCreatePlanFlow(deps)
       expect(state.writtenPlan?.content.endsWith("\n")).toBe(true)
+    })
+
+    it("preserves CRLF of an existing plan when overwriting (O-05)", async () => {
+      const { deps, state } = makeDeps({
+        choices: ["yes"],
+        messagesByIteration: [[assistantMsg("# New Plan\n- [ ] task one\n")]],
+      })
+      deps.readExistingPlan = async () => "# Old Plan\r\n- [x] old task\r\n"
+      await runCreatePlanFlow(deps)
+      expect(state.writtenPlan?.content).toBe("# New Plan\r\n- [ ] task one\r\n")
+    })
+  })
+
+  describe("formatPlanForSave (O-05 EOL policy)", () => {
+    it("preserves CRLF from existing plan", () => {
+      const formatted = formatPlanForSave("line1\nline2", "existing\r\nfile\r\n", "linux")
+      expect(formatted).toBe("line1\r\nline2\r\n")
+    })
+
+    it("preserves LF from existing plan even on win32", () => {
+      const formatted = formatPlanForSave("line1\r\nline2", "existing\nfile\n", "win32")
+      expect(formatted).toBe("line1\nline2\n")
+    })
+
+    it("uses CRLF for a new plan on win32", () => {
+      const formatted = formatPlanForSave("line1\nline2", null, "win32")
+      expect(formatted).toBe("line1\r\nline2\r\n")
+    })
+
+    it("uses LF for a new plan on POSIX/darwin", () => {
+      const formatted = formatPlanForSave("line1\r\nline2", null, "darwin")
+      expect(formatted).toBe("line1\nline2\n")
+      const linuxFormatted = formatPlanForSave("line1\r\nline2", null, "linux")
+      expect(linuxFormatted).toBe("line1\nline2\n")
+    })
+
+    it("ensures exactly one trailing newline", () => {
+      expect(formatPlanForSave("plan\n\n\n", null, "linux")).toBe("plan\n")
+      expect(formatPlanForSave("plan", null, "linux")).toBe("plan\n")
+      expect(formatPlanForSave("plan\r\n\r\n", null, "win32")).toBe("plan\r\n")
     })
   })
 

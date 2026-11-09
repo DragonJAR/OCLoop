@@ -32,6 +32,7 @@
 import type { OpencodeBackend, SessionMessage, ReconcileResult } from "./api"
 import { hasNewAssistantReply, extractLastAssistantText, countAssistantMessages } from "./api"
 import { stripCodeFences } from "./plan-parser"
+import { eolOf, normalizeLineEndings, preserveEol } from "./text"
 import { t } from "./i18n"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
@@ -84,6 +85,8 @@ export interface CreatePlanFlowDeps {
   readEditFeedback: () => string | null
   /** Persist the generated plan. */
   writePlan: (path: string, content: string) => Promise<void>
+  /** Read the existing plan before overwriting, if any (defaults to Bun.file). */
+  readExistingPlan?: (path: string) => Promise<string | null>
   /** Sleep (injected so tests skip the 1500ms poll interval). */
   sleep: (ms: number) => Promise<void>
   /** Monotonic-ish clock for the deadline (injected; tests advance it). */
@@ -102,6 +105,43 @@ export function buildPlanPrompt(goal: string): string {
 /** Build a refinement prompt given the previous plan and user feedback. */
 export function buildRefinePrompt(previousPlan: string, feedback: string): string {
   return t("cpRefine", { feedback, plan: previousPlan })
+}
+
+/** Read existing plan text from disk if it exists; returns null otherwise. */
+async function defaultReadExistingPlan(path: string): Promise<string | null> {
+  try {
+    const file = Bun.file(path)
+    if (await file.exists()) {
+      return await file.text()
+    }
+  } catch {
+    // Return null if read fails
+  }
+  return null
+}
+
+/**
+ * Format plan content for saving:
+ * - If overwriting an existing PLAN.md, preserves its line endings.
+ * - For a new plan, uses host OS line endings (CRLF on Windows, LF on POSIX).
+ * - Ensures exactly one trailing newline in the target EOL format.
+ */
+export function formatPlanForSave(
+  plan: string,
+  existingContent: string | null,
+  platform: NodeJS.Platform | string = process.platform,
+): string {
+  const targetEol =
+    existingContent !== null
+      ? eolOf(existingContent)
+      : platform === "win32"
+        ? "\r\n"
+        : "\n"
+
+  const normalized = normalizeLineEndings(plan)
+  const trimmed = normalized.replace(/\n+$/, "")
+  const withNewline = `${trimmed}\n`
+  return preserveEol(targetEol, withNewline)
 }
 
 /**
@@ -186,17 +226,19 @@ export async function runCreatePlanFlow(deps: CreatePlanFlowDeps): Promise<Creat
       const choice = deps.readChoice().trim().toLowerCase()
 
       // Accept ([y/yes/s/si/sí]) → save, exit 0 (do not auto-run).
-      if (["y", "yes", "s", "si", "sí"].includes(choice)) {
-        await deps.writePlan(planPath, plan.endsWith("\n") ? plan : plan + "\n")
-        deps.emit(t("cpSaved", { path: planPath }))
-        return { type: "saved", runAfter: false }
-      }
       // Save & run ([r/run/ejecutar]) → save, boot TUI with run=true.
-      if (["r", "run", "ejecutar"].includes(choice)) {
-        await deps.writePlan(planPath, plan.endsWith("\n") ? plan : plan + "\n")
+      const isAccept = ["y", "yes", "s", "si", "sí"].includes(choice)
+      const isRun = ["r", "run", "ejecutar"].includes(choice)
+      if (isAccept || isRun) {
+        const readExisting = deps.readExistingPlan ?? defaultReadExistingPlan
+        const existing = await readExisting(planPath)
+        const formatted = formatPlanForSave(plan, existing)
+        await deps.writePlan(planPath, formatted)
         deps.emit(t("cpSaved", { path: planPath }))
-        deps.emit(t("cpStarting"))
-        return { type: "saved", runAfter: true }
+        if (isRun) {
+          deps.emit(t("cpStarting"))
+        }
+        return { type: "saved", runAfter: isRun }
       }
       // Edit ([e/edit/editar]) → refine prompt and regenerate.
       if (["e", "edit", "editar"].includes(choice)) {
