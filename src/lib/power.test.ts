@@ -36,7 +36,16 @@ import {
   type FakeProc,
 } from "./test-helpers/bun-spawn-mock"
 
+import { mockCommandExists } from "./command-exists-mock"
+
 setupBunSpawnMock()
+
+// caffeinate is gated by an absolute-path existence check; fake it so the
+// suite behaves the same on every host (and ignores mocks leaked by others).
+let caffeinateInstalled = true
+mockCommandExists({
+  systemBinaryExists: (name: string) => name === "caffeinate" && caffeinateInstalled,
+})
 
 const { createPowerManager } = await import("./power")
 
@@ -47,6 +56,18 @@ describe("createPowerManager (Finding 18.2.D)", () => {
     expect(pm.isActive()).toBe(true)
     expect(spawnState.calls).toHaveLength(1)
     expect(spawnState.calls[0].cmd).toEqual(["/usr/bin/caffeinate", "-dimsu", "-w", String(process.pid)])
+  })
+
+  it("start() degrades without spawning when caffeinate is not installed", () => {
+    caffeinateInstalled = false
+    try {
+      const pm = createPowerManager({ enabled: () => true, platform: "darwin" })
+      pm.start()
+      expect(pm.isActive()).toBe(false)
+      expect(spawnState.calls).toHaveLength(0)
+    } finally {
+      caffeinateInstalled = true
+    }
   })
 
   it("a second start() is a no-op while a proc is already running (line 35 guard)", () => {

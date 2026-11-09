@@ -6,6 +6,7 @@
 
 import { commandExists, systemBinary, systemBinaryExists } from "./command-exists"
 import { toErrorMessage } from "./format"
+import { killTree } from "./kill-tree"
 import { t } from "./i18n"
 import { TimeoutError, withTimeout } from "./with-timeout"
 
@@ -114,7 +115,7 @@ export async function copyToClipboard(
   } catch (err) {
     // runClipboardTool never rejects, so this is the timeout: reap the hung
     // tool defensively and report it instead of hanging the caller.
-    try { spawned.proc?.kill(); } catch { /* already dead */ }
+    if (spawned.proc) killTree(spawned.proc);
     return {
       success: false,
       error: err instanceof TimeoutError

@@ -7,7 +7,7 @@
  * still runs; it just won't prevent system sleep). Disable with `--no-caffeinate`.
  */
 
-import { systemBinary } from "./command-exists"
+import { systemBinary, systemBinaryExists } from "./command-exists"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
 
@@ -38,6 +38,12 @@ export function createPowerManager(options: PowerManagerOptions): PowerManager {
     if (!options.enabled()) return
     if (!isMac) {
       // Documented limitation: only macOS is supported.
+      return
+    }
+    if (!systemBinaryExists("caffeinate", "darwin")) {
+      log.health("power", "caffeinate_missing", {
+        message: `${systemBinary("caffeinate", "darwin")} not found; system sleep will not be prevented`,
+      })
       return
     }
     try {
