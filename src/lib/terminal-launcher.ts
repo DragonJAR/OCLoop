@@ -135,7 +135,7 @@ function toArgsPatternTokens(args: string[]): ArgsPatternToken[] {
   return args.map((value) => ({ value, quoted: false }))
 }
 
-function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
+export function parseCustomArgsPattern(pattern: string): ArgsPatternToken[] {
   const args: ArgsPatternToken[] = []
   let value = ""
   let quote: "'" | '"' | null = null
