@@ -1,4 +1,4 @@
-import { describe, expect, it, mock } from "bun:test"
+import { describe, expect, it, mock, spyOn } from "bun:test"
 import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
@@ -301,7 +301,14 @@ describe("execGit", () => {
     const exec: Parameters<typeof execGit>[3] = () => {
       throw new TypeError("The \"cwd\" argument must be of type string")
     }
-    const res = await execGit("/usr/bin/git", ["status"], "/repo", exec, 20)
+    const clearSpy = spyOn(globalThis, "clearTimeout")
+    let res: Awaited<ReturnType<typeof execGit>>
+    try {
+      res = await execGit("/usr/bin/git", ["status"], "/repo", exec, 20)
+      expect(clearSpy).toHaveBeenCalled()
+    } finally {
+      clearSpy.mockRestore()
+    }
     expect(res.exitCode).toBe(1)
     expect(res.stderr).toContain("failed to start")
     // The deadline was cleared: past it, nothing fires (a stray timer would
