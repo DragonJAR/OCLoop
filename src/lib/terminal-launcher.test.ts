@@ -23,6 +23,7 @@
 
 import { afterEach, describe, expect, it, mock } from "bun:test"
 import { withPlatform } from "./test-helpers/with-platform"
+import { withSystemRoot } from "./test-helpers/with-system-root"
 
 import { mockCommandExists } from "./command-exists-mock"
 import {
@@ -418,17 +419,12 @@ describe("launchTerminal (Finding 18.2.D)", () => {
     // lookup drops it when the cwd is System32, as in an elevated terminal).
     resolveSpawnableImpl = async () => null
     systemBinaryExistsImpl = (name) => name === "cmd"
-    const prevRoot = process.env.SystemRoot
-    process.env.SystemRoot = "C:\\Windows"
-    try {
+    await withSystemRoot("C:\\Windows", async () => {
       await withPlatform("win32", () => launchTerminal(
         { type: "known", name: "cmd" },
         "http://127.0.0.1:4096", "ses_abc",
       ))
-    } finally {
-      if (prevRoot === undefined) delete process.env.SystemRoot
-      else process.env.SystemRoot = prevRoot
-    }
+    })
     expect(spawnState.calls).toHaveLength(1)
     expect(spawnState.calls[0].cmd).toEqual([
       String.raw`C:\Windows\System32\cmd.exe`, "/c", "start", "", "cmd", "/k",

@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, mock } from "bun:test"
 import { mockCommandExists } from "./command-exists-mock"
 import { withPlatform } from "./test-helpers/with-platform"
+import { withSystemRoot } from "./test-helpers/with-system-root"
 
 // `mock.module` MUST be called before importing the module under test, so the
 // import is hoisted to the top of the file by Bun's bundler. The factory
@@ -53,9 +54,7 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
   })
 
   it("returns clip.exe by absolute System32 path on win32 (no PATH lookup)", async () => {
-    const prevRoot = process.env.SystemRoot
-    process.env.SystemRoot = "C:\\Windows"
-    try {
+    await withSystemRoot("C:\\Windows", async () => {
       // Even when the PATH lookup would drop it (cwd = System32, elevated).
       resolveSpawnableImpl = async () => null
       systemBinaryExistsImpl = (name) => name === "clip"
@@ -63,10 +62,7 @@ describe("detectClipboardTool (Finding 11.4.D)", () => {
         command: String.raw`C:\Windows\System32\clip.exe`,
         args: [],
       })
-    } finally {
-      if (prevRoot === undefined) delete process.env.SystemRoot
-      else process.env.SystemRoot = prevRoot
-    }
+    })
   })
 
   it("returns null when no clipboard tool is on PATH", async () => {
