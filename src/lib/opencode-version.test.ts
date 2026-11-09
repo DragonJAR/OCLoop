@@ -1,5 +1,13 @@
 import { describe, expect, it } from "bun:test"
-import { parseOpencodeVersion } from "./opencode-version"
+import { withPlatform } from "./test-helpers/with-platform"
+import { mockCommandExists } from "./command-exists-mock"
+
+// Registered before the module under test loads. Only `resolveSpawnable` is
+// stubbed; `isWindowsShellShim` stays real (it is the logic being exercised).
+let resolved: string | null = null
+mockCommandExists({ resolveSpawnable: async () => resolved })
+
+const { parseOpencodeVersion, getOpencodeSpawnTarget } = await import("./opencode-version")
 
 describe("parseOpencodeVersion", () => {
   it("recognizes the supported OpenCode v1 and v2 forms", () => {
@@ -43,5 +51,31 @@ describe("parseOpencodeVersion", () => {
       "Welcome to PowerShell\r\n" +
       "opencode 1.18.33\r\n"
     expect(parseOpencodeVersion(outputWithCrlf)).toBe(1)
+  })
+})
+
+describe("getOpencodeSpawnTarget", () => {
+  // `isWindowsShellShim` reads process.platform, so each case pins it.
+  it("returns null when opencode cannot be resolved (no bare-name fallback)", async () => {
+    resolved = null
+    expect(await getOpencodeSpawnTarget()).toBeNull()
+  })
+
+  it("returns the bare name without a shell for a POSIX hit", async () => {
+    resolved = "opencode"
+    const target = await withPlatform("linux", () => getOpencodeSpawnTarget())
+    expect(target).toEqual({ command: "opencode", shell: false })
+  })
+
+  it("quotes a .cmd shim and enables the shell on win32", async () => {
+    resolved = String.raw`C:\Users\Ana\AppData\Roaming\npm\opencode.cmd`
+    const target = await withPlatform("win32", () => getOpencodeSpawnTarget())
+    expect(target).toEqual({ command: `"${resolved}"`, shell: true })
+  })
+
+  it("spawns a .exe directly (no quotes, no shell) on win32", async () => {
+    resolved = String.raw`C:\Program Files\opencode\opencode.exe`
+    const target = await withPlatform("win32", () => getOpencodeSpawnTarget())
+    expect(target).toEqual({ command: resolved, shell: false })
   })
 })
