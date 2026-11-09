@@ -399,36 +399,52 @@ export async function integrateWorkerResult(
     .filter((s) => s.length > 0 && !isPlanPath(s))
 
   if (changedFiles.length > 0 && mainHead !== job.baseSha) {
-    const rebaseRes = await runGit(["rebase", mainHead], job.worktreePath, {
+    // The rebase rewrites (and would re-sign) the worker's commits: same
+    // hook/gpg bypass as the internal commits.
+    const rebaseRes = await runGit([...commitPrefix, "rebase", mainHead], job.worktreePath, {
       timeoutMs: GIT_LONG_TIMEOUT_MS,
     })
-    if (rebaseRes.exitCode === GIT_TIMEOUT_EXIT_CODE) {
-      // Best-effort: leave the worktree on the worker's original HEAD instead
-      // of detached mid-rebase. Never reset --hard here: the worker's commits
-      // must survive for the retry.
-      await runGit(["rebase", "--abort"], job.worktreePath, {
+    // Best-effort: leave the worktree on the worker's original HEAD instead
+    // of detached mid-rebase. Never reset --hard on a non-conflict failure:
+    // the worker's commits must survive for the retry.
+    const abortRebase = () =>
+      runGit(["rebase", "--abort"], job.worktreePath, {
         timeoutMs: GIT_LONG_TIMEOUT_MS,
       }).catch(() => {})
-      return {
-        status: "error",
-        message: `Rebase failed for task ${job.taskId}: ${rebaseRes.stderr.trim() || rebaseRes.stdout.trim() || "timed out"}`,
-      }
+    const rebaseError = (): IntegrationOutcome => ({
+      status: "error",
+      message: `Rebase failed for task ${job.taskId}: ${rebaseRes.stderr.trim() || rebaseRes.stdout.trim() || `exit ${rebaseRes.exitCode}`}`,
+    })
+    if (rebaseRes.exitCode === GIT_TIMEOUT_EXIT_CODE) {
+      await abortRebase()
+      return rebaseError()
     }
     if (rebaseRes.exitCode !== 0) {
-      const conflictRes = await runGit(
+      const conflict = await mustGit(
+        "git diff --diff-filter=U",
         ["diff", "--name-only", "--diff-filter=U"],
         job.worktreePath,
       )
-      const conflictingFiles = conflictRes.stdout
+      if (!conflict.ok) {
+        await abortRebase()
+        return conflict.error
+      }
+      const conflictingFiles = conflict.stdout
         .split(/\r?\n/)
         .map((s) => s.trim())
         .filter(Boolean)
+      // No unmerged files means the rebase failed for another reason (gpg,
+      // hook, lock...): reporting it as a conflict would retry the task on a
+      // fake conflict until the stuck-task detector stops the loop.
+      if (conflictingFiles.length === 0) {
+        await abortRebase()
+        return rebaseError()
+      }
       await runGit(["rebase", "--abort"], job.worktreePath)
       await runGit(["reset", "--hard", mainHead], job.worktreePath)
       return {
         status: "conflict_retry",
-        conflictingFiles:
-          conflictingFiles.length > 0 ? conflictingFiles : changedFiles,
+        conflictingFiles,
         newBaseSha: mainHead,
       }
     }

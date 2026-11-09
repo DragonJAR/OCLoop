@@ -166,7 +166,7 @@ describe("integration-queue", () => {
           if (args.includes("--")) return { exitCode: 0, stdout: "", stderr: "" }
           return { exitCode: 0, stdout: "src/shared.ts\n", stderr: "" }
         }
-        if (args[0] === "rebase" && args[1] !== "--abort") {
+        if (args.includes("rebase") && !args.includes("--abort")) {
           return { exitCode: 1, stdout: "", stderr: "CONFLICT (content): Merge conflict in src/shared.ts" }
         }
         return { exitCode: 0, stdout: "", stderr: "" }
