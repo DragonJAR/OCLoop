@@ -2,11 +2,13 @@ import { describe, expect, it } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import type { GitRunner } from "./workspace-manager"
+import { GIT_LONG_TIMEOUT_MS, type GitRunner } from "./workspace-manager"
 import {
   createSerialQueue,
   extractWorkerPlanEdits,
+  GIT_COMMIT_TIMEOUT_MS,
   integrateWorkerResult,
+  internalCommitConfig,
   resolveGitPathCase,
 } from "./integration-queue"
 
@@ -610,5 +612,154 @@ describe("plan path casing vs git pathspecs (T10-A O-05)", () => {
     expect(calls.some((c) => c[0] === "ls-files")).toBe(false)
     expect(calls.find((c) => c[0] === "show")).toEqual(["show", "sha-base:plan.md"])
     if (outcome.status === "integrated") expect(outcome.changedFiles).toEqual(["PLAN.md", "src/a.ts"])
+  })
+})
+
+describe("every integration git step fails loudly (T13 R-01/R-02/R-04/R-06/R-09)", () => {
+  type Step = "status" | "add" | "unstage" | "cached" | "changed" | "commit" | "amend" | "rebase" | "restore"
+  const PLAN = ["## Phase 1", "- [ ] **1.1** Do A", "- [ ] **1.2** Do B"].join("\n")
+  const okRes = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" })
+
+  /** The git subcommand, skipping leading `-c key=value` pairs. */
+  const sub = (args: string[]) => {
+    let i = 0
+    while (args[i] === "-c") i += 2
+    return args.slice(i)
+  }
+
+  function classify(args: string[]): Step | "other" {
+    const a = sub(args)
+    if (a[0] === "status") return "status"
+    if (a[0] === "add") return "add"
+    if (a[0] === "reset" && a[1] === "HEAD") return "unstage"
+    if (a[0] === "checkout") return "restore"
+    if (a[0] === "diff" && a.includes("--cached")) return "cached"
+    if (a[0] === "diff" && a[1] === "--name-only" && !a.includes("--") && a[2] !== "--diff-filter=U") return "changed"
+    if (a[0] === "commit") return a.includes("--amend") ? "amend" : "commit"
+    if (a[0] === "rebase" && a[1] !== "--abort") return "rebase"
+    return "other"
+  }
+
+  async function run(opts: {
+    fail?: Step
+    exitCode?: number
+    /** "dirty": uncommitted changes (commit path). "amend": worker committed PLAN.md. */
+    mode?: "dirty" | "amend"
+    platform?: string
+  }) {
+    const { fail, exitCode = 1, mode = "dirty", platform = "linux" } = opts
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-fail-"))
+    const wtPath = join(scratch, ".loop-worktrees", "slot-1")
+    mkdirSync(wtPath, { recursive: true })
+    const rootPlanPath = join(scratch, "PLAN.md")
+    writeFileSync(rootPlanPath, PLAN)
+    writeFileSync(join(wtPath, "PLAN.md"), PLAN)
+    const calls: { args: string[]; timeoutMs?: number }[] = []
+    const git: GitRunner = async (args, cwd, o) => {
+      calls.push({ args, timeoutMs: o?.timeoutMs })
+      const step = classify(args)
+      if (step === fail) return { exitCode, stdout: "", stderr: `boom ${step}` }
+      const a = sub(args)
+      if (a[0] === "show") return okRes(PLAN)
+      if (step === "status") return okRes(mode === "dirty" ? " M src/a.ts\n" : "")
+      if (step === "cached") return okRes("src/a.ts\n")
+      if (a[0] === "diff" && a.includes("--")) return okRes(mode === "amend" ? "PLAN.md\n" : "")
+      if (step === "changed") return okRes("src/a.ts\n")
+      if (a[0] === "rev-parse") return okRes(cwd === wtPath ? "sha-worker\n" : "sha-main\n")
+      return okRes()
+    }
+    try {
+      const outcome = await integrateWorkerResult({
+        slotId: 1,
+        taskId: "1.1",
+        taskDescription: "**1.1** Do A",
+        sessionId: "ses-1",
+        worktreePath: wtPath,
+        baseSha: "sha-base",
+        repoRoot: scratch,
+        planPath: "PLAN.md",
+        runGit: git,
+        platform,
+      })
+      const plan = await Bun.file(rootPlanPath).text()
+      return { outcome, calls, plan }
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  }
+
+  const expectErrorNoMark = (r: Awaited<ReturnType<typeof run>>, step: string) => {
+    expect(r.outcome.status).toBe("error")
+    if (r.outcome.status === "error") {
+      expect(r.outcome.message).toContain("task 1.1")
+      expect(r.outcome.message).toContain(`boom ${step}`)
+    }
+    expect(r.plan).not.toContain("- [x]")
+    expect(r.calls.some((c) => sub(c.args)[0] === "merge")).toBe(false)
+  }
+
+  it("baseline: with no failure the task integrates and is marked [x]", async () => {
+    const r = await run({})
+    expect(r.outcome.status).toBe("integrated")
+    expect(r.plan).toContain("- [x] **1.1** Do A")
+  })
+
+  it("(a) add -A exit 1 => error and PLAN.md has no [x]", async () => {
+    expectErrorNoMark(await run({ fail: "add" }), "add")
+  })
+
+  it("(b) status --porcelain exit 1 => error", async () => {
+    expectErrorNoMark(await run({ fail: "status" }), "status")
+  })
+
+  it("(c) diff base..HEAD exit 1 => error", async () => {
+    expectErrorNoMark(await run({ fail: "changed" }), "changed")
+  })
+
+  it("(d) diff --cached exit 1 => error", async () => {
+    expectErrorNoMark(await run({ fail: "cached" }), "cached")
+  })
+
+  it("reset HEAD -- plan and the plan checkout abort the integration on failure", async () => {
+    expectErrorNoMark(await run({ fail: "unstage" }), "unstage")
+    expectErrorNoMark(await run({ fail: "restore" }), "restore")
+  })
+
+  it("(e) commit exit 1 and exit 124 => error without [x]", async () => {
+    expectErrorNoMark(await run({ fail: "commit", exitCode: 1 }), "commit")
+    expectErrorNoMark(await run({ fail: "commit", exitCode: 124 }), "commit")
+  })
+
+  it("(f) commit --amend exit != 0 => error without [x]", async () => {
+    const ok = await run({ mode: "amend" })
+    expect(ok.calls.some((c) => classify(c.args) === "amend")).toBe(true)
+    expectErrorNoMark(await run({ mode: "amend", fail: "amend", exitCode: 128 }), "amend")
+  })
+
+  it("(g) rebase timeout (124) => error, rebase --abort, never reset --hard", async () => {
+    const r = await run({ fail: "rebase", exitCode: 124 })
+    expectErrorNoMark(r, "rebase")
+    const abort = r.calls.find((c) => c.args[0] === "rebase" && c.args[1] === "--abort")
+    expect(abort).toBeDefined()
+    expect(abort?.timeoutMs).toBe(GIT_LONG_TIMEOUT_MS)
+    expect(r.calls.some((c) => c.args[0] === "reset" && c.args.includes("--hard"))).toBe(false)
+  })
+
+  it("internal commits skip user hooks and GPG signing (POSIX /dev/null, win32 NUL)", async () => {
+    for (const [platform, nul] of [["linux", "/dev/null"], ["win32", "NUL"]] as const) {
+      for (const mode of ["dirty", "amend"] as const) {
+        const r = await run({ mode, platform })
+        const commit = r.calls.find((c) => sub(c.args)[0] === "commit")
+        expect(commit?.args.slice(0, 4)).toEqual(["-c", `core.hooksPath=${nul}`, "-c", "commit.gpgsign=false"])
+        expect(commit?.timeoutMs).toBe(GIT_COMMIT_TIMEOUT_MS)
+      }
+    }
+    expect(internalCommitConfig("darwin")).toContain("core.hooksPath=/dev/null")
+  })
+
+  it("add -A and merge --ff-only get the long git deadline", async () => {
+    const r = await run({})
+    expect(r.calls.find((c) => c.args[0] === "add")?.timeoutMs).toBe(GIT_LONG_TIMEOUT_MS)
+    expect(r.calls.find((c) => c.args[0] === "merge")?.timeoutMs).toBe(GIT_LONG_TIMEOUT_MS)
   })
 })
