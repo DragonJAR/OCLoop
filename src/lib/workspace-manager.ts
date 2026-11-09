@@ -296,12 +296,17 @@ export async function acquireSlotWorkspace(
     await runGit(["rebase", "--abort"], worktreePath, LONG)
     await runGit(["merge", "--abort"], worktreePath, LONG)
     const resetRes = await runGit(["reset", "--hard", baseSha], worktreePath, LONG)
-    if (resetRes.exitCode === 0) {
-      await runGit(["clean", "-fd", "-e", "node_modules"], worktreePath, LONG)
+    // A failed clean leaves the previous worker's untracked files behind, which
+    // the next integration's `add -A` would commit: treat it like a failed reset.
+    const cleanRes =
+      resetRes.exitCode === 0
+        ? await runGit(["clean", "-fd", "-e", "node_modules"], worktreePath, LONG)
+        : resetRes
+    if (cleanRes.exitCode === 0) {
       await ensureNodeModulesSymlink(repoRoot, worktreePath)
       return { slotId, worktreePath, baseSha }
     }
-    // If reset failed (corrupted worktree), tear it down and re-create below
+    // If reset or clean failed (corrupted worktree), tear it down and re-create below
     await releaseSlotWorkspace(slotId, { repoRoot, runGit })
   } else if (existsSync(worktreePath)) {
     await removeNodeModulesSymlink(worktreePath)

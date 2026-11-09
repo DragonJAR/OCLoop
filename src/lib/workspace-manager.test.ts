@@ -186,6 +186,33 @@ describe("workspace-manager", () => {
     }
   })
 
+  it("re-creates a reused worktree whose clean fails instead of keeping stale files", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-cleanfail-"))
+    try {
+      const wtPath = getSlotWorktreePath(scratch, 1)
+      mkdirSync(wtPath, { recursive: true })
+      writeFileSync(join(wtPath, ".git"), "gitdir: x\n")
+      writeFileSync(join(wtPath, "stale-untracked.txt"), "previous worker")
+      const calls: string[] = []
+      const fakeGit: GitRunner = async (args) => {
+        calls.push(args.slice(0, 2).join(" "))
+        if (args[0] === "rev-parse") return { exitCode: 0, stdout: "sha-c\n", stderr: "" }
+        if (args[0] === "clean") return { exitCode: GIT_TIMEOUT_EXIT_CODE, stdout: "", stderr: "timed out" }
+        if (args[0] === "worktree" && args[1] === "add") {
+          mkdirSync(args[4], { recursive: true })
+          writeFileSync(join(args[4], ".git"), "gitdir: x\n")
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+      await acquireSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
+      expect(calls).toContain("worktree remove")
+      expect(calls).toContain("worktree add")
+      expect(existsSync(join(wtPath, "stale-untracked.txt"))).toBe(false)
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
   it("releaseSlotWorkspace never throws even when git itself fails", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-release-"))
     try {
