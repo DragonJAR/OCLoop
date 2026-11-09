@@ -184,6 +184,12 @@ export type IntegrationOutcome =
       message: string
     }
 
+/**
+ * Deadline for OCLoop's internal integration commits. Longer than the query
+ * default because a commit on a large tree can be slow even without hooks.
+ */
+export const GIT_COMMIT_TIMEOUT_MS = 120_000
+
 async function defaultReadFile(path: string): Promise<string | null> {
   try {
     return await Bun.file(path).text()
@@ -266,7 +272,9 @@ export async function integrateWorkerResult(
   const status = await mustGit("git status", ["status", "--porcelain"], job.worktreePath)
   if (!status.ok) return status.error
   if (status.stdout.trim() !== "") {
-    const add = await mustGit("git add", ["add", "-A"], job.worktreePath)
+    const add = await mustGit("git add", ["add", "-A"], job.worktreePath, {
+      timeoutMs: GIT_LONG_TIMEOUT_MS,
+    })
     if (!add.ok) return add.error
     const unstage = await mustGit(
       "Unstaging the plan",
@@ -285,7 +293,7 @@ export async function integrateWorkerResult(
         "Commit",
         ["commit", "-m", `chore(ocloop): complete task ${job.taskId}`],
         job.worktreePath,
-        { timeoutMs: 120000 },
+        { timeoutMs: GIT_COMMIT_TIMEOUT_MS },
       )
       if (!commit.ok) return commit.error
     }
@@ -306,7 +314,7 @@ export async function integrateWorkerResult(
         "Commit amend",
         ["commit", "--amend", "--no-edit", "--allow-empty"],
         job.worktreePath,
-        { timeoutMs: 120000 },
+        { timeoutMs: GIT_COMMIT_TIMEOUT_MS },
       )
       if (!amend.ok) return amend.error
     }
@@ -406,7 +414,9 @@ export async function integrateWorkerResult(
   const workerHead = workerHeadRes.stdout.trim() || mainHead
 
   if (changedFiles.length > 0 && workerHead !== mainHead) {
-    const ffRes = await runGit(["merge", "--ff-only", workerHead], repoRoot)
+    const ffRes = await runGit(["merge", "--ff-only", workerHead], repoRoot, {
+      timeoutMs: GIT_LONG_TIMEOUT_MS,
+    })
     if (ffRes.exitCode !== 0) {
       return {
         status: "error",
