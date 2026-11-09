@@ -32,7 +32,7 @@
 import type { OpencodeBackend, SessionMessage, ReconcileResult } from "./api"
 import { hasNewAssistantReply, extractLastAssistantText, countAssistantMessages } from "./api"
 import { stripCodeFences } from "./plan-parser"
-import { eolOf, normalizeLineEndings, preserveEol } from "./text"
+import { eolOf, normalizeLineEndings, preserveEol, systemEol } from "./text"
 import { t } from "./i18n"
 import { log } from "./debug-logger"
 import { toErrorMessage } from "./format"
@@ -134,9 +134,7 @@ export function formatPlanForSave(
   const targetEol =
     existingContent !== null
       ? eolOf(existingContent)
-      : platform === "win32"
-        ? "\r\n"
-        : "\n"
+      : systemEol(platform)
 
   const normalized = normalizeLineEndings(plan)
   const trimmed = normalized.replace(/\n+$/, "")

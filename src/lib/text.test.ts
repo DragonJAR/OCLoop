@@ -1,5 +1,5 @@
 import { describe, expect, it } from "bun:test"
-import { normalizeLineEndings, splitLines, eolOf, preserveEol } from "./text"
+import { normalizeLineEndings, splitLines, eolOf, preserveEol, systemEol } from "./text"
 
 describe("normalizeLineEndings", () => {
   it("leaves pure-LF text unchanged", () => {
@@ -68,6 +68,21 @@ describe("eolOf", () => {
 
   it("falls back to LF for empty content", () => {
     expect(eolOf("")).toBe("\n")
+  })
+})
+
+describe("systemEol", () => {
+  it("returns CRLF on win32", () => {
+    expect(systemEol("win32")).toBe("\r\n")
+  })
+
+  it("returns LF on POSIX platforms", () => {
+    expect(systemEol("darwin")).toBe("\n")
+    expect(systemEol("linux")).toBe("\n")
+  })
+
+  it("defaults to process.platform", () => {
+    expect(systemEol()).toBe(process.platform === "win32" ? "\r\n" : "\n")
   })
 })
 

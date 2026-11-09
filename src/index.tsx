@@ -16,7 +16,7 @@ import { DEFAULTS, DEFAULT_PLAN_MODEL, DEFAULT_PLAN_AGENT } from "./lib/constant
 import { resolvePlanFile, resolvePromptFile } from "./lib/plan-file"
 import { parsePlan, isStructurallyComplete } from "./lib/plan-parser"
 import { atomicWriteText } from "./lib/atomic-fs"
-import { preserveEol } from "./lib/text"
+import { preserveEol, systemEol } from "./lib/text"
 import { runCreatePlanFlow } from "./lib/create-plan-flow"
 import type { CLIArgs } from "./types"
 import { loadConfig, resolveResilience } from "./lib/config"
@@ -115,16 +115,7 @@ async function ensureLoopPrompt(args: CLIArgs): Promise<void> {
       // Wrap so unexpected filesystem errors display cleanly instead of
       // escaping as a raw stack trace.
       try {
-        const rawPrompt = t("defaultLoopPrompt")
-        let eolSample = process.platform === "win32" ? "\r\n" : "\n"
-        if (await Bun.file(promptPath).exists()) {
-          try {
-            eolSample = await Bun.file(promptPath).text()
-          } catch {
-            // Keep host default
-          }
-        }
-        const promptBody = preserveEol(eolSample, rawPrompt)
+        const promptBody = preserveEol(systemEol(), t("defaultLoopPrompt"))
         await atomicWriteText(promptPath, promptBody)
         console.log(t("promptCreated", { path: promptPath }))
       } catch (err) {

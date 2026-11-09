@@ -44,6 +44,13 @@ export function eolOf(text: string): "\r\n" | "\n" {
 }
 
 /**
+ * The default line terminator for `platform`: `\r\n` on Windows, `\n` elsewhere.
+ */
+export function systemEol(platform: NodeJS.Platform | string = process.platform): "\r\n" | "\n" {
+  return platform === "win32" ? "\r\n" : "\n"
+}
+
+/**
  * Re-join a `\n`-normalized `transformed` text using the line terminator that
  * dominated `original`. The mutators in plan-parser.ts read a file, normalize
  * it to `\n`, splice lines, and `join("\n")` — returning that verbatim rewrites
