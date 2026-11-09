@@ -25,7 +25,13 @@ import {
   markTaskCompleted,
   replaceTaskWithBlocked,
 } from "./plan-parser"
-import { defaultGitRunner, type GitRunner } from "./workspace-manager"
+import { isCaseInsensitiveFs } from "./path-semantics"
+import {
+  defaultGitRunner,
+  GIT_LONG_TIMEOUT_MS,
+  GIT_TIMEOUT_EXIT_CODE,
+  type GitRunner,
+} from "./workspace-manager"
 import type { WorkerSlotId } from "../types"
 
 export interface SerialQueue {
@@ -111,11 +117,6 @@ export interface IntegrationJob {
   evalGate?: (job: IntegrationJob) => Promise<EvalGateVerdict>
   /** Injectable for tests; defaults to `process.platform`. */
   platform?: string
-}
-
-/** Default file systems on Windows (NTFS) and macOS (APFS) ignore case. */
-function isCaseInsensitiveFs(platform: string): boolean {
-  return platform === "win32" || platform === "darwin"
 }
 
 /**
@@ -236,10 +237,14 @@ export async function integrateWorkerResult(
     await runGit(["reset", "HEAD", "--", relPlanPath], job.worktreePath)
     const stagedRes = await runGit(["diff", "--cached", "--name-only"], job.worktreePath)
     if (stagedRes.stdout.trim() !== "") {
-      await runGit(
+      const commitRes = await runGit(
         ["commit", "-m", `chore(ocloop): complete task ${job.taskId}`],
         job.worktreePath,
+        { timeoutMs: 120000 },
       )
+      if (commitRes.exitCode !== 0) {
+        return { status: "error", message: commitRes.stderr }
+      }
     }
   } else {
     // If the worker already committed changes that included PLAN.md, strip PLAN.md from the commit
@@ -249,7 +254,14 @@ export async function integrateWorkerResult(
     )
     if (diffPlan.exitCode === 0 && diffPlan.stdout.trim() !== "") {
       await runGit(["checkout", job.baseSha, "--", relPlanPath], job.worktreePath)
-      await runGit(["commit", "--amend", "--no-edit", "--allow-empty"], job.worktreePath)
+      const amendRes = await runGit(
+        ["commit", "--amend", "--no-edit", "--allow-empty"],
+        job.worktreePath,
+        { timeoutMs: 120000 },
+      )
+      if (amendRes.exitCode !== 0) {
+        return { status: "error", message: amendRes.stderr }
+      }
     }
   }
 
@@ -314,7 +326,12 @@ export async function integrateWorkerResult(
     .filter((s) => s.length > 0 && !isPlanPath(s))
 
   if (changedFiles.length > 0 && mainHead !== job.baseSha) {
-    const rebaseRes = await runGit(["rebase", mainHead], job.worktreePath)
+    const rebaseRes = await runGit(["rebase", mainHead], job.worktreePath, {
+      timeoutMs: GIT_LONG_TIMEOUT_MS,
+    })
+    if (rebaseRes.exitCode === GIT_TIMEOUT_EXIT_CODE) {
+      return { status: "error", message: rebaseRes.stderr }
+    }
     if (rebaseRes.exitCode !== 0) {
       const conflictRes = await runGit(
         ["diff", "--name-only", "--diff-filter=U"],
