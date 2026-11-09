@@ -17,7 +17,7 @@
  * cleanup and process-tree cleanup for those shims.
  */
 
-import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { withPlatform } from "./test-helpers/with-platform"
 import { mockCommandExists, realCommandExists } from "./command-exists-mock"
 import { killAllTrackedSync } from "./kill-tree"
@@ -121,6 +121,11 @@ mock.module("node:child_process", () => ({
   ...realChildProcess,
   spawn: spawnImpl,
 }))
+
+// Restore the real child_process once this file is done (no permanent leak).
+afterAll(() => {
+  mock.module("node:child_process", () => realChildProcess)
+})
 
 // Restore the real launcher for THIS file's SUT import: a hooks-level test
 // (useServer.test.ts) runs earlier in this process and overrides
