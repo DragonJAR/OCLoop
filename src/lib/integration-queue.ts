@@ -399,7 +399,16 @@ export async function integrateWorkerResult(
       timeoutMs: GIT_LONG_TIMEOUT_MS,
     })
     if (rebaseRes.exitCode === GIT_TIMEOUT_EXIT_CODE) {
-      return { status: "error", message: rebaseRes.stderr }
+      // Best-effort: leave the worktree on the worker's original HEAD instead
+      // of detached mid-rebase. Never reset --hard here: the worker's commits
+      // must survive for the retry.
+      await runGit(["rebase", "--abort"], job.worktreePath, {
+        timeoutMs: GIT_LONG_TIMEOUT_MS,
+      }).catch(() => {})
+      return {
+        status: "error",
+        message: `Rebase failed for task ${job.taskId}: ${rebaseRes.stderr.trim() || rebaseRes.stdout.trim() || "timed out"}`,
+      }
     }
     if (rebaseRes.exitCode !== 0) {
       const conflictRes = await runGit(
