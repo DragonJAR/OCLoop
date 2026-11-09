@@ -16,6 +16,7 @@ import { existsSync } from "node:fs"
 import { lstat, mkdir, rm, symlink, unlink } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import type { WorkerSlotId } from "../types"
+import { buildChildEnv } from "./cli-runner"
 import { resolveCommandPath } from "./command-exists"
 import { log } from "./debug-logger"
 import { killTree, trackProcess, type KillableProcess } from "./kill-tree"
@@ -203,7 +204,7 @@ export function execGit(
           // steal focus) on Windows while worktrees are created in parallel.
           windowsHide: true,
           // Fail a credential prompt at once instead of burning the deadline.
-          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
+          env: buildChildEnv({ GIT_TERMINAL_PROMPT: "0" }),
         },
         (err, stdout, stderr) => {
           const code =
