@@ -36,7 +36,7 @@ import {
   type FakeProc,
 } from "./test-helpers/bun-spawn-mock"
 
-import { mockCommandExists } from "./command-exists-mock"
+import { mockCommandExists, realCommandExists } from "./command-exists-mock"
 
 setupBunSpawnMock()
 
@@ -44,7 +44,10 @@ setupBunSpawnMock()
 // suite behaves the same on every host (and ignores mocks leaked by others).
 let caffeinateInstalled = true
 mockCommandExists({
-  systemBinaryExists: (name: string) => name === "caffeinate" && caffeinateInstalled,
+  systemBinaryExists: (name: string, ...rest: unknown[]) =>
+    name === "caffeinate"
+      ? caffeinateInstalled
+      : (realCommandExists.systemBinaryExists as (...a: unknown[]) => boolean)(name, ...rest),
 })
 
 const { createPowerManager } = await import("./power")

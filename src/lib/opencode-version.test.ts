@@ -1,11 +1,16 @@
 import { describe, expect, it } from "bun:test"
 import { withPlatform } from "./test-helpers/with-platform"
-import { mockCommandExists } from "./command-exists-mock"
+import { mockCommandExists, realCommandExists } from "./command-exists-mock"
 
 // Registered before the module under test loads. Only `resolveSpawnable` is
 // stubbed; `isWindowsShellShim` stays real (it is the logic being exercised).
 let resolved: string | null = null
-mockCommandExists({ resolveSpawnable: async () => resolved })
+mockCommandExists({
+  resolveSpawnable: (cmd: string, ...rest: unknown[]) =>
+    cmd === "opencode"
+      ? Promise.resolve(resolved)
+      : (realCommandExists.resolveSpawnable as (...a: unknown[]) => Promise<string | null>)(cmd, ...rest),
+})
 
 const { parseOpencodeVersion, getOpencodeSpawnTarget } = await import("./opencode-version")
 

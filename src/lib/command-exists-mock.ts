@@ -4,7 +4,7 @@
  * resolves to the same specifier consumer tests and production code use.
  */
 import { createRequire } from "node:module"
-import { mock } from "bun:test"
+import { afterAll, mock } from "bun:test"
 
 const require = createRequire(import.meta.url)
 
@@ -32,6 +32,13 @@ export const realCommandExists: CommandExistsModule = {
 
 /** Register a partial mock; unlisted exports stay real. */
 export function mockCommandExists(overrides: CommandExistsOverrides): void {
+  registerMock(overrides)
+  // Standard restoration: once the calling test file finishes, later files in
+  // the same process see the real module again.
+  afterAll(() => registerMock({}))
+}
+
+function registerMock(overrides: CommandExistsOverrides): void {
   mock.module("./command-exists", () => ({
     ...realCommandExists,
     ...overrides,
