@@ -1,6 +1,6 @@
 import { existsSync } from "node:fs"
 import { posix, win32 } from "node:path"
-import { isCaseInsensitiveFs } from "./path-semantics"
+import { foldPathCase } from "./path-semantics"
 
 /** Injectable PATH lookup (default `Bun.which`) so tests need no real binaries. */
 export type WhichFn = (command: string) => string | null
@@ -61,8 +61,10 @@ export function systemBinaryExists(
 export function isInCwd(file: string, platform: string, cwd: string = process.cwd()): boolean {
   // Platform-specific path flavor keeps this correct for an injected platform.
   const path = platform === "win32" ? win32 : posix
-  const norm = (p: string) => (isCaseInsensitiveFs(platform) ? p.toLowerCase() : p)
-  return norm(path.resolve(path.dirname(file))) === norm(path.resolve(cwd))
+  return (
+    foldPathCase(path.resolve(path.dirname(file)), platform) ===
+    foldPathCase(path.resolve(cwd), platform)
+  )
 }
 
 /**
