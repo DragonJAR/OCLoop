@@ -42,6 +42,7 @@ import { compareAndSwapPlan } from "./lib/plan-cas"
 import { casPlanOrDispatch } from "./lib/eval-mark-cas"
 import { runIteration, type IterationDeps } from "./lib/start-iteration"
 import { clampParallelJobs } from "./lib/task-scheduler"
+import { pathsEqual } from "./lib/path-semantics"
 import { createParallelCoordinator } from "./lib/parallel-run"
 import { resolveTierMapping } from "./lib/resolve-tier-mapping"
 import { resolveActiveSessionId } from "./lib/active-session-id"
@@ -928,14 +929,9 @@ function AppContent(props: AppProps) {
 
       // Windows AND macOS filesystems are case-insensitive (APFS/HFS+ keep
       // that default on macOS), so `C:\repo\plan.md` vs `C:\repo\PLAN.md` —
-      // or `PLAN.md` vs `plan.md` on a Mac — are the same file. Comparing the
-      // raw strings there misses the edit and the dashboard keeps showing a
-      // stale plan. Linux filesystems are case-sensitive, so the comparison
-      // stays exact there.
-      const samePath =
-        process.platform === "win32" || process.platform === "darwin"
-          ? absoluteFilePath.toLowerCase() === absolutePlanPath.toLowerCase()
-          : absoluteFilePath === absolutePlanPath
+      // or `PLAN.md` vs `plan.md` on a Mac — are the same file. `pathsEqual`
+      // applies case-folding on win32 and darwin and exact comparison on Linux.
+      const samePath = pathsEqual(absoluteFilePath, absolutePlanPath)
 
       if (samePath) {
         if (refreshPlanTimer) clearTimeout(refreshPlanTimer)
