@@ -282,7 +282,11 @@ describe("execGit", () => {
     let path: string | undefined
     const exec: Parameters<typeof execGit>[3] = (_f, _a, opts, cb) => {
       prompt = opts.env.GIT_TERMINAL_PROMPT
-      path = opts.env.PATH
+      // Windows env keys are case-insensitive and the real PATH arrives as
+      // `Path`, so look the key up the way the OS does instead of assuming
+      // the POSIX spelling.
+      const pathKey = Object.keys(opts.env).find((k) => k.toLowerCase() === "path")
+      path = pathKey === undefined ? undefined : opts.env[pathKey]
       cb(null, "", "")
     }
     const previous = process.env.GIT_TERMINAL_PROMPT
@@ -294,7 +298,9 @@ describe("execGit", () => {
       else process.env.GIT_TERMINAL_PROMPT = previous
     }
     expect(prompt).toBe("0")
-    expect(path).toBe(process.env.PATH)
+    // The env must still carry the user's PATH (whatever casing the host uses).
+    const hostPathKey = Object.keys(process.env).find((k) => k.toLowerCase() === "path")
+    expect(path).toBe(hostPathKey === undefined ? undefined : process.env[hostPathKey])
   })
 
   it("resolves (never rejects, no stray timer) when exec throws synchronously (N-7)", async () => {

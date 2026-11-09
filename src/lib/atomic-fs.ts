@@ -66,10 +66,31 @@ export function renameWithRetrySync(
   }
 }
 
+/**
+ * Ensure the parent directory of `path` exists.
+ *
+ * Windows (Bun) raises `EEXIST: file already exists, mkdir '.'` for
+ * `mkdir(".", { recursive: true })`, which is a no-op on POSIX. Every caller
+ * that writes to a relative path (`.loop-prompt.md`, `PLAN.md`, a config in
+ * the cwd) has `dirname(path) === "."`, so the recursive mkdir must be skipped
+ * there instead of failing the whole atomic write.
+ */
+async function ensureParentDir(path: string): Promise<void> {
+  const dir = dirname(path)
+  if (dir === "." || dir === "") return
+  await mkdir(dir, { recursive: true })
+}
+
+/** Synchronous twin of {@link ensureParentDir}. */
+function ensureParentDirSync(path: string): void {
+  const dir = dirname(path)
+  if (dir === "." || dir === "") return
+  mkdirSync(dir, { recursive: true })
+}
+
 /** Synchronous atomic write — used by `saveConfig`. */
 export function atomicWriteTextSync(path: string, content: string): void {
-  const dir = dirname(path)
-  mkdirSync(dir, { recursive: true })
+  ensureParentDirSync(path)
   const tmp = deterministicTmpPath(path)
   try {
     writeFileSync(tmp, content, "utf-8")
@@ -208,14 +229,16 @@ export async function atomicWriteText(path: string, content: string): Promise<vo
   const tmp = deterministicTmpPath(path)
   let handle: FileHandle | null = null
   try {
-    await mkdir(dir, { recursive: true })
+    await ensureParentDir(path)
     handle = await open(tmp, "w")
     await handle.writeFile(content, "utf8")
     await handle.sync()
     await handle.close()
     handle = null
     await renameWithRetry(tmp, path)
-    await syncDirectoryBestEffort(dir)
+    // Directory fsync is meaningless for the cwd: `open(".", "r")` fails on
+    // Windows and syncDirectoryBestEffort would swallow it anyway.
+    if (dir !== "." && dir !== "") await syncDirectoryBestEffort(dir)
   } catch (err) {
     if (handle) {
       try {

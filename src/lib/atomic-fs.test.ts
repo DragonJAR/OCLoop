@@ -52,6 +52,37 @@ describe("atomic-fs", () => {
     expect(leftovers).toEqual([])
   })
 
+  // A relative target has `dirname(path) === "."`. Bun on Windows raises
+  // `EEXIST: file already exists, mkdir '.'` for `mkdir(".", {recursive:true})`,
+  // which used to fail the whole write: `.loop-prompt.md` (and any bare
+  // filename in the cwd) never got created on Windows CI. Both variants must
+  // skip the parent mkdir for "." instead of failing, and must still write.
+  it("atomicWriteText writes a relative path whose parent is '.' (win32 EEXIST)", async () => {
+    const cwd = process.cwd()
+    dir = mkdtempSync(join(tmpdir(), "atomic-fs-rel-"))
+    process.chdir(dir)
+    try {
+      await atomicWriteText("relative.json", "rel\n")
+      expect(readFileSync(join(dir, "relative.json"), "utf-8")).toBe("rel\n")
+      const leftovers = readdirSync(dir).filter((f) => f.endsWith(".tmp"))
+      expect(leftovers).toEqual([])
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it("atomicWriteTextSync writes a relative path whose parent is '.' (win32 EEXIST)", () => {
+    const cwd = process.cwd()
+    dir = mkdtempSync(join(tmpdir(), "atomic-fs-relsync-"))
+    process.chdir(dir)
+    try {
+      atomicWriteTextSync("relative-sync.json", "relsync\n")
+      expect(readFileSync(join(dir, "relative-sync.json"), "utf-8")).toBe("relsync\n")
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
   it("atomicWriteText handles concurrent writes without clobbering tmp files", async () => {
     dir = mkdtempSync(join(tmpdir(), "atomic-fs-"))
     const path = join(dir, "concurrent.json")
