@@ -254,16 +254,25 @@ describe("runCreatePlanFlow", () => {
     })
 
     it("uses LF for a new plan on POSIX/darwin", () => {
-      const formatted = formatPlanForSave("line1\r\nline2", null, "darwin")
+      const formatted = formatPlanForSave("line1\nline2", null, "darwin")
       expect(formatted).toBe("line1\nline2\n")
-      const linuxFormatted = formatPlanForSave("line1\r\nline2", null, "linux")
+      const linuxFormatted = formatPlanForSave("line1\nline2", null, "linux")
       expect(linuxFormatted).toBe("line1\nline2\n")
     })
 
-    it("ensures exactly one trailing newline", () => {
-      expect(formatPlanForSave("plan\n\n\n", null, "linux")).toBe("plan\n")
+    it("preserves trailing blank lines while ensuring trailing newline", () => {
+      // Plan with two blank lines at the end (three newlines total) => preserved
+      expect(formatPlanForSave("plan\n\n\n", null, "linux")).toBe("plan\n\n\n")
+      // Plan without trailing newline => exactly one added
       expect(formatPlanForSave("plan", null, "linux")).toBe("plan\n")
-      expect(formatPlanForSave("plan\r\n\r\n", null, "win32")).toBe("plan\r\n")
+      // Windows CRLF: two blank lines preserved, no trailing newline gets one CRLF
+      expect(formatPlanForSave("plan\r\n\r\n\r\n", null, "win32")).toBe("plan\r\n\r\n\r\n")
+      expect(formatPlanForSave("plan", null, "win32")).toBe("plan\r\n")
+    })
+
+    it("leaves lone \\r untouched on POSIX", () => {
+      expect(formatPlanForSave("line1\rline2\n", null, "linux")).toBe("line1\rline2\n")
+      expect(formatPlanForSave("line1\rline2", null, "darwin")).toBe("line1\rline2\n")
     })
   })
 

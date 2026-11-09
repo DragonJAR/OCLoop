@@ -124,7 +124,8 @@ async function defaultReadExistingPlan(path: string): Promise<string | null> {
  * Format plan content for saving:
  * - If overwriting an existing PLAN.md, preserves its line endings.
  * - For a new plan, uses host OS line endings (CRLF on Windows, LF on POSIX).
- * - Ensures exactly one trailing newline in the target EOL format.
+ * - Preserves trailing blank lines while ensuring at least one trailing newline.
+ * - On POSIX with LF, leaves content byte-identical (does not touch stray \r).
  */
 export function formatPlanForSave(
   plan: string,
@@ -136,10 +137,19 @@ export function formatPlanForSave(
       ? eolOf(existingContent)
       : systemEol(platform)
 
-  const normalized = normalizeLineEndings(plan)
-  const trimmed = normalized.replace(/\n+$/, "")
-  const withNewline = `${trimmed}\n`
-  return preserveEol(targetEol, withNewline)
+  if (targetEol === "\n" && platform !== "win32") {
+    // POSIX path: byte-identical to pre-fix behavior. A single final newline is
+    // added if missing; existing trailing newlines are never collapsed and stray
+    // \r characters are left untouched.
+    return plan.endsWith("\n") ? plan : `${plan}\n`
+  }
+
+  // Windows / CRLF target: preserve existing trailing newlines without collapsing,
+  // add a single final newline if missing, and normalize to target EOL.
+  const endsWithNewline = plan.endsWith("\n") || plan.endsWith("\r")
+  const withNewline = endsWithNewline ? plan : `${plan}\n`
+  const normalized = normalizeLineEndings(withNewline)
+  return preserveEol(targetEol, normalized)
 }
 
 /**
