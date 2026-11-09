@@ -1,6 +1,6 @@
 import { MAX_TIMEOUT_MS } from "./constants"
 import { afterEach, beforeEach, describe, expect, it } from "bun:test"
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { deterministicTmpPath } from "./atomic-fs"
@@ -801,6 +801,17 @@ describe("resolveResilience — invalid-value skip", () => {
 })
 
 describe("saveConfig — round-trip (Finding 12.2.A)", () => {
+  it("preserves CRLF line endings of an existing config file (O-04)", () => {
+    const configPath = getConfigPath()
+    mkdirSync(join(dir, "ocloop"), { recursive: true })
+    writeFileSync(configPath, '{\r\n  "language": "en"\r\n}\r\n', "utf-8")
+    saveConfig({ language: "es" })
+    const raw = readFileSync(configPath, "utf-8")
+    expect(raw).toContain("\r\n")
+    expect(raw).not.toMatch(/[^\r]\n/)
+    expect(loadConfig()).toEqual({ language: "es" })
+  })
+
   it("writes the config and loadConfig reads it back", () => {
     saveConfig({ language: "es" })
     expect(loadConfig()).toEqual({ language: "es" })

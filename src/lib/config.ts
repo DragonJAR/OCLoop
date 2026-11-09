@@ -11,6 +11,7 @@ import { isAbsolute, join } from "node:path"
 import { atomicWriteTextSync, cleanupDeterministicTmp } from "./atomic-fs"
 import { log } from "./debug-logger"
 import { isLocale } from "./i18n"
+import { preserveEol } from "./text"
 import { MAX_PARALLEL_JOBS, MIN_PARALLEL_JOBS } from "./task-scheduler"
 import { MAX_TIMEOUT_MS } from "./constants"
 
@@ -412,7 +413,18 @@ export function saveConfig(config: OcloopConfig): boolean {
   const configPath = getConfigPath()
 
   try {
-    atomicWriteTextSync(configPath, JSON.stringify(config, null, 2) + "\n")
+    let raw = JSON.stringify(config, null, 2) + "\n"
+    if (existsSync(configPath)) {
+      try {
+        const existing = readFileSync(configPath, "utf-8")
+        raw = preserveEol(existing, raw)
+      } catch {
+        // Fall back to default raw if read fails
+      }
+    } else if (process.platform === "win32") {
+      raw = preserveEol("\r\n", raw)
+    }
+    atomicWriteTextSync(configPath, raw)
     cachedConfig = config
     log.info("config", "Saved config", config)
     return true
