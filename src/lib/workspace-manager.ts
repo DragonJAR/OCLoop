@@ -28,7 +28,16 @@ export interface GitCommandResult {
   stderr: string
 }
 
-export type GitRunner = (args: string[], cwd: string) => Promise<GitCommandResult>
+export interface GitRunOptions {
+  /** Deadline for this command in ms (default {@link GIT_TIMEOUT_MS}). */
+  timeoutMs?: number
+}
+
+export type GitRunner = (
+  args: string[],
+  cwd: string,
+  options?: GitRunOptions,
+) => Promise<GitCommandResult>
 
 export interface WorkerWorkspace {
   slotId: WorkerSlotId
@@ -53,7 +62,7 @@ export const GIT_NOT_FOUND_EXIT_CODE = 127
 export function createGitRunner(
   resolveGit: () => Promise<string | null> = () => resolveCommandPath("git"),
 ): GitRunner {
-  return async (args, cwd) => {
+  return async (args, cwd, options) => {
     const git = await resolveGit()
     if (!git) {
       return {
@@ -62,7 +71,7 @@ export function createGitRunner(
         stderr: "git executable not found on PATH; install git to use parallel worktrees",
       }
     }
-    return execGit(git, args, cwd)
+    return execGit(git, args, cwd, undefined, options?.timeoutMs)
   }
 }
 
@@ -70,8 +79,16 @@ export const defaultGitRunner: GitRunner = createGitRunner()
 
 /** Exit code reported when git is killed for exceeding its deadline (`timeout(1)`). */
 export const GIT_TIMEOUT_EXIT_CODE = 124
-/** Deadline for one git command (worktree add, rebase, merge... all local). */
+/** Default deadline for one git command: quick queries (rev-parse, status, prune). */
 export const GIT_TIMEOUT_MS = 30_000
+/**
+ * Deadline for git commands that rewrite a whole working tree (worktree
+ * add/remove, reset --hard, clean, rebase): a checkout with LFS or a
+ * post-checkout hook in a large repo, or under Windows Defender, easily
+ * exceeds {@link GIT_TIMEOUT_MS}.
+ */
+export const GIT_LONG_TIMEOUT_MS = 300_000
+const LONG: GitRunOptions = { timeoutMs: GIT_LONG_TIMEOUT_MS }
 
 export interface ExecGitOptions {
   cwd: string
@@ -274,12 +291,13 @@ export async function acquireSlotWorkspace(
 
   const gitFileInWorktree = join(worktreePath, ".git")
   if (existsSync(gitFileInWorktree)) {
-    // Worktree already registered — abort any lingering rebase/merge and reset to baseSha
-    await runGit(["rebase", "--abort"], worktreePath)
-    await runGit(["merge", "--abort"], worktreePath)
-    const resetRes = await runGit(["reset", "--hard", baseSha], worktreePath)
+    // Worktree already registered — abort any lingering rebase/merge and reset to baseSha.
+    // The aborts fail harmlessly when nothing is in progress; both may rewrite the tree.
+    await runGit(["rebase", "--abort"], worktreePath, LONG)
+    await runGit(["merge", "--abort"], worktreePath, LONG)
+    const resetRes = await runGit(["reset", "--hard", baseSha], worktreePath, LONG)
     if (resetRes.exitCode === 0) {
-      await runGit(["clean", "-fd", "-e", "node_modules"], worktreePath)
+      await runGit(["clean", "-fd", "-e", "node_modules"], worktreePath, LONG)
       await ensureNodeModulesSymlink(repoRoot, worktreePath)
       return { slotId, worktreePath, baseSha }
     }
@@ -294,6 +312,7 @@ export async function acquireSlotWorkspace(
   const addRes = await runGit(
     ["worktree", "add", "--force", "--detach", worktreePath, baseSha],
     repoRoot,
+    LONG,
   )
   if (addRes.exitCode !== 0) {
     throw new Error(
@@ -318,7 +337,7 @@ export async function releaseSlotWorkspace(
 
   try {
     await removeNodeModulesSymlink(worktreePath)
-    await runGit(["worktree", "remove", "--force", worktreePath], repoRoot)
+    await runGit(["worktree", "remove", "--force", worktreePath], repoRoot, LONG)
     if (existsSync(worktreePath)) {
       await rm(worktreePath, { recursive: true, force: true })
     }

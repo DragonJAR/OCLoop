@@ -7,6 +7,7 @@ import {
   acquireSlotWorkspace,
   createGitRunner,
   execGit,
+  GIT_LONG_TIMEOUT_MS,
   GIT_TIMEOUT_EXIT_CODE,
   defaultGitRunner,
   spawnExecFile,
@@ -159,6 +160,32 @@ describe("workspace-manager", () => {
     }
   })
 
+  it("gives tree-rewriting git commands the long deadline and quick queries the default (N-6)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-timeouts-"))
+    try {
+      const seen = new Map<string, number | undefined>()
+      const fakeGit: GitRunner = async (args, _cwd, options) => {
+        seen.set(args.slice(0, 2).join(" "), options?.timeoutMs)
+        if (args[0] === "rev-parse") return { exitCode: 0, stdout: "sha-t\n", stderr: "" }
+        if (args[0] === "worktree" && args[1] === "add") {
+          mkdirSync(args[4], { recursive: true })
+          writeFileSync(join(args[4], ".git"), "gitdir: x\n")
+        }
+        return { exitCode: 0, stdout: "", stderr: "" }
+      }
+      await acquireSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
+      await acquireSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
+      await releaseSlotWorkspace(1, { repoRoot: scratch, runGit: fakeGit })
+      for (const op of ["worktree add", "worktree remove", "reset --hard", "clean -fd", "rebase --abort", "merge --abort"]) {
+        expect(seen.get(op)).toBe(GIT_LONG_TIMEOUT_MS)
+      }
+      expect(seen.get("rev-parse HEAD")).toBeUndefined()
+      expect(seen.get("worktree prune")).toBeUndefined()
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
+  })
+
   it("releaseSlotWorkspace never throws even when git itself fails", async () => {
     const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-release-"))
     try {
@@ -184,6 +211,14 @@ describe("git runner", () => {
     const res = await run(["status"], process.cwd())
     expect(res.exitCode).toBe(GIT_NOT_FOUND_EXIT_CODE)
     expect(res.stderr).toContain("git executable not found")
+  })
+
+  it.skipIf(process.platform === "win32")("honors a per-call timeoutMs (N-6)", async () => {
+    const run = createGitRunner(async () => "/bin/sh")
+    const started = Date.now()
+    const res = await run(["-c", "sleep 5"], process.cwd(), { timeoutMs: 100 })
+    expect(res.exitCode).toBe(GIT_TIMEOUT_EXIT_CODE)
+    expect(Date.now() - started).toBeLessThan(2_000)
   })
 
   it("runs the resolved git (real PATH)", async () => {
