@@ -12,6 +12,8 @@
  * layout measurements.
  */
 import { fileURLToPath } from "node:url"
+import { buildChildEnv, readUntilExitDrained } from "../lib/cli-runner"
+import { killTree, killTreeSync } from "../lib/kill-tree"
 
 /** Result of a scenario run in a child process. */
 export interface RenderScenarioResult {
@@ -69,23 +71,22 @@ export async function runRenderScenario(opts: {
     cwd: opts.cwd ?? repoRoot(),
     stdout: "pipe",
     stderr: "pipe",
-    env: { ...process.env, [SCENARIO_ENV]: "1", ...opts.env },
+    env: buildChildEnv({ [SCENARIO_ENV]: "1", ...opts.env }),
   })
 
   const timeoutMs = opts.timeoutMs ?? 30_000
+  let escalation: ReturnType<typeof setTimeout> | undefined
   const killer = setTimeout(() => {
-    try {
-      child.kill()
-    } catch {
-      // already gone
-    }
+    killTree(child)
+    // A child that ignores SIGTERM would leave `child.exited` pending forever.
+    escalation = setTimeout(() => killTreeSync(child), 1_000)
   }, timeoutMs)
 
   try {
     const [code, stdout, stderr] = await Promise.all([
       child.exited,
-      new Response(child.stdout).text(),
-      new Response(child.stderr).text(),
+      readUntilExitDrained(child.stdout, child.exited),
+      readUntilExitDrained(child.stderr, child.exited),
     ])
     let data: unknown
     if (opts.resultFile) {
@@ -101,5 +102,6 @@ export async function runRenderScenario(opts: {
     return { code, stdout, stderr, output: stdout + stderr, data }
   } finally {
     clearTimeout(killer)
+    if (escalation !== undefined) clearTimeout(escalation)
   }
 }
