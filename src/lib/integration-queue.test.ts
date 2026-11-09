@@ -616,7 +616,9 @@ describe("plan path casing vs git pathspecs (T10-A O-05)", () => {
 })
 
 describe("every integration git step fails loudly (T13 R-01/R-02/R-04/R-06/R-09)", () => {
-  type Step = "status" | "add" | "unstage" | "cached" | "changed" | "commit" | "amend" | "rebase" | "restore"
+  type Step =
+    | "status" | "add" | "unstage" | "cached" | "changed" | "commit" | "amend" | "rebase" | "restore"
+    | "diffPlan" | "unmerged" | "workerHead"
   const PLAN = ["## Phase 1", "- [ ] **1.1** Do A", "- [ ] **1.2** Do B"].join("\n")
   const okRes = (stdout = "") => ({ exitCode: 0, stdout, stderr: "" })
 
@@ -634,20 +636,24 @@ describe("every integration git step fails loudly (T13 R-01/R-02/R-04/R-06/R-09)
     if (a[0] === "reset" && a[1] === "HEAD") return "unstage"
     if (a[0] === "checkout") return "restore"
     if (a[0] === "diff" && a.includes("--cached")) return "cached"
-    if (a[0] === "diff" && a[1] === "--name-only" && !a.includes("--") && a[2] !== "--diff-filter=U") return "changed"
+    if (a[0] === "diff" && a[2] === "--diff-filter=U") return "unmerged"
+    if (a[0] === "diff" && a[1] === "--name-only" && a.includes("--")) return "diffPlan"
+    if (a[0] === "diff" && a[1] === "--name-only") return "changed"
     if (a[0] === "commit") return a.includes("--amend") ? "amend" : "commit"
     if (a[0] === "rebase" && a[1] !== "--abort") return "rebase"
     return "other"
   }
 
   async function run(opts: {
-    fail?: Step
+    fail?: Step | Step[]
     exitCode?: number
     /** "dirty": uncommitted changes (commit path). "amend": worker committed PLAN.md. */
     mode?: "dirty" | "amend"
     platform?: string
+    /** stdout of `diff --diff-filter=U` after a failed rebase. */
+    unmerged?: string
   }) {
-    const { fail, exitCode = 1, mode = "dirty", platform = "linux" } = opts
+    const { fail, exitCode = 1, mode = "dirty", platform = "linux", unmerged = "" } = opts
     const scratch = mkdtempSync(join(tmpdir(), "ocloop-int-fail-"))
     const wtPath = join(scratch, ".loop-worktrees", "slot-1")
     mkdirSync(wtPath, { recursive: true })
@@ -657,12 +663,14 @@ describe("every integration git step fails loudly (T13 R-01/R-02/R-04/R-06/R-09)
     const calls: { args: string[]; timeoutMs?: number }[] = []
     const git: GitRunner = async (args, cwd, o) => {
       calls.push({ args, timeoutMs: o?.timeoutMs })
-      const step = classify(args)
-      if (step === fail) return { exitCode, stdout: "", stderr: `boom ${step}` }
+      let step = classify(args)
+      if (sub(args)[0] === "rev-parse" && cwd === wtPath) step = "workerHead"
+      if ((Array.isArray(fail) ? fail : [fail]).includes(step as Step)) return { exitCode, stdout: "", stderr: `boom ${step}` }
       const a = sub(args)
       if (a[0] === "show") return okRes(PLAN)
       if (step === "status") return okRes(mode === "dirty" ? " M src/a.ts\n" : "")
       if (step === "cached") return okRes("src/a.ts\n")
+      if (step === "unmerged") return okRes(unmerged)
       if (a[0] === "diff" && a.includes("--")) return okRes(mode === "amend" ? "PLAN.md\n" : "")
       if (step === "changed") return okRes("src/a.ts\n")
       if (a[0] === "rev-parse") return okRes(cwd === wtPath ? "sha-worker\n" : "sha-main\n")
@@ -761,5 +769,40 @@ describe("every integration git step fails loudly (T13 R-01/R-02/R-04/R-06/R-09)
     const r = await run({})
     expect(r.calls.find((c) => c.args[0] === "add")?.timeoutMs).toBe(GIT_LONG_TIMEOUT_MS)
     expect(r.calls.find((c) => c.args[0] === "merge")?.timeoutMs).toBe(GIT_LONG_TIMEOUT_MS)
+  })
+
+  it("(h) worker rev-parse HEAD failing => error and PLAN.md has no [x] (R-15)", async () => {
+    expectErrorNoMark(await run({ fail: "workerHead", exitCode: 124 }), "workerHead")
+    expectErrorNoMark(await run({ fail: "workerHead", exitCode: 128 }), "workerHead")
+  })
+
+  it("diff base..HEAD -- plan failing on the amend branch => error, no merge (R-15)", async () => {
+    expectErrorNoMark(await run({ mode: "amend", fail: "diffPlan" }), "diffPlan")
+  })
+
+  it("(i) rebase exit 1 with no unmerged files => error, not conflict_retry, no reset --hard (R-16)", async () => {
+    const r = await run({ fail: "rebase", exitCode: 1 })
+    expectErrorNoMark(r, "rebase")
+    expect(r.calls.some((c) => c.args[0] === "rebase" && c.args[1] === "--abort")).toBe(true)
+    expect(r.calls.some((c) => c.args[0] === "reset" && c.args.includes("--hard"))).toBe(false)
+  })
+
+  it("a rebase with real unmerged files still reports conflict_retry with those files", async () => {
+    const r = await run({ fail: "rebase", exitCode: 1, unmerged: "src/a.ts\n" })
+    expect(r.outcome).toEqual({ status: "conflict_retry", conflictingFiles: ["src/a.ts"], newBaseSha: "sha-main" })
+    expect(r.plan).not.toContain("- [x]")
+  })
+
+  it("a failing diff --diff-filter=U after a failed rebase => error, no reset --hard", async () => {
+    const r = await run({ fail: ["rebase", "unmerged"], exitCode: 1 })
+    expectErrorNoMark(r, "unmerged")
+    expect(r.calls.some((c) => c.args[0] === "rebase" && c.args[1] === "--abort")).toBe(true)
+    expect(r.calls.some((c) => c.args[0] === "reset" && c.args.includes("--hard"))).toBe(false)
+  })
+
+  it("the rebase runs with the hook/gpg bypass (R-16)", async () => {
+    const r = await run({})
+    const rebase = r.calls.find((c) => classify(c.args) === "rebase")
+    expect(rebase?.args.slice(0, 5)).toEqual(["-c", "core.hooksPath=/dev/null", "-c", "commit.gpgsign=false", "rebase"])
   })
 })
