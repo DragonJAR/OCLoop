@@ -19,10 +19,11 @@
 
 import { afterEach, beforeEach, describe, expect, it, mock } from "bun:test"
 import { withPlatform } from "./test-helpers/with-platform"
-import { mockCommandExists } from "./command-exists-mock"
+import { mockCommandExists, realCommandExists } from "./command-exists-mock"
 import { killAllTrackedSync } from "./kill-tree"
 import { mockOpencodeServer } from "./opencode-server-mock"
 import { EventEmitter } from "node:events"
+import { createRequire } from "node:module"
 import { PERMISSION_TOOLS } from "./config"
 import { toError } from "./format"
 
@@ -43,6 +44,15 @@ type SpawnCall = {
 /** The five blocking tools — read-only tools never ask, so this is the full set. */
 const BLOCKING_TOOLS = [...PERMISSION_TOOLS]
 
+// Real `node:child_process` snapshot, captured BEFORE `mock.module` below.
+// Bun replaces the module namespace for everything loaded later in the same
+// process, so without delegation other test files (workspace-manager, git
+// helpers) would receive the fake spawn. Same pattern as command-exists-mock.ts.
+const realChildProcess = createRequire(import.meta.url)(
+  "node:child_process",
+) as typeof import("node:child_process")
+const realSpawn = realChildProcess.spawn
+
 let resolveSpawnableImpl: (cmd: string) => Promise<string | null> = async () =>
   null
 let versionOutput = "opencode v1.18.33\n"
@@ -61,7 +71,15 @@ function createFakeProcess(pid: number): FakeChildProcess {
   return proc
 }
 
+/** Spawns that belong to the SUT: opencode (serve/--version) and taskkill. */
+function isSutSpawn(command: string, args: string[]): boolean {
+  return isTaskkill(command) || (/opencode/i.test(command) && (args[0] === "serve" || args[0] === "--version"))
+}
+
 const spawnImpl = mock((command: string, args: string[], opts: unknown) => {
+  if (!isSutSpawn(command, args)) {
+    return (realSpawn as (...a: unknown[]) => unknown)(command, args, opts) as FakeChildProcess
+  }
   const proc = args[0] === "serve" && nextProc ? nextProc : createFakeProcess(1234)
   // Bun's node:child_process emits an 'error' event with an AbortError on the
   // child when the spawn's AbortSignal fires. Reproduce it: the server is
@@ -91,10 +109,16 @@ const spawnImpl = mock((command: string, args: string[], opts: unknown) => {
 })
 
 mockCommandExists({
-  resolveSpawnable: (cmd: string) => resolveSpawnableImpl(cmd),
+  // Only `opencode` is faked; every other command resolves through the real
+  // implementation so later test files in the process are unaffected.
+  resolveSpawnable: (cmd: string, ...rest: unknown[]) =>
+    cmd === "opencode"
+      ? resolveSpawnableImpl(cmd)
+      : (realCommandExists.resolveSpawnable as (...a: unknown[]) => Promise<string | null>)(cmd, ...rest),
 })
 
 mock.module("node:child_process", () => ({
+  ...realChildProcess,
   spawn: spawnImpl,
 }))
 
