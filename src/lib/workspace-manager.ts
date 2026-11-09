@@ -11,14 +11,14 @@
  * - Tear down worktrees cleanly on session completion or process shutdown.
  */
 
-import { execFile } from "node:child_process"
+import { spawn } from "node:child_process"
 import { existsSync } from "node:fs"
 import { lstat, mkdir, rm, symlink, unlink } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import type { WorkerSlotId } from "../types"
 import { resolveCommandPath } from "./command-exists"
 import { log } from "./debug-logger"
-import { killTree, type KillableProcess } from "./kill-tree"
+import { killTree, trackProcess, type KillableProcess } from "./kill-tree"
 
 export const WORKTREES_DIR = ".loop-worktrees"
 
@@ -73,13 +73,72 @@ export const GIT_TIMEOUT_EXIT_CODE = 124
 /** Deadline for one git command (worktree add, rebase, merge... all local). */
 export const GIT_TIMEOUT_MS = 30_000
 
-/** The slice of `execFile` execGit uses (injectable for tests). */
+export interface ExecGitOptions {
+  cwd: string
+  maxBuffer: number
+  windowsHide: boolean
+  env: NodeJS.ProcessEnv
+}
+
+/** An execFile-shaped launcher (injectable for tests). */
 export type ExecFileFn = (
   file: string,
   args: string[],
-  options: { cwd: string; maxBuffer: number; windowsHide: boolean },
+  options: ExecGitOptions,
   callback: (err: Error | null, stdout: string | Buffer, stderr: string | Buffer) => void,
 ) => KillableProcess | void
+
+/**
+ * Default {@link ExecFileFn}: execFile semantics on top of `spawn`, because
+ * `execFile` silently drops `detached` (verified on Bun and Node). On POSIX the
+ * child leads its own process group (and session, so no tty to prompt on), so
+ * killTree reaches hooks, credential helpers and `gc --auto` — not just git.
+ * Windows uses taskkill /t instead (detached there would open a console).
+ * Tracked so the exit hook (`killAllTrackedSync`) still reaps it: a detached
+ * child no longer receives the tty's SIGINT/SIGHUP.
+ */
+export const spawnExecFile: ExecFileFn = (file, args, options, callback) => {
+  const child = spawn(file, args, {
+    cwd: options.cwd,
+    env: options.env,
+    windowsHide: options.windowsHide,
+    detached: process.platform !== "win32",
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+  // A spawn that failed (ENOENT) has no pid and nothing to reap.
+  if (child.pid) trackProcess(child)
+  const out: Buffer[] = []
+  const errOut: Buffer[] = []
+  let size = 0
+  let failure: Error | null = null
+  let done = false
+  const finish = (err: Error | null) => {
+    if (done) return
+    done = true
+    callback(err, Buffer.concat(out).toString(), Buffer.concat(errOut).toString())
+  }
+  const collect = (chunks: Buffer[]) => (chunk: Buffer) => {
+    if (failure) return
+    size += chunk.length
+    if (size > options.maxBuffer) {
+      failure = Object.assign(new Error("git output exceeded maxBuffer"), {
+        code: "ERR_CHILD_PROCESS_STDIO_MAXBUFFER",
+      })
+      killTree(child)
+      return
+    }
+    chunks.push(chunk)
+  }
+  child.stdout?.on("data", collect(out))
+  child.stderr?.on("data", collect(errOut))
+  child.on("error", (err) => finish(err))
+  child.on("close", (code, signal) => {
+    if (failure) return finish(failure)
+    if (code === 0) return finish(null)
+    finish(Object.assign(new Error(`git exited with ${code ?? signal}`), { code, signal }))
+  })
+  return child
+}
 
 /**
  * Run git once. Never rejects. Exported (with an injectable exec/deadline)
@@ -95,7 +154,7 @@ export function execGit(
   git: string,
   args: string[],
   cwd: string,
-  exec: ExecFileFn = execFile as unknown as ExecFileFn,
+  exec: ExecFileFn = spawnExecFile,
   timeoutMs: number = GIT_TIMEOUT_MS,
 ): Promise<GitCommandResult> {
   return new Promise((resolvePromise) => {
@@ -126,6 +185,8 @@ export function execGit(
           // windowsHide: background git must not flash a console window (or
           // steal focus) on Windows while worktrees are created in parallel.
           windowsHide: true,
+          // Fail a credential prompt at once instead of burning the deadline.
+          env: { ...process.env, GIT_TERMINAL_PROMPT: "0" },
         },
         (err, stdout, stderr) => {
           const code =

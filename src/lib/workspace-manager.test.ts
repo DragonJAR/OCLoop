@@ -1,5 +1,5 @@
 import { describe, expect, it, mock } from "bun:test"
-import { mkdirSync, mkdtempSync, existsSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, existsSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import {
@@ -9,6 +9,7 @@ import {
   execGit,
   GIT_TIMEOUT_EXIT_CODE,
   defaultGitRunner,
+  spawnExecFile,
   cleanupAllWorkspaces,
   getSlotWorktreePath,
   releaseSlotWorkspace,
@@ -214,6 +215,26 @@ describe("execGit", () => {
     expect(kill).toHaveBeenCalled()
   })
 
+  it("disables git's terminal credential prompt (N-4)", async () => {
+    let prompt: string | undefined
+    let path: string | undefined
+    const exec: Parameters<typeof execGit>[3] = (_f, _a, opts, cb) => {
+      prompt = opts.env.GIT_TERMINAL_PROMPT
+      path = opts.env.PATH
+      cb(null, "", "")
+    }
+    const previous = process.env.GIT_TERMINAL_PROMPT
+    process.env.GIT_TERMINAL_PROMPT = "1" // the override must win over the user's env
+    try {
+      await execGit("/usr/bin/git", ["fetch"], "/repo", exec)
+    } finally {
+      if (previous === undefined) delete process.env.GIT_TERMINAL_PROMPT
+      else process.env.GIT_TERMINAL_PROMPT = previous
+    }
+    expect(prompt).toBe("0")
+    expect(path).toBe(process.env.PATH)
+  })
+
   it("resolves (never rejects, no stray timer) when exec throws synchronously (N-7)", async () => {
     const exec: Parameters<typeof execGit>[3] = () => {
       throw new TypeError("The \"cwd\" argument must be of type string")
@@ -236,5 +257,46 @@ describe("execGit", () => {
     expect(res.exitCode).toBe(0)
     await new Promise((r) => setTimeout(r, 40))
     expect(kill).not.toHaveBeenCalled()
+  })
+})
+
+describe.skipIf(process.platform === "win32")("spawnExecFile (POSIX)", () => {
+  it("reports stdout, stderr and the numeric exit code", async () => {
+    const res = await execGit("/bin/sh", ["-c", "echo out; echo err >&2; exit 3"], process.cwd(), spawnExecFile)
+    expect(res).toEqual({ exitCode: 3, stdout: "out\n", stderr: "err\n" })
+  })
+
+  it("runs git as the leader of its own process group (N-4)", async () => {
+    const probe = await execGit("/bin/sh", ["-c", "echo $$; ps -o pgid= -p $$"], process.cwd(), spawnExecFile)
+    const [pid, pgid] = probe.stdout.trim().split(/\s+/)
+    expect(pgid).toBe(pid)
+  })
+
+  it("kills a grandchild (hook / credential helper) on timeout (N-4)", async () => {
+    const scratch = mkdtempSync(join(tmpdir(), "ocloop-wt-tree-"))
+    try {
+      const pidFile = join(scratch, "grandchild.pid")
+      const res = await execGit(
+        "/bin/sh",
+        ["-c", `sleep 30 & echo "$!" > '${pidFile}'; wait`],
+        scratch,
+        spawnExecFile,
+        300,
+      )
+      expect(res.exitCode).toBe(GIT_TIMEOUT_EXIT_CODE)
+      const grandchild = Number(readFileSync(pidFile, "utf8").trim())
+      let alive = true
+      for (let i = 0; i < 40 && alive; i++) {
+        await new Promise((r) => setTimeout(r, 50))
+        try {
+          process.kill(grandchild, 0)
+        } catch {
+          alive = false
+        }
+      }
+      expect(alive).toBe(false)
+    } finally {
+      rmSync(scratch, { recursive: true, force: true })
+    }
   })
 })
