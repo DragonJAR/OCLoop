@@ -311,11 +311,15 @@ export async function integrateWorkerResult(
     }
   } else {
     // If the worker already committed changes that included PLAN.md, strip PLAN.md from the commit
-    const diffPlan = await runGit(
+    // A failure here must abort: otherwise the worker's PLAN.md would ride
+    // its commit into the fast-forward of main.
+    const diffPlan = await mustGit(
+      "git diff base..HEAD -- plan",
       ["diff", "--name-only", `${job.baseSha}..HEAD`, "--", relPlanPath],
       job.worktreePath,
     )
-    if (diffPlan.exitCode === 0 && diffPlan.stdout.trim() !== "") {
+    if (!diffPlan.ok) return diffPlan.error
+    if (diffPlan.stdout.trim() !== "") {
       const restore = await mustGit(
         "Restoring the plan",
         ["checkout", job.baseSha, "--", relPlanPath],
@@ -431,8 +435,14 @@ export async function integrateWorkerResult(
   }
 
   // 6. Fast-forward main repo to the rebased worktree HEAD if new commits exist
-  const workerHeadRes = await runGit(["rev-parse", "HEAD"], job.worktreePath)
-  const workerHead = workerHeadRes.stdout.trim() || mainHead
+  // A failed rev-parse must abort: falling back to mainHead would skip the
+  // fast-forward and still mark the task [x] with no code integrated.
+  const workerHeadRes = await mustGit("git rev-parse HEAD", ["rev-parse", "HEAD"], job.worktreePath)
+  if (!workerHeadRes.ok) return workerHeadRes.error
+  const workerHead = workerHeadRes.stdout.trim()
+  if (!workerHead) {
+    return { status: "error", message: `git rev-parse HEAD returned no SHA for task ${job.taskId}` }
+  }
 
   if (changedFiles.length > 0 && workerHead !== mainHead) {
     const ffRes = await runGit(["merge", "--ff-only", workerHead], repoRoot, {
